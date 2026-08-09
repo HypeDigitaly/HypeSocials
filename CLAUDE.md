@@ -63,7 +63,7 @@ Project configuration and agent coordination guide for HypeSocials MVP (Phase 1)
 - Leaked via error messages
 Redaction boundary enforced in logwriter; full prompts logged only to events.jsonl, never run.log.
 
-**5. G2 line ceiling: 12,000 lines (target ~11,500 — v1.6.5, operator decision 2026-08-09).** Tracked at every wave barrier with `wc -l hypesocials/**/*.py`. Wave 1 ended at 3,919, Wave 2 at 7,868, Wave 3 at 9,993; escalation past the ceiling stays an operator decision, never silent cuts.
+**5. G2 line ceiling: 13,000 lines (target ~12,500 — v1.6.7, operator decision 2026-08-09).** Tracked at every wave barrier with `wc -l hypesocials/**/*.py`. Wave 1 ended at 3,919, Wave 2 at 7,868, Wave 3 at 9,993, Wave 4 at 11,519; escalation past the ceiling stays an operator decision, never silent cuts.
 
 **6. Junctions, not symlinks.** Windows: `mklink /J` only. Never `os.symlink`.
 

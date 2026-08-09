@@ -114,10 +114,10 @@ models:
       480p: null
       720p: null
   image_job_timeout_s: 180         # measured image render: ~90 s, comfortable
-  video_job_timeout_s: 300         # PRD canonical (FR-259). NOTE: both live Seedance renders took
-                                   # 302 s and 378 s (spikes/RESULTS.md §C), so this default times
-                                   # out real jobs - a D15 amendment candidate (>= 600), NOT
-                                   # silently changed here. Override per config: hypedigitaly.yaml.
+  video_job_timeout_s: 600         # PRD canonical (FR-259, amended 300->600 in v1.6.7): both live
+                                   # Seedance renders took 302 s and 378 s (spikes/RESULTS.md §C);
+                                   # a timed-out job is paid and never resubmitted, so 300 s would
+                                   # have discarded real results seconds before arrival.
   poll_interval_s: 3               # gap between Kie recordInfo polls
   http_max_attempts: 3             # EVERY bounded-retry path: OpenRouter, Kie, Virlo, Postiz
   max_inflight_llm_calls: 8        # keep at or under your provider account's concurrency limit

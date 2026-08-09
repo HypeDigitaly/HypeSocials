@@ -1,7 +1,7 @@
 # HypeSocials MVP — Implementation Plan (Phase 1)
 
 **Status:** REVIEWED (architect + python/async + PRD-coverage panels applied) · **Source of truth:** `prds/00-overview.md` … `prds/50-promptcraft.md` (v1.6.2)
-**Goal:** Full MVP per PRD. Line budget: **hard ceiling 12,000 (G2 v1.6.5, raised at the W3/M1 barrier by operator decision; was 10,000 at W2, 6,500 at W1, 4,500 originally)** — Wave 3 actual 9,993, remaining estimate ~1,500–2,000 — tracked at every wave barrier (`wc -l`), escalation by operator decision (§1a).
+**Goal:** Full MVP per PRD. Line budget: **hard ceiling 13,000 (G2 v1.6.7, raised at the W4/M2 barrier by operator decision; was 12,000 at W3, 10,000 at W2, 6,500 at W1, 4,500 originally)** — Wave 4 actual 11,519, remaining estimate ~800–1,000 — tracked at every wave barrier (`wc -l`), escalation by operator decision (§1a).
 **Execution model:** flat-wave conductor dispatch per `CODING_GUIDELINES.md` §21. Operator decisions: minimal deterministic test suite (money/logic math), repo docs authored in Wave 0, day-one paid spikes (~$1–2) auto-run from `.env`.
 
 **Standing child-prompt preamble (every spawn, every level):** (1) read `CODING_GUIDELINES.md` in full; (2) model/effort policy per `CLAUDE.md` §9 — never pass a `model` param at spawn; (3) subagent output contract — conclusion first, bullets, `path:line`, no preamble; (4) read this plan file and the named PRD files fully.
@@ -125,7 +125,7 @@ hypesocials/
 
 Support trees (`virlo_mcp` counts toward G2 per NFR-110; the rest don't): `run.bat` · `configs/` · `prompts/` · `niches/hypedigitaly/` · `tests/` · `spikes/` (never imported by production code; retired after W1) · `CLAUDE.md`, `NAVIGATION.md`, `plans/`.
 
-### 1a. Line budget (HONEST reckoning · originally hard ceiling 4,500; **now target ~11,500 / hard ceiling 12,000 — G2 v1.6.5, operator decision 2026-08-09 at the W3/M1 barrier.** Measured at barriers: W1 3,919 · W2 7,868 · W3 9,993. The table below is the original W0 sizing, kept for the record)
+### 1a. Line budget (HONEST reckoning · originally hard ceiling 4,500; **now target ~12,500 / hard ceiling 13,000 — G2 v1.6.7, operator decision 2026-08-09 at the W4/M2 barrier.** Measured at barriers: W1 3,919 · W2 7,868 · W3 9,993 · W4 11,519. The table below is the original W0 sizing, kept for the record)
 
 | Area | Raw est. |
 |---|---|

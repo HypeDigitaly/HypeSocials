@@ -18,9 +18,10 @@ run:
   platforms: [linkedin, instagram, tiktok]
   languages: { linkedin: en, instagram: en, tiktok: en }
   # Cost lever (30 §2 v1.6.6): the motion reference's seconds are BILLED at the full with-video
-  # rate. 10 s keeps the measured spike shape (~$2.85/reel); the break-even vs no-reference is
+  # rate. 20 s (operator decision v1.6.7, was 10) lets most real TikToks qualify for motion
+  # mimicry at a worst case of ~$4.75 per 5 s 720p reel; the break-even vs no-reference is
   # input < 0.65 x output (~3 s for a 5 s reel). The provider ceiling 28/30 s is a cost trap.
-  reel_reference_max_s: 10
+  reel_reference_max_s: 20
 
 sources:
   # The three REAL monitor ids recorded live in spikes/RESULTS.md §A (2026-08-09).
@@ -40,10 +41,7 @@ briefs_dir: niches/hypedigitaly/briefs   # holds ai-audit-cta/ (shipped first br
 prompts_dir: null                        # set to niches/hypedigitaly/prompts once that folder exists
 
 models:
-  # OPERATOR OVERRIDE, justified by measurement - not a PRD change. Both live Seedance renders in
-  # spikes/RESULTS.md §C finished at 302 s and 378 s, i.e. over the PRD default of 300 s. A
-  # timed-out job is never resubmitted and its spend still counts (20-integrations §8), so 300 s
-  # would have paid $2.85 and thrown the result away 79 seconds before it arrived.
+  # 600 is now the PRD default too (FR-259 amended in v1.6.7); kept explicit here for clarity.
   video_job_timeout_s: 600
 
   price_per_unit:
@@ -62,11 +60,11 @@ models:
       # The estimator has only ONE scalar per resolution, multiplied by reel_duration_s, and it
       # runs BEFORE the yt-dlp probe - so the reference's real duration is unknown at estimate
       # time. The value below therefore prices the WORST CASE this config can produce, with
-      # run.reel_reference_max_s: 10 (set above for the M2 barrier - the measured spike shape):
-      #     720p: 38 x (reel_reference_max_s 10 + reel_duration_s 5) = 570 cr = $2.85 / 5 s
-      #           = 0.570 per output second
-      #     480p: 17 x (10 + 5)                                      = 255 cr = $1.275 / 5 s
-      #           = 0.255 per output second
+      # run.reel_reference_max_s: 20 (operator decision v1.6.7 - most real TikToks qualify):
+      #     720p: 38 x (reel_reference_max_s 20 + reel_duration_s 5) = 950 cr = $4.75 / 5 s
+      #           = 0.950 per output second
+      #     480p: 17 x (20 + 5)                                      = 425 cr = $2.125 / 5 s
+      #           = 0.425 per output second
       #   Understating is the one unacceptable error here (D11/FR-282), so the scalar overstates
       #   the cheaper branches on purpose:
       #     no video reference at all, 720p -> 0.315 / output second ($1.575 per 5 s reel)
@@ -78,5 +76,5 @@ models:
       #
       # IF YOU CHANGE reel_reference_max_s OR reel_duration_s, RECOMPUTE THESE TWO NUMBERS.
       # ---------------------------------------------------------------------------------------
-      480p: 0.255
-      720p: 0.570
+      480p: 0.425
+      720p: 0.950

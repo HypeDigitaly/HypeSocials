@@ -162,7 +162,7 @@ class ModelsConfig:
         default_factory=lambda: {"analysis": 600, "copy": 1000})
     price_per_unit: PriceTable = field(default_factory=PriceTable)
     image_job_timeout_s: int = 180
-    video_job_timeout_s: int = 300  # PRD canonical (FR-259); measured renders ran 302–378 s
+    video_job_timeout_s: int = 600  # PRD canonical (FR-259, v1.6.7); measured renders ran 302–378 s
     poll_interval_s: int = 3
     http_max_attempts: int = 3  # EVERY bounded-retry path in the engine (NFR-14)
     max_inflight_llm_calls: int = 8
