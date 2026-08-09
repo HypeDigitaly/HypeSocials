@@ -125,21 +125,21 @@ hypesocials/
 
 Support trees (`virlo_mcp` counts toward G2 per NFR-110; the rest don't): `run.bat` · `configs/` · `prompts/` · `niches/hypedigitaly/` · `tests/` · `spikes/` (never imported by production code; retired after W1) · `CLAUDE.md`, `NAVIGATION.md`, `plans/`.
 
-### 1a. Line budget (honest estimate ~4,150 · hard ceiling 4,500)
+### 1a. Line budget (HONEST reckoning · hard ceiling 4,500 per G2)
 
-| Area | Est. |
+| Area | Raw est. |
 |---|---|
-| cli + menu + preflight + config | 850 |
-| plan + budget | 700 |
+| cli + menu + preflight + config | 800 |
+| plan + budget | 650 |
 | sources(virlo) + virlo_mcp + mcp_client | 700 |
-| llm + analyze + copywrite + prompts_engine | 750 |
+| llm + analyze + copywrite + prompts_engine | 700 |
 | render (seam + kie + profiles + permit gate) | 400 |
 | generate (waves/carousel/reel/video_ref) + vision_check | 750 |
-| outputs + runner + util + models | 1000 |
+| outputs + runner + util + models | 950 |
 | notion + inspiration + briefs (W5) | 300 |
-| **Total** | **~4,450 worst case → drive to ≤4,300** |
+| **Raw sum** | **5,250** |
 
-`wc -l hypesocials/**/*.py` is a **barrier command at every wave**. Pre-committed levers, in order, that do NOT reverse operator keeps: (1) deep `render.run()` already designed in (−~120 vs naive); (2) gallery as one template string; (3) merge `analyze.py`+`copywrite.py` into one `content.py`; (4) **last resort, requires D21 amendment per D15:** swap `virlo_mcp/` wrapper for the official Virlo MCP server via config (−250–350).
+**Stated plainly: the raw sum EXCEEDS the 4,500 ceiling.** The build must land ≤4,500. Mechanism: (a) `wc -l hypesocials/**/*.py` is a **barrier command at every wave** — drift is caught per-wave, not at the end; (b) pre-committed levers, in order, none reversing operator keeps: (1) deep `render.run()` (already designed in), (2) gallery as one template string, (3) merge `analyze.py`+`copywrite.py` into one `content.py` (−~150), (4) **last resort, D21 amendment per D15:** swap `virlo_mcp/` for the official Virlo MCP server via config (−250–350); (c) if levers still don't close it, **G2's own escalation applies** — further cuts come from the remaining REVIEW-v1.6 candidates by operator decision, never silently. Estimates above are deliberately paranoid; disciplined deep-module implementation typically lands 15–20% under them.
 
 Dependencies (pinned; guidelines §13 approval given here): `httpx`, `pyyaml`, `mcp`, `yt-dlp` (routine-bump policy NFR-160), `Pillow` (FR-93 downscale ONLY, NFR-25), `python-dotenv`, **`pywin32` (job objects FR-111 — `win32job`; approved now to avoid a mid-task dependency wall)**. stdlib `argparse` for flags; the menu is a separate hand-rolled `input()` wizard (argparse cannot and need not build it).
 
@@ -152,7 +152,7 @@ Dependencies (pinned; guidelines §13 approval given here): `httpx`, `pyyaml`, `
 | Task | Owner | Path set |
 |---|---|---|
 | T0.1 `CLAUDE.md` (incl. §9 model policy + §9a — **quote the three flat-wave triggers verbatim from CODING_GUIDELINES.md §21**, no paraphrase; resolve `prd/`→`prds/` mismatch) + `NAVIGATION.md` | technical-writer | `CLAUDE.md`, `NAVIGATION.md` |
-| T0.2 Scaffold: `pyproject.toml` (pinned deps incl. pywin32), `run.bat` (FR-53/54/55/256), `.gitignore`, `.env.example`, `hypesocials/__init__.py`, `tests/` skeleton | python-pro | `pyproject.toml`, `run.bat`, `.gitignore`, `.env.example`, `hypesocials/__init__.py`, `tests/` |
+| T0.2 Scaffold: `pyproject.toml` (pinned deps incl. pywin32), `run.bat` (FR-53/54/55/256; **bootstrap also pins + pre-installs the Notion MCP server package — FR-113, no bare `npx pkg@latest` at run time**), `.gitignore`, `.env.example`, `hypesocials/__init__.py`, `tests/` skeleton | python-pro | `pyproject.toml`, `run.bat`, `.gitignore`, `.env.example`, `hypesocials/__init__.py`, `tests/` |
 
 **Barrier:** venv bootstraps; `python -c "import hypesocials"`.
 
@@ -162,18 +162,18 @@ Dependencies (pinned; guidelines §13 approval given here): `httpx`, `pyyaml`, `
 
 | Task | Owner | Path set |
 |---|---|---|
-| T1.0 `models.py` + pinned contracts: all shared types + degradations enum; `llm.structured_call()` signature; `render.run()` signature + 2-tier permit gate spec; `briefs.load()` stub; template-set naming `prompts/<profile>/<role>.md` + placeholder vocabulary (from 50-promptcraft FR-181/182) | python-pro (single) | `hypesocials/models.py` |
+| T1.0 `models.py` + pinned contracts: all shared types + degradations enum; `llm.structured_call()` signature; `render.run()` signature + 2-tier permit gate spec; `briefs.load()` stub; **template layout is TWO-LEVEL per FR-181: the 3 global role templates (`style_brief_system.md`, `copywriter_system.md`, `vision_check_question.md`) sit FLAT in `prompts/`; only render sets live under `prompts/<profile>/<role>.md`** + placeholder vocabulary (FR-181/182) | python-pro (single) | `hypesocials/models.py` |
 
 **W1b (parallel fan-out):**
 
 | Task | Leaf | Path set | Spike-dependent? |
 |---|---|---|---|
 | T0.3 Day-one spikes (auto-run, ~$1–2): `spikes/day_one.py` + execute. Settles: OQ-17 residual (refs honored), OQ-2 (one 5 s 720p Seedance render → measured price), OQ-21 (image+video refs in one job), OQ-22 (Luna strict schema), **mkv upload spot-check (20 §8b)**, Virlo 5-endpoint + `list_monitors` live smoke (**record real monitor ids → RESULTS.md for W3 live run**), OQ-19/OQ-20 notes, **$0 Windows signal spike: ProactorEventLoop + subprocess + double-SIGINT delivery via signal.signal** | python-pro (Bash) | `spikes/` | — |
-| T1.1 `config.py` + `configs/default.yaml` (**reel_second stays `null` + OQ-2 comment — FR-258 is unconditional**) + `configs/hypedigitaly.yaml` (niche block; **measured reel price goes HERE**) + FR-124 char-budget key + inert postiz entries | python-pro | `hypesocials/config.py`, `configs/` | reads RESULTS at finalization |
+| T1.1 `config.py` + `configs/default.yaml` (**reel_second stays `null` + OQ-2 comment — FR-258 is unconditional**; image tiers `1k/2k/4k` per FR-258 — 30 §2's two-tier prose flagged via D15) + `configs/hypedigitaly.yaml` (niche block; **measured reel price goes HERE**) + FR-124 char-budget key + **NFR-111 per-role token-limit floors (clamp + warn)** + inert postiz entries | python-pro | `hypesocials/config.py`, `configs/` | reads RESULTS at finalization |
 | T1.2 `util.py` + `outputs/__init__.py` facade + `logwriter.py` + `state.py` (junction via `mklink /J`) | python-pro | those 4 files | no |
 | T1.3 `render/` (deep `run()`, permit gate, kie, profiles) | python-pro | `hypesocials/render/` | reads RESULTS (param shapes) |
-| T1.4 `llm.py` (schema-agnostic contract per T1.0; LLM semaphore inside) | python-pro | `hypesocials/llm.py` | reads RESULTS (OQ-22) |
-| T1.5 `mcp_client.py` + `virlo_mcp/` | python-pro | `hypesocials/mcp_client.py`, `hypesocials/virlo_mcp/` | endpoint smoke cross-check |
+| T1.4 `llm.py` (schema-agnostic contract per T1.0; LLM semaphore inside; **enforces NFR-111 token floors from config**) | python-pro | `hypesocials/llm.py` | reads RESULTS (OQ-22) |
+| T1.5 `mcp_client.py` + `virlo_mcp/` (**incl. FR-120: Virlo calls use `http_max_attempts` bounded backoff — never retried for auth/not-found**) | python-pro | `hypesocials/mcp_client.py`, `hypesocials/virlo_mcp/` | endpoint smoke cross-check |
 | T1.6 All 9 prompt templates per 50-promptcraft playbooks incl. **FR-102 data-not-instruction delimiters** in `style_brief_system.md`/`copywriter_system.md` | prompt-engineer | `prompts/` | no |
 
 **Barrier:** imports clean; wrapper starts + lists 5 tools; logwriter round-trip; **`prompts_engine` spec + T1.0 contracts reviewed and accepted by a python-pro before W2**; spike RESULTS.md complete — **spike failure on refs/Seedance = STOP, PRD amendment path (D15)**; `wc -l` checkpoint. Spike code marked retired.
@@ -182,11 +182,11 @@ Dependencies (pinned; guidelines §13 approval given here): `httpx`, `pyyaml`, `
 
 | Task | Leaf | Path set |
 |---|---|---|
-| T2.1 `sources/__init__.py` + `sources/virlo.py` ONLY (notion/inspiration are W5) | python-pro | those 2 files |
+| T2.1 `sources/__init__.py` + `sources/virlo.py` ONLY (notion/inspiration are W5). **Includes FR-91's trend-side coherent reference-set builder**: 2–3 refs from ONE coherent source (single slideshow's panels or single creator), panels preferred over UI-dense thumbnails, face-dominant refs avoided, `media_download_cap` vs `reference_images_per_job` split honored — consumed by `generate/` | python-pro | those 2 files |
 | T2.2 `plan.py`: FR-6 usability filter + `text_only`, FR-7 history verdicts (eligible/excluded(date)/unusable(reason)), expansion w/ brief entries first, affinity assignment + **`tests/test_plan.py`** (worked-example FR-1 test, compound trim-order input) | python-pro | `hypesocials/plan.py`, `tests/test_plan.py` |
 | T2.3 `budget.py`: estimator with **one named test per FR-107 bullet**, FR-282 provenance/unpriced data, reserve/reconcile + **asyncio race test (N concurrent reservations vs small cap) IN THIS WAVE'S barrier**, reverse-plan trim + compound trim test + **`tests/test_budget.py`** | python-pro | `hypesocials/budget.py`, `tests/test_budget.py` |
-| T2.4 `analyze.py` + `copywrite.py` + `prompts_engine.py` (FR-102 delimiter insertion at fill time; FR-263 validator; template hashes) | python-pro | those 3 files |
-| T2.5 `outputs/packager.py` (+ `update_meta`/`set_marker` mutators) + `outputs/gallery.py` (header documents SELECTED.marker/publish.txt; badges from models enum) | python-pro | those 2 files |
+| T2.4 `analyze.py` + `copywrite.py` + `prompts_engine.py` (FR-102 delimiter insertion at fill time; FR-263 validator; template hashes; **length-limit truncation order per 50 §7 — style-DNA truncated first, exact text block + exclusion clauses NEVER; FR-109 Notion-`full` precedence — accent colour + product nouns only, never brand fonts/layouts; brief-directives slot for FR-144 override (visual directives replace `render_prompt`/`layout_zones`) and FR-145 blend (trend wins visuals, brief wins message/CTA)**) | python-pro | those 3 files |
+| T2.5 `outputs/packager.py` (+ `update_meta`/`set_marker` mutators; **meta.yaml carries `render_not_reproducible: true` no-seed line (FR-109/OQ-4) and `aspect_ratio_requested`/`native_size_rendered` (FR-98)**) + `outputs/gallery.py` (header documents SELECTED.marker/publish.txt; badges from models enum) | python-pro | those 2 files |
 
 **Barrier:** full pytest green (plan/budget suites); `wc -l`; NAVIGATION.md updated.
 
@@ -214,14 +214,14 @@ Then single owner:
 |---|---|---|
 | T4.3 Wave-engine integration: two-wave submission with **priority permit gate (wave-2 before queued wave-1 — named starvation test required)**; wave-1 projection / wave-2 pre-commit / discretionary reservation (FR-106 a/b/c) with **anchor-fallback N+1 slides explicitly PRE-COMMITTED (never discretionary)**; FR-105 ordering (anchor checked pre-deck; seed frame checked pre-chain); two-stage Ctrl+C (`signal.signal` + `call_soon_threadsafe`, verified against T0.3 signal-spike findings); deadline + ~30 s grace poll; ledger wiring; both-mode pairs (FR-3/22); FR-249 cleanup on every exit path | python-pro (single) | `hypesocials/generate/__init__.py`, `runner.py` edits, `budget.py` edits |
 
-**Barrier (M2):** live run 1 image + 1 carousel (+1 reel if priced in hypedigitaly.yaml); Ctrl+C mid-run → packaged, exit 4; tiny-deadline run abandons honestly with ledger entries; **named tests green: permit starvation (wave-2 vs late wave-1), reservation race, FR-105 ordering**; `wc -l`.
+**Barrier (M2):** live run 1 image + 1 carousel (+1 reel if priced in hypedigitaly.yaml) **with wall clock recorded vs NFR-1 tiers**; Ctrl+C mid-run → packaged, exit 4; tiny-deadline run abandons honestly with ledger entries; **named tests green: permit starvation (wave-2 vs late wave-1), reservation race, FR-105 ordering**; `wc -l`.
 
 ### WAVE 5 — Full surface (shape: a-flat, 5 pure-module leaves — **no child touches cli/runner/preflight**), then single-writer wiring
 
 | Task | Leaf | Path set |
 |---|---|---|
-| T5.1 `menu.py` pure module (FR-56–60, **135/136/137**, NFR-16; fidelity-rating prompt FR-232, suppressed under `--yes`) | python-pro | `hypesocials/menu.py` |
-| T5.2 Preview implementations as `runner`-callable functions in own module (FR-139/140/253; video-ref suppression flag; log-only folders never repoint latest) | python-pro | `hypesocials/previews.py` |
+| T5.1 `menu.py` pure module (FR-56–60, **135/136/137**, NFR-16; **pre-wizard one-key action choice "Start a new run / Publish a finished run" with Phase-2 placeholder branch (FR-175 menu half)**; **interactive over-cap refusal offers reduced counts (FR-28)**; fidelity-rating prompt FR-232, suppressed under `--yes`) | python-pro | `hypesocials/menu.py` |
+| T5.2 Preview implementations (FR-139/140/253) — **MUST reuse `runner.py`'s Launch/Collect/Select and Analyze/Write stage calls verbatim; a parallel dry-run code path violates D19**; video-ref suppression flag; log-only folders never repoint latest | python-pro | `hypesocials/previews.py` |
 | T5.3 `briefs.py` loader (models.py stub signature) + `niches/hypedigitaly/` assets incl. `briefs/ai-audit-cta/` (v1.5.1) | python-pro | `hypesocials/briefs.py`, `niches/` |
 | T5.4 `sources/notion.py` + `sources/inspiration.py` (full paths: influence tiers, truncation, mix) | python-pro | those 2 files |
 | T5.5 Test completion: **exit-code decision-function unit test (all 5 codes + brief-only edge)**, config load/malformed, slug/asset_id, ledger format, redaction | test-automator | `tests/` |
@@ -230,7 +230,7 @@ Then:
 
 | Task | Owner | Path set |
 |---|---|---|
-| T5.6 Single-writer wiring (conductor or one python-pro): menu/previews/briefs/notion into `cli.py`/`runner.py`/`preflight.py`; FR-252 rows routed to their four executors; **brief-only run carve-outs** (no Virlo session for pure-override plans; exit 3/1/0 logic per 10 §10) | python-pro (single) | `hypesocials/cli.py`, `runner.py`, `preflight.py` |
+| T5.6 Single-writer wiring (conductor or one python-pro): menu/previews/briefs/notion into `cli.py`/`runner.py`/`preflight.py`; **`generate/`-side brief wiring — brief directives flow into `prompts_engine`'s FR-144/145 slot built in T2.4**; FR-252 rows routed to their four executors; **brief-only run carve-outs** (no Virlo session for pure-override plans; exit 3/1/0 logic per 10 §10) | python-pro (single) | `hypesocials/cli.py`, `runner.py`, `preflight.py`, `generate/__init__.py` (brief hookup only) |
 
 **Barrier:** menu walkthrough; `--preview-sources` shows verdicts at $0 model spend; brief run produces badged creatives; brief-only run opens no Virlo session; full pytest green; `wc -l`.
 
@@ -239,7 +239,7 @@ Then:
 | Task | Owner | Path set |
 |---|---|---|
 | T6.1 FR-coverage audit vs all PRD FR tables; fixes by python-pro | code-reviewer + python-pro | read-all, targeted fixes |
-| T6.2 Final `wc -l` vs 4,500 (apply levers if over), NAVIGATION.md final, README quickstart, final live `--mode both` A/B run, operator handoff | python-pro | docs + misc |
+| T6.2 Final `wc -l` vs 4,500 (apply levers if over), NAVIGATION.md final, README quickstart (**incl. Notion one-time page-share prerequisite, FR-123**), final live `--mode both` A/B run **with measured wall clock recorded against G1/NFR-1 tiers (≈3 min images/carousels · ≈8–10 min with reels)**, operator handoff | python-pro | docs + misc |
 
 **Barrier (MVP DONE):** PRD Build-Time Verification items 1–6, 13–15 closed/logged; exit-code matrix test green; two archived live runs (interactive + `--yes`).
 
@@ -283,8 +283,12 @@ Then:
 5. **Windows job objects** — pywin32 pre-approved; `mklink /J` for junctions, never `os.symlink`.
 6. **API drift vs PRD facts** — RESULTS.md is authoritative; deviations surface via D15, never silently coded around.
 
-## 6. PRD amendments expected
+## 6. PRD amendments expected (all via D15 cycle)
 
-- FR-124 char-budget key name added to 30 §2 (conductor-approved) — record via D15 at W1.
-- 40 §3 FR-76's dangling "FR-236" pointer → FR-231 (editorial, D15).
+- FR-124 char-budget key name added to 30 §2 (conductor-approved) — at W1.
+- 40 §3 FR-76's dangling "FR-236" pointer → FR-231 (editorial).
+- **FR-25 implementation sentence:** "plain semaphore" contradicts its own wave-2-priority clause (FIFO semaphores starve wave-2). Amend to "small priority permit gate". The plan builds the priority gate — the PRD text must follow, not the other way round silently.
+- **NFR-7 / NFR-110 "~3,000-line budget" wording** → restate as "target ~3,000, hard ceiling 4,500 (G2 v1.6.1)" — stale v1.5 text.
+- **FR-59 vs FR-70 tension** (decline-confirm "no output" vs run folder created at launch): resolve as "folder + log survive; FR-59 means no *assets*, no spend" — editorial.
+- 30 §2 image price prose (two tiers) vs FR-258 (three tiers): T1.1 follows FR-258; prose fixed.
 - Only if lever #4 fires: D21 amendment (wrapper → official Virlo MCP).
