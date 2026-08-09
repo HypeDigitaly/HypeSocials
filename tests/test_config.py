@@ -7,6 +7,9 @@ except the two read-only assertions that the shipped `configs/*.yaml` still load
 The invariant behind most of these: a config file is *data*, so an absent key must default
 (FR-50/NFR-19) and a malformed key must produce exactly ONE operator-facing line naming the key
 and the expected shape (FR-51/69) — never a traceback, never a partial load.
+
+The tail section covers a flag that overrides this same surface for one run (`--sources`,
+FR-61/65/135): it lives here because what it changes — and never rewrites — is a config.
 """
 
 from __future__ import annotations
@@ -16,6 +19,7 @@ from pathlib import Path
 
 import pytest
 
+from hypesocials import cli
 from hypesocials.config import (
     CONFIGS_DIR,
     Config,
@@ -185,6 +189,17 @@ def test_fr69_an_unknown_source_adapter_is_refused_by_name(tmp_path: Path) -> No
     assert "sources.active" in line and "reddit" in line
 
 
+def test_fr69_an_unknown_platform_is_refused_by_name_rather_than_silently_spent_on(
+    tmp_path: Path,
+) -> None:
+    """D6 fixes the platform set, so `linkedn` is malformed — and it used to load clean: nothing
+    is ever planned for it, while its correctly-spelled siblings still spend the whole budget."""
+    line = refusal(tmp_path, "run:\n  platforms: [linkedn, tiktok]\n")
+
+    assert "run.platforms" in line and "'linkedn'" in line
+    assert "linkedin | instagram | tiktok" in line
+
+
 def test_fr69_an_unknown_language_names_the_platform(tmp_path: Path) -> None:
     line = refusal(tmp_path, "run:\n  languages: { linkedin: de }\n")
     assert "linkedin" in line and "en | cs" in line
@@ -338,6 +353,55 @@ def test_config_default_path_points_at_the_repo_configs_folder() -> None:
     """A `Config()` built in code (tests, previews) still resolves the shipped folder."""
     assert Config().path.parent == CONFIGS_DIR
     assert CONFIGS_DIR.name == "configs"
+
+
+# --------------------------------------------------------------------------- the --sources flag
+
+
+def test_fr65_the_sources_flag_overrides_sources_active_without_rewriting_the_file(
+    tmp_path: Path,
+) -> None:
+    """30 §5: the CLI twin of the menu's source picker — flags win for this run only (FR-61)."""
+    path = write(tmp_path, "sources:\n  active: [google_trends]\n")
+    cfg = load_config("unit", configs_dir=tmp_path)
+
+    assert cli.parse_args([]).sources == ()  # no flag, no override: the file's list stands
+    applied = cli.apply_overrides(cfg, cli.parse_args(["--sources", "virlo, virlo"]))
+
+    assert cfg.sources.active == ["virlo"]  # deduped, exactly as the picker dedupes its pick
+    assert "sources.active=virlo" in applied
+    assert "google_trends" in path.read_text(encoding="utf-8")
+
+
+def test_fr135_the_sources_flag_refuses_an_unknown_and_an_unbuilt_adapter_in_one_line(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """FR-63/69: one line, exit 2, before any config load — and never a silent no-op (FR-135)."""
+    for value, expected in (("reddit", "expected a comma-separated list of"),
+                            ("virlo,google_trends", "not built yet")):
+        with pytest.raises(SystemExit) as caught:
+            cli.parse_args(["--sources", value])
+        assert caught.value.code == 2
+        assert expected in capsys.readouterr().err
+
+
+def test_fr137_the_platforms_flag_refuses_the_same_typo_at_the_flag_boundary(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`--platforms` is the ONLY way to change the list (FR-137), so it enforces the same D6
+    vocabulary as the file — argparse exits 2 with one line before any config is loaded
+    (FR-63/69), which is what makes a typo cost $0 instead of a whole plan."""
+    with pytest.raises(SystemExit) as caught:
+        cli.parse_args(["--platforms", "linkedn,tiktok"])
+    assert caught.value.code == 2
+    assert "linkedin | instagram | tiktok" in capsys.readouterr().err
+
+    opts = cli.parse_args(["--platforms", "tiktok, linkedin,tiktok"])
+    assert opts.platforms == ["tiktok", "linkedin"]  # trimmed and deduped, like --sources
+
+    config = Config()
+    assert "run.platforms=tiktok,linkedin" in cli.apply_overrides(config, opts)
+    assert config.run.platforms == ["tiktok", "linkedin"]
 
 
 def _timed(call) -> float:

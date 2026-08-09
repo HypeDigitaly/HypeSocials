@@ -87,10 +87,10 @@ class Console:
 class MenuResult:
     """What the wizard resolved.
 
-    `options` is dispatch-ready: it carries every answer that has a CLI flag, so re-loading
-    `config_name` and re-applying `cli.apply_overrides()` reproduces the wizard. `config` is that
-    same file already loaded and mutated, and is the ONLY carrier of the one menu answer with no
-    flag behind it — `sources.active` (FR-135). Drop it and the source pick is silently dropped.
+    `options` is dispatch-ready: every answer now has a CLI flag behind it — the source pick
+    included, since `--sources` landed (30 §5, FR-65/135) — so re-loading `config_name` and
+    re-applying `cli.apply_overrides()` reproduces the wizard exactly. `config` is that same file
+    already loaded and mutated, passed on so the runner skips a redundant second load.
     """
 
     options: cli.Options
@@ -317,6 +317,7 @@ def _options_from(opts: cli.Options, config: Config,
     return replace(
         opts, action=cli.Action.RUN, config_name=config.name,
         counts={name: int(config.run.formats.get(name, 0)) for name in _FORMATS},
+        sources=tuple(config.sources.active),
         budget_usd=config.run.spend_cap_usd, mode=config.run.generation_mode,
         notion=config.run.notion_influence, briefs=briefs, yes=False)
 

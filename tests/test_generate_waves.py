@@ -23,6 +23,7 @@ from hypesocials.models import (
     CopySet,
     DegradationTag,
     LayoutZone,
+    ParsedResult,
     PlanEntry,
     PlanEntryStatus,
     RenderFailCause,
@@ -31,6 +32,7 @@ from hypesocials.models import (
     RenderPriority,
     StyleBrief,
     TrendItem,
+    VisionCheckResult,
 )
 from hypesocials.outputs import Ledger, packager, read_meta
 from hypesocials.prompts_engine import PromptEngine
@@ -86,6 +88,19 @@ def ok(url: str = RESULT_URL, *, task: str = "kie_ok", cost: float = 0.03) -> Re
     return RenderOutcome(kind=RenderOutcomeKind.SUCCESS, task_id=task, request_token="tok",
                          result_urls=[url], cost_usd=cost, submitted_at="2026-08-09T10:00:00Z",
                          completed_at="2026-08-09T10:01:00Z")
+
+
+def vision(*flags: bool) -> Any:
+    """A `models.StructuredCall` answering FR-105 — one queued verdict per check call."""
+    queue = list(flags) or [False]
+
+    async def call(role: str, messages: list[dict[str, Any]], schema: dict[str, Any],
+                   images: list[bytes] | None = None) -> ParsedResult:
+        flagged = queue.pop(0) if len(queue) > 1 else queue[0]
+        return ParsedResult(parsed={"verdicts": [{"image": 1, "text_broken": flagged,
+                                                  "fake_ui": False, "detail": "garbled headline"}]},
+                            raw_text="{}", cost_usd=0.01)
+    return call
 
 
 def refused() -> RenderOutcome:
@@ -289,6 +304,48 @@ async def test_both_mode_pair_fields_reach_meta_for_every_format(tmp_path: Path)
     assert [r.pair_id for r in records] == ["p1", "p1"]
     assert [r.variant for r in records] == ["analyzed", "direct"]
     assert [r.generation_mode for r in records] == ["analyzed", "direct"]
+
+
+# --------------------------------------------------------------------------- FR-27 / FR-105
+
+
+async def test_standalone_image_is_vision_checked_re_rendered_once_and_re_checked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FR-27/105: a standalone image gets the same treatment a slide and a seed frame get — one
+    check, ONE discretionary re-render of a flagged image, one re-check, then it ships. The
+    estimator bills `checked_images` for every image (budget.py), so skipping the check would be
+    charging for a pass that never ran."""
+    entry = make_entry()
+    env = make_env(tmp_path, [entry])
+    env.config.run.vision_check = True
+    env.llm_call = vision(True, False)  # flagged, then clean after the shorter, larger re-render
+    renders = Renders([ok(task="kie_first"), ok(task="kie_retry")])
+    monkeypatch.setattr(render, "run", renders)
+
+    report = await generate.create([entry], env)
+
+    record = report.records[entry.asset_id]
+    assert len(renders.calls) == 2, "the flagged image earns exactly one re-render (NFR-4)"
+    assert record.vision_check_result is VisionCheckResult.RETRIED_PASSED
+    assert record.kie_job_ids == ["kie_first", "kie_retry"]
+    assert record.actual_cost_usd == pytest.approx(0.06)  # both renders billed at submission
+    assert (tmp_path / entry.asset_id / "image.jpg").is_file()  # the re-render REPLACED the file
+
+
+async def test_vision_check_off_leaves_a_standalone_image_not_checked(tmp_path: Path,
+                                                                     monkeypatch: pytest.MonkeyPatch) -> None:
+    """D3: the check is off by default — one render, one verdict of `not_checked`, no LLM call."""
+    entry = make_entry()
+    env = make_env(tmp_path, [entry])
+    env.llm_call = vision(True)  # present, but `run.vision_check` is off
+    renders = Renders(rule=lambda _self: ok())
+    monkeypatch.setattr(render, "run", renders)
+
+    report = await generate.create([entry], env)
+
+    assert len(renders.calls) == 1
+    assert report.records[entry.asset_id].vision_check_result is VisionCheckResult.NOT_CHECKED
 
 
 # --------------------------------------------------------------------------- 10 §10 disk_full

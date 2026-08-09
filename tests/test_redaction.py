@@ -244,21 +244,15 @@ def test_fr81_every_events_line_is_one_whole_json_object(
     assert "caption=line1 line2 line3" in run_log(tmp_path)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="DEFECT (logwriter.py:186 `_digest`): data VALUES are newline-flattened but the "
-           "message is not, so a multi-line `message=` splits one event across several run.log "
-           "lines, against 40 §4's 'run.log carries one-line digests'. Reported, not fixed "
-           "(T5.5 owns tests only). Remove this marker when the digest clips the message.",
-)
-def test_40s4_a_multiline_message_should_still_be_one_run_log_line(
+def test_40s4_a_multiline_message_is_still_one_run_log_line(
     writer: LogWriter, tmp_path: Path
 ) -> None:
     """40 §4: `run.log` carries "one-line digests"; `narrative()` is the sanctioned multi-line
-    path. A provider error or a caption passed as `message` currently tears the digest."""
-    writer.event("render_failed", "provider said:\nContent policy\nrefused")
+    path. A provider error or a caption passed as `message` must not tear the digest."""
+    writer.event("render_failed", "provider said:\nContent policy\r\nrefused")
 
     assert len(run_log(tmp_path).splitlines()) == 1
+    assert "provider said: Content policy refused" in run_log(tmp_path)
 
 
 def test_fr78_timestamps_are_iso_8601_and_durations_are_milliseconds(

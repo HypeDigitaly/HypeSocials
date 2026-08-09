@@ -7,10 +7,10 @@ decides *how to survive Windows*.
 
 Public API (FR-30/31, 110–117, 246):
     ServerConfig                  — one server's transport/launch/env/timeout record, from config
-    open_session(cfg)             — async CM yielding one live `Session`
+    open_session(cfg, log=…)      — async CM yielding one live `Session`
     Session.call_tool(tool, args) — serialized, timeout-bounded, payload already unwrapped
     Session.tool_names()          — the tool names the server advertises
-    SessionPool(cfg, size)        — async CM handing a BOUNDED set of sessions to work items
+    SessionPool(cfg, size, log=…) — async CM handing a BOUNDED set of sessions to work items
     MCPClientError / MCPStartupError / MCPStartupTimeout / MCPCallTimeout
 
 Invariants enforced here, once, for every caller:
@@ -51,6 +51,8 @@ from mcp.client import stdio as _sdk_stdio
 from mcp.client.streamable_http import streamable_http_client
 from mcp.shared._httpx_utils import create_mcp_http_client
 from mcp_types import INTERNAL_ERROR, Implementation
+
+from hypesocials.util import Stopwatch
 
 logger = logging.getLogger(__name__)
 
@@ -137,12 +139,14 @@ class ServerConfig:
 class Session:
     """One live MCP connection. Calls are serialized (FR-115) and time-bounded (FR-112)."""
 
-    __slots__ = ("_client", "_cfg", "_lock", "_process")
+    __slots__ = ("_client", "_cfg", "_lock", "_log", "_process")
 
-    def __init__(self, cfg: ServerConfig, client: Client, process: Any | None) -> None:
+    def __init__(self, cfg: ServerConfig, client: Client, process: Any | None,
+                 log: Any = None) -> None:
         self._cfg = cfg
         self._client = client
         self._process = process
+        self._log = log  # the run's `outputs.LogWriter`, when a run owns one (FR-77)
         self._lock = asyncio.Lock()
 
     @property
@@ -163,20 +167,38 @@ class Session:
                 error class (the Virlo wrapper's four classes are FR-119), so callers branch on
                 the code rather than parsing text.
         """
-        async with self._lock:  # FR-115: one call in flight per session
-            try:
-                async with asyncio.timeout(self._cfg.call_timeout_s):
-                    result = await self._client.call_tool(tool, arguments or {})
-            except TimeoutError as exc:
-                raise MCPCallTimeout(
-                    f"MCP call {self._cfg.name}.{tool} exceeded mcp_call_timeout_s="
-                    f"{self._cfg.call_timeout_s}s"
-                ) from exc
-        if result.is_error:
-            raise MCPError(INTERNAL_ERROR, f"{self._cfg.name}.{tool} failed: {_text_of(result)}")
-        if result.structured_content is not None:
-            return result.structured_content
-        return _text_of(result)
+        watch, status = Stopwatch(), "ok"
+        try:
+            async with self._lock:  # FR-115: one call in flight per session
+                try:
+                    async with asyncio.timeout(self._cfg.call_timeout_s):
+                        result = await self._client.call_tool(tool, arguments or {})
+                except TimeoutError as exc:
+                    raise MCPCallTimeout(
+                        f"MCP call {self._cfg.name}.{tool} exceeded mcp_call_timeout_s="
+                        f"{self._cfg.call_timeout_s}s"
+                    ) from exc
+            if result.is_error:
+                raise MCPError(INTERNAL_ERROR,
+                               f"{self._cfg.name}.{tool} failed: {_text_of(result)}")
+            if result.structured_content is not None:
+                return result.structured_content
+            return _text_of(result)
+        except BaseException as exc:  # the error CLASS is the log field, never the arguments
+            status = type(exc).__name__
+            raise
+        finally:
+            self._log_call(tool, status, watch.elapsed_ms)
+
+    def _log_call(self, tool: str, status: str, duration_ms: int) -> None:
+        """FR-77's per-MCP-call line: server, tool, duration, outcome — the call ledger, never a
+        transcript, so arguments and payloads deliberately do not travel here (40 §4)."""
+        logger.info("MCP call %s.%s -> %s in %dms", self._cfg.name, tool, status, duration_ms)
+        if self._log is not None:
+            self._log.event(
+                "mcp_call", f"{self._cfg.name} MCP: {tool} -> {status}",
+                level="info" if status == "ok" else "warn", duration_ms=duration_ms,
+                server=self._cfg.name, tool=tool, status=status)
 
     async def tool_names(self) -> list[str]:
         """The tool names this server advertises — the wrapper contract check at run start."""
@@ -187,8 +209,12 @@ class Session:
 
 
 @asynccontextmanager
-async def open_session(cfg: ServerConfig) -> AsyncIterator[Session]:
-    """Opens ONE session and guarantees its subprocess tree dies on every exit path (FR-31/111)."""
+async def open_session(cfg: ServerConfig, *, log: Any = None) -> AsyncIterator[Session]:
+    """Opens ONE session and guarantees its subprocess tree dies on every exit path (FR-31/111).
+
+    `log` is the run's `outputs.LogWriter`; with it every tool call lands in the run's own logs
+    (FR-77), without it only in the stdlib logger.
+    """
     sink: list[Any] = []
     transport = _build_transport(cfg, sink)
     client = Client(transport, client_info=_CLIENT_INFO, cache=None)  # cache=None: no caching (FR-118)
@@ -212,7 +238,7 @@ async def open_session(cfg: ServerConfig) -> AsyncIterator[Session]:
     pid = getattr(process, "pid", None)
     logger.info("MCP session open: server=%s transport=%s pid=%s", cfg.name, cfg.transport, pid)
     try:
-        yield Session(cfg, client, process)
+        yield Session(cfg, client, process, log)
     finally:
         await _safe_close(client)
         _close_job_handle(job)  # kill-on-close reaps anything the graceful shutdown missed
@@ -232,13 +258,14 @@ class SessionPool:
                 await session.call_tool("get_top_videos", {"monitor_id": mid})
     """
 
-    __slots__ = ("_cfg", "_exits", "_free", "_size")
+    __slots__ = ("_cfg", "_exits", "_free", "_log", "_size")
 
-    def __init__(self, cfg: ServerConfig, size: int) -> None:
+    def __init__(self, cfg: ServerConfig, size: int, *, log: Any = None) -> None:
         if size < 1:
             raise MCPClientError(f"MCP session pool for {cfg.name!r} needs at least one session, got {size}")
         self._cfg = cfg
         self._size = size
+        self._log = log  # forwarded to every session, so FR-77 covers pooled calls too
         self._exits: list[Any] = []
         self._free: asyncio.Queue[Session] = asyncio.Queue()
 
@@ -246,7 +273,7 @@ class SessionPool:
         try:
             for _ in range(self._size):
                 # Sequential on purpose: an async CM must be entered and exited in the same task.
-                ctx = open_session(self._cfg)
+                ctx = open_session(self._cfg, log=self._log)
                 self._free.put_nowait(await ctx.__aenter__())
                 self._exits.append(ctx)
         except BaseException:

@@ -81,7 +81,13 @@ secret-free context object; an unfilled placeholder fails that creative
 - **Never hardcode a character budget or a reference list.** Both change per
   call; the placeholders exist so a template can never go stale (see below).
 
-## Three placeholders that are computed per call, not fixed
+## Computed per call, not fixed — and where each one lives
+
+Some prompt text is assembled by the engine at call time instead of sitting in
+a template. Every such line is enumerated below with the constant that owns it.
+They are **FR-180 clause-(c) mandatory lines**: they belong to the requirement,
+not to a template, so **they are editable only in code** — there is no file
+here to change, and none of them is a hidden fourth prompt layer.
 
 - **`{{text_budgets}}`** is filled from config `text_budgets`
   (`image_headline`, `image_subline`, `reel_seed_headline`) — change the
@@ -107,3 +113,20 @@ secret-free context object; an unfilled placeholder fails that creative
 `{{content_sentence}}` stays reserved for FR-96's deterministic direct-mode /
 reference-free sentence and is the fallback fill for the reel through-line
 when no copy exists.
+
+### The full list of engine-built lines (FR-180 clause (c))
+
+| Line | Where it goes | Source constant |
+|---|---|---|
+| Reel audio cue — `(music or ambience matched to the trend's vibe …)` + at most one `<sound effect>` | `{{audio_cue}}` in `reel_director.md` | `generate/reel.py` `_AUDIO_CUE` |
+| Silent-clip line, when `reel_audio` is off or audio was dropped after a content-audit failure | `{{audio_cue}}` | `generate/reel.py` `SILENT_CLIP_CLAUSE` |
+| `@Image1` description — "the 9:16 still hook frame … hook text already burnt in" | `{{seed_frame_ref}}` | `generate/reel.py` `_SEED_REF_LINE` |
+| The two seed-frame-less variants: render the hook text in-model, or a clip with no lettering at all (`reel_overlay_text: in_model` / `none`) | `{{seed_frame_ref}}` | `generate/reel.py` `_IN_MODEL_REF_LINE`, `_CLEAN_CLIP_REF_LINE` |
+| Reference role lines — one per attached reference, in three provenance-based variants: **trend**, **inspiration**, **brief subject** | `{{reference_roles}}` | `generate/__init__.py` (single image), `generate/carousel.py` `_TREND_ROLE`, `generate/reel.py` `_REF_ROLE` |
+| Vision-check retry instruction — "re-render of an image whose text came back broken … one text block only, maximum legible size" (FR-105's third lever) | appended to the assembled render prompt on a retry | `vision_check.py` `RETRY_INSTRUCTION` |
+| On-image text block — `headline (render verbatim): "…"` plus its `spelled out: H-e-a-d` line (FR-186 diacritics defence) | `{{onimage_text}}` | `prompts_engine.py` `_onimage_text` / `_spell` |
+| Campaign-brief context — the `Campaign brief "<name>" — influence: …` header, its directives, and the precedence sentence (`override` vs blend, FR-144/145) | `{{brief_directives}}` | `prompts_engine.py` `_brief_directives` |
+| Brand accent line — accent colour "substitute it inside the trend's own palette structure" + available product nouns (Notion `full` only, FR-109) | `{{brand_accent}}` | `prompts_engine.py` `_brand_accent` |
+
+Changing any of these means changing the constant in code (and the
+requirement behind it), not editing a file in this folder.

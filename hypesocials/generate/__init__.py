@@ -49,7 +49,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
-from hypesocials import render
+from hypesocials import render, vision_check
 from hypesocials.budget import Budget, SpendCategory, job_projection
 from hypesocials.config import Config
 from hypesocials.models import (
@@ -67,8 +67,9 @@ from hypesocials.models import (
     RenderRefs,
     StyleBrief,
     TrendItem,
+    VisionCheckResult,
 )
-from hypesocials.outputs import AssetFolder, Ledger, LogWriter, PackagingError
+from hypesocials.outputs import AssetFolder, Ledger, LogWriter, PackagingError, write_gallery
 from hypesocials.prompts_engine import (
     MissingTemplateError,
     PromptEngine,
@@ -79,6 +80,7 @@ from hypesocials.util import Deadline
 
 # Both format modules back-import this package under TYPE_CHECKING only, so importing them here
 # is safe and keeps the dispatch a plain name lookup (which is also what makes it fakeable).
+from hypesocials.generate.refs import Reference, attach, role_lines
 from hypesocials.generate.carousel import render_carousel
 from hypesocials.generate.reel import render_reel
 
@@ -123,7 +125,9 @@ class Env:
     copy: Mapping[str, CopySet] = field(default_factory=dict)
     copy_degraded: frozenset[str] = frozenset()
     copy_trimmed: frozenset[str] = frozenset()
-    local_refs: Mapping[str, Sequence[Path]] = field(default_factory=dict)  # FR-200 upload path
+    #: FR-200/191: `asset_id -> ((path, kind), …)`, kind in {"brief", "inspiration"} — the
+    #: provenance that picks each attachment's role line (`refs.py`).
+    local_refs: Mapping[str, Sequence[tuple[Path, str]]] = field(default_factory=dict)
     campaign_briefs: Mapping[str, Brief] = field(default_factory=dict)  # FR-144/145, by name
     brand_accent: str = ""  # FR-109 `full` only: one accent colour inside the trend's own palette
     brand_product_nouns: Sequence[str] = ()  # FR-109 `full` only: nouns for the on-image text
@@ -201,8 +205,12 @@ async def _drain(tasks: list[asyncio.Task[AssetRecord]], env: Env) -> list[Asset
     never awaited past the grace, and cancellation never escapes this function.
     """
     pending: set[asyncio.Task[AssetRecord]] = set(tasks)
+    shown = False
     while pending and not env.halted:
-        _, pending = await asyncio.wait(pending, timeout=_HALT_POLL_S)
+        done, pending = await asyncio.wait(pending, timeout=_HALT_POLL_S)
+        if done and not shown:  # FR-76: the first creatives are reviewable while reels still run
+            shown = True  # NFR-22 is inside `write_gallery` — it returns None, it never raises
+            write_gallery(env.run_dir, title=env.config.output.gallery.title, log=env.log)
     if pending:
         env.log.warn("grace_poll",
                      f"{len(pending)} creative(s) still in flight — one {GRACE_S:.0f}s grace "
@@ -229,6 +237,14 @@ async def _one(entry: PlanEntry, env: Env, report: Report) -> AssetRecord:
         except PackagingError as exc:
             env.log.error("caption_write_failed", f"{entry.asset_id}: {exc}",
                           asset_id=entry.asset_id)
+    brief = env.campaign_briefs.get(entry.brief_name or "")
+    for path in (brief.reference_image_paths if brief else ()):
+        try:  # FR-71: a brief's own pictures ship in the asset's `refs/`, beside what they made
+            folder.add_reference(path)
+        except PackagingError as exc:
+            env.log.warn("reference_copy_failed",
+                         f"{entry.asset_id}: {Path(path).name} not copied into refs/ ({exc})",
+                         asset_id=entry.asset_id, reference=Path(path).name)
     try:
         return await _dispatch(entry, env, folder, report)
     except asyncio.CancelledError:
@@ -246,7 +262,7 @@ async def _dispatch(entry: PlanEntry, env: Env, folder: AssetFolder,
     if entry.status is not PlanEntryStatus.PENDING:
         return folder.skip(entry.skip_reason or f"not generated ({entry.status.value})")
     if env.credits_exhausted:
-        return _fail(entry, folder, _CREDITS)
+        return _fail(entry, env, folder, _CREDITS)
     if env.halted:
         entry.status = PlanEntryStatus.ABANDONED
         entry.skip_reason = "interrupted_before_submission"
@@ -266,11 +282,12 @@ async def _dispatch(entry: PlanEntry, env: Env, folder: AssetFolder,
 
 
 async def _image(entry: PlanEntry, env: Env, folder: AssetFolder, submit: Any) -> AssetRecord:
-    """One standalone image: assemble, submit, apply FR-97's single retry, package the bytes."""
-    urls = await _reference_urls(entry, env, folder)
-    prompt = _assemble(entry, env, urls)
+    """One standalone image: assemble, submit, FR-97's retry, FR-27's check, package the bytes."""
+    attached = await attach(entry, env, folder)
+    urls = [ref.url for ref in attached]
+    prompt = _assemble(entry, env, attached)
     if prompt is None:
-        return _fail(entry, folder, "prompt_assembly_failed — unresolved placeholder (FR-260)")
+        return _fail(entry, env, folder, "prompt_assembly_failed — unresolved placeholder (FR-260)")
     params = RenderParams(prompt=prompt, aspect_ratio=entry.aspect_ratio)
     try:
         outcome = await submit(entry, params, RenderRefs(image_urls=urls), job="image",
@@ -291,9 +308,9 @@ async def _image(entry: PlanEntry, env: Env, folder: AssetFolder, submit: Any) -
                 outcome = retry
     except render.KieOutOfCredits as exc:
         env.credits_exhausted = True
-        return _fail(entry, folder, f"{_CREDITS} ({exc})")
+        return _fail(entry, env, folder, f"{_CREDITS} ({exc})")
     if outcome is None:
-        return _fail(entry, folder, "skipped_budget — the cap declined this submission",
+        return _fail(entry, env, folder, "skipped_budget — the cap declined this submission",
                      DegradationTag.SKIPPED_BUDGET)
     if outcome.kind is not RenderOutcomeKind.SUCCESS or not outcome.result_urls:
         # FR-242: a `success` with no usable result is a failure that lies — treated as a failure.
@@ -301,31 +318,87 @@ async def _image(entry: PlanEntry, env: Env, folder: AssetFolder, submit: Any) -
         env.log.error("render_failed", f"{entry.asset_id}: {cause} — "
                       f"{outcome.fail_message or 'no usable result'}", asset_id=entry.asset_id,
                       task_id=outcome.task_id, cost_usd=round(outcome.cost_usd, 6))
-        return _fail(entry, folder, f"{cause}: {outcome.fail_message or 'no usable result'}"
+        return _fail(entry, env, folder, f"{cause}: {outcome.fail_message or 'no usable result'}"
                      f" (job {outcome.task_id or 'unknown'})", cost=outcome.cost_usd,
                      outcome=outcome)
     if env.disk_full:  # 10 §10: downloads stopped run-wide rather than thrash a full disk
-        return _fail(entry, folder, "disk_full: downloads stopped for this run",
+        return _fail(entry, env, folder, "disk_full: downloads stopped for this run",
                      cost=outcome.cost_usd, outcome=outcome)
     try:  # the bytes stop being a borrowed 24 h URL and become the operator's file
-        await folder.store_render(outcome.result_urls[0])
+        stored = await folder.store_render(outcome.result_urls[0])
     except PackagingError as exc:
         if exc.reason == "disk_full":  # the one failure that outlives this creative
             env.disk_full = True
-        return _fail(entry, folder, f"{exc.reason}: {exc}", cost=outcome.cost_usd, outcome=outcome)
+        return _fail(entry, env, folder, f"{exc.reason}: {exc}", cost=outcome.cost_usd,
+                     outcome=outcome)
+    verdict, retry = await _vision(entry, env, folder, submit, attached, stored)
 
     entry.status = PlanEntryStatus.SUCCESS
+    cost = outcome.cost_usd + (retry.cost_usd if retry is not None else 0.0)
     return folder.finish(
-        actual_cost_usd=round(outcome.cost_usd, 6),
+        actual_cost_usd=round(cost, 6),
         model_ids=[env.config.models.image, env.config.models.image_profile],
-        kie_job_ids=[outcome.task_id] if outcome.task_id else [],
+        kie_job_ids=[job.task_id for job in (outcome, retry) if job is not None and job.task_id],
         job_submission_timestamp=outcome.submitted_at,
-        job_completion_timestamp=outcome.completed_at,
+        job_completion_timestamp=(retry.completed_at if retry else "") or outcome.completed_at,
         native_size_rendered=entry.aspect_ratio,  # FR-98: shipped exactly as it came back
+        vision_check_result=verdict,
         event_id=env.log.event("creative_delivered", f"{entry.asset_id} rendered",
                                asset_id=entry.asset_id, task_id=outcome.task_id,
-                               cost_usd=round(outcome.cost_usd, 6),
+                               cost_usd=round(cost, 6), vision_check=verdict.value,
                                duration_ms=int(outcome.elapsed_s * 1000)))
+
+
+async def _vision(
+    entry: PlanEntry, env: Env, folder: AssetFolder, submit: Any,
+    attached: Sequence[Reference], stored: Path,
+) -> tuple[VisionCheckResult, RenderOutcome | None]:
+    """FR-27/105 for a standalone image: one check, ONE re-render, one re-check, then it ships.
+
+    The estimator prices exactly this pair per image (`budget.py`'s `checked_images` plus the
+    `vision_retry_allowance`), so an image the operator was billed a check for gets one. The
+    re-render is discretionary (FR-106c) — a declined or failed one is `retried_failed`, never
+    laundered into `passed`. Returns the verdict and the retry's outcome, for cost and job ids.
+    """
+    if not env.config.run.vision_check or env.llm_call is None:
+        return VisionCheckResult.NOT_CHECKED, None
+    first = (await vision_check.check([stored], call=env.llm_call, engine=env.engine,
+                                      log=env.log)).verdict_for(1)
+    if first is None or not first.flagged or env.halted:
+        return vision_check.verdict_result(first), None
+    env.log.warn("vision_check_flagged",
+                 f"{entry.asset_id} flagged ({first.detail}); one re-render with shorter, larger "
+                 "text (FR-105)", asset_id=entry.asset_id)
+    plan = vision_check.retry_plan(
+        env.copy.get(entry.asset_id) or CopySet(asset_id=entry.asset_id, language=entry.language),
+        "image", env.config.run.text_budgets)
+    prompt = _assemble(entry, env, attached, copyset=plan.copy, budget_scale=plan.budget_scale,
+                       extra=plan.instruction)
+    if prompt is None:
+        return VisionCheckResult.RETRIED_FAILED, None
+    try:
+        retry = await submit(entry, RenderParams(prompt=prompt, aspect_ratio=entry.aspect_ratio),
+                             RenderRefs(image_urls=[ref.url for ref in attached]), job="image",
+                             priority=RenderPriority.WAVE1, kind="discretionary",
+                             label=f"vision re-render · {entry.asset_id}")
+    except render.KieOutOfCredits:
+        env.credits_exhausted = True  # FR-167: the flagged image ships exactly as rendered
+        return VisionCheckResult.RETRIED_FAILED, None
+    if retry is None or retry.kind is not RenderOutcomeKind.SUCCESS or not retry.result_urls:
+        env.log.warn("vision_retry_unavailable",
+                     f"{entry.asset_id}: the flagged image ships as rendered "
+                     f"({'declined by the cap' if retry is None else 'the re-render failed'})",
+                     asset_id=entry.asset_id)
+        return VisionCheckResult.RETRIED_FAILED, retry
+    try:  # the re-render REPLACES the delivered file, then earns its one second verdict
+        replaced = await folder.store_render(retry.result_urls[0])
+    except PackagingError as exc:
+        if exc.reason == "disk_full":
+            env.disk_full = True
+        return VisionCheckResult.RETRIED_FAILED, retry
+    after = (await vision_check.check([replaced], call=env.llm_call, engine=env.engine,
+                                      log=env.log)).verdict_for(1)
+    return vision_check.verdict_result(first, after, retried=True), retry
 
 
 # --------------------------------------------------------------------------- the money door
@@ -398,43 +471,18 @@ async def _submit(
 # --------------------------------------------------------------------------- inputs
 
 
-async def _reference_urls(entry: PlanEntry, env: Env, folder: AssetFolder) -> list[str]:
-    """The FR-91 coherent set as public URLs, with FR-200's upload for anything local.
-
-    Virlo CDN URLs are passed straight through (RESULTS.md §B: Kie accepts them, webp included).
-    Local files — Inspiration images, a brief's own references — become URLs through the render
-    seam's upload op; a per-file failure drops that reference by name and the job proceeds with
-    whatever survived, because a curated picture is an input, not a prerequisite.
-    """
-    trend = env.trends.get(entry.trend_key or "")
-    urls = list(trend.reference_groups[0]) if trend and trend.reference_groups else []
-    for path in env.local_refs.get(entry.asset_id, ()):  # W3: empty; W5 briefs/inspiration fill it
-        try:
-            urls.append(await render.upload_file(path))
-        except Exception as exc:  # noqa: BLE001 - any upload failure degrades to "one fewer ref"
-            env.log.warn("reference_upload_failed",
-                         f"{entry.asset_id}: {Path(path).name} could not be uploaded ({exc}); "
-                         "the job proceeds with its remaining references (FR-200)",
-                         asset_id=entry.asset_id, reference=Path(path).name)
-    limit = render.get_profile(env.config.models.image_profile).limits.max_image_urls
-    if not urls:
-        folder.mark(DegradationTag.REFERENCE_FREE)
-    return urls[:limit] if limit else urls
-
-
-def _assemble(entry: PlanEntry, env: Env, urls: Sequence[str]) -> str | None:
+def _assemble(entry: PlanEntry, env: Env, attached: Sequence[Reference], *,
+              copyset: CopySet | None = None, budget_scale: float = 1.0,
+              extra: str = "") -> str | None:
     """The finished render prompt, or `None` when it cannot be filled (FR-17/94/96, FR-260)."""
     brief = env.style_briefs.get(entry.trend_key or "") if entry.variant == "analyzed" else None
     role = ROLE_ANALYZED if brief is not None else ROLE_DIRECT
-    # FR-191/91: one line per attachment saying what it contributes and what it never does — the
-    # RESULTS.md §B defence against GPT Image 2 cloning a reference's wordmark.
-    roles = [f"Image {index}: trend reference — layout, palette, typography and treatment only; "
-             "no words, no logo, no chrome, no person's identity"
-             for index, _ in enumerate(urls, start=1)]
+    profile = render.get_profile(env.config.models.image_profile)
     context = build_context(
         trend=env.trends.get(entry.trend_key or ""),
         style_brief=brief,
-        copy=env.copy.get(entry.asset_id),
+        copy=copyset or env.copy.get(entry.asset_id),
+        budget_scale=budget_scale,  # FR-105's −40% retry states the budget it actually carries
         # FR-144/145: `override` visual directives REPLACE render_prompt/layout_zones; `blend`
         # states the precedence — trend wins visuals, brief wins message and CTA.
         campaign_brief=env.campaign_briefs.get(entry.brief_name or ""),
@@ -443,17 +491,26 @@ def _assemble(entry: PlanEntry, env: Env, urls: Sequence[str]) -> str | None:
         brand_accent=env.brand_accent,  # FR-109's only render-side brand influence, `full` only
         brand_product_nouns=env.brand_product_nouns,
         text_budgets=env.config.run.text_budgets,
-        reference_roles=roles,
-        reference_image_count=len(urls),
+        reference_roles=role_lines(attached),  # FR-191: one line per attachment, by provenance
+        reference_image_count=len(attached),
     )
+    if brief is not None and not attached:
+        # FR-18/96: a reference-free job keeps its written style description AND gains the
+        # deterministic content sentence — with no pixels, style alone renders nothing in
+        # particular. (`image_single_post.md` has no content_sentence slot; this is the same
+        # substitution `reel_seed_frame.md` makes, 50 §3.)
+        context["render_prompt"] = f"{context['content_sentence']} {context['render_prompt']}".strip()
     try:
-        prompt = env.engine.render(role, context, profile=env.config.models.image_profile)
+        prompt = env.engine.render(role, context, profile=profile.name,
+                                   max_chars=profile.limits.max_prompt_chars)  # 50 §7
     except (UnresolvedPlaceholderError, MissingTemplateError, ValueError, LookupError) as exc:
         env.log.error("prompt_assembly_failed", f"{entry.asset_id}: {exc}",
                       asset_id=entry.asset_id, role=role)
         return None
+    if extra:  # FR-193: the vision retry repeats the preserve list and adds one line
+        prompt = f"{prompt}\n\n{extra}"
     env.log.event("render_prompt_assembled", f"{entry.asset_id} prompt ready", verbose_only=True,
-                  asset_id=entry.asset_id, role=role, references=len(urls), prompt=prompt)
+                  asset_id=entry.asset_id, role=role, references=len(attached), prompt=prompt)
     return prompt
 
 
@@ -479,7 +536,7 @@ def _record(entry: PlanEntry, env: Env) -> AssetRecord:
         generation_mode=entry.variant,
         hook_pattern_used=copyset.hook_pattern_used if copyset else "",
         source_hook=next((hook for hook in (trend.hook_texts if trend else ()) if hook), ""),
-        ref_source="virlo" if trend else ("brief" if entry.brief_name else ""),
+        ref_source=_ref_source(entry, env, trend),
         degradations=degradations,
         brief_name=entry.brief_name,
         brief_influence_mode=entry.brief_influence,
@@ -491,6 +548,20 @@ def _record(entry: PlanEntry, env: Env) -> AssetRecord:
 
 
 # --------------------------------------------------------------------------- small helpers
+
+
+def _ref_source(entry: PlanEntry, env: Env, trend: TrendItem | None) -> str:
+    """FR-73's honest provenance: what this job's references actually came FROM.
+
+    Under `inspiration_mix: exclusive` the trend keeps its metadata but `sources.apply_mix()` has
+    already emptied its reference groups, so "virlo" would be a lie — the pictures are the pool's.
+    """
+    kinds = {kind for _, kind in env.local_refs.get(entry.asset_id, ())}
+    if trend is not None and trend.reference_groups:
+        return "virlo"
+    if "inspiration" in kinds:
+        return "inspiration"
+    return "brief" if entry.brief_name else ""
 
 
 def _abandon(entry: PlanEntry, env: Env, folder: AssetFolder) -> AssetRecord:
@@ -505,19 +576,24 @@ def _abandon(entry: PlanEntry, env: Env, folder: AssetFolder) -> AssetRecord:
     entry.status = PlanEntryStatus.ABANDONED
     entry.skip_reason = entry.skip_reason or reason
     env.ledger.terminal(entry.asset_id, "", task_id, "abandoned")
-    env.log.warn("abandoned", f"{entry.asset_id}: {reason}", asset_id=entry.asset_id,
-                 task_id=task_id or "")
-    return folder.skip(reason, DegradationTag.ABANDONED)
+    # FR-73: `event_id` points at the line that explains this asset — never null on a terminal.
+    event_id = env.log.warn("abandoned", f"{entry.asset_id}: {reason}", asset_id=entry.asset_id,
+                            task_id=task_id or "")
+    return folder.skip(reason, DegradationTag.ABANDONED, event_id=event_id)
 
 
-def _fail(entry: PlanEntry, folder: AssetFolder, reason: str,
+def _fail(entry: PlanEntry, env: Env, folder: AssetFolder, reason: str,
           tag: DegradationTag | None = None, *, cost: float = 0.0,
           outcome: RenderOutcome | None = None) -> AssetRecord:
     """Terminal failure that keeps its paid artifacts (FR-74) and stays in the plan (FR-4)."""
     if entry.status is PlanEntryStatus.PENDING:
         entry.status = PlanEntryStatus.FAILED
     entry.skip_reason = entry.skip_reason or reason
-    extra: dict[str, Any] = {"actual_cost_usd": round(cost, 6)}
+    extra: dict[str, Any] = {  # FR-73: the run-log line this meta.yaml points back at
+        "actual_cost_usd": round(cost, 6),
+        "event_id": env.log.error("creative_failed", f"{entry.asset_id}: {reason}",
+                                  asset_id=entry.asset_id, cost_usd=round(cost, 6)),
+    }
     if outcome is not None:
         extra["kie_job_ids"] = [outcome.task_id] if outcome.task_id else []
         extra["job_submission_timestamp"] = outcome.submitted_at

@@ -8,7 +8,8 @@ Analyze stage is still running (D23). Callers get one honest answer per trend an
 yt-dlp, a scratch folder or a format table were involved.
 
 Public API:
-    prefetch(candidates, *, max_duration_s, log) -> Prefetch   launched once, alongside Analyze
+    prefetch(candidates, *, max_duration_s, log, profile_name) -> Prefetch   launched once,
+                                                               alongside Analyze
     await Prefetch.get(trend_key, *, timeout_s) -> VideoRefOutcome     never raises
     await Prefetch.aclose()                     cancel outstanding work, sweep scratch
     cleanup()                                   module-level, idempotent scratch removal (FR-249)
@@ -55,8 +56,9 @@ from hypesocials.util import slugify
 
 logger = logging.getLogger(__name__)
 
-#: The render profile whose documented limits every qualifying decision is measured against — the
-#: bounds live in `ReferenceLimits`, never hardcoded here (20 §8a, RESULTS.md §C).
+#: Default render profile whose documented limits every qualifying decision is measured against —
+#: the bounds live in `ReferenceLimits`, never hardcoded here (20 §8a, RESULTS.md §C). The runner
+#: passes `models.video_profile` to `prefetch()`; this is only the standalone-call fallback.
 VIDEO_PROFILE = "seedance-2-5"
 PROBE_TIMEOUT_S = 90.0
 DOWNLOAD_TIMEOUT_S = 300.0
@@ -134,17 +136,20 @@ class Prefetch:
 
 
 def prefetch(
-    candidates: Mapping[str, str], *, max_duration_s: int, log: Any = None
+    candidates: Mapping[str, str], *, max_duration_s: int, log: Any = None,
+    profile_name: str = VIDEO_PROFILE,
 ) -> Prefetch:
     """Start one probe/download/upload chain per candidate and return immediately (D23).
 
     `candidates` is `{trend_key: winning_video_url}` for the trends that carry one;
-    `max_duration_s` is `run.reel_reference_max_s` (FR-161); `log` is the run's LogWriter. The
+    `max_duration_s` is `run.reel_reference_max_s` (FR-161); `log` is the run's LogWriter;
+    `profile_name` is `models.video_profile`, whose `ReferenceLimits` every qualifying decision is
+    measured against — a swapped video profile must not be qualified against the old one. The
     returned `Prefetch` is what the reel chain awaits at Seedance submission time, and the caller
     owns `aclose()` on every exit path — the preview modes simply never call this at all.
     """
     tasks = {
-        key: asyncio.create_task(_resolve(key, url, int(max_duration_s), log),
+        key: asyncio.create_task(_resolve(key, url, int(max_duration_s), log, profile_name),
                                  name=f"video_ref:{key}")
         for key, url in candidates.items() if str(url or "").strip()
     }
@@ -168,10 +173,11 @@ def cleanup() -> None:
 
 
 async def _resolve(
-    trend_key: str, source_url: str, max_duration_s: int, log: Any
+    trend_key: str, source_url: str, max_duration_s: int, log: Any,
+    profile_name: str = VIDEO_PROFILE,
 ) -> VideoRefOutcome:
     """Probe → qualify → download → upload for ONE candidate. Returns, never raises."""
-    limits = render.get_profile(VIDEO_PROFILE).limits
+    limits = render.get_profile(profile_name).limits
     ok, payload = await _run(["--skip-download", "--dump-single-json", "--no-playlist",
                               source_url], timeout_s=PROBE_TIMEOUT_S)
     if not ok:

@@ -38,8 +38,9 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 from hypesocials.budget import Estimate, TrimResult, estimate as estimate_plan, format_usd, trim
-from hypesocials.config import Config
+from hypesocials.config import PLATFORMS, Config
 from hypesocials.models import PlanEntry
+from hypesocials.sources import SOURCE_STATUS
 
 PROG = "hypesocials"
 _MODES = ("analyzed", "direct", "both")
@@ -65,6 +66,7 @@ class Options:
     config_name: str | None = None
     counts: dict[str, int] = field(default_factory=dict)  # only the formats a flag named
     platforms: list[str] | None = None
+    sources: tuple[str, ...] = ()  # `--sources`, the CLI twin of the menu's picker (FR-135)
     budget_usd: float | None = None
     mode: str | None = None
     notion: str | None = None
@@ -94,7 +96,8 @@ def parse_args(argv: Sequence[str] | None = None) -> Options:
         action=_action(ns),
         config_name=ns.config,
         counts=counts,
-        platforms=[p.strip() for p in ns.platforms.split(",") if p.strip()] if ns.platforms else None,
+        platforms=ns.platforms,  # already the checked, deduped list (`_platforms`)
+        sources=tuple(ns.sources or ()),
         budget_usd=ns.budget,
         mode=ns.mode,
         notion=ns.notion,
@@ -115,7 +118,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--images", type=int, metavar="N", help="override the image count")
     parser.add_argument("--carousels", type=int, metavar="N", help="override the carousel count")
     parser.add_argument("--reels", type=int, metavar="N", help="override the reel count")
-    parser.add_argument("--platforms", metavar="LIST", help="comma-separated platform list (FR-137)")
+    parser.add_argument("--platforms", type=_platforms, metavar="LIST",
+                        help="comma-separated platform list (FR-137)")
+    parser.add_argument("--sources", type=_sources, metavar="LIST",
+                        help="comma-separated source list, overrides sources.active (FR-135)")
     parser.add_argument("--budget", type=float, metavar="USD", help="override the spend cap")
     parser.add_argument("--mode", choices=_MODES, help="generation mode (D2)")
     parser.add_argument("--notion", choices=_NOTION, help="Notion influence level (D7)")
@@ -146,6 +152,40 @@ def _action(ns: argparse.Namespace) -> Action:
     return Action.RUN
 
 
+def _sources(value: str) -> tuple[str, ...]:
+    """`--sources virlo` → the source pick, validated exactly as the menu's picker validates it.
+
+    Same two refusals as `menu._pick_sources` (FR-135), because this flag IS that step for an
+    unattended run: an unknown name lists the vocabulary, and a named-but-unbuilt adapter is
+    refused outright rather than accepted and silently skipped at Collect.
+    """
+    names = list(dict.fromkeys(name.strip() for name in str(value).split(",") if name.strip()))
+    if not names or any(name not in SOURCE_STATUS for name in names):
+        raise argparse.ArgumentTypeError(
+            f"--sources {value!r} — expected a comma-separated list of: "
+            + " | ".join(SOURCE_STATUS))
+    if unbuilt := [name for name in names if not SOURCE_STATUS[name]]:
+        raise argparse.ArgumentTypeError(
+            f"--sources {value!r} — {', '.join(unbuilt)} is named for a future adapter and is not "
+            "built yet; pick virlo (FR-135)")
+    return tuple(names)
+
+
+def _platforms(value: str) -> list[str]:
+    """`--platforms linkedin,tiktok` → the pick, checked against D6's fixed set (FR-51/69/137).
+
+    Checked HERE, at the boundary, exactly as `--sources` is: argparse exits 2 with one line
+    before any config load, so `linkedn` costs $0 instead of loading clean and spending the plan
+    on its correctly-spelled siblings. `config._validate` is the file-side twin (same tuple),
+    which is why `apply_overrides` can trust `opts.platforms` and never re-checks it.
+    """
+    names = list(dict.fromkeys(name.strip() for name in str(value).split(",") if name.strip()))
+    if not names or any(name not in PLATFORMS for name in names):
+        raise argparse.ArgumentTypeError(
+            f"--platforms {value!r} — expected a comma-separated list of: " + " | ".join(PLATFORMS))
+    return names
+
+
 def _brief(value: str) -> tuple[str, int]:
     name, _, raw = str(value).partition(":")
     count = raw.strip() or "1"
@@ -169,6 +209,9 @@ def apply_overrides(config: Config, opts: Options) -> list[str]:
         for name in opts.platforms:
             config.run.languages.setdefault(name, "en")
         applied.append(f"run.platforms={','.join(opts.platforms)}")
+    if opts.sources:
+        config.sources.active = list(opts.sources)
+        applied.append(f"sources.active={','.join(opts.sources)}")
     if opts.budget_usd is not None:
         config.run.spend_cap_usd = float(opts.budget_usd)
         applied.append(f"run.spend_cap_usd={format_usd(config.run.spend_cap_usd)}")

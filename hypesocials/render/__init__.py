@@ -5,7 +5,7 @@ and *which wave it belongs to*; this module submits, polls, classifies and retur
 names, five poll states, `resultJson` shape and status codes never leave this package.
 
 Public API
-    configure(settings)     once per run, from the runner, after config load
+    configure(settings, log=...)  once per run, from the runner, after config load (FR-77)
     await run(profile, params, refs, priority) -> RenderOutcome    (models.RenderRun)
     await upload_file(path) -> str                                 (seam op 4, FR-244)
     await aclose()          once per run, on every exit path
@@ -41,6 +41,7 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from hypesocials.models import RenderOutcome, RenderParams, RenderPriority, RenderRefs
 from hypesocials.render import profiles as _profiles
@@ -157,8 +158,11 @@ _client: KieClient | None = None
 _gate: RenderGate | None = None
 
 
-def configure(settings: RenderSettings) -> None:
+def configure(settings: RenderSettings, *, log: Any = None) -> None:
     """Binds the run's provider client and permit gate. Called once, by the runner.
+
+    `log` is the run's `outputs.LogWriter`; passing it is what puts every Kie submit, poll and
+    terminal result into `run.log`/`events.jsonl` (FR-77), rather than a stdlib logger nobody reads.
 
     Raises `RenderError` if the key variable is unset — pre-flight (FR-45/46) normally refuses
     long before this, so reaching it here means the run skipped its own gate.
@@ -175,6 +179,7 @@ def configure(settings: RenderSettings) -> None:
         poll_interval_s=settings.poll_interval_s,
         upload_path=settings.upload_path,
         credit_usd=settings.credit_usd,
+        log=log,
     )
     logger.info(
         "Render seam ready: max_inflight=%d poll=%.1fs profiles=%s",

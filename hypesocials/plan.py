@@ -166,7 +166,12 @@ class Plan:
     """The resolved run plan: a flat, ordered list of creatives plus what did not make it."""
 
     entries: list[PlanEntry] = field(default_factory=list)
-    notes: list[str] = field(default_factory=list)  # formats dropped by allowlist / unpriced reels
+    #: Counts dropped BEFORE expansion — unpriced reels (FR-131), a format no platform allows
+    #: (FR-132), a brief with no usable format. They never become entries, so this list is the
+    #: run's only record that it delivered less than it was asked for: `runner._package()` feeds
+    #: it to `decide_exit_code(plan_reduced=...)`, which is what keeps FR-252's "never a silent
+    #: full-success exit" true for an unattended run. Emptying it silently is a defect.
+    notes: list[str] = field(default_factory=list)
 
 
 def build_plan(

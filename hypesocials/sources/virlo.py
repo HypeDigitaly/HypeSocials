@@ -94,8 +94,8 @@ async def fetch(cfg: Config, *, cache_dir: Path | None = None, log: LogWriter | 
         _warn(log, "virlo_no_monitors", "sources.virlo_monitor_ids is empty — run --list-monitors")
         return []
     size = max(1, min(cfg.sources.virlo_session_pool, len(ids) + (1 if include_digest else 0)))
-    async with SessionPool(_server(cfg), size) as pool:
-        jobs: list[Any] = [_monitor_item(pool, mid, cfg) for mid in ids]
+    async with SessionPool(_server(cfg), size, log=log) as pool:
+        jobs: list[Any] = [_monitor_item(pool, mid, cfg, log) for mid in ids]
         if include_digest:
             jobs.append(_digest(pool, log))
         results = await asyncio.gather(*jobs, return_exceptions=True)
@@ -166,14 +166,32 @@ def _server(cfg: Config) -> ServerConfig:
     )
 
 
-async def _monitor_item(pool: SessionPool, monitor_id: str, cfg: Config) -> TrendItem:
+async def _monitor_item(pool: SessionPool, monitor_id: str, cfg: Config,
+                        log: LogWriter | None = None) -> TrendItem:
     """One monitor's three calls on one borrowed session (FR-115 serializes them anyway)."""
     args = {"monitor_id": monitor_id, "limit": _MEDIA_LIMIT}
     async with pool.acquire() as session:
         analysis = await _call(session, "get_monitor_analysis", {"monitor_id": monitor_id})
         videos = await _call(session, "get_top_videos", args)
         shows = await _call(session, "get_top_slideshows", args)
-    return _build_item(monitor_id, analysis, videos.get("videos") or [], shows.get("slideshows") or [], cfg)
+    clips, panels = videos.get("videos") or [], shows.get("slideshows") or []
+    item = _build_item(monitor_id, analysis, clips, panels, cfg)
+    _payload_event(log, item, len(clips), len(panels))
+    return item
+
+
+def _payload_event(log: LogWriter | None, item: TrendItem, videos: int, slideshows: int) -> None:
+    """FR-77's per-trend Virlo payload summary, written once at join time: key, name, video count
+    and the top engagement stats — enough to tell a thin trend from a strong one in run.log."""
+    if log is None:
+        return
+    newest = item.newest_published_at.date().isoformat() if item.newest_published_at else "-"
+    likes = int(item.engagement.get("likes", 0))
+    log.event("virlo_payload",
+              f"{item.name}: {videos} videos, {slideshows} slideshows, {item.total_views:,} views, "
+              f"{likes:,} likes, newest {newest}",
+              trend=item.history_key, name=item.name, videos=videos, slideshows=slideshows,
+              views=item.total_views, likes=likes, newest_published=newest)
 
 
 async def _digest(pool: SessionPool, log: LogWriter | None) -> tuple[str, dict[str, float]]:

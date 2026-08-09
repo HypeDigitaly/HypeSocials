@@ -39,6 +39,10 @@ _INTERPOLATION = re.compile(r"\$\{")
 _SOURCES = ("virlo", "google_trends", "hacker_news")  # last two: named in the picker, not built
 _FORMATS = ("image", "carousel", "reel")
 _LANGUAGES = ("en", "cs")  # D6
+#: D6's fixed platform set. PUBLIC because `--platforms` must refuse the same vocabulary at the
+#: flag boundary (cli.py) — one list, two doors; a typo'd platform silently plans nothing for
+#: itself and still spends on its siblings (FR-51/69/137).
+PLATFORMS = ("linkedin", "instagram", "tiktok")
 _REEL_PLATFORMS = ("tiktok",)  # 30 §2: reel is allowlisted on TikTok only by default
 #: `Config` fields that come from the filesystem, not from YAML — writing them in a file is as
 #: meaningless as any other unknown key.
@@ -614,6 +618,8 @@ def _validate(cfg: Config, ctx: _Ctx) -> None:
         if language not in _LANGUAGES:
             ctx.fail(f"language for {platform}", language, "one of: " + " | ".join(_LANGUAGES))
     for platform in cfg.run.platforms:
+        if platform not in PLATFORMS:  # `linkedn` used to load clean and cost real money
+            ctx.fail("run.platforms", platform, "one of: " + " | ".join(PLATFORMS))
         if platform not in cfg.run.languages:
             ctx.defaults.append(f"run.languages.{platform} (en)")
             cfg.run.languages[platform] = "en"
@@ -663,6 +669,7 @@ def _clamp_token_limits(models: ModelsConfig, ctx: _Ctx) -> None:
 
 __all__ = [
     "CONFIGS_DIR", "DEFAULT_CONFIG_NAME", "Config", "ConfigError", "ConfigSummary",
-    "GalleryConfig", "McpConfig", "ModelsConfig", "NicheConfig", "OutputConfig", "PlatformConfig",
-    "PriceTable", "RunConfig", "SourcesConfig", "TextBudgets", "list_configs", "load_config",
+    "GalleryConfig", "McpConfig", "ModelsConfig", "NicheConfig", "OutputConfig", "PLATFORMS",
+    "PlatformConfig", "PriceTable", "RunConfig", "SourcesConfig", "TextBudgets", "list_configs",
+    "load_config",
 ]

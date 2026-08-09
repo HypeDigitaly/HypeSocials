@@ -48,6 +48,7 @@ from hypesocials.models import (
     RenderOutcome, RenderOutcomeKind, RenderParams, RenderPriority, RenderRefs, VisionCheckResult,
 )
 from hypesocials.outputs import AssetFolder, PackagingError, save_reference
+from hypesocials.generate.refs import Reference, attach, role_lines
 from hypesocials.prompts_engine import (
     MissingTemplateError, UnresolvedPlaceholderError, build_context,
 )
@@ -78,8 +79,6 @@ _IN_MODEL_REF_LINE = ("No seed frame is attached to this job. Render the hook te
 _CLEAN_CLIP_REF_LINE = ("No seed frame is attached to this job, and this clip carries no on-screen "
                         "text at all: open on the scene described below and keep every frame free "
                         "of lettering.")
-_REF_ROLE = ("Image {index}: trend reference — layout, palette, typography and treatment only; "
-             "no words, no logo, no chrome, no person's identity")
 #: A task-creation / reference-validation failure whose message implicates the seed-frame URL
 #: (20 §10 `seed_frame_url_unreachable`). Deliberately narrow: an unmatched message is an ordinary
 #: failed render, and one wrong resubmission costs a whole clip.
@@ -143,12 +142,11 @@ async def _chain(
     """Seed frame → check → motion reference → clip, with each degrade scoped to its own step."""
     run = env.config.run
     copyset = env.copy.get(entry.asset_id)
-    refs = _trend_refs(entry, env)
     seed_url: str | None = None
     verdict = VisionCheckResult.NOT_CHECKED
     mode = run.reel_overlay_text
     if mode == "seed_frame":  # `in_model` / `none` skip the chain entirely (FR-24)
-        seed_url, verdict = await _seed_frame(entry, env, folder, submit, spend, copyset, refs)
+        seed_url, verdict = await _seed_frame(entry, env, folder, submit, spend, copyset)
         mode = "seed_frame" if seed_url else "in_model"  # FR-24's degrade, either failure shape
     seed_rendered = seed_url is not None  # paid for, so it stays in `model_ids` even if dropped
 
@@ -171,14 +169,21 @@ async def _chain(
 
     if outcome is not None and seed_url and _seed_url_rejected(outcome):
         # FR-24's second failure: the frame rendered and was paid for; the handoff is what broke.
+        # 10 §10 requires the clip to still be generated and delivered, so this resubmission
+        # stays — but as DISCRETIONARY work (FR-106c): a second full Seedance clip is not in the
+        # wave-1 projection the operator approved, so the cap may refuse it (20 §8, CLAUDE.md #7).
         env.log.warn("seed_frame_url_unreachable",
                      f"{entry.asset_id}: Seedance rejected the seed-frame reference "
                      f"({outcome.fail_message}); one resubmission with in-model overlay text",
                      asset_id=entry.asset_id)
         folder.mark(DegradationTag.SEED_FRAME_URL_UNREACHABLE)
         seed_url = None
-        outcome = await _submit_clip(entry, env, submit, spend, copyset, seed_url=None,
-                                     video_url=video_url, audio_on=audio_on, mode="in_model")
+        retry = await _submit_clip(entry, env, submit, spend, copyset, seed_url=None,
+                                   video_url=video_url, audio_on=audio_on, mode="in_model",
+                                   kind="discretionary")
+        # Nothing re-ordered: an interrupt still packages as abandoned, a cap refusal keeps the
+        # rejection this reel already paid for as its honest terminal reason.
+        outcome = retry or (None if env.halted else outcome)
 
     if outcome is None:  # nothing was ordered: Ctrl+C / deadline, or a prompt that would not fill
         if not env.halted:
@@ -226,18 +231,19 @@ async def _chain(
 
 async def _seed_frame(
     entry: PlanEntry, env: Env, folder: AssetFolder, submit: Any, spend: _Spend,
-    copyset: CopySet | None, refs: list[str],
+    copyset: CopySet | None,
 ) -> tuple[str | None, VisionCheckResult]:
     """Render the hook frame, keep its bytes, and check it before anything references it (FR-24)."""
     if env.halted:
         return None, VisionCheckResult.NOT_CHECKED  # the clip step packages the honest abandon
-    if not refs:
-        folder.mark(DegradationTag.REFERENCE_FREE)  # FR-18: absence is visible, never silent
+    # FR-200/FR-244: the brief's own product photos and the Inspiration pick are uploaded here
+    # too — under `inspiration_mix: exclusive` they are the ONLY references this frame gets.
+    refs = await attach(entry, env, folder)
     prompt = _seed_prompt(entry, env, copyset, refs)
     if prompt is None:
         return _seed_failed(entry, env, folder, "prompt assembly failed (FR-260)")
     params = RenderParams(prompt=prompt, aspect_ratio=ASPECT_9_16)
-    outcome = spend.add(await submit(entry, params, RenderRefs(image_urls=list(refs)),
+    outcome = spend.add(await submit(entry, params, RenderRefs(image_urls=_urls(refs)),
                                      job="seed_frame", priority=RenderPriority.WAVE1,
                                      kind="projected",
                                      label=f"reel seed frame · {entry.asset_id}"))
@@ -261,7 +267,7 @@ async def _seed_frame(
 
 async def _check_seed(
     entry: PlanEntry, env: Env, folder: AssetFolder, submit: Any, spend: _Spend,
-    copyset: CopySet | None, refs: list[str], seed: Path | None, url: str,
+    copyset: CopySet | None, refs: list[Reference], seed: Path | None, url: str,
 ) -> tuple[str, VisionCheckResult]:
     """FR-105: check the frame, and re-render it ONCE if flagged — before Seedance sees it.
 
@@ -291,7 +297,7 @@ async def _check_seed(
     if prompt is None or env.halted:
         return url, VisionCheckResult.RETRIED_FAILED
     retry = spend.add(await submit(entry, RenderParams(prompt=prompt, aspect_ratio=ASPECT_9_16),
-                                   RenderRefs(image_urls=list(refs)), job="seed_frame",
+                                   RenderRefs(image_urls=_urls(refs)), job="seed_frame",
                                    priority=RenderPriority.WAVE1, kind="discretionary",
                                    label=f"seed-frame vision re-render · {entry.asset_id}"))
     if retry is None or retry.kind is not RenderOutcomeKind.SUCCESS or not retry.result_urls:
@@ -378,7 +384,7 @@ async def _motion_reference(entry: PlanEntry, env: Env, folder: AssetFolder) -> 
 async def _submit_clip(
     entry: PlanEntry, env: Env, submit: Any, spend: _Spend, copyset: CopySet | None, *,
     seed_url: str | None, video_url: str | None, audio_on: bool, mode: str,
-    extra: str = "",
+    extra: str = "", kind: str = "precommitted",
 ) -> RenderOutcome | None:
     """One Seedance submission (FR-23). `None` means nothing was ordered — halt or a bad prompt."""
     if env.halted:  # FR-201/108: stop ORDERING; whatever is already paid for is packaged
@@ -399,7 +405,7 @@ async def _submit_clip(
     refs = RenderRefs(image_urls=[seed_url] if seed_url else [],  # FR-24: @Image1 leads
                       video_urls=[video_url] if video_url else [])
     return spend.add(await submit(entry, params, refs, job="clip", priority=RenderPriority.WAVE2,
-                                  kind="precommitted",  # FR-106b: approved in the wave-1 projection
+                                  kind=kind,  # FR-106b, except the seed-URL retry (see `_chain`)
                                   label=f"reel clip · {entry.asset_id}"))
 
 
@@ -415,22 +421,19 @@ def _seed_url_rejected(outcome: RenderOutcome) -> bool:
 # --------------------------------------------------------------------------- prompt assembly
 
 
-def _trend_refs(entry: PlanEntry, env: Env) -> list[str]:
-    """The FR-91 coherent set as public URLs — Kie takes Virlo's CDN directly (RESULTS.md §B)."""
-    trend = env.trends.get(entry.trend_key or "")
-    urls = list(trend.reference_groups[0]) if trend and trend.reference_groups else []
-    limit = render.get_profile(env.config.models.image_profile).limits.max_image_urls
-    return urls[:limit] if limit else urls
+def _urls(refs: list[Reference]) -> list[str]:
+    """Just the URLs — what a render job takes; the roles go into the prompt (FR-191)."""
+    return [ref.url for ref in refs]
 
 
 def _seed_prompt(
-    entry: PlanEntry, env: Env, copyset: CopySet | None, urls: list[str], *,
+    entry: PlanEntry, env: Env, copyset: CopySet | None, refs: list[Reference], *,
     budget_scale: float = 1.0, extra: str = "",
 ) -> str | None:
     """`reel_seed_frame.md` filled — the hook text burnt in, FR-94's clauses inside the template."""
     context = _context(
-        entry, env, copyset, budget_scale=budget_scale, reference_image_count=len(urls),
-        reference_roles=[_REF_ROLE.format(index=index) for index, _ in enumerate(urls, start=1)])
+        entry, env, copyset, budget_scale=budget_scale, reference_image_count=len(refs),
+        reference_roles=role_lines(refs))
     # FR-19/96: with no style brief the subject is the deterministic content sentence — the same
     # substitution `image_direct.md` makes for images, done here because the seed frame has one
     # scaffold for both modes.
@@ -480,7 +483,9 @@ def _render(
 ) -> str | None:
     """Fill one template, or fail this creative BEFORE anything is submitted (FR-260)."""
     try:
-        prompt = env.engine.render(role, context, profile=profile)
+        prompt = env.engine.render(  # 50 §7: over the bound, descriptive slots are cut in order
+            role, context, profile=profile,
+            max_chars=render.get_profile(profile).limits.max_prompt_chars)
     except (UnresolvedPlaceholderError, MissingTemplateError, ValueError, LookupError) as exc:
         env.log.error("prompt_assembly_failed", f"{entry.asset_id}: {exc}",
                       asset_id=entry.asset_id, role=role)

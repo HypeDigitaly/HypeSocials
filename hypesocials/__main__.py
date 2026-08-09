@@ -3,6 +3,7 @@
 Module contract
 ---------------
 Purpose: everything that must happen exactly once per process and cannot happen anywhere else —
+force UTF-8 on the console (FR-256), sweep scratch a hard-killed predecessor left behind (FR-249),
 load `.env`, build the Windows event loop, install the SIGINT handler, route the parsed action,
 and return the FR-202 exit code to `run.bat`. No pipeline logic lives here.
 
@@ -28,8 +29,11 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
 import signal
 import sys
+import tempfile
+import time
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -38,6 +42,13 @@ from hypesocials import cli, menu, previews, runner
 
 #: Repo root — `.env` sits beside `run.bat`, never inside the package.
 ROOT = Path(__file__).resolve().parent.parent
+
+#: The %TEMP% scratch folders `sources/virlo.py` and `generate/video_ref.py` create. FR-249 deletes
+#: them on every exit path bar one: the second Ctrl+C leaves through `os._exit`, which runs no
+#: cleanup at all. The next run sweeps that aftermath — a day old cannot belong to a live run, so
+#: a concurrent run's fresh scratch is never touched.
+_SCRATCH_GLOBS = ("hypesocials-refs-*", "hypesocials-videoref-*")
+_SCRATCH_MAX_AGE_S = 24 * 60 * 60
 
 _PHASE_2_NOTE = (
     "Publishing to Postiz is Phase 2 and is not implemented in the MVP.\n"
@@ -49,6 +60,8 @@ _PHASE_2_NOTE = (
 
 def main(argv: list[str] | None = None) -> int:
     """Parse, dispatch, and return the exit code. `run.bat` propagates it to Task Scheduler."""
+    _force_utf8()
+    _sweep_stale_scratch()
     load_dotenv(ROOT / ".env")
     opts = cli.parse_args(argv)  # unknown flag: argparse exits 2 here, before any load (FR-63)
     config = None
@@ -84,6 +97,31 @@ def main(argv: list[str] | None = None) -> int:
         return runner.EXIT_INTERRUPTED
     finally:
         _close(loop)
+
+
+def _force_utf8() -> None:
+    """FR-256: Czech survives a console `run.bat`'s `chcp 65001` never touched.
+
+    A bare `python -m hypesocials`, a scheduled task or a redirected stdout all bypass the batch
+    file, where one `ř` in a trend name would raise `UnicodeEncodeError`. `errors="replace"`
+    because a mangled character is cosmetic; a crashed print mid-run is not.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        if reconfigure := getattr(stream, "reconfigure", None):
+            reconfigure(encoding="utf-8", errors="replace")
+
+
+def _sweep_stale_scratch() -> None:
+    """Delete scratch folders an earlier hard-killed run left in %TEMP% (FR-249). Never raises."""
+    cutoff = time.time() - _SCRATCH_MAX_AGE_S
+    temp = Path(tempfile.gettempdir())
+    for pattern in _SCRATCH_GLOBS:
+        for folder in temp.glob(pattern):
+            try:
+                if folder.is_dir() and folder.stat().st_mtime < cutoff:
+                    shutil.rmtree(folder, ignore_errors=True)
+            except OSError:
+                continue  # locked or already gone: the next run tries again
 
 
 def _install_sigint(loop: asyncio.AbstractEventLoop, control: runner.Control) -> None:

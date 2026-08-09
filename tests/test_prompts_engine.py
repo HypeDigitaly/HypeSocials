@@ -118,8 +118,9 @@ def test_fr261_context_carries_no_environment_or_secret_values(monkeypatch) -> N
 
 
 def test_fr261_out_of_role_placeholder_is_unresolved_not_leaked(tmp_path) -> None:
-    """Condition 3 — `{{brand_context}}` is copywriter-only. A render template naming it fails
-    before submission (FR-260) instead of leaking Notion brand text into a render prompt."""
+    """Condition 3 — `{{brand_context}}` is copywriter-only, so a render template naming it never
+    resolves it. Notion's brand text cannot reach a render prompt by any route: the file is
+    refused at load and the built-in ships instead (FR-183, tested in full below)."""
     profile_dir = tmp_path / "gpt-image-2"
     profile_dir.mkdir()
     (profile_dir / "image_single_post.md").write_text(
@@ -128,9 +129,10 @@ def test_fr261_out_of_role_placeholder_is_unresolved_not_leaked(tmp_path) -> Non
     context = pe.build_context(copy=CopySet("a1", "en", headline="Hi"),
                                brand_context="ACME brand voice, Poppins, navy templates")
 
-    with pytest.raises(pe.UnresolvedPlaceholderError) as excinfo:
-        engine.render("image_single_post.md", context, profile="gpt-image-2")
-    assert "brand_context" in str(excinfo.value)
+    rendered = engine.render("image_single_post.md", context, profile="gpt-image-2")
+
+    assert "ACME brand voice" not in rendered and "Poppins" not in rendered
+    assert "brand_context" not in pe.allowlist("image_single_post.md")
 
 
 def test_fr109_brand_influence_reaches_a_render_through_brand_accent_only(tmp_path) -> None:
@@ -211,11 +213,14 @@ def test_every_built_in_default_renders_from_a_normal_context(tmp_path) -> None:
 
 
 def test_fr260_unresolved_placeholder_fails_before_submission(tmp_path) -> None:
-    (tmp_path / "style_brief_system.md").write_text("{{trend_texts}} {{render_prompt}}",
+    """A name the supplied context cannot fill fails THAT creative before submission — no prompt
+    carrying a raw `{{token}}` ever reaches a paid API."""
+    (tmp_path / "style_brief_system.md").write_text("{{trend_texts}} {{engagement_numbers}}",
                                                     encoding="utf-8")
     engine = pe.PromptEngine(prompts_dir=tmp_path)
-    with pytest.raises(pe.UnresolvedPlaceholderError):
-        engine.render("style_brief_system.md", pe.build_context(trend=make_trend()))
+    with pytest.raises(pe.UnresolvedPlaceholderError) as excinfo:
+        engine.render("style_brief_system.md", {"trend_texts": "the only value provided"})
+    assert "engagement_numbers" in str(excinfo.value)
 
 
 def test_fr183_unknown_placeholder_falls_back_to_the_built_in_naming_the_file(tmp_path) -> None:
@@ -229,6 +234,54 @@ def test_fr183_unknown_placeholder_falls_back_to_the_built_in_naming_the_file(tm
     assert template.origin == "built-in default"
     assert log.warnings and log.warnings[0][0] == "template_fallback"
     assert str(bad) in log.warnings[0][1] and "not_a_real_placeholder" in log.warnings[0][1]
+
+
+def test_fr183_out_of_role_placeholder_falls_back_and_fr263_refuses_a_new_profile(
+    monkeypatch, tmp_path
+) -> None:
+    """An IN-vocabulary but OUT-OF-ROLE name is as unusable as an unknown one, and both rules must
+    act where they still can: FR-183 degrades a shipped role to its built-in at LOAD time (not
+    once per creative at fill time, which would kill the whole run), while FR-263 refuses a new
+    profile that has no built-in to degrade to."""
+    shipped = tmp_path / "gpt-image-2"
+    shipped.mkdir()
+    bad = shipped / "image_single_post.md"
+    bad.write_text("SCENE {{render_prompt}}\nBRAND {{brand_context}}\n", encoding="utf-8")
+    log = Recorder()
+    engine = pe.PromptEngine(prompts_dir=tmp_path, log=log)
+
+    template = engine.template("image_single_post.md", profile="gpt-image-2")
+
+    assert template.origin == "built-in default"
+    assert log.warnings[0][0] == "template_fallback"
+    assert str(bad) in log.warnings[0][1] and "brand_context" in log.warnings[0][1]
+    # …and that fallback renders, rather than raising FR-260 on every single creative.
+    context = pe.build_context(style_brief=make_brief(), copy=CopySet("a1", "en", headline="Hi"),
+                               brand_context="ACME brand voice, Poppins, navy templates")
+    rendered = engine.render("image_single_post.md", context, profile="gpt-image-2")
+    assert "{{" not in rendered and "ACME brand voice" not in rendered
+
+    class FakeProfile:
+        kind = "video"
+
+    monkeypatch.setattr(pe, "get_profile", lambda name: FakeProfile())
+    new_profile = tmp_path / "kling-video"
+    new_profile.mkdir()
+    (new_profile / "reel_director.md").write_text("{{through_line}} {{brand_context}}",
+                                                  encoding="utf-8")
+    assert pe.validate_template_set("kling-video", prompts_dir=tmp_path) == [
+        "kling-video/reel_director.md"]
+
+
+def test_fr183_a_missing_template_file_is_warned_not_silently_swapped(tmp_path) -> None:
+    """FR-183's warning names the file and the reason for MISSING too — an operator who typed the
+    filename wrong must not read a run log that looks exactly like a healthy one."""
+    log = Recorder()
+    engine = pe.PromptEngine(prompts_dir=tmp_path, log=log)
+
+    assert engine.template("copywriter_system.md").origin == "built-in default"
+    assert [event for event, _ in log.warnings] == ["template_fallback"]
+    assert "copywriter_system.md" in log.warnings[0][1] and "not found" in log.warnings[0][1]
 
 
 def test_fr174_override_folder_wins_over_the_prompts_folder(tmp_path) -> None:

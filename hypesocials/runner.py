@@ -39,8 +39,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Sequence
-from dataclasses import dataclass, field
+from collections.abc import Mapping, Sequence
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -48,9 +48,9 @@ from hypesocials import analyze, cli, copywrite, generate, menu, plan, preflight
 from hypesocials.budget import Budget, Estimate, SpendCategory, SpendSummary, estimate, format_usd
 from hypesocials.config import CONFIGS_DIR, Config, ConfigError, load_config
 from hypesocials.generate import video_ref
-from hypesocials.llm import LLMClient, RoleSettings
+from hypesocials.llm import CREDITS_EXHAUSTED_REASON, LLMClient, RoleSettings
 from hypesocials.models import (
-    Brief, ParsedResult, PlanEntry, PlanEntryStatus, StyleBrief, TrendItem)
+    Brief, DegradationTag, ParsedResult, PlanEntry, PlanEntryStatus, StyleBrief, TrendItem)
 from hypesocials.outputs import (
     Ledger,
     LogWriter,
@@ -139,9 +139,10 @@ async def run(opts: cli.Options, control: Control | None = None, *,
               config: Config | None = None) -> int:
     """Execute one full run and return its FR-202 exit code. Never raises for a run outcome.
 
-    `config` is the file the interactive wizard already loaded and mutated (`menu.MenuResult`).
-    It must travel: `sources.active` is the one menu answer with no CLI flag behind it (FR-135),
-    so re-loading from `opts.config_name` here would silently drop the operator's source pick.
+    `config` is the file the interactive wizard already loaded and mutated (`menu.MenuResult`),
+    passed rather than re-loaded so the wizard's answers cost nothing to carry. Re-applying the
+    overrides below is idempotent: every answer — the source pick included, since `--sources`
+    landed (30 §5, FR-65/135) — travels in `opts` as the flag value it is equivalent to.
     """
     control = control or Control()
     try:
@@ -159,6 +160,10 @@ async def run(opts: cli.Options, control: Control | None = None, *,
         return await _pipeline(session, overrides)
     except _Abort as abort:
         session.say(str(abort))
+        # FR-232/FR-84: an abort still closes with the status line — nobody should have to infer
+        # the outcome. No spend table: an abort has no creative rows, and its (usually zero)
+        # spend is in this line already.
+        session.say(_final_line(session, (), session.budget.summary(()), abort.code))
         return abort.code
     except Exception as exc:  # noqa: BLE001 — NFR-9: no unhandled crash; the log keeps the cause
         logger.exception("run failed")
@@ -202,6 +207,7 @@ def decide_exit_code(
     interrupted: bool = False,
     preflight_refused: bool = False,
     trend_supply_failed: bool = False,
+    plan_reduced: bool = False,
 ) -> int:
     """FR-202's five codes, in one place, so a scheduler reads the same meaning every time.
 
@@ -218,6 +224,12 @@ def decide_exit_code(
     that is the partial carousel of FR-20/10 §10, which ships its finished slides and names the
     missing ones. FR-202's code 1 covers "at least one creative was skipped, failed,
     budget-trimmed or abandoned", and a deck missing slides is exactly that, so it exits 1.
+
+    `plan_reduced` (`plan.Plan.notes`) is why this decision cannot be read off the entries alone:
+    a count dropped *before* expansion — unpriced reels (FR-131), a format no platform allows
+    (FR-132), a brief that resolved to nothing under `--yes` (FR-172) — never becomes a `PlanEntry`,
+    so every surviving entry can succeed while the run delivered less than it was asked for. 30 §5:
+    "a trimmed, reduced, or partially-dropped unattended run … never a silent full-success exit".
     """
     if preflight_refused:
         return EXIT_PREFLIGHT
@@ -229,7 +241,7 @@ def decide_exit_code(
     if not entries:
         return EXIT_PREFLIGHT  # a zero-creative plan never starts (FR-64)
     whole = [entry for entry in delivered if not entry.skip_reason]
-    return EXIT_OK if len(whole) == len(entries) else EXIT_PARTIAL
+    return EXIT_OK if len(whole) == len(entries) and not plan_reduced else EXIT_PARTIAL
 
 
 # --------------------------------------------------------------------------- the pipeline
@@ -302,7 +314,8 @@ async def _pipeline(session: _Session, overrides: Sequence[str]) -> int:
     # and a brief-only plan never had a trend supply to fail — its losses are ordinary (exit 1).
     return await _package(session, resolved.entries, plan_estimate, report,
                           trend_supply_failed=not brief_only
-                          and not any(e.trend_key for e in resolved.entries))
+                          and not any(e.trend_key for e in resolved.entries),
+                          plan_notes=resolved.notes)  # FR-252: pre-expansion drops exit 1
 
 
 async def _confirm(session: _Session, entries: list[PlanEntry]) -> tuple[list[PlanEntry], Estimate]:
@@ -366,7 +379,8 @@ def _configure_providers(session: _Session) -> None:
         http_max_attempts=config.models.http_max_attempts,
         model_ids={config.models.image_profile: config.models.image,
                    config.models.video_profile: config.models.video},
-        on_intent=on_intent, on_submitted=on_submitted))
+        on_intent=on_intent, on_submitted=on_submitted),
+        log=session.log)  # FR-77: submit/poll/download narrate into the run's own log
     session.render_ready = True
     _configure_llm(session)
 
@@ -441,6 +455,13 @@ def _select(session: _Session, trends: list[TrendItem],
         session.log.event("trend_assigned",
                           f"{'/'.join(decision.asset_ids)} ← {decision.trend_key or 'no trend'} "
                           f"({decision.reason})", detail=decision.detail)
+        if decision.reason == "reuse":  # FR-8: a reuse is a fact, with the count that bounds it
+            session.log.event("trend_reused",
+                              f"{decision.trend_key} reused for {'/'.join(decision.asset_ids)} — "
+                              f"use #{decision.use_index} of "
+                              f"{config.run.max_trend_reuses_per_run} (FR-8)",
+                              trend=decision.trend_key, use_index=decision.use_index,
+                              max_reuses=config.run.max_trend_reuses_per_run)
     if not any(entry.trend_key or entry.brief_influence == "override" for entry in entries):
         raise _Abort(EXIT_NOTHING_USABLE, _famine_message(selection, config))
     return assignment
@@ -493,7 +514,9 @@ def _launch_video_refs(session: _Session, live: Sequence[PlanEntry],
     if not candidates:
         return
     session.video_refs = video_ref.prefetch(
-        candidates, max_duration_s=session.config.run.reel_reference_max_s, log=session.log)
+        candidates, max_duration_s=session.config.run.reel_reference_max_s,
+        profile_name=session.config.models.video_profile,  # FR-273: the profile decides the probe
+        log=session.log)
 
 
 def _store_references(session: _Session, trends: dict[str, TrendItem],
@@ -512,19 +535,30 @@ def _store_references(session: _Session, trends: dict[str, TrendItem],
 
 async def _analyze(session: _Session, live: Sequence[PlanEntry],
                    trends: dict[str, TrendItem]) -> dict[str, StyleBrief]:
-    """ANALYZE: one Sonnet 5 vision call per distinct assigned trend, all concurrent (FR-9)."""
+    """ANALYZE: one Sonnet 5 vision call per distinct assigned trend, all concurrent (FR-9).
+
+    The analyst sees **every** downloaded group, bounded by `media_download_cap`: FR-91 makes that
+    cap "the primary per-trend cap [governing] … how many images enter the analysis call", while
+    `reference_images_per_job` (group 0 alone) governs only what a RENDER job attaches. Group 0
+    alone would show the analyst 3 images where FR-9 promises 6 — and the rest are already on disk.
+    """
     wanted = {entry.trend_key for entry in live
               if entry.variant == "analyzed" and entry.trend_key in trends}
     if not wanted or _halt(session, "analysis"):
         return {}
     subjects = [trends[key] for key in wanted if key]
-    images = {t.history_key: sources.reference_paths(t.reference_groups[0] if t.reference_groups
-                                                     else []) for t in subjects}
+    cap = max(1, session.config.sources.media_download_cap)
+    images = {t.history_key: sources.reference_paths(
+        list(dict.fromkeys(url for group in t.reference_groups for url in group))[:cap])
+        for t in subjects}
     watch = Stopwatch()
     briefs = await analyze.style_briefs(
         subjects, images, call=_metered(session), engine=session.engine,
         niche_descriptor=session.config.niche.as_text(),
-        max_images=session.config.sources.media_download_cap, log=session.log)
+        max_images=cap, log=session.log)
+    for key, brief in briefs.items():  # NFR-5/FR-92: the FULL brief is logged, never injected
+        session.log.event("style_brief", f"style brief for {key} (FR-92)", verbose_only=True,
+                          trend=key, hook_pattern=brief.hook_pattern, brief=asdict(brief))
     session.log.event("analysis_complete", f"{len(briefs)} of {len(subjects)} style brief(s)",
                       duration_ms=watch.elapsed_ms, briefs=sorted(briefs))
     return briefs
@@ -590,8 +624,11 @@ async def _create(session: _Session, entries: Sequence[PlanEntry], live: Sequenc
 
 
 async def _package(session: _Session, entries: Sequence[PlanEntry], plan_estimate: Estimate,
-                   report: generate.Report, *, trend_supply_failed: bool) -> int:
+                   report: generate.Report, *, trend_supply_failed: bool,
+                   plan_notes: Sequence[str] = ()) -> int:
     """PACKAGE: gallery, history, latest-pointer, spend summary, exit code (FR-75/82/84/232)."""
+    _log_template_attribution(session)
+    credits_line = _credits_exhausted_line(session, entries, report)  # FR-248, before the counts
     write_gallery(session.run_dir, title=session.config.output.gallery.title, log=session.log)
     if report.packaged_trends:  # FR-82: only trends that actually produced a packaged creative
         await record_trends(LOGS_DIR, sorted(report.packaged_trends), session.run_id,
@@ -601,8 +638,13 @@ async def _package(session: _Session, entries: Sequence[PlanEntry], plan_estimat
 
     summary = session.budget.summary(entries, plan_estimate)
     session.say(_spend_table(summary))
+    if credits_line:
+        session.say(credits_line)
+    for note in plan_notes:  # FR-252: what was dropped is repeated in the end-of-run summary
+        session.say(f"dropped before generation: {note}")
     code = decide_exit_code(entries, interrupted=session.control.stop.is_set(),
-                            trend_supply_failed=trend_supply_failed)
+                            trend_supply_failed=trend_supply_failed,
+                            plan_reduced=bool(plan_notes))
     session.say(_final_line(session, entries, summary, code))
     # FR-232: one optional 1–3 rating per run, asked after the summary. `menu` suppresses it under
     # `--yes` and with no console attached, so nothing unattended ever waits on it.
@@ -616,18 +658,60 @@ async def _package(session: _Session, entries: Sequence[PlanEntry], plan_estimat
 
 
 def _local_refs(session: _Session, live: Sequence[PlanEntry],
-                mix_refs: Any) -> dict[str, list[Path]]:
+                mix_refs: Any) -> dict[str, tuple[tuple[Path, str], ...]]:
     """Every local file a job uploads before it can reference it (FR-200), in FR-91's order: a
     brief's own images FIRST (they are what an `override` creative is about), the inspiration
-    image `apply_mix()` picked LAST — which is exactly the `minority` rule."""
-    refs: dict[str, list[Path]] = {}
+    image `apply_mix()` picked LAST — which is exactly the `minority` rule.
+
+    Each file travels WITH its kind (`brief` / `inspiration`), because position alone stops being
+    readable once a prompt must NAME what each reference is (50 §3's `reference_roles`) — and a
+    `Path` carries no provenance for a consumer to re-derive.
+    """
+    refs: dict[str, tuple[tuple[Path, str], ...]] = {}
     for entry in live:
         brief = session.campaign_briefs.get(entry.brief_name or "")
-        merged = [*(brief.reference_image_paths if brief else ()),
-                  *mix_refs.get(entry.asset_id, ())]
+        merged = (*((path, "brief") for path in (brief.reference_image_paths if brief else ())),
+                  *((path, "inspiration") for path in mix_refs.get(entry.asset_id, ())))
         if merged:
             refs[entry.asset_id] = merged
     return refs
+
+
+def _log_template_attribution(session: _Session) -> None:
+    """FR-184: one line per template role the run actually filled — file name, origin, hash.
+
+    Logged at Package rather than at construction because `PromptEngine` resolves lazily: FR-184
+    is "once per template role actually USED", and before Create runs the cache is empty.
+    """
+    rows = session.engine.attribution()
+    session.log.event(
+        "prompt_templates",
+        "templates used: " + (", ".join(f"{row['role']}@{row['hash'][:8]}" for row in rows)
+                              or "none (no prompt was assembled)"),
+        templates=rows)
+
+
+def _credits_exhausted_line(session: _Session, entries: Sequence[PlanEntry],
+                            report: generate.Report) -> str:
+    """FR-248: OpenRouter's 402 named once, distinctly from a Kie 402, and charged to what it cost.
+
+    The latch is run-scoped and one-way (`llm.py`), so after it trips, a creative that ended with
+    no cause of its own — or shipped on degraded copy / no style brief — ended that way *because of
+    it*. Stamping the reason puts them in FR-84's counts and off a clean exit 0: a batch that
+    silently shipped fallback copy is not a full success. `""` when credits were never the story.
+    """
+    if session.llm is None or not session.llm.credits_exhausted:
+        return ""
+    llm_starved = {DegradationTag.ANALYSIS_MISSING, DegradationTag.COPY_DEGRADED}
+    degraded = {asset_id for asset_id, record in report.records.items()
+                if llm_starved.intersection(record.degradations)}
+    hit = [entry for entry in entries if not entry.skip_reason
+           and (entry.status is not PlanEntryStatus.SUCCESS or entry.asset_id in degraded)]
+    for entry in hit:
+        entry.skip_reason = f"{CREDITS_EXHAUSTED_REASON} (FR-248)"
+    return (f"OpenRouter returned 402 — {CREDITS_EXHAUSTED_REASON}. Every later LLM call was "
+            f"skipped rather than retried (FR-248); {len(hit)} creative(s) were lost or shipped "
+            "degraded under it. This is NOT a Kie.ai render 402 (FR-167) — top up OpenRouter.")
 
 
 def _metered(session: _Session) -> Any:
@@ -643,18 +727,33 @@ def _metered(session: _Session) -> Any:
 
     async def call(role: str, messages: list[dict[str, Any]], json_schema: dict[str, Any],
                    images: list[bytes] | None = None) -> ParsedResult:
+        watch = Stopwatch()
         result = await client.structured_call(role, messages, json_schema, images)
         held = await session.budget.commit(result.cost_usd, label=f"llm {role}",
                                            category=SpendCategory.LLM, kind="projected")
         await session.budget.reconcile(held, result.cost_usd or None)
-        session.log.event("llm_call", f"{role} call complete", role=role,
+        # NFR-5: model, duration and the prompt IN FULL. `messages` is a `_FULL_ONLY_KEYS` name, so
+        # events.jsonl keeps the whole payload and run.log gets its size — 40 §4's split, verbatim.
+        extra: dict[str, Any] = {"messages": messages}
+        if hooks := _hook_patterns(result.parsed):
+            extra["hook_pattern_used"] = hooks
+        session.log.event("llm_call", f"{role} call complete", duration_ms=watch.elapsed_ms,
+                          role=role, model=_role_settings(session.config, role).model,
+                          image_count=len(images or ()),  # not `images`: that key is prompt-sized
                           prompt_tokens=result.prompt_tokens,
                           completion_tokens=result.completion_tokens,
                           reasoning_tokens=result.reasoning_tokens,
-                          cost_usd=round(result.cost_usd, 6), degraded=result.degraded)
+                          cost_usd=round(result.cost_usd, 6), degraded=result.degraded, **extra)
         return result
 
     return call
+
+
+def _hook_patterns(parsed: Any) -> list[str]:
+    """NFR-5's `hook_pattern_used`, when the answer carries one — the copy call's creatives do."""
+    creatives = parsed.get("creatives") if isinstance(parsed, Mapping) else None
+    return sorted({str(item.get("hook_pattern_used") or "").strip()
+                   for item in creatives or () if isinstance(item, Mapping)} - {""})
 
 
 def _halt(session: _Session, stage: str) -> bool:

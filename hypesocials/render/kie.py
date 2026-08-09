@@ -76,7 +76,8 @@ class KieUploadError(KieError):
 class KieClient:
     """One `httpx.AsyncClient` and the job lifecycle built on it. Owned by `render/__init__`."""
 
-    __slots__ = ("_attempts", "_credit_usd", "_http", "_poll_interval_s", "_probe", "_upload_path")
+    __slots__ = ("_attempts", "_credit_usd", "_http", "_log", "_poll_interval_s", "_probe",
+                 "_upload_path")
 
     def __init__(
         self,
@@ -86,6 +87,7 @@ class KieClient:
         poll_interval_s: float = 3.0,
         upload_path: str = "hypesocials",
         credit_usd: float = 0.005,
+        log: Any = None,
     ) -> None:
         self._http = httpx.AsyncClient(
             headers={"Authorization": f"Bearer {api_key}"},
@@ -100,6 +102,9 @@ class KieClient:
         self._poll_interval_s = max(0.5, float(poll_interval_s))
         self._upload_path = upload_path.strip("/") or "hypesocials"
         self._credit_usd = float(credit_usd)
+        # The run's `outputs.LogWriter`, bound by `render.configure()`. Absent in tests and in the
+        # spikes, so every call site goes through `_event`, never through the attribute (FR-77).
+        self._log = log
 
     async def aclose(self) -> None:
         await self._http.aclose()
@@ -135,16 +140,23 @@ class KieClient:
             if on_submitted is not None:
                 on_submitted(token, None)  # response lost or refused -> `submit_unknown`
             logger.warning("Kie createTask failed for model %s: %s", model, exc)
-            return RenderOutcome(
+            outcome = RenderOutcome(
                 kind=RenderOutcomeKind.FAIL, request_token=token,
                 fail_cause=RenderFailCause.PROVIDER_FAIL, fail_message=str(exc),
                 submitted_at=submitted_at, completed_at=now_iso(), elapsed_s=watch.elapsed_s,
             )
+            self._result_event(outcome, model)
+            return outcome
         if on_submitted is not None:
             on_submitted(token, task_id)
         logger.info("Kie job submitted: task=%s model=%s timeout=%.0fs", task_id, model, timeout_s)
+        self._event("kie_job_submitted", f"Kie accepted {model} as task {task_id}",
+                    endpoint=f"{JOBS_BASE}/createTask", model=model, task_id=task_id,
+                    timeout_s=round(timeout_s))
         record = await self._poll(task_id, timeout_s=timeout_s, watch=watch)
-        outcome = await self._classify(record, task_id=task_id, token=token, timeout_s=timeout_s)
+        timings: dict[str, int] = {}
+        outcome = await self._classify(
+            record, task_id=task_id, token=token, timeout_s=timeout_s, timings=timings)
         outcome.submitted_at, outcome.completed_at = submitted_at, now_iso()
         outcome.elapsed_s = watch.elapsed_s
         logger.info(
@@ -152,6 +164,7 @@ class KieClient:
             task_id, outcome.kind.value, outcome.fail_cause.value if outcome.fail_cause else "-",
             outcome.elapsed_s, outcome.cost_usd,
         )
+        self._result_event(outcome, model, **timings)
         return outcome
 
     async def _create_task(self, model: str, body: dict[str, Any]) -> str:
@@ -186,14 +199,25 @@ class KieClient:
                 logger.warning("Kie poll error (not terminal): task=%s %s", task_id, exc)
                 interval = min(max(interval, self._poll_interval_s) * 2, _MAX_POLL_BACKOFF_S)
                 continue
-            if str(record.get("state") or "") in _TERMINAL_STATES:
+            state = str(record.get("state") or "")
+            # The noisiest event a run emits: events.jsonl keeps every tick, run.log only when
+            # the operator asked for `verbosity: verbose` (40 §4).
+            self._event("kie_job_polled", f"task {task_id} is {state or 'unknown'}",
+                        verbose_only=True, task_id=task_id, state=state,
+                        elapsed_s=round(watch.elapsed_s, 1))
+            if state in _TERMINAL_STATES:
                 return record
             interval = _WIDE_POLL_INTERVAL_S if watch.elapsed_s >= _WIDEN_AFTER_S else self._poll_interval_s
 
     async def _classify(
-        self, record: dict[str, Any], *, task_id: str, token: str, timeout_s: float
+        self, record: dict[str, Any], *, task_id: str, token: str, timeout_s: float,
+        timings: dict[str, int],
     ) -> RenderOutcome:
-        """FR-242's three outcomes. A green status with nothing behind it is a failure."""
+        """FR-242's three outcomes. A green status with nothing behind it is a failure.
+
+        `timings` is filled with `download_ms` when the FR-242 reachability check actually runs —
+        it is the caller's terminal log line that needs it, and only this method can measure it.
+        """
         outcome = RenderOutcome(
             kind=RenderOutcomeKind.FAIL, task_id=task_id, request_token=token,
             cost_usd=self._cost_usd(record),
@@ -212,7 +236,9 @@ class KieClient:
             outcome.fail_cause = RenderFailCause.EMPTY_RESULT_URLS
             outcome.fail_message = "state success with no usable resultUrls"
             return outcome
+        check = Stopwatch()
         unreachable = await self._first_unreachable(urls)
+        timings["download_ms"] = check.elapsed_ms
         if unreachable:
             outcome.fail_cause = RenderFailCause.RESULT_URL_UNREACHABLE
             outcome.fail_message = unreachable
@@ -307,6 +333,27 @@ class KieClient:
             if response.headers.get("content-length") == "0":
                 return "result url returned a zero-byte body"
         return ""
+
+    # ----------------------------------------------------------------- run-log events (FR-77)
+    def _event(self, event_type: str, message: str, **data: Any) -> None:
+        """One Kie call line into the run's OWN logs — the stdlib logger reaches no operator.
+
+        The request body never travels here: it carries the assembled prompt, and 40 §4 keeps
+        prompt-sized payloads in events.jsonl, never in run.log.
+        """
+        if self._log is not None:
+            self._log.event(event_type, message, **data)
+
+    def _result_event(self, outcome: RenderOutcome, model: str, **data: Any) -> None:
+        """The terminal line for one job: what it cost, how long it took, why it failed."""
+        cause = outcome.fail_cause.value if outcome.fail_cause else ""
+        self._event(
+            "kie_job_result",
+            f"Kie {model} task {outcome.task_id or '-'}: {outcome.kind.value}"
+            + (f" ({cause})" if cause else ""),
+            level="error" if outcome.kind is not RenderOutcomeKind.SUCCESS else "info",
+            model=model, task_id=outcome.task_id, kind=outcome.kind.value, cause=cause,
+            duration_ms=int(outcome.elapsed_s * 1000), cost_usd=outcome.cost_usd, **data)
 
     def _cost_usd(self, record: dict[str, Any]) -> float:
         """`data.creditsConsumed` is the reconcile-to-actual figure — 0.0 on a failed job, and

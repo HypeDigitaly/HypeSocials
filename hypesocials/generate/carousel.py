@@ -52,6 +52,7 @@ from hypesocials.models import (
     VisionCheckResult,
 )
 from hypesocials.outputs import AssetFolder, PackagingError
+from hypesocials.generate.refs import Reference, attach, role_lines
 from hypesocials.prompts_engine import (
     MissingTemplateError, UnresolvedPlaceholderError, build_context, style_dna,
 )
@@ -67,8 +68,6 @@ ROLE_ANCHOR = "carousel_anchor_instruction.md"
 ReserveKind = Literal["projected", "precommitted", "discretionary"]  # FR-106 a/b/c
 
 _CREDITS = "kie_credits_exhausted — top up your Kie.ai credits (FR-167)"
-_TREND_ROLE = ("trend reference — layout, palette, typography and treatment only; no words, "
-               "no logo, no chrome, no person's identity")
 #: Worst first: one `retried_failed` slide makes the whole deck `retried_failed` (FR-27 honesty).
 _SEVERITY = (VisionCheckResult.RETRIED_FAILED, VisionCheckResult.RETRIED_PASSED,
              VisionCheckResult.PASSED)
@@ -115,7 +114,7 @@ class _Deck:
     texts: list[str] = field(default_factory=list)  # one line per slide, deck order (FR-13)
     dna: str = ""  # FR-189 — built once, reused byte for byte
     brief: StyleBrief | None = None
-    trend_refs: list[str] = field(default_factory=list)
+    trend_refs: list[Reference] = field(default_factory=list)  # FR-91's merged, role-labelled set
     anchored: bool = False
     anchor_url: str = ""
     outcomes: list[RenderOutcome] = field(default_factory=list)  # EVERY submission, failures too
@@ -145,7 +144,7 @@ class _Deck:
 
     async def build(self) -> None:
         """Anchor, check, deck — or the independent-slide fallback when the anchor never lands."""
-        self.trend_refs = await self._reference_urls()
+        self.trend_refs = await attach(self.entry, self.env, self.folder)
         self.anchored = bool(self.env.config.run.carousel_anchor)
         if self.anchored:
             await self._slide(1, anchor=False, kind="projected", priority=RenderPriority.WAVE1)
@@ -182,12 +181,13 @@ class _Deck:
             return self._note(f"slide {number}: interrupted before submission")
         if env.credits_exhausted:
             return self._note(f"slide {number}: {_CREDITS}")
-        urls = self._refs(anchor)
-        prompt = self._prompt(number, anchor=anchor, urls=urls, plan=plan)
+        refs = self._refs(anchor)
+        prompt = self._prompt(number, anchor=anchor, refs=refs, plan=plan)
         if prompt is None:
             return self._note(f"slide {number}: prompt_assembly_failed — unresolved placeholder "
                               "(FR-260)", error=True)
-        outcome = await self._call(number, prompt, urls, kind=kind, priority=priority)
+        outcome = await self._call(number, prompt, [ref.url for ref in refs], kind=kind,
+                                   priority=priority)
         if outcome is None:
             return False
         url = outcome.result_urls[0] if outcome.result_urls else ""
@@ -300,38 +300,22 @@ class _Deck:
 
     # --------------------------------------------------------------------------------- inputs
 
-    async def _reference_urls(self) -> list[str]:
-        """The FR-91 coherent set as public URLs, with FR-200's upload for anything local."""
-        env, entry = self.env, self.entry
-        trend = env.trends.get(entry.trend_key or "")
-        urls = list(trend.reference_groups[0]) if trend and trend.reference_groups else []
-        for path in getattr(env, "local_refs", {}).get(entry.asset_id, ()):
-            try:
-                urls.append(await render.upload_file(path))
-            except Exception as exc:  # noqa: BLE001 - any upload failure is one fewer reference
-                env.log.warn("reference_upload_failed",
-                             f"{entry.asset_id}: {Path(path).name} could not be uploaded ({exc}); "
-                             "the deck proceeds with its remaining references (FR-200)",
-                             asset_id=entry.asset_id, reference=Path(path).name)
-        if not urls:
-            self.folder.mark(DegradationTag.REFERENCE_FREE)  # FR-18: absence is never silent
-        return urls[:self._limit]
-
-    def _refs(self, anchor: bool) -> list[str]:
-        """Slide 1 leads for slides 2–N (FR-95 PRIMARY), then the trend set, then the cap."""
-        urls = ([self.anchor_url, *self.trend_refs] if anchor and self.anchor_url
-                else list(self.trend_refs))
-        return urls[:self._limit]
+    def _refs(self, anchor: bool) -> list[Reference]:
+        """Slide 1 leads for slides 2–N (FR-95 PRIMARY), then the FR-91 set, then the hard cap."""
+        refs = ([Reference(self.anchor_url), *self.trend_refs]  # role replaced by ROLE_ANCHOR
+                if anchor and self.anchor_url else list(self.trend_refs))
+        return refs[:self._limit]
 
     def _prompt(
-        self, number: int, *, anchor: bool, urls: list[str], plan: vision_check.RetryPlan | None,
+        self, number: int, *, anchor: bool, refs: list[Reference],
+        plan: vision_check.RetryPlan | None,
     ) -> str | None:
         """One slide's finished prompt, or `None` when it cannot be filled (FR-260)."""
         env = self.env
         copyset = plan.copy if plan is not None else self.copy
+        urls = [ref.url for ref in refs]
         try:
-            # FR-191: one line per attachment saying what it contributes and what it never does.
-            roles = [f"Image {index}: {_TREND_ROLE}" for index, _ in enumerate(urls, start=1)]
+            roles = role_lines(refs)  # FR-191: one line per attachment, by provenance
             if anchor and urls:  # FR-190: the anchor block outranks every role under it
                 roles[0] = env.engine.render(ROLE_ANCHOR, {},
                                              profile=env.config.models.image_profile)
@@ -351,7 +335,8 @@ class _Deck:
                 slide_text=plan.slide_text if plan is not None else self.texts[number - 1])
             context["style_dna"] = self.dna  # FR-189: the one block that never varies
             prompt = env.engine.render(ROLE_SLIDE, context,
-                                       profile=env.config.models.image_profile)
+                                       profile=env.config.models.image_profile,
+                                       max_chars=self._limits.max_prompt_chars)  # 50 §7
         except (UnresolvedPlaceholderError, MissingTemplateError, ValueError, LookupError) as exc:
             env.log.error("prompt_assembly_failed", f"{self.entry.asset_id} slide {number}: {exc}",
                           asset_id=self.entry.asset_id, slide=number, role=ROLE_SLIDE)
@@ -419,9 +404,18 @@ class _Deck:
         return bool(self.env.config.run.vision_check) and self.env.llm_call is not None
 
     @property
+    def _limits(self) -> Any:
+        """This deck's render-profile limits — reference ceiling and 50 §7's prompt bound."""
+        return render.get_profile(self.env.config.models.image_profile).limits
+
+    @property
     def _limit(self) -> int:
-        """The profile's declared reference ceiling — cap before spending, never after (FR-272)."""
-        return render.get_profile(self.env.config.models.image_profile).limits.max_image_urls or 16
+        """The profile's declared reference ceiling — cap before spending, never after (FR-272).
+
+        The FR-91 set is already capped at `reference_images_per_job` by `refs.attach()`; this is
+        the provider's own hard ceiling, which the chained anchor may still occupy a slot in.
+        """
+        return self._limits.max_image_urls or 16
 
     def _input(self, number: int) -> Path | str:
         """A check input at NATIVE resolution — the local file when it landed, else its URL."""

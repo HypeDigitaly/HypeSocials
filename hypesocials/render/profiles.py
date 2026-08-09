@@ -40,7 +40,14 @@ _SEEDANCE_ROUTE = "bytedance/seedance-2-5"
 _IMAGE_RESOLUTIONS = ("1K", "2K", "4K")
 #: 1K-only ratios, plus `auto`/unset which renders 1K whatever else is asked for (20 §8c).
 _ONE_K_ONLY_RATIOS = frozenset({"", "auto", "5:4", "4:5", "3:1", "1:3", "9:21"})
-_NO_4K_RATIOS = frozenset({"1:1"})  # 1:1 at 4K fails task creation, not the render
+#: FR-192's production ceiling, enforced where the parameter is built rather than trusted from
+#: config: above 2K the model is documented unstable, and 1:1 at 4K fails task creation outright.
+_IMAGE_RESOLUTION_CEILING = "2K"
+
+#: 50 §7 states the truncation ORDER but no number, and no provider documents a prompt-length
+#: limit. 10 000 characters is therefore this ENGINE's bound, not a provider fact: generous for
+#: every shipped template, tight enough that a runaway style brief cannot buy a rejected job.
+MAX_PROMPT_CHARS = 10_000
 
 SEEDANCE_DURATION_RANGE = (4, 30)  # FR-164; the provider's `-1` auto value is never sent
 _SEEDANCE_DEFAULT_DURATION_S = 5
@@ -71,6 +78,7 @@ class ReferenceLimits:
     video_aspect_range: tuple[float, float] = (0.0, 0.0)
     video_fps_range: tuple[int, int] = (0, 0)
     video_formats: tuple[str, ...] = ()
+    max_prompt_chars: int = 0  # 50 §7's truncation trigger; 0 = never truncate
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,9 +148,9 @@ def _image_resolution(aspect_ratio: str, requested: str | None) -> str:
         resolution = "1K"
     if aspect_ratio in _ONE_K_ONLY_RATIOS:
         return "1K"
-    if resolution == "4K" and aspect_ratio in _NO_4K_RATIOS:
-        return "2K"
-    return resolution
+    # FR-192: 4K is declared by the enum but never requested — the ceiling is 2K (which also
+    # subsumes 20 §8c's 1:1-at-4K task-creation refusal).
+    return _IMAGE_RESOLUTION_CEILING if resolution == "4K" else resolution
 
 
 def _clamped_duration(seconds: int | None) -> int:
@@ -150,8 +158,10 @@ def _clamped_duration(seconds: int | None) -> int:
     return max(low, min(high, int(seconds or _SEEDANCE_DEFAULT_DURATION_S)))
 
 
-GPT_IMAGE_2_LIMITS = ReferenceLimits(max_image_urls=16)  # `input_urls` maxItems 16, URLs only
+GPT_IMAGE_2_LIMITS = ReferenceLimits(max_image_urls=16,  # `input_urls` maxItems 16, URLs only
+                                     max_prompt_chars=MAX_PROMPT_CHARS)
 SEEDANCE_LIMITS = ReferenceLimits(
+    max_prompt_chars=MAX_PROMPT_CHARS,
     max_image_urls=30,
     max_video_urls=10,
     max_image_bytes=30 * 1024 * 1024,
@@ -200,6 +210,7 @@ def get(name: str) -> RenderProfile:
 
 
 __all__ = [
-    "GPT_IMAGE_2", "PROFILES", "PROFILE_NAMES", "ReferenceLimits", "RenderProfile",
+    "GPT_IMAGE_2", "MAX_PROMPT_CHARS", "PROFILES", "PROFILE_NAMES", "ReferenceLimits",
+    "RenderProfile",
     "SEEDANCE_2_5", "SEEDANCE_DURATION_RANGE", "UnknownProfileError", "get",
 ]

@@ -177,6 +177,31 @@ def test_fr202_empty_skip_reason_string_does_not_manufacture_a_loss() -> None:
     assert decide_exit_code([entry(0, skip_reason=""), entry(1)]) == EXIT_OK
 
 
+# --------------------------------------------------------------------------- reduced plan (FR-252)
+
+
+def test_fr252_dropped_format_never_exits_a_silent_full_success() -> None:
+    """30 §5: "A trimmed, reduced, or partially-dropped unattended run is a partial success …
+    never a silent full-success exit." The regression: an unpriced reel (FR-131) or a format no
+    platform allows (FR-132) is dropped BEFORE expansion, so it leaves no `PlanEntry` behind —
+    every surviving entry succeeds and the run would otherwise exit 0 having delivered less than
+    it was asked for. `plan.Plan.notes` is the only surviving evidence, so it decides."""
+    entries = [entry(0), entry(1)]
+    assert decide_exit_code(entries) == EXIT_OK  # the same plan with nothing dropped
+    assert decide_exit_code(entries, plan_reduced=True) == EXIT_PARTIAL
+
+
+def test_fr252_a_reduced_plan_cannot_downgrade_a_worse_outcome() -> None:
+    """The flag only ever turns a 0 into a 1: pre-flight, the interrupt and the famine all name a
+    more precise cause and are checked first."""
+    assert decide_exit_code([], plan_reduced=True) == EXIT_PREFLIGHT
+    assert decide_exit_code([entry(0)], plan_reduced=True, interrupted=True) == EXIT_INTERRUPTED
+    assert decide_exit_code([entry(0, PlanEntryStatus.SKIPPED)], plan_reduced=True,
+                            trend_supply_failed=True) == EXIT_NOTHING_USABLE
+    assert decide_exit_code([entry(0), entry(1, PlanEntryStatus.FAILED)],
+                            plan_reduced=True) == EXIT_PARTIAL
+
+
 # --------------------------------------------------------------------------- shape of the codes
 
 

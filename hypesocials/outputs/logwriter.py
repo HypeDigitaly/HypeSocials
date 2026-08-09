@@ -43,7 +43,10 @@ _SECRET_KEYS = re.compile(
 #: Keys that carry a full prompt / payload: events.jsonl keeps them, run.log gets a size note.
 _FULL_ONLY_KEYS = frozenset(
     {"prompt", "prompts", "messages", "payload", "request", "response", "body",
-     "raw", "raw_text", "schema", "json_schema", "images", "template"}
+     "raw", "raw_text", "schema", "json_schema", "images", "template",
+     # W6: the FR-92 full style brief and FR-184 attribution rows are bulky structured
+     # data — events.jsonl keeps them whole, run.log's one-line digest shows a size note.
+     "brief", "templates"}
 )
 _REDACTED = "[REDACTED]"
 _MIN_SECRET_LEN = 6  # shorter "secrets" would redact ordinary words out of the narrative
@@ -178,21 +181,29 @@ class LogWriter:
                 duration_ms: int | None, data: dict[str, Any]) -> str:
         """One run.log line: `<iso> LEVEL event_type: message (342ms) k=v k=v` (FR-77/78).
 
+        Message AND values are flattened: a provider fail-message arrives multi-line, and an
+        unflattened one would split a single event across several run.log lines, against 40 §4's
+        "run.log carries one-line digests". `narrative()` is the sanctioned multi-line path.
         Prompt-sized values are named and sized, never inlined — 40 §4 puts them in
         events.jsonl exclusively.
         """
         parts = [f"{stamp} {level.upper():<5} {event_type}"]
         if message:
-            parts.append(f": {_clip(message, _DIGEST_MESSAGE_MAX)}")
+            parts.append(f": {_one_line(message, _DIGEST_MESSAGE_MAX)}")
         if duration_ms is not None:
             parts.append(f" ({int(duration_ms)}ms)")
         for key, value in data.items():
             if key in _FULL_ONLY_KEYS:
                 parts.append(f" {key}=<{len(str(value))} chars in events.jsonl>")
             else:
-                parts.append(f" {key}={_clip(str(value).replace(chr(10), ' '), _DIGEST_VALUE_MAX)}")
+                parts.append(f" {key}={_one_line(str(value), _DIGEST_VALUE_MAX)}")
         return "".join(parts) + "\n"
 
 
-def _clip(text: str, limit: int) -> str:
-    return text if len(text) <= limit else text[:limit] + "…"
+#: Any newline run (LF, CR, CRLF) becomes one space — the digest owns exactly one run.log line.
+_NEWLINES = re.compile(r"[\r\n]+")
+
+
+def _one_line(text: str, limit: int) -> str:
+    flat = _NEWLINES.sub(" ", text)
+    return flat if len(flat) <= limit else flat[:limit] + "…"

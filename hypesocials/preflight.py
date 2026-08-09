@@ -3,8 +3,8 @@
 Module contract
 ---------------
 Purpose: one pass, run before any MCP session and any billable call, that either clears the run
-or refuses it with plain lines an operator can act on (FR-45–47, FR-138, FR-255, FR-281, FR-263,
-FR-103, 30 §8). Callers get a verdict object, never a scattering of booleans.
+or refuses it with plain lines an operator can act on (FR-45–47, FR-117, FR-135, FR-138, FR-255,
+FR-281, FR-263, FR-103, 30 §8). Callers get a verdict object, never a scattering of booleans.
 
 Public API: `check()` · `Preflight` · `collect_secrets()` · `resolve_briefs()` ·
 `EXIT_PREFLIGHT`.
@@ -43,6 +43,7 @@ from hypesocials.config import Config
 from hypesocials.plan import BriefRequest
 from hypesocials.prompts_engine import validate_template_set
 from hypesocials.render import UnknownProfileError, get_profile
+from hypesocials.sources import SOURCE_STATUS
 
 EXIT_PREFLIGHT = 2
 
@@ -66,10 +67,19 @@ _NEEDED: dict[str, tuple[str, ...]] = {
 
 MIN_PYTHON = (3, 12)
 REEL_DURATION_RANGE = (4, 30)  # FR-103 / 20 FR-164 — the provider's verified continuous range
-#: 40 FR-86's per-asset figures, used only to size the FR-255 free-space comparison.
-_ASSET_BYTES = {"image": 300_000, "carousel": 800_000, "reel": 20_000_000}
-_RUN_OVERHEAD_BYTES = 8_000_000  # logs, gallery, the run-level refs/ folder
+#: 40 FR-86's per-asset figures, used only to size the FR-255 free-space comparison. PER SLIDE for
+#: `carousel` — the footprint sum multiplies this by `slide_count`, so a per-deck figure here
+#: over-estimated a five-slide deck five-fold.
+_ASSET_BYTES = {"image": 300_000, "carousel": 300_000, "reel": 20_000_000}
+#: run.log + events.jsonl are ≈50–200 KB (40 FR-86); the rest is the gallery and the run-level
+#: refs/ folder. Deliberately not generous: an over-estimate refuses a run that would have fit.
+_RUN_OVERHEAD_BYTES = 2_000_000
 _PROBE_FILE = ".hypesocials-disk-probe"
+#: `sources/notion.py`'s `SERVER_NAME` and the command inside its private `_DEFAULT_SERVER` — the
+#: entry used when a config names no `notion:` server at all. Replicated rather than imported
+#: because that default is private to its module; if it changes there, change it here (FR-117).
+_NOTION_SERVER = "notion"
+_NOTION_DEFAULT_COMMAND = "npx --no-install @notionhq/notion-mcp-server"
 
 
 @dataclass(slots=True)
@@ -156,6 +166,7 @@ def check(
                       f"{sys.version.split()[0]} (FR-138) — delete .venv and re-run run.bat")
 
     _check_secrets(config, action, errors, warnings)
+    _check_sources(config, errors, warnings)
     _check_profiles(config, action, errors)
     _check_node(config, errors)
     _clamp_reel_duration(config, warnings)
@@ -183,18 +194,40 @@ def _check_secrets(config: Config, action: str, errors: list[str], warnings: lis
         config.run.notion_influence = "off"  # type: ignore[assignment]
 
 
+def _check_sources(config: Config, errors: list[str], warnings: list[str]) -> None:
+    """FR-135: a named-but-unbuilt adapter refuses HERE, not with a warning after the confirm gate.
+
+    `SOURCE_STATUS` is the one registry of what exists (FR-121) — never a second list. The wording
+    mirrors the menu picker's refusal, which is the same verdict reached one step earlier.
+    """
+    active = list(dict.fromkeys(config.sources.active))
+    unbuilt = [name for name in active if not SOURCE_STATUS.get(name, False)]
+    if not unbuilt:
+        return
+    named = ", ".join(unbuilt)
+    if len(unbuilt) < len(active):  # something built remains: the run can still deliver
+        warnings.append(f"sources.active names {named}, which is not built yet — dropped for this "
+                        "run (FR-135)")
+        return
+    errors.append(f"sources.active: {named} is named for a future adapter and is not built yet — "
+                  "pick virlo (D20/FR-135)")
+
+
 def _check_profiles(config: Config, action: str, errors: list[str]) -> None:
-    """FR-281 + FR-263: an unknown profile, or a new profile with no template set, is exit 2."""
+    """FR-281/FR-272 + FR-263: an unknown profile, or one with no template set, is exit 2."""
     if action in ("list-monitors", "preview-sources"):
         return  # no render model is reached on these paths
     overrides = [config.prompts_dir] if config.prompts_dir else []
-    for key, name in (("models.image_profile", config.models.image_profile),
-                      ("models.video_profile", config.models.video_profile)):
+    for key, name, model in (("models.image_profile", config.models.image_profile,
+                              config.models.image),
+                             ("models.video_profile", config.models.video_profile,
+                              config.models.video)):
         try:
             profile = get_profile(name)
         except UnknownProfileError as exc:
+            # FR-272 wants all three named: the key, the model id, the missing profile.
             errors.append(f"{key}: {exc} — a model FAMILY change needs its profile implemented "
-                          "before the run (FR-281)")
+                          f"before the run; the configured model is {model!r} (FR-281/FR-272)")
             continue
         missing = validate_template_set(profile.name, override_dirs=overrides)
         if missing:
@@ -207,11 +240,18 @@ def _check_node(config: Config, errors: list[str]) -> None:
 
     `yt-dlp` never counts — it is a Python package in the venv (D23), so a Node-free workstation
     is a perfectly healthy one unless a configured MCP command literally invokes npx/node.
+
+    A config that omits its `notion:` entry still launches Node: `sources/notion.py` falls back to
+    its own default command. That command is checked too, so "not configured" never means
+    "not checked" while `notion_influence` is on.
     """
-    for name, entry in config.mcp_servers.servers.items():
-        if name == "notion" and config.run.notion_influence == "off":
-            continue  # not launched this run, so its toolchain is not this run's problem
-        command = str(entry.get("command", "")).strip().lower()
+    launched = [(name, str(entry.get("command", ""))) for name, entry
+                in config.mcp_servers.servers.items()
+                if not (name == _NOTION_SERVER and config.run.notion_influence == "off")]
+    if config.run.notion_influence != "off" and _NOTION_SERVER not in config.mcp_servers.servers:
+        launched.append((_NOTION_SERVER, _NOTION_DEFAULT_COMMAND))
+    for name, raw_command in launched:
+        command = raw_command.strip().lower()
         head = command.split()[0].rsplit("\\", 1)[-1] if command else ""
         if head.startswith(("npx", "node")) and not shutil.which(head.split(".")[0]):
             errors.append(f"mcp_servers.{name} launches {head!r} but Node/npx was not found on "

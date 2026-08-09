@@ -107,9 +107,18 @@ models:
       # the yt-dlp probe, i.e. AFTER the pre-flight estimate is shown. With the shipped
       # reel_reference_max_s: 28 a single 5 s 720p reel costs 1254 credits = $6.27.
       #
-      # A D15 amendment to FR-258's `reel_second` shape (resolution x with_video/no_video, on an
-      # input+output basis) is PENDING and must land before formats.reel is raised above 0.
-      # An operator config may set a worst-case scalar meanwhile - see configs/hypedigitaly.yaml.
+      # SO FR-258's `reel_second` WAS RESHAPED - AND THAT RESHAPE LANDED (PRD v1.6.6, 30 §2):
+      # the key is now DEFINED as a WORST-CASE-HONEST per-output-second scalar you derive as
+      #     unit_with_video x (reel_reference_max_s + reel_duration_s) / reel_duration_s
+      #   with THIS file's shipped 28 s bound and 5 s clip:
+      #     720p: 0.190 x (28 + 5) / 5 = 1.254 / output second  ($6.27 per 5 s reel)
+      #     480p: 0.085 x (28 + 5) / 5 = 0.561 / output second  ($2.81 per 5 s reel)
+      # Understating is the one unacceptable estimator error (D11/FR-282), so the scalar
+      # deliberately overstates the cheaper branches (no video reference at all: 720p 0.315/s).
+      # Lowering reel_reference_max_s lowers the scalar directly - it is a price lever, not just
+      # a safety bound. A fully worked derivation sits in configs/hypedigitaly.yaml (§reel_second,
+      # for its own 20 s bound); copy it, RECOMPUTE for your two values, then raise formats.reel.
+      # The keys stay unset HERE so a fresh checkout ships with reels unplanned (FR-131).
       # ---------------------------------------------------------------------------------------
       480p: null
       720p: null

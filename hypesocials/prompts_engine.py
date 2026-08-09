@@ -161,24 +161,29 @@ class PromptEngine:
         key = (profile, role)
         if (cached := self._cache.get(key)) is not None:
             return cached
+        candidates = [(folder / profile / role) if profile else (folder / role)
+                      for folder in self._dirs]
         resolved: Template | None = None
-        for folder in self._dirs:
-            path = (folder / profile / role) if profile else (folder / role)
+        present = False
+        for path in candidates:
             if not path.is_file():
                 continue
+            present = True
             try:
                 text = read_text(path)
             except OSError as exc:  # unreadable: FR-183 degrades, never blocks
                 self._fallback_warning(path, f"unreadable ({exc.strerror or exc})")
                 continue
-            if unknown := [n for n in _names(text) if n not in PLACEHOLDERS]:
-                self._fallback_warning(path, f"unknown placeholder(s): {', '.join(unknown)}")
+            if bad := _unresolvable_names(text, role):
+                self._fallback_warning(path, f"unusable placeholder(s): {', '.join(bad)}")
                 continue
             resolved = Template(role, text, str(path), _hash(text))
             break
         if resolved is None:
-            resolved = Template(role, _built_in(role, profile), "built-in default",
-                                _hash(_built_in(role, profile)))
+            if not present:  # FR-183 names the file for a MISSING template too — never a silent swap
+                self._fallback_warning(candidates[-1], "not found")
+            text = _built_in(role, profile)
+            resolved = Template(role, text, "built-in default", _hash(text))
         self._cache[key] = resolved
         return resolved
 
@@ -270,8 +275,9 @@ def validate_template_set(
     Required names come from the profile's `kind` (`image` → the five gpt-image-2 roles,
     `video` → `reel_director.md`), so no second registry can drift. Shipped profiles have
     compiled built-ins, so FR-183's fallback governs them and this always returns `[]`.
-    A file that exists but names an unknown placeholder counts as missing — it is unparseable,
-    and for a profile with no built-in that is the same problem (exit 2, never a paid surprise).
+    A file that exists but names a placeholder its role cannot resolve counts as missing — it is
+    unparseable in exactly the way `render()` would refuse (FR-260/261), and for a profile with no
+    built-in that is the same problem (exit 2 at pre-flight, never a paid surprise per creative).
     """
     if profile_name in PROFILE_TEMPLATES:
         return []
@@ -279,17 +285,30 @@ def validate_template_set(
     folders = [*(Path(d) for d in override_dirs), Path(prompts_dir or PROMPTS_DIR)]
     missing = []
     for role in _TEMPLATES_BY_KIND.get(kind, ()):
-        if not any(_usable(folder / profile_name / role) for folder in folders):
+        if not any(_usable(folder / profile_name / role, role) for folder in folders):
             missing.append(f"{profile_name}/{role}")
     return missing
 
 
-def _usable(path: Path) -> bool:
+def _usable(path: Path, role: str) -> bool:
     try:
         text = read_text(path)
     except OSError:
         return False
-    return all(name in PLACEHOLDERS for name in _names(text))
+    return not _unresolvable_names(text, role)
+
+
+def _unresolvable_names(text: str, role: str) -> list[str]:
+    """The placeholders in `text` that assembly could never fill for `role` (FR-260/261).
+
+    Two ways to be unfillable, checked ONCE here so load time and pre-flight agree with fill time:
+    outside `models.PLACEHOLDERS` (no builder produces it), or outside this role's allowlist (an
+    in-vocabulary name a render role may not resolve, e.g. `{{brand_context}}` — FR-109's leak
+    guard). A role the allowlist has never mapped is checked against the vocabulary only.
+    """
+    allowed = _ALLOWLIST.get(role)
+    return [name for name in _names(text)
+            if name not in PLACEHOLDERS or (allowed is not None and name not in allowed)]
 
 
 # --------------------------------------------------------------------------------------------
