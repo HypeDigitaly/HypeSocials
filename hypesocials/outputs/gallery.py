@@ -150,11 +150,14 @@ def _card_html(run: Path, folder: Path, meta: _Meta) -> str:
              f'<div class="badges">{_badges(folder, meta)}</div>',
              _media_html(folder, meta),
              f'<div class="facts">{_facts(meta)}</div>']
-    # FR-76's "source hook text": the record carries the hook PATTERN the copy followed
-    # (FR-100/146), which is what names the shape a reader is comparing against.
     origin = " · ".join(str(meta.get(key) or "") for key in ("source_name", "hook_pattern_used"))
     if origin.strip(" ·"):
         parts.append(f'<p class="hook">{html.escape(origin.strip(" ·"))}</p>')
+    # FR-76's source hook text, verbatim from the trend (models.AssetRecord.source_hook, v1.6.4) —
+    # what the creative was mimicking, next to the pattern name it followed (FR-100/146).
+    source_hook = str(meta.get("source_hook") or "").strip()
+    if source_hook:
+        parts.append(f'<p class="hook">Source hook: “{html.escape(source_hook)}”</p>')
     skip = _text(folder / SKIP_REASON_FILE)
     if skip:
         parts.append(f'<p class="skip">Skipped: {html.escape(skip)}</p>')

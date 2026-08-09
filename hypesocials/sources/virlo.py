@@ -115,7 +115,8 @@ async def fetch(cfg: Config, *, cache_dir: Path | None = None, log: LogWriter | 
     for item in items:  # global digest first, then this monitor's own timing/thread context
         item.cross_monitor_context = " · ".join(
             part for part in (context, item.cross_monitor_context) if part)
-        item.confidence = _match_confidence(item.name, confidences)
+        if item.confidence is None:  # themes lead (FR-5 v1.6.4); the digest is the empty fallback
+            item.confidence = _match_confidence(item.name, confidences)
     await _download_references(items, cfg, cache_dir, log)
     _score(items)
     items.sort(key=lambda item: item.strength, reverse=True)
@@ -228,11 +229,12 @@ def _build_item(monitor_id: str, analysis: Mapping[str, Any], videos: list[Any],
     media = [*videos, *shows]
     views = [_num(entry.get("views")) for entry in media]
     top_video = max(videos, key=lambda entry: _num(entry.get("views")), default=None)
-    why, tactics, context = _analysis_fields(analysis)
+    why, tactics, context, confidence = _analysis_fields(analysis)
     item = TrendItem(
         history_key=str(monitor_id) or slugify(name, 0),  # agent id, else the name slug (20 §3)
         monitor_id=str(monitor_id),
         name=name,
+        confidence=confidence,  # FR-5 v1.6.4: mean of the consumed themes' confidence
         why_it_works=why,
         tactics=tactics,
         cross_monitor_context=context,  # `fetch` prefixes the global digest onto this
@@ -305,16 +307,21 @@ def _reference_groups(videos: list[Any], shows: list[Any], cfg: Config) -> tuple
     return groups, primary
 
 
-def _analysis_fields(analysis: Mapping[str, Any]) -> tuple[str, list[str], str]:
-    """`why_it_works`, tactics and this monitor's own context, out of `analysis_data`.
+def _analysis_fields(analysis: Mapping[str, Any]) -> tuple[str, list[str], str, float | None]:
+    """`why_it_works`, tactics, this monitor's own context and its confidence, from `analysis_data`.
 
-    RESULTS.md §A puts all three on the monitor, not on the digest 20 §3 credits — so this is where
-    FR-9/FR-14's tactics and timing inputs come from. Absent-safe, and bounded: these reach prompts.
+    RESULTS.md §A puts all four on the monitor, not on the digest 20 §3 credits — so this is where
+    FR-9/FR-14's tactics and timing inputs come from, and (FR-5 v1.6.4) where the 0.20 confidence
+    component is sourced: the MEAN over the consumed themes, since the digest's `global_confidence`
+    is null on every live trend. Absent-safe, and bounded: these reach prompts.
     """
     themes = analysis.get("themes") or []
+    consumed = themes[:_MAX_THEMES]
+    scored = [float(t["confidence"]) for t in consumed
+              if isinstance(t.get("confidence"), (int, float)) and not isinstance(t["confidence"], bool)]
     why = " · ".join(part for part in [
         str(analysis.get("why_it_works") or "").strip(),
-        *(f"{t.get('name')}: {t['why_it_works']}" for t in themes[:_MAX_THEMES] if t.get("why_it_works")),
+        *(f"{t.get('name')}: {t['why_it_works']}" for t in consumed if t.get("why_it_works")),
     ] if part)[:_WHY_MAX_CHARS]
     tactics: list[str] = []
     for value in [t for theme in themes for t in theme.get("tactics") or []] + list(
@@ -328,7 +335,8 @@ def _analysis_fields(analysis: Mapping[str, Any]) -> tuple[str, list[str], str]:
     parts += [f"{label}: {analysis[key]}" for key, label in
               (("connecting_thread", "Connecting thread"), ("key_highlight", "Key highlight"))
               if analysis.get(key)]
-    return why, tactics[:_MAX_TACTICS], " · ".join(parts)[:_CONTEXT_MAX_CHARS]
+    return (why, tactics[:_MAX_TACTICS], " · ".join(parts)[:_CONTEXT_MAX_CHARS],
+            statistics.fmean(scored) if scored else None)
 
 
 def _frame_quality(video: Mapping[str, Any]) -> float:

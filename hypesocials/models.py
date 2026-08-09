@@ -207,6 +207,7 @@ class AssetRecord:
     pair_id: str | None = None
     generation_mode: Variant = "direct"  # --- provenance & degradations ---
     hook_pattern_used: str = ""
+    source_hook: str = ""  # the trend's original hook line, verbatim — gallery card (FR-76, v1.6.4)
     ref_source: str = ""  # "virlo" | "brief" | "inspiration"
     degradations: list[DegradationTag] = field(default_factory=list)
     brief_name: str | None = None  # --- brief overrides (D26) ---
@@ -440,5 +441,9 @@ PLACEHOLDERS: frozenset[str] = frozenset(
         #   stays reserved for FR-96's deterministic direct-mode/reference-free sentence
         "reference_roles",  # one engine-emitted line per attached reference: index · source kind ·
         #   contribution · exclusions (FR-191/91) — carries the RESULTS.md §B wordmark defense
+        # W2 barrier operator decision (v1.6.4, 2026-08-09):
+        "brand_accent",  # FR-109's ONLY brand slot in render templates: one engine-built line of
+        #   accent colour + product nouns under Notion `full` influence — never fonts/layouts;
+        #   empty when influence is off. Dedicated so render-side allowlists stay narrow.
     }
 )

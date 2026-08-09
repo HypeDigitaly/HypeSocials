@@ -28,6 +28,8 @@ TEXT (locked asset — the hook, burnt into the frame):
 LAYOUT AND STYLE:
   {{layout_zones}}
 
+  BRAND INFLUENCE: {{brand_accent}}
+
 BUILT TO BE ANIMATED — composition rules that outrank stylistic flourish:
   - One clear focal subject, centred or slightly low, with headroom above it
     and empty space around it for movement.

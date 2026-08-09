@@ -29,6 +29,8 @@ STYLE:
   layout for this frame. Never letterbox, stretch, bar-pad or crop the
   reference composition.
 
+  BRAND INFLUENCE: {{brand_accent}}
+
 REFERENCES:
   {{reference_roles}}
 

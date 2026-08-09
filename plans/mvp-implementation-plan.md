@@ -1,7 +1,7 @@
 # HypeSocials MVP — Implementation Plan (Phase 1)
 
 **Status:** REVIEWED (architect + python/async + PRD-coverage panels applied) · **Source of truth:** `prds/00-overview.md` … `prds/50-promptcraft.md` (v1.6.2)
-**Goal:** Full MVP per PRD. Line budget: **hard ceiling 6,500 (G2 v1.6.3, raised at the W1 barrier by operator decision; was 4,500)** — Wave 1 actual 3,919, remaining estimate ~3,300 — tracked at every wave barrier (`wc -l`), levers pre-committed (§1a).
+**Goal:** Full MVP per PRD. Line budget: **hard ceiling 10,000 (G2 v1.6.4, raised at the W2 barrier by operator decision; was 6,500 at W1, 4,500 originally)** — Wave 2 actual 7,868, remaining estimate ~1,500–2,000 — tracked at every wave barrier (`wc -l`), escalation by operator decision (§1a).
 **Execution model:** flat-wave conductor dispatch per `CODING_GUIDELINES.md` §21. Operator decisions: minimal deterministic test suite (money/logic math), repo docs authored in Wave 0, day-one paid spikes (~$1–2) auto-run from `.env`.
 
 **Standing child-prompt preamble (every spawn, every level):** (1) read `CODING_GUIDELINES.md` in full; (2) model/effort policy per `CLAUDE.md` §9 — never pass a `model` param at spawn; (3) subagent output contract — conclusion first, bullets, `path:line`, no preamble; (4) read this plan file and the named PRD files fully.

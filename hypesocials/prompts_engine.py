@@ -16,9 +16,11 @@ Invariants enforced here, once, for every caller:
   dataclass (`RenderParams.output_format` and the `{{output_format}}` placeholder share a name
   and nothing else). Keys are checked against `models.PLACEHOLDERS` at build time.
 - **Per-role allowlists (FR-261/109).** An out-of-role name does not resolve, so it fails as an
-  unresolved placeholder instead of leaking. That is what keeps `{{brand_context}}` out of every
-  render prompt: FR-109's brand influence reaches a render only as a narrow accent colour plus
-  product nouns, passed as their own typed arguments — never brand fonts, layouts or templates.
+  unresolved placeholder instead of leaking. That is what keeps `{{brand_context}}` — Notion's
+  wide brand text — out of every render prompt. FR-109's render-side influence travels in ONE
+  dedicated slot, `{{brand_accent}}` (v1.6.4): an engine-built line of accent colour plus product
+  nouns, built from typed arguments, allowlisted for exactly the four gpt-image-2 render roles,
+  empty when influence is off, and never carrying a brand font, layout or template.
 - **FR-260 fails BEFORE submission**, and substitution is ONE pass, so a placeholder-like string
   inside trend data can neither be re-substituted nor mistaken for a template bug.
 - **FR-183 fallback, FR-263 refusal.** Shipped roles fall back to a compiled built-in with a
@@ -84,19 +86,21 @@ _ALLOWLIST: dict[str, frozenset[str]] = {
         "niche_descriptor", "brand_context", "style_brief_summary", "trend_texts", "source_hooks",
         "sibling_list", "text_budgets", "platform_conventions", "brief_directives"}),
     "vision_check_question.md": frozenset(),
+    # `brand_accent` is allowlisted for these FOUR gpt-image-2 roles and nowhere else (v1.6.4):
+    # the copywriter keeps the wide `brand_context`, renders get one narrow engine-built line.
     "image_single_post.md": frozenset({
         "render_prompt", "layout_zones", "onimage_text", "reference_roles", "exclusions",
-        "text_budgets", "brief_directives"}),
+        "text_budgets", "brief_directives", "brand_accent"}),
     "carousel_slide.md": frozenset({
         "slide_index", "style_dna", "render_prompt", "onimage_text", "reference_roles",
-        "exclusions", "text_budgets", "brief_directives"}),
+        "exclusions", "text_budgets", "brief_directives", "brand_accent"}),
     "carousel_anchor_instruction.md": frozenset(),
     "image_direct.md": frozenset({
         "content_sentence", "onimage_text", "reference_roles", "text_budgets",
-        "brief_directives"}),
+        "brief_directives", "brand_accent"}),
     "reel_seed_frame.md": frozenset({
         "render_prompt", "layout_zones", "onimage_text", "reference_roles", "exclusions",
-        "text_budgets", "brief_directives"}),
+        "text_budgets", "brief_directives", "brand_accent"}),
     "reel_director.md": frozenset({
         "through_line", "seed_frame_ref", "onimage_text", "audio_cue", "exclusions",
         "brief_directives"}),
@@ -329,8 +333,9 @@ def build_context(
         brand_context: Notion brand text — reaches the COPYWRITER only, no render role allowlists
             it (FR-109).
         brand_accent, brand_product_nouns: FR-109's `full` influence in the only shape a render
-            prompt may carry it — one accent colour inside the trend's own palette structure plus
-            product nouns for the on-image text. Never a brand font, layout or template.
+            prompt may carry it. They build the `{{brand_accent}}` line — one accent colour to
+            substitute inside the trend's own palette structure plus product nouns for the
+            on-image text. Leave both unset when influence is off and the line is empty.
         budget_scale: 1.0 normally; FR-105's vision-check retry passes `1 - retry_reduction_pct`.
         slide_text: this carousel slide's own line (FR-13's coherent sequence, one entry a slide).
 
@@ -341,7 +346,6 @@ def build_context(
         end up filling FR-92's `{{output_format}}` slot.
     """
     budgets = text_budgets or TextBudgets()
-    directives = _brief_directives(campaign_brief, brand_accent, brand_product_nouns)
     override = bool(campaign_brief and campaign_brief.influence == "override"
                     and campaign_brief.visual_directives)
     visual = _directive_lines(campaign_brief.visual_directives) if override and campaign_brief \
@@ -363,8 +367,9 @@ def build_context(
         "content_sentence": content_sentence or _content_sentence(trend, creative_format),
         # --- run context ---
         "niche_descriptor": niche_descriptor,
-        "brand_context": brand_context,
-        "brief_directives": directives,
+        "brand_context": brand_context,  # copywriter only — no render role allowlists it (FR-109)
+        "brand_accent": _brand_accent(brand_accent, brand_product_nouns),
+        "brief_directives": _brief_directives(campaign_brief),
         "platform_conventions": _conventions(platform_conventions),
         "text_budgets": _budget_line(budgets, creative_format, budget_scale),
         "output_format": style_brief_format_block(),
@@ -576,28 +581,38 @@ def _spell(text: str) -> str:
     return " ".join("-".join(word) for word in text.split())
 
 
-def _brief_directives(
-    brief: Brief | None, accent: str, nouns: Sequence[str]
-) -> str:
-    """FR-144/145 + FR-109's narrow brand slot — the only brand text a render prompt may carry."""
-    lines: list[str] = []
-    if brief is not None:
-        lines.append(f'Campaign brief "{brief.name}" — influence: {brief.influence}')
-        if brief.description:
-            lines.append(brief.description)
-        lines.extend(_directive_lines(brief.copy_directives).splitlines())
-        lines.extend(_directive_lines(brief.visual_directives).splitlines())
-        lines.append(
-            "Precedence: this brief's visual directives replace the trend's render prompt and "
-            "layout zones." if brief.influence == "override" else
-            "Precedence: the trend's style brief wins on layout, palette, typography and "
-            "treatment; this brief wins on message, offer and CTA.")
-    if accent:
-        lines.append(f"Brand accent colour: {accent} — substitute it inside the trend's own "
-                     "palette structure; brand fonts, layouts and templates are never used.")
-    if nouns:
-        lines.append(f"Product nouns available for on-image text: {_join(nouns, ', ')}")
+def _brief_directives(brief: Brief | None) -> str:
+    """FR-144/145 — the campaign brief's directives plus its stated precedence. Brand context is
+    NOT in here: FR-109's render-side influence has its own slot, `_brand_accent`."""
+    if brief is None:
+        return ""
+    lines = [f'Campaign brief "{brief.name}" — influence: {brief.influence}']
+    if brief.description:
+        lines.append(brief.description)
+    lines.extend(_directive_lines(brief.copy_directives).splitlines())
+    lines.extend(_directive_lines(brief.visual_directives).splitlines())
+    lines.append(
+        "Precedence: this brief's visual directives replace the trend's render prompt and "
+        "layout zones." if brief.influence == "override" else
+        "Precedence: the trend's style brief wins on layout, palette, typography and "
+        "treatment; this brief wins on message, offer and CTA.")
     return "\n  ".join(line for line in lines if line.strip())
+
+
+def _brand_accent(accent: str, nouns: Sequence[str]) -> str:
+    """FR-109's ONE render-side brand slot (v1.6.4) — accent colour and product nouns, nothing else.
+
+    Empty when `notion_influence` is off or `copy`. The line is engine-built rather than copied
+    from Notion so no brand font, layout or template can travel with it: a brand-templated render
+    has stopped being a mimicry render, and mimicry is the product.
+    """
+    lines = []
+    if accent:
+        lines.append(f"accent colour {accent} — substitute it inside the trend's own palette "
+                     "structure; the trend's layout, typography and treatment are unchanged")
+    if nouns:
+        lines.append(f"product nouns available for the on-image text: {_join(nouns, ', ')}")
+    return "; ".join(lines)
 
 
 def _directive_lines(directives: Mapping[str, str] | None) -> str:
@@ -708,6 +723,10 @@ _EXCL = """  - Never reproduce platform UI, watermarks, app logos, usernames, ha
 #: (direct mode has no style brief, so it has no observed exclusions to name).
 _EXCL_OBSERVED = "  - Additional exclusions observed in these references: {{exclusions}}"
 
+#: FR-109's render-side brand line, in the four gpt-image-2 built-ins and nowhere else. Empty
+#: when influence is off, and the trailing "ignore an empty labelled line" rule then applies.
+_BRAND = "  BRAND INFLUENCE (ignore if empty): {{brand_accent}}"
+
 _BUILT_INS: dict[str, str] = {
     "style_brief_system.md": """ROLE: forensic analyst of a winning social creative, not a
 creative director. Describe what makes the attached {{reference_image_count}} reference image(s)
@@ -800,6 +819,7 @@ with `image` (1-based), `text_broken`, `fake_ui` and a short `detail` phrase."""
 SUBJECT AND SCENE:
   {{{{render_prompt}}}}
   BRIEF OVERLAY: {{{{brief_directives}}}}
+{_BRAND}
 
 {_LOCK}
 
@@ -827,6 +847,7 @@ STYLE_DNA (identical on every slide of this deck — reproduce it exactly):
 SLIDE CONTENT:
   {{{{render_prompt}}}}
   BRIEF OVERLAY: {{{{brief_directives}}}}
+{_BRAND}
 
 {_LOCK}
 
@@ -852,6 +873,7 @@ CONSTRAINTS:
 SUBJECT AND SCENE:
   {{{{content_sentence}}}}
   BRIEF OVERLAY: {{{{brief_directives}}}}
+{_BRAND}
 
 {_LOCK}
 
@@ -874,6 +896,7 @@ CONSTRAINTS:
 SUBJECT AND SCENE:
   {{{{render_prompt}}}}
   BRIEF OVERLAY: {{{{brief_directives}}}}
+{_BRAND}
 
 {_LOCK}
   Set the hook as ONE static block in the upper third, on a clear background area, at the largest

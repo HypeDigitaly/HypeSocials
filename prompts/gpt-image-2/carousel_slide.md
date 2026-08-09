@@ -13,6 +13,8 @@ STYLE_DNA (identical on every slide of this deck — reproduce it exactly):
   it changes because the slide index changed. Only the SLIDE CONTENT below
   differs between slides.
 
+  BRAND INFLUENCE: {{brand_accent}}
+
 SLIDE CONTENT:
   {{render_prompt}}
 

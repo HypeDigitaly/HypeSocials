@@ -30,6 +30,8 @@ LAYOUT AND STYLE:
   for this frame — re-flow the zones so they fit natively. Never letterbox,
   never stretch, never bar-pad, never crop the reference composition.
 
+  BRAND INFLUENCE: {{brand_accent}}
+
 REFERENCES:
   {{reference_roles}}
 

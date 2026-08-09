@@ -41,6 +41,7 @@ secret-free context object; an unfilled placeholder fails that creative
 | `{{content_sentence}}` | deterministic subject sentence, no LLM call (FR-96): direct mode and any reference-free job | image_direct |
 | `{{through_line}}` | the copywriter's one-line "what this clip is about" | reel_director |
 | `{{brief_directives}}` | campaign brief's directives; empty when none | render templates, copywriter_system |
+| `{{brand_accent}}` | filled with the brand accent-colour + product-noun line (Notion `full` influence only; empty when off) | image_single_post, carousel_slide, image_direct, reel_seed_frame |
 | `{{slide_index}}` | this slide's position in the deck | carousel_slide |
 | `{{seed_frame_ref}}` | one-line description of what the seed frame shows | reel_director |
 | `{{audio_cue}}` | the whole AUDIO body — either the bracketed cue set or the silent-clip line | reel_director |
