@@ -32,7 +32,7 @@ secret-free context object; an unfilled placeholder fails that creative
 | Placeholder | Filled with | Used in |
 |---|---|---|
 | `{{render_prompt}}` | style brief's compact ≤120-word instruction | image_single_post, carousel_slide, reel_seed_frame |
-| `{{layout_zones}}` | style brief's ordered frame regions | image_single_post, reel_seed_frame |
+| `{{layout_zones}}` | style brief's ordered frame regions — zone structure only, never a reference's literal wording | image_single_post, reel_seed_frame |
 | `{{style_dna}}` | the fixed palette/type/grid block, identical on every slide | carousel_slide |
 | `{{onimage_text}}` | the exact text to render, already inside its character budget | all render templates |
 | `{{text_budgets}}` | the on-image character budget **in force for this call**, sourced from config `text_budgets` | copywriter_system + the four gpt-image-2 render templates |
@@ -66,6 +66,13 @@ secret-free context object; an unfilled placeholder fails that creative
   of obeying it.
 - **Keep the text block a locked asset.** "Render exactly, add nothing,
   repeat nothing" is why headlines come back readable.
+- **Do not delete the TEXT PRECEDENCE clause** from a render template, and
+  never quote a reference's own wording anywhere else in one. GPT Image 2
+  reads any quoted string as content to letter, wherever it sits — a live run
+  cloned the reference's wordmark because the layout description spelled it
+  out (`spikes/RESULTS.md` §B). The rule: the TEXT block is the only source of
+  renderable words; every other section describes structure; a text zone with
+  no quoted replacement renders empty.
 - Change wording freely; change section *labels* only if you mean it — the
   labelled scaffold is what makes a bad render debuggable from the log.
 - A broken or deleted file is not fatal: the engine falls back to its built-in

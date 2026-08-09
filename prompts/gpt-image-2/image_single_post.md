@@ -21,11 +21,23 @@ TEXT (locked asset — this is the exact content of the creative):
   Typography, weight, case and placement come from the LAYOUT section below;
   where the two disagree about a word's case, the quoted string wins.
 
+  TEXT PRECEDENCE — this block is the ONLY source of renderable words. Any
+  string quoted, named or spelled out anywhere else in this instruction — in
+  SUBJECT AND SCENE, in LAYOUT AND STYLE, in REFERENCES, in the exclusion lines
+  — is a DESCRIPTION of what the reference images already contain, never
+  content to render: do not letter it, echo it, shorten it or translate it. A
+  zone described with words in it (a kicker, a label, a badge, a sticker, a
+  wordmark) supplies its position, size, typeface, weight, colour and alignment
+  only; its words come from the block above, or that zone carries no words at
+  all. A named exclusion is a forbidden string, not an instruction to draw it.
+
 LAYOUT AND STYLE:
   {{layout_zones}}
 
   Reproduce these zones in the order given, top of frame to bottom. Keep the
-  proportions, the margins and the text treatment of each zone. If the target
+  proportions, the margins and the text treatment of each zone. This is a
+  description of STRUCTURE: reproduce each zone's geometry and typography, and
+  take its words only from the TEXT block. If the target
   frame is a different shape from the reference images, RE-COMPOSE the layout
   for this frame — re-flow the zones so they fit natively. Never letterbox,
   never stretch, never bar-pad, never crop the reference composition.
@@ -56,8 +68,15 @@ CONSTRAINTS:
   - If the reference template has a text zone for which no string is quoted
     above, leave that zone empty or fill it with a non-text graphic element
     (a rule, a bar, a shape, negative space) — never carry the reference's
-    words into it, and never invent replacement words for it.
-  - Additional exclusions observed in these references: {{exclusions}}
+    words into it, and never invent replacement words for it. A kicker slot
+    with nothing quoted for it stays wordless.
+  - This is one standalone image: no navigation or swipe prompt of any kind
+    ("SWIPE LEFT", "SWIPE RIGHT", "READ MORE", "TAP", an arrow or a hand
+    carrying words), and no brand wordmark, logotype or signature line —
+    neither a reference's nor an invented one. Nothing here is swiped and
+    nothing here is signed.
+  - Additional exclusions observed in these references — these are strings
+    forbidden in the frame, never strings to render: {{exclusions}}
   - All rendered text sits inside the central 80% of the frame, clear of every
     edge, so a platform crop or a UI overlay can never amputate it.
   - The text block above is already within the budget in force for this

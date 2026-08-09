@@ -19,6 +19,15 @@ TEXT (locked asset — this is the exact content of the creative):
   that echo is a spelling aid for you alone: use it to get every accent right
   and never draw the hyphenated form onto the image.
 
+  TEXT PRECEDENCE — this block is the ONLY source of renderable words. Any
+  string quoted or named anywhere else in this instruction — in SUBJECT AND
+  SCENE, in STYLE, in REFERENCES, in the constraint lines — is a DESCRIPTION of
+  what a reference already contains, never content to render: do not letter it,
+  echo it or translate it. A reference zone that holds words (a kicker, a
+  label, a badge, a sticker, a wordmark) supplies its position, size, typeface,
+  weight, colour and alignment only; its words come from the block above, or
+  that zone carries no words at all.
+
 STYLE:
   Take the visual style wholly from the attached reference images —
   composition and grid, colour relationships, lettering character and weight,
@@ -59,7 +68,12 @@ CONSTRAINTS:
   - If the reference template has a text zone for which no string is quoted
     above, leave that zone empty or fill it with a non-text graphic element
     (a rule, a bar, a shape, negative space) — never carry the reference's
-    words into it, and never invent replacement words for it.
+    words into it, and never invent replacement words for it. A kicker slot
+    with nothing quoted for it stays wordless.
+  - This is one standalone image: no navigation or swipe prompt of any kind
+    ("SWIPE LEFT", "SWIPE RIGHT", "READ MORE", "TAP", an arrow or a hand
+    carrying words), and no brand wordmark, logotype or signature line —
+    neither a reference's nor an invented one.
   - All rendered text sits inside the central 80% of the frame, clear of every
     edge, so a platform crop or a UI overlay can never amputate it.
   - The text block above is already within the budget in force for this

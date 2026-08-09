@@ -25,8 +25,22 @@ TEXT (locked asset — the hook, burnt into the frame):
   contrast (or a solid backing plate) to stay readable on a phone in
   daylight. Keep it clear of the subject and clear of every frame edge.
 
+  TEXT PRECEDENCE — this block is the ONLY source of renderable words. Any
+  string quoted or named anywhere else in this instruction — in SUBJECT AND
+  SCENE, in LAYOUT AND STYLE, in the reference roles, in the exclusion lines —
+  is a DESCRIPTION of what the reference images already contain, never content
+  to render: do not letter it, echo it or translate it. A described zone that
+  holds words (a kicker, a label, a badge, a sticker, a wordmark) supplies its
+  position, size, typeface, weight, colour and alignment only; here every such
+  zone stays wordless, because the hook above is the frame's only text.
+
 LAYOUT AND STYLE:
   {{layout_zones}}
+
+  These zones describe STRUCTURE — geometry, proportion and typography. Take
+  the frame's only words from the TEXT block above; a zone the hook does not
+  fill is rendered as picture, shape or negative space, never as reference
+  wording.
 
   BRAND INFLUENCE: {{brand_accent}}
 
@@ -54,7 +68,12 @@ CONSTRAINTS:
   - That prohibition covers brand wordmarks, logotypes, product names,
     category or section labels, button, chip or pill labels, and kicker lines
     — any legible string in a reference, whether or not it reads as design.
-  - Additional exclusions observed in these references: {{exclusions}}
+  - This is the first frame of one clip: no navigation or swipe prompt
+    ("SWIPE LEFT", "SWIPE RIGHT", "READ MORE", "TAP", an arrow or a hand
+    carrying words), no brand wordmark, logotype or signature line — neither a
+    reference's nor an invented one.
+  - Additional exclusions observed in these references — these are strings
+    forbidden in the frame, never strings to render: {{exclusions}}
   - Reference roles, in the order attached:
     {{reference_roles}}
     Every one of them is a style, layout, palette, typography and treatment

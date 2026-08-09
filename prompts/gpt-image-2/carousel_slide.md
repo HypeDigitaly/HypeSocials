@@ -34,6 +34,16 @@ TEXT (locked asset — this slide's exact content):
   slide's position exactly as stated in the FORMAT line above, in the badge
   style STYLE_DNA describes, and carries no other characters.
 
+  TEXT PRECEDENCE — this block is the ONLY source of renderable words on this
+  slide (the position badge above excepted). Any string quoted or named
+  anywhere else in this instruction — inside STYLE_DNA, in SLIDE CONTENT, in
+  REFERENCES, in the exclusion lines — is a DESCRIPTION of what the reference
+  material already contains, never content to render: do not letter it, echo it
+  or translate it. A zone STYLE_DNA describes with words in it (a kicker, a
+  label, a chip, a wordmark, a swipe sticker) supplies its position, size,
+  typeface, weight, colour and alignment only; its words come from the block
+  above, or that zone carries no words at all.
+
 REFERENCES:
   {{reference_roles}}
 
@@ -59,8 +69,14 @@ CONSTRAINTS:
   - If STYLE_DNA or a reference has a text zone for which no string is quoted
     above, leave that zone empty or fill it with a non-text graphic element
     (a rule, a bar, a shape, negative space) — never carry the reference's
-    words into it, and never invent replacement words for it.
-  - Additional exclusions observed in these references: {{exclusions}}
+    words into it, and never invent replacement words for it. A kicker slot
+    with nothing quoted for it stays wordless.
+  - A navigation or swipe prompt ("SWIPE LEFT", "SWIPE RIGHT", "READ MORE",
+    "TAP", an arrow or a hand carrying words) appears only if it is quoted in
+    the TEXT block above; it is never carried in from a reference. No brand
+    wordmark, logotype or signature line, a reference's or an invented one.
+  - Additional exclusions observed in these references — these are strings
+    forbidden in the frame, never strings to render: {{exclusions}}
   - All rendered text sits inside the central 80% of the frame, clear of every
     edge.
   - If the references' frame shape differs from this slide's frame, RE-COMPOSE

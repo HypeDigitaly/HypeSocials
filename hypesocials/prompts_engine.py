@@ -698,7 +698,10 @@ _LOCK = """TEXT (locked asset — the exact content of this creative):
   {{onimage_text}}
   Render every quoted string exactly as written: same characters, accents, capitalisation and
   punctuation. Add no words, repeat no words, render no text that is not quoted above. A
-  letter-by-letter echo is a spelling aid for you alone; never draw it onto the image."""
+  letter-by-letter echo is a spelling aid for you alone; never draw it onto the image.
+  TEXT PRECEDENCE: only this block's quoted strings may appear in the frame. Any wording quoted
+  or named in a layout, style or scene description below is a DESCRIPTION of the reference,
+  never content to render."""
 
 _REFS = """REFERENCES:
   {{reference_roles}}
@@ -712,6 +715,8 @@ _EXCL = """  - Never reproduce platform UI, watermarks, app logos, usernames, ha
     lines included. A word set in the reference's own typeface is still that reference's word.
   - If a reference template has a text zone with no string quoted above, leave it empty or fill
     it with a non-text graphic element; never carry the reference's words into it.
+  - Never render navigation or sticker prompts carried from a reference — "SWIPE LEFT",
+    "SWIPE RIGHT", "READ MORE", "TAP", worded arrows — unless quoted in the TEXT block.
   - All rendered text sits inside the central 80% of the frame, clear of every edge.
   - If the references' frame shape differs from this frame, RE-COMPOSE the layout for this frame;
     never letterbox, stretch, bar-pad or crop the reference composition.
@@ -826,7 +831,8 @@ SUBJECT AND SCENE:
 LAYOUT AND STYLE:
   {{{{layout_zones}}}}
   Reproduce these zones in the order given, top of frame to bottom, keeping their proportions,
-  margins and text treatment.
+  margins and text treatment. Zone descriptions are STRUCTURE only — any wording they carry
+  belongs to the reference and is never rendered.
 
 {_REFS}
 

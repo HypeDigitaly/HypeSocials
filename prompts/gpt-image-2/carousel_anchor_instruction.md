@@ -16,6 +16,15 @@ ANCHOR REFERENCE (Image 1 — PRIMARY, outranks every other reference):
   subject, or its slide-position badge value. Copying slide 1's text onto this
   slide is a failed render.
 
+  Image 1's text zones are STRUCTURE, not content — position, size, typeface,
+  weight, colour and alignment carry over; the characters inside them do not.
+  Any string quoted or named in this instruction, in STYLE_DNA or in a
+  reference role describes what is already on Image 1; it is never content to
+  render. A zone of Image 1 that this slide's TEXT block does not fill is
+  rendered empty or as a non-text graphic element (a rule, a bar, a shape,
+  negative space) — never refilled with Image 1's own wording, an invented
+  substitute, a wordmark or a swipe sticker.
+
   Where Image 1 and any other attached reference disagree, Image 1 wins. Where
   Image 1 and the STYLE_DNA block disagree, Image 1 wins — it is STYLE_DNA
   already rendered.

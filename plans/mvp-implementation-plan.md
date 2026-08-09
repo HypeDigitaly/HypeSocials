@@ -1,7 +1,7 @@
 # HypeSocials MVP — Implementation Plan (Phase 1)
 
 **Status:** REVIEWED (architect + python/async + PRD-coverage panels applied) · **Source of truth:** `prds/00-overview.md` … `prds/50-promptcraft.md` (v1.6.2)
-**Goal:** Full MVP per PRD. Line budget: **hard ceiling 10,000 (G2 v1.6.4, raised at the W2 barrier by operator decision; was 6,500 at W1, 4,500 originally)** — Wave 2 actual 7,868, remaining estimate ~1,500–2,000 — tracked at every wave barrier (`wc -l`), escalation by operator decision (§1a).
+**Goal:** Full MVP per PRD. Line budget: **hard ceiling 12,000 (G2 v1.6.5, raised at the W3/M1 barrier by operator decision; was 10,000 at W2, 6,500 at W1, 4,500 originally)** — Wave 3 actual 9,993, remaining estimate ~1,500–2,000 — tracked at every wave barrier (`wc -l`), escalation by operator decision (§1a).
 **Execution model:** flat-wave conductor dispatch per `CODING_GUIDELINES.md` §21. Operator decisions: minimal deterministic test suite (money/logic math), repo docs authored in Wave 0, day-one paid spikes (~$1–2) auto-run from `.env`.
 
 **Standing child-prompt preamble (every spawn, every level):** (1) read `CODING_GUIDELINES.md` in full; (2) model/effort policy per `CLAUDE.md` §9 — never pass a `model` param at spawn; (3) subagent output contract — conclusion first, bullets, `path:line`, no preamble; (4) read this plan file and the named PRD files fully.
@@ -212,7 +212,7 @@ Then single owner:
 
 | Task | Owner | Path set |
 |---|---|---|
-| T4.3 Wave-engine integration: two-wave submission with **priority permit gate (wave-2 before queued wave-1 — named starvation test required)**; wave-1 projection / wave-2 pre-commit / discretionary reservation (FR-106 a/b/c) with **anchor-fallback N+1 slides explicitly PRE-COMMITTED (never discretionary)**; FR-105 ordering (anchor checked pre-deck; seed frame checked pre-chain); two-stage Ctrl+C (`signal.signal` + `call_soon_threadsafe`, verified against T0.3 signal-spike findings); deadline + ~30 s grace poll; ledger wiring; both-mode pairs (FR-3/22); FR-249 cleanup on every exit path | python-pro (single) | `hypesocials/generate/__init__.py`, `runner.py` edits, `budget.py` edits |
+| T4.3 Wave-engine integration: two-wave submission with **priority permit gate (wave-2 before queued wave-1 — named starvation test required)**; wave-1 projection / wave-2 pre-commit / discretionary reservation (FR-106 a/b/c) with **anchor-fallback N+1 slides explicitly PRE-COMMITTED (never discretionary)**; FR-105 ordering (anchor checked pre-deck; seed frame checked pre-chain); two-stage Ctrl+C (`signal.signal` + `call_soon_threadsafe`, verified against T0.3 signal-spike findings); deadline + ~30 s grace poll; ledger wiring; both-mode pairs (FR-3/22); FR-249 cleanup on every exit path; **estimator fidelity fix (v1.6.5, M1 finding): FR-107 analysis line priced per distinct ASSIGNED trend (M1 priced 1 call, reality was 2), plus a truncation-retry allowance line (FR-127 retry-widening ~doubled per-call analysis cost; M1 actual $0.23 vs worst-case estimate $0.16)** | python-pro (single) | `hypesocials/generate/__init__.py`, `runner.py` edits, `budget.py` edits |
 
 **Barrier (M2):** live run 1 image + 1 carousel (+1 reel if priced in hypedigitaly.yaml) **with wall clock recorded vs NFR-1 tiers**; Ctrl+C mid-run → packaged, exit 4; tiny-deadline run abandons honestly with ledger entries; **named tests green: permit starvation (wave-2 vs late wave-1), reservation race, FR-105 ordering**; `wc -l`.
 
