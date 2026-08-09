@@ -47,6 +47,7 @@ from typing import Any
 from hypesocials import analyze, cli, copywrite, generate, plan, preflight, render, sources
 from hypesocials.budget import Budget, Estimate, SpendCategory, SpendSummary, estimate, format_usd
 from hypesocials.config import CONFIGS_DIR, Config, ConfigError, load_config
+from hypesocials.generate import video_ref
 from hypesocials.llm import LLMClient, RoleSettings
 from hypesocials.models import ParsedResult, PlanEntry, PlanEntryStatus, StyleBrief, TrendItem
 from hypesocials.outputs import (
@@ -115,6 +116,7 @@ class _Session:
     engine: PromptEngine
     llm: LLMClient | None = None
     render_ready: bool = False
+    video_refs: video_ref.Prefetch | None = None  # D23 chain, launched alongside Analyze
 
     def say(self, text: str) -> None:
         """Print one operator-facing block and put the identical (redacted) text in run.log."""
@@ -201,17 +203,23 @@ def decide_exit_code(
     The brief-only carve-out lives in the `trend_supply_failed` branch: a trend famine is fatal
     only when it left nothing deliverable. If override-brief creatives shipped anyway the run is
     a partial success (`1`), and a brief-only plan that delivered everything is a plain `0`.
+
+    A **delivered creative that still carries a `skip_reason` is a loss, not a clean success** —
+    that is the partial carousel of FR-20/10 §10, which ships its finished slides and names the
+    missing ones. FR-202's code 1 covers "at least one creative was skipped, failed,
+    budget-trimmed or abandoned", and a deck missing slides is exactly that, so it exits 1.
     """
     if preflight_refused:
         return EXIT_PREFLIGHT
     if interrupted:
         return EXIT_INTERRUPTED
-    delivered = sum(1 for entry in entries if entry.status is PlanEntryStatus.SUCCESS)
+    delivered = [entry for entry in entries if entry.status is PlanEntryStatus.SUCCESS]
     if trend_supply_failed and not delivered:
         return EXIT_NOTHING_USABLE
     if not entries:
         return EXIT_PREFLIGHT  # a zero-creative plan never starts (FR-64)
-    return EXIT_OK if delivered == len(entries) else EXIT_PARTIAL
+    whole = [entry for entry in delivered if not entry.skip_reason]
+    return EXIT_OK if len(whole) == len(entries) else EXIT_PARTIAL
 
 
 # --------------------------------------------------------------------------- the pipeline
@@ -270,6 +278,7 @@ async def _pipeline(session: _Session, overrides: Sequence[str]) -> int:
     live = [entry for entry in live if entry.status is PlanEntryStatus.PENDING]
 
     by_key = {trend.history_key: trend for trend in trends}
+    _launch_video_refs(session, live, by_key)  # D23: overlaps Analyze, never the reel's critical path
     _store_references(session, by_key, live)
     briefs_by_trend = await _analyze(session, live, by_key)
     copy_result = await _write(session, live, by_key, briefs_by_trend)
@@ -284,11 +293,12 @@ async def _confirm(session: _Session, entries: list[PlanEntry]) -> tuple[list[Pl
     """FR-58/59 + FR-282: show the priced plan, then take the answer. Money waits for it.
 
     The estimate runs *before* Collect, so no trend is assigned yet — and FR-107's analysis and
-    copy lines are per distinct trend, not per creative. Provisional keys model FR-8's assignment
-    exactly (one trend per `max_trend_reuses_per_run` creatives) so the operator sees the call
-    count they will actually be billed for, and are cleared again before `assign()` runs.
+    copy lines are per distinct trend, not per creative. Provisional keys model the worst case
+    FR-8's assignment can produce (one distinct trend per atomic group, `_stamp_provisional`), so
+    the operator sees the call count they can really be billed for; they are cleared again before
+    `assign()` runs.
     """
-    _stamp_provisional(entries, session.config.run.max_trend_reuses_per_run)
+    _stamp_provisional(entries)
     outcome = await cli.confirm_spend(session.config, entries, assume_yes=session.opts.yes,
                                       emit=session.say)
     for entry in entries:  # cleared again: `assign()` binds the real trends, nothing inherits these
@@ -405,6 +415,28 @@ def _restate(session: _Session, assignment: plan.Assignment, plan_estimate: Esti
         session.say(line)
 
 
+def _launch_video_refs(session: _Session, live: Sequence[PlanEntry],
+                       trends: dict[str, TrendItem]) -> None:
+    """D23/FR-142: start the yt-dlp → Kie chain the moment trends are assigned, not at Seedance.
+
+    It depends only on assignment, so its 15–60 s of probe/download/upload overlaps Analyze and
+    Write instead of extending a reel's critical path; `reel.py` awaits it under a short bounded
+    wait and ships seed-frame-only if it is not ready. Nothing starts when reels are off, when
+    `reel_video_reference` is false, or when no assigned trend carries a winning video — the
+    handle simply stays `None` and no yt-dlp process is ever spawned (FR-139/140 stay $0).
+    """
+    if not session.config.run.reel_video_reference:
+        return
+    keys = {entry.trend_key for entry in live
+            if entry.creative_format == "reel" and entry.trend_key}
+    candidates = {key: url for key in keys
+                  if (trend := trends.get(key or "")) and (url := trend.winning_video_url)}
+    if not candidates:
+        return
+    session.video_refs = video_ref.prefetch(
+        candidates, max_duration_s=session.config.run.reel_reference_max_s, log=session.log)
+
+
 def _store_references(session: _Session, trends: dict[str, TrendItem],
                       live: Sequence[PlanEntry]) -> None:
     """Copy each assigned trend's reference set into `refs/` so the gallery can compare (FR-71/150)."""
@@ -462,18 +494,26 @@ async def _write(session: _Session, live: Sequence[PlanEntry], trends: dict[str,
 async def _create(session: _Session, entries: Sequence[PlanEntry], live: Sequence[PlanEntry],
                   trends: dict[str, TrendItem], briefs: dict[str, StyleBrief],
                   copy_result: copywrite.CopyResult) -> generate.Report:
-    """CREATE: wave-1 images (W3 scope). Entries already terminal are packaged as honest skips."""
+    """CREATE: images, carousels and reels in two waves. Terminal entries package as honest skips.
+
+    The vision check is wired in here and nowhere else: `llm_call` is the same metered wrapper the
+    Analyze and Write stages use, so every check call lands in the FR-84 tally — and it is `None`
+    whenever the check is off, which is what `generate/`, `carousel.py` and `reel.py` read as
+    `not_checked` (FR-27). `deadline` gives them FR-108's `env.halted` without a runner callback.
+    """
     if _halt(session, "generation"):  # FR-4/FR-108: nothing leaves the plan, it goes terminal
         for entry in entries:
             if entry.status is PlanEntryStatus.PENDING:
                 entry.status = PlanEntryStatus.ABANDONED
                 entry.skip_reason = "run deadline elapsed or interrupted before submission"
+    checking = bool(session.config.run.vision_check) and session.llm is not None
     env = generate.Env(
         config=session.config, run_dir=session.run_dir, engine=session.engine,
         budget=session.budget, log=session.log, ledger=session.ledger, trends=trends,
         style_briefs=briefs, copy=copy_result.copy, copy_degraded=copy_result.degraded,
         copy_trimmed=copy_result.trimmed, niche_descriptor=session.config.niche.as_text(),
-        stop=session.control.stop)
+        llm_call=_metered(session) if checking else None, video_refs=session.video_refs,
+        stop=session.control.stop, deadline=session.deadline)
     watch = Stopwatch()
     report = await generate.create(entries, env)
     session.log.event("generation_complete",
@@ -541,16 +581,20 @@ def _halt(session: _Session, stage: str) -> bool:
     return True
 
 
-def _stamp_provisional(entries: Sequence[PlanEntry], max_reuses: int) -> None:
-    """Give each atomic group the trend key FR-8 would give it, so the pre-Collect estimate
-    counts the analysis and copy calls the operator will really be billed for."""
-    groups = list(dict.fromkeys(entry.atomic_group or entry.asset_id for entry in entries
-                                if entry.brief_influence != "override"))
-    keys = {group: f"{_PROVISIONAL}{index // max(1, int(max_reuses))}"
-            for index, group in enumerate(groups)}
+def _stamp_provisional(entries: Sequence[PlanEntry]) -> None:
+    """Give each atomic group its own provisional trend key, so the pre-Collect estimate counts
+    the analysis (FR-9) and copy (FR-99) calls the operator can really be billed for.
+
+    **Worst-case-honest, per the v1.6.5 estimator fidelity fix.** `plan.assign()` binds trends per
+    *atomic group* and `_pick()` prefers the least-used trend, so a group gets a DISTINCT trend
+    whenever the pool allows — up to one per group. `max_trend_reuses_per_run` only ever *reduces*
+    that count, when the pool is short. Modelling the reuse ceiling here (as the M1 run did) priced
+    one analysis call while two distinct trends were assigned, and understating is the one
+    unacceptable estimator error (D11/FR-282). Override briefs consume no trend at all (FR-144).
+    """
     for entry in entries:
         if entry.brief_influence != "override":
-            entry.trend_key = keys[entry.atomic_group or entry.asset_id]
+            entry.trend_key = f"{_PROVISIONAL}{entry.atomic_group or entry.asset_id}"
 
 
 def _launch_summary(session: _Session, overrides: Sequence[str]) -> str:
@@ -621,6 +665,8 @@ async def _cleanup(session: _Session) -> None:
     already gone before we get here (spikes/RESULTS.md §F — `ProcessLookupError` is expected).
     """
     steps = [close_downloads()]
+    if session.video_refs is not None:  # cancels outstanding yt-dlp chains, sweeps their scratch
+        steps.insert(0, session.video_refs.aclose())
     if session.render_ready:
         steps.insert(0, render.aclose())
     if session.llm is not None:
@@ -632,10 +678,11 @@ async def _cleanup(session: _Session) -> None:
             pass  # the child died with the console before cleanup ran (RESULTS.md §F)
         except Exception as exc:  # noqa: BLE001 — cleanup never re-raises
             logger.warning("cleanup step failed: %s: %s", type(exc).__name__, exc)
-    try:
-        sources.cleanup()  # the run's scratch reference downloads (FR-249)
-    except OSError as exc:
-        logger.warning("scratch cleanup failed: %s", exc)
+    for sweep in (sources.cleanup, video_ref.cleanup):  # scratch downloads (FR-249), idempotent
+        try:
+            sweep()
+        except OSError as exc:
+            logger.warning("scratch cleanup failed: %s", exc)
     session.log.close()
 
 

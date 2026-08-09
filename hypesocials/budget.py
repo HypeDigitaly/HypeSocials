@@ -1,8 +1,9 @@
 """Budget — the run's one money module: what it will cost, what may be spent, what it did cost.
 
-Public API: `estimate(config, entries)` (10 FR-107, 30 NFR-18/FR-282) · `trim(config, entries,
-cap_usd)` (FR-28/FR-106) · `Budget(cap_usd)` with `fits`/`commit`/`reserve`/`release`/`reconcile`/
-`summary` (FR-106 a/b/c, FR-84/85) · `format_usd`.
+Public API: `estimate(config, entries)` (10 FR-107, 30 NFR-18/FR-282) · `job_projection(config,
+entry, job)` (the expected cost of ONE submission) · `trim(config, entries, cap_usd)`
+(FR-28/FR-106) · `Budget(cap_usd)` with `fits`/`commit`/`reserve`/`release`/`reconcile`/`summary`
+(FR-106 a/b/c, FR-84/85) · `format_usd`.
 
 Invariants:
 - **No network, no clock.** The estimate is config arithmetic only, so it appears before any
@@ -354,8 +355,31 @@ def _entry_lines(config: Config, entry: PlanEntry, lines: list[EstimateLine]) ->
                            allowance=True))
 
 
+def job_projection(config: Config, entry: PlanEntry, job: str) -> float:
+    """The expected cost of ONE submission — the engine's single per-job price (FR-107/FR-106).
+
+    `generate`'s metered `submit` is the only caller, so no module ever re-derives a rate:
+    `image` / `slide` / `seed_frame` are the platform's image tier (the same tier `estimate()`
+    priced the plan with), `clip` is `price_per_unit.reel_second` x the configured duration.
+    An unpriced line projects **$0** and the submission still proceeds — pre-committed work is
+    already approved (FR-106b), and FR-131 blocked unpriced reels at *planning* time, not here.
+    """
+    if job == "clip":
+        return round((config.reel_price_per_second or 0.0)
+                     * max(int(config.run.reel_duration_s), 0), 6)
+    (price, *_), _ = _image_price(config, entry.platform)
+    return round(price or 0.0, 6)
+
+
 def _llm_lines(config: Config, entries: Sequence[PlanEntry], lines: list[EstimateLine]) -> None:
-    """Analysis calls (one per analyzed trend) and copy calls (one per FR-99 group) + allowance."""
+    """Analysis calls (one per analyzed trend) and copy calls (one per FR-99 group) + allowances.
+
+    Both lines are counted **per distinct `trend_key` present on the entries**, which is exactly
+    what FR-9/FR-99 bill. Before Collect no trend is assigned yet, so `runner._stamp_provisional`
+    supplies the worst-case-honest keys — one distinct trend per atomic group, because that is the
+    most `plan.assign()` can produce (v1.6.5 estimator fidelity fix; understating is the one
+    unacceptable estimator error).
+    """
     planned = [e for e in entries
                if not (e.creative_format == "reel" and not config.reels_plannable)]
 
@@ -368,9 +392,18 @@ def _llm_lines(config: Config, entries: Sequence[PlanEntry], lines: list[Estimat
         prompt = _ANALYSIS_PROMPT_TOKENS + images * _image_tokens(_ANALYSIS_IMAGE_PX,
                                                                  _ANALYSIS_IMAGE_ASPECT)
         priced = _llm_call_price(config, "analysis", prompt, config.max_tokens_for("analysis"), 0)
+        orders = [order for orders in analyzed.values() for order in orders]
         lines.append(_line("analysis_call", f"style-brief analysis calls ({len(analyzed)})",
-                           SpendCategory.LLM, "call", len(analyzed), priced,
-                           [order for orders in analyzed.values() for order in orders]))
+                           SpendCategory.LLM, "call", len(analyzed), priced, orders))
+        # FR-127 truncation retry (v1.6.5 fidelity fix, M1 finding): a truncated answer is re-sent
+        # WIDER — the whole prompt, downscaled images included, at up to double the completion cap.
+        # M1 billed $0.23 against a $0.16 worst case for exactly this, so the worst case now
+        # carries one extra FULL-cost call per analysis call. It is an allowance: FR-106a's
+        # expected projection stays ungated by a contingency that mostly never happens.
+        lines.append(_line("analysis_truncation_allowance",
+                           f"analysis truncation-retry allowance ({len(analyzed)})",
+                           SpendCategory.LLM, "retry", len(analyzed), priced, orders,
+                           allowance=True))
 
     groups: dict[tuple[str, str], list[PlanEntry]] = {}
     for entry in planned:  # FR-99: one call per (trend x language); briefs by (brief x language)
@@ -387,12 +420,23 @@ def _llm_lines(config: Config, entries: Sequence[PlanEntry], lines: list[Estimat
         """One sibling line per pair_id, not per asset — a both-mode pair shares one CopySet."""
         return len({e.pair_id or e.asset_id for e in members})
 
+    per_group: list[Priced] = []
     for (subject, language), members in groups.items():
         tokens = _COPY_PROMPT_TOKENS + brand + siblings_of(members) * _COPY_TOKENS_PER_SIBLING
         priced = _llm_call_price(config, "copy", tokens, completion, reasoning)
+        per_group.append(priced)
         lines.append(_line("copy_call",
                            f"copy call · {subject} ({language}, {siblings_of(members)} siblings)",
                            SpendCategory.LLM, "call", 1, priced, [e.order for e in members]))
+    # FR-127 applies to EVERY role — `llm._run_attempts` widens and re-sends whatever was
+    # truncated, and `max_tokens.copy` is sized for the grouped FR-99 call precisely because a
+    # small cap "would pay for FR-127's retry as the normal path" (30 §2). So copy carries the
+    # same one-extra-full-call allowance, priced at the widest group's call: the worst case this
+    # config can actually produce.
+    widest = max(per_group, key=lambda priced: priced[0] or 0.0)
+    lines.append(_line("copy_truncation_allowance",
+                       f"copy truncation-retry allowance ({len(groups)})", SpendCategory.LLM,
+                       "retry", len(groups), widest, [e.order for e in planned], allowance=True))
     # FR-107: FR-99's split per-creative calls are a real conditional contributor — carried as a
     # worst-case allowance of one call per sibling, not as expected spend.
     split_calls = sum(siblings_of(members) for members in groups.values())
@@ -672,5 +716,5 @@ class Budget:
 __all__ = [
     "Budget", "Estimate", "EstimateLine", "Priced", "Reservation", "ReservationKind",
     "ReservationState", "SpendCategory", "SpendRow", "SpendSummary", "TrimResult", "estimate",
-    "format_usd", "trim",
+    "format_usd", "job_projection", "trim",
 ]

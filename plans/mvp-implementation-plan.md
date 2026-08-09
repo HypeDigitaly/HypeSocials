@@ -125,7 +125,7 @@ hypesocials/
 
 Support trees (`virlo_mcp` counts toward G2 per NFR-110; the rest don't): `run.bat` · `configs/` · `prompts/` · `niches/hypedigitaly/` · `tests/` · `spikes/` (never imported by production code; retired after W1) · `CLAUDE.md`, `NAVIGATION.md`, `plans/`.
 
-### 1a. Line budget (HONEST reckoning · hard ceiling 4,500 per G2)
+### 1a. Line budget (HONEST reckoning · originally hard ceiling 4,500; **now target ~11,500 / hard ceiling 12,000 — G2 v1.6.5, operator decision 2026-08-09 at the W3/M1 barrier.** Measured at barriers: W1 3,919 · W2 7,868 · W3 9,993. The table below is the original W0 sizing, kept for the record)
 
 | Area | Raw est. |
 |---|---|

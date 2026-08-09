@@ -284,6 +284,72 @@ def test_fr107_unpriced_non_reel_line_participates_at_zero_and_says_so(cfg: Conf
     assert est.banner == f"governance partial — {len(est.unpriced_lines)} lines unpriced"
 
 
+# ------------------------------------------------- v1.6.5 estimator fidelity fix (M1 finding)
+
+
+def test_analysis_priced_per_distinct_assigned_trend(cfg: Config) -> None:
+    """v1.6.5 (00-overview amendment log): M1's actual $0.23 beat its $0.16 worst case partly
+    because "FR-107's analysis line priced one call while two distinct trends were assigned".
+
+    `plan.assign()` binds a trend per ATOMIC GROUP and prefers the least-used one, so two groups
+    can consume two distinct trends whatever `max_trend_reuses_per_run` says — the reuse ceiling
+    only ever *reduces* the count when the pool is short. The pre-confirm estimate therefore
+    prices the honest worst case: one analysis call (FR-9) and one copy call (FR-99) per group.
+    """
+    from hypesocials.runner import _stamp_provisional  # the pre-Collect half of the same fix
+
+    cfg.run.max_trend_reuses_per_run = 2  # the M1 setting that hid the second trend
+    plan = [entry(0, variant="analyzed"), entry(1, variant="analyzed")]
+    _stamp_provisional(plan)
+
+    assert len({e.trend_key for e in plan}) == 2  # one distinct trend per atomic group
+    est = estimate(cfg, plan)
+    assert one(est, "analysis_call").quantity == 2
+    assert len(lines(est, "copy_call")) == 2  # FR-99 groups by (trend x language), same worst case
+
+
+def test_truncation_retry_allowance_in_worst_case_not_expected(cfg: Config) -> None:
+    """The other half of the v1.6.5 fix: FR-127's retry re-sends a truncated call WIDER, which
+    roughly doubled M1's per-call analysis cost. It is carried as one extra full-cost call per LLM
+    call — in `worst_case_usd` only, because FR-106a's expected projection is never gated on a
+    contingency that mostly never happens.
+    """
+    plan = [entry(0, variant="analyzed"), entry(1, variant="analyzed")]
+    from hypesocials.runner import _stamp_provisional
+
+    _stamp_provisional(plan)
+    est = estimate(cfg, plan)
+    analysis, retry = one(est, "analysis_call"), one(est, "analysis_truncation_allowance")
+    copy_retry = one(est, "copy_truncation_allowance")
+
+    assert retry.allowance and copy_retry.allowance and retry.category is SpendCategory.LLM
+    assert retry.quantity == analysis.quantity  # one extra full-cost call per analysis call
+    assert retry.unit_price == analysis.unit_price
+    assert copy_retry.quantity == len(lines(est, "copy_call"))
+    # Worst case carries them; expected does not, and no entry's share is inflated by an allowance.
+    assert est.worst_case_usd - est.expected_usd >= retry.amount_usd + copy_retry.amount_usd
+    bare = round(sum(l.amount_usd for l in est.lines if not l.allowance), 6)
+    assert est.expected_usd == pytest.approx(bare)
+
+
+def test_job_projection_is_the_one_per_submission_price(cfg: Config) -> None:
+    """`generate`'s metered `submit` is its only caller (FR-106/107): image, slide and seed-frame
+    jobs are the platform's image tier; a clip is the per-second rate x the configured duration."""
+    image = entry(0)
+    reel = entry(1, "reel", platform="tiktok")
+    cfg.run.reel_duration_s = 5
+
+    for job in ("image", "slide", "seed_frame"):
+        assert budget.job_projection(cfg, image, job) == cfg.models.price_per_unit.image["1k"]
+    # Unpriced reels are blocked at PLANNING time (FR-131), so a clip that reaches submission
+    # projects $0 rather than a guess — pre-committed work still goes out (FR-106b).
+    assert cfg.reel_price_per_second is None
+    assert budget.job_projection(cfg, reel, "clip") == 0.0
+
+    priced_reels(cfg, 0.57)  # the hypedigitaly.yaml worst-case-honest scalar (v1.6.6)
+    assert budget.job_projection(cfg, reel, "clip") == pytest.approx(2.85)
+
+
 def test_nfr18_estimate_is_computed_from_local_config_only(cfg: Config) -> None:
     """NFR-18: "using only local config values (no network call), so the estimate appears before
     any external service is contacted"."""
@@ -430,7 +496,7 @@ def test_trim_leaves_a_plan_that_already_fits_untouched(cfg: Config) -> None:
 # --------------------------------------------------------------------------- FR-106 reservations
 
 
-async def test_fr106c_concurrent_reservations_never_exceed_the_cap() -> None:
+async def test_reservation_race_concurrent_reserves_never_jointly_exceed_cap() -> None:
     """FR-106c: "a dozen vision retries all reading "$1.40 remaining" at once would all conclude
     they fit, and would jointly spend $6. The reservation makes the decision and the debit one
     indivisible step" — N concurrent attempts, exactly the affordable number granted."""

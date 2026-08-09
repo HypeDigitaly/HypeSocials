@@ -38,6 +38,8 @@ class DegradationTag(str, Enum):
     ABANDONED = "abandoned"  # FR-108 deadline / FR-201 interrupt
     SEED_FRAME_RENDER_FAILED = "seed_frame_render_failed"  # FR-24
     SEED_FRAME_URL_UNREACHABLE = "seed_frame_url_unreachable"  # FR-24
+    AUDIO_DROPPED_CONTENT_AUDIT = "audio_dropped_content_audit"  # FR-141 content-audit degrade
+    #   (v1.6.6): clip re-submitted once with generate_audio=false; references kept
     PROBE_FAILED = "probe_failed"  # video-ref chain, FR-142 / 20 FR-160
     NO_QUALIFYING_VIDEO = "no_qualifying_video"
     DOWNLOAD_FAILED = "download_failed"

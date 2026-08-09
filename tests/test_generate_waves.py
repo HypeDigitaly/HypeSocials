@@ -1,0 +1,433 @@
+"""Wave-engine tests — format dispatch, the one money door, and honest abandonment.
+
+No network and no money: `render.run` is monkeypatched, the packager's download is faked, and the
+budget/ledger are the real ones so every assertion is against what actually lands on disk. The
+carousel and reel modules are faked where only the *dispatch* is under test — their own chains have
+their own suites (`test_carousel.py`, `test_reel.py`).
+"""
+
+from __future__ import annotations
+
+import asyncio
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+import pytest
+
+from hypesocials import generate, render
+from hypesocials.budget import Budget
+from hypesocials.config import Config
+from hypesocials.models import (
+    AssetStatus,
+    CopySet,
+    DegradationTag,
+    LayoutZone,
+    PlanEntry,
+    PlanEntryStatus,
+    RenderFailCause,
+    RenderOutcome,
+    RenderOutcomeKind,
+    RenderPriority,
+    StyleBrief,
+    TrendItem,
+)
+from hypesocials.outputs import Ledger, packager, read_meta
+from hypesocials.prompts_engine import PromptEngine
+
+TREND_REFS = ["https://auth.virlo.ai/p1.webp", "https://auth.virlo.ai/p2.webp"]
+RESULT_URL = "https://tempfile.aiquickdraw.com/result.jpg"
+
+
+# --------------------------------------------------------------------------------- doubles
+
+
+class Log:
+    """`outputs.LogWriter`'s three call shapes, remembering only what tests assert on."""
+
+    def __init__(self) -> None:
+        self.records: list[tuple[str, str]] = []
+
+    def event(self, event_type: str, message: str = "", **data: Any) -> str:
+        self.records.append((event_type, message))
+        return f"ev_{len(self.records):04d}"
+
+    warn = event
+    error = event
+
+    def types(self) -> list[str]:
+        return [event_type for event_type, _ in self.records]
+
+
+class Renders:
+    """A fake `render.run`: records every submission and answers from a queue or a rule."""
+
+    def __init__(self, outcomes: list[Any] | None = None, rule: Any = None) -> None:
+        self.queue = list(outcomes or [])
+        self.rule = rule
+        self.calls: list[dict[str, Any]] = []
+
+    async def __call__(self, profile: str, params: Any, refs: Any,
+                       priority: RenderPriority) -> RenderOutcome:
+        self.calls.append({"profile": profile, "priority": priority, "params": params,
+                           "refs": refs})
+        answer = self.rule(self) if self.rule is not None else (
+            self.queue.pop(0) if self.queue else ok())
+        if isinstance(answer, BaseException):
+            raise answer
+        return answer
+
+    @property
+    def profiles(self) -> list[str]:
+        return [call["profile"] for call in self.calls]
+
+
+def ok(url: str = RESULT_URL, *, task: str = "kie_ok", cost: float = 0.03) -> RenderOutcome:
+    return RenderOutcome(kind=RenderOutcomeKind.SUCCESS, task_id=task, request_token="tok",
+                         result_urls=[url], cost_usd=cost, submitted_at="2026-08-09T10:00:00Z",
+                         completed_at="2026-08-09T10:01:00Z")
+
+
+def refused() -> RenderOutcome:
+    return RenderOutcome(kind=RenderOutcomeKind.FAIL, task_id="kie_refused", request_token="tok",
+                         fail_cause=RenderFailCause.MODERATION,
+                         fail_message="content policy", cost_usd=0.03)
+
+
+# --------------------------------------------------------------------------------- fixtures
+
+
+@pytest.fixture(autouse=True)
+def downloads(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+    """Every `store_render` writes real bytes to a real folder; nothing touches the network."""
+    control = SimpleNamespace(fetched=[], fail_reason="")
+
+    async def _download(url: str) -> bytes:
+        control.fetched.append(url)
+        if control.fail_reason:
+            raise packager.PackagingError(f"write failed: {control.fail_reason}",
+                                          reason=control.fail_reason)
+        return b"\xff\xd8fake-jpeg-bytes"
+
+    monkeypatch.setattr(packager, "_download", _download)
+    return control
+
+
+def make_entry(order: int = 0, fmt: str = "image", **overrides: Any) -> PlanEntry:
+    entry = PlanEntry(order=order, asset_id=f"{order:04d}_{fmt}_linkedin", creative_format=fmt,
+                      platform="linkedin" if fmt != "reel" else "tiktok", language="en",
+                      aspect_ratio="1:1" if fmt != "reel" else "9:16", variant="analyzed",
+                      trend_key="t1", estimated_cost_usd=0.10)
+    for key, value in overrides.items():
+        setattr(entry, key, value)
+    return entry
+
+
+def make_env(tmp_path: Path, entries: list[PlanEntry], *, cap_usd: float = 5.0,
+             **overrides: Any) -> generate.Env:
+    trend = TrendItem(history_key="t1", monitor_id="m1", name="AI tool stacks",
+                      why_it_works="numbers in the first line",
+                      hook_texts=["Nobody tells you this about AI tools"],
+                      video_descriptions=["a creator lists seven tools"],
+                      panel_texts=["panel one", "panel two"],
+                      reference_groups=[list(TREND_REFS)])
+    style = StyleBrief(trend_key="t1", render_prompt="Flat graphic card, centred subject.",
+                       palette=["#1B1F3B"], typography="bold condensed sans",
+                       layout_zones=[LayoutZone("upper third", "headline", "bold, sentence case")],
+                       exclusions=["usernames"], text_placement="headline upper third",
+                       image_treatment="flat graphic", visual_pacing="one idea per panel",
+                       hook_pattern="negative-outcome claim")
+    env = generate.Env(
+        config=Config(), run_dir=tmp_path, engine=PromptEngine(), budget=Budget(cap_usd),
+        log=Log(), ledger=Ledger(tmp_path), trends={"t1": trend}, style_briefs={"t1": style},
+        copy={entry.asset_id: CopySet(asset_id=entry.asset_id, language="en", trend_key="t1",
+                                      caption="Most people wire this backwards.", hashtags=["#ai"],
+                                      headline="Wired backwards", subline="Here is the fix",
+                                      overlay_text="Wired backwards",
+                                      through_line="a fast reveal of the tool stack",
+                                      slide_texts=["One", "Two", "Three", "Four", "Five"])
+              for entry in entries},
+        stop=asyncio.Event(), niche_descriptor="Audience: founders · Vibe: blunt")
+    for key, value in overrides.items():
+        setattr(env, key, value)
+    return env
+
+
+def ledger_lines(tmp_path: Path) -> list[str]:
+    return (tmp_path / "LEDGER.txt").read_text(encoding="utf-8").strip().splitlines()
+
+
+# --------------------------------------------------------------------------- dispatch by format
+
+
+async def test_dispatch_reaches_each_format_module_with_the_right_submit_kinds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`_one` dispatches by format and every module spends through the SAME injected `submit` —
+    one money path, not two (plan §2 T4.3). Kinds are FR-106's: wave-1 work is `projected`, the
+    deck's slides and the Seedance clip are `precommitted`."""
+    entries = [make_entry(0, "image"), make_entry(1, "carousel"), make_entry(2, "reel")]
+    env = make_env(tmp_path, entries)
+    seen: list[tuple[str, str, RenderPriority]] = []
+
+    async def fake_carousel(entry, env_, folder, *, submit):
+        await submit(entry, SimpleNamespace(prompt="p", aspect_ratio="1:1"),
+                     SimpleNamespace(image_urls=[], video_urls=[]), job="slide",
+                     priority=RenderPriority.WAVE2, kind="precommitted", label="slide 1")
+        entry.status = PlanEntryStatus.SUCCESS
+        return folder.finish()
+
+    async def fake_reel(entry, env_, folder, *, submit):
+        await submit(entry, SimpleNamespace(prompt="p", aspect_ratio="9:16"),
+                     SimpleNamespace(image_urls=[], video_urls=[]), job="clip",
+                     priority=RenderPriority.WAVE2, kind="precommitted", label="reel clip")
+        entry.status = PlanEntryStatus.SUCCESS
+        return folder.finish()
+
+    async def spy(entry, params, refs, *, env, job, priority, kind, label):
+        seen.append((job, kind, priority))
+        return await real_submit(entry, params, refs, env=env, job=job, priority=priority,
+                                 kind=kind, label=label)
+
+    real_submit = generate._submit
+    monkeypatch.setattr(generate, "_submit", spy)
+    monkeypatch.setattr(generate, "render_carousel", fake_carousel)
+    monkeypatch.setattr(generate, "render_reel", fake_reel)
+    renders = Renders(rule=lambda _self: ok())
+    monkeypatch.setattr(render, "run", renders)
+
+    report = await generate.create(entries, env)
+
+    assert seen == [("image", "projected", RenderPriority.WAVE1),
+                    ("slide", "precommitted", RenderPriority.WAVE2),
+                    ("clip", "precommitted", RenderPriority.WAVE2)]
+    # `submit` owns the profile choice: only a clip goes to the video profile (FR-281).
+    assert renders.profiles == [env.config.models.image_profile, env.config.models.image_profile,
+                                env.config.models.video_profile]
+    assert len(report.records) == 3
+    assert report.packaged_trends == {"t1"}  # FR-82: one history line per packaged trend
+
+
+async def test_real_carousel_and_reel_chains_land_through_the_wave_engine(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The M2 shape without a network: the REAL `render_carousel` and `render_reel` run behind the
+    injected `submit`, so the deck's anchor goes out as wave-1 and its slides plus the clip as
+    wave-2 (FR-25/95/24), and every file lands in its own folder."""
+    deck, reel = make_entry(0, "carousel"), make_entry(1, "reel")
+    env = make_env(tmp_path, [deck, reel])
+
+    def result(self: Renders) -> RenderOutcome:  # the clip comes back as an mp4, everything else jpg
+        video = self.calls[-1]["profile"] == env.config.models.video_profile
+        return ok("https://tempfile.aiquickdraw.com/clip.mp4" if video else RESULT_URL,
+                  task=f"kie_{len(self.calls)}")
+
+    renders = Renders(rule=result)
+    monkeypatch.setattr(render, "run", renders)
+
+    report = await generate.create([deck, reel], env)
+
+    slides = env.config.platform("linkedin").carousel_slides
+    assert deck.status is PlanEntryStatus.SUCCESS and reel.status is PlanEntryStatus.SUCCESS
+    assert (tmp_path / deck.asset_id / "slide_01.jpg").is_file()
+    assert (tmp_path / reel.asset_id / "seed_frame.jpg").is_file()
+    assert (tmp_path / reel.asset_id / "reel.mp4").is_file()
+    assert report.records[deck.asset_id].slide_count == slides
+    # Anchor first and alone (WAVE1), then the rest of the deck and the clip as wave-2 work.
+    deck_calls = [call for call in renders.calls if call["params"].aspect_ratio == "1:1"]
+    assert deck_calls[0]["priority"] is RenderPriority.WAVE1
+    assert {call["priority"] for call in deck_calls[1:]} == {RenderPriority.WAVE2}
+    assert renders.profiles.count(env.config.models.video_profile) == 1  # one clip, one profile
+    assert len(ledger_lines(tmp_path)) == len(renders.calls)  # one terminal line per submission
+
+
+async def test_every_submission_is_billed_and_gets_one_terminal_ledger_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FR-203: one `terminal` line per submission — including the moderation-refused attempt that
+    was billed and then retried (20 §8's tally-on-submission)."""
+    entry = make_entry()
+    env = make_env(tmp_path, [entry])
+    monkeypatch.setattr(render, "run", Renders([refused(), ok(task="kie_retry")]))
+
+    report = await generate.create([entry], env)
+
+    statuses = [line.split(",")[-1] for line in ledger_lines(tmp_path)]
+    assert statuses.count("moderation") == 1 and statuses.count("success") == 1
+    assert entry.status is PlanEntryStatus.SUCCESS
+    record = report.records[entry.asset_id]
+    assert DegradationTag.REFS_DROPPED_MODERATION in record.degradations  # FR-97
+    assert env.budget.spent_usd == pytest.approx(0.06)  # both attempts billed, failures included
+
+
+async def test_moderation_retry_declined_by_the_cap_is_a_skipped_budget_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FR-106c: the retry is the discretionary tail, so a cap with nothing left declines it — and
+    the creative fails with the refusal it already paid for, never with an unbudgeted submission."""
+    entry = make_entry()
+    env = make_env(tmp_path, [entry], cap_usd=0.03)
+    monkeypatch.setattr(render, "run", Renders([refused(), ok()]))
+
+    report = await generate.create([entry], env)
+
+    assert entry.status is PlanEntryStatus.FAILED
+    assert "skipped_budget" in " ".join(env.log.types())
+    assert report.records[entry.asset_id].status is AssetStatus.FAILED
+    assert len(ledger_lines(tmp_path)) == 1  # only the refused job was ever submitted
+
+
+async def test_both_mode_pair_fields_reach_meta_for_every_format(tmp_path: Path) -> None:
+    """FR-3/22: pairing is decided in plan/copywrite and shown by the gallery; `generate` only has
+    to carry `pair_id` and `variant` onto the record — for carousels and reels as much as images."""
+    entries = [make_entry(0, "carousel", pair_id="p1", variant="analyzed"),
+               make_entry(1, "reel", pair_id="p1", variant="direct")]
+    env = make_env(tmp_path, entries)
+
+    records = [generate._record(entry, env) for entry in entries]
+
+    assert [r.pair_id for r in records] == ["p1", "p1"]
+    assert [r.variant for r in records] == ["analyzed", "direct"]
+    assert [r.generation_mode for r in records] == ["analyzed", "direct"]
+
+
+# --------------------------------------------------------------------------- 10 §10 disk_full
+
+
+async def test_disk_full_latches_and_stops_further_downloads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, downloads: SimpleNamespace,
+) -> None:
+    """10 §10: "that creative fails with reason `disk_full`; further downloads stop rather than
+    thrashing a full disk". The latch lives on `Env` and is reported back on `Report`."""
+    first, second = make_entry(0), make_entry(1)
+    env = make_env(tmp_path, [first, second])
+    monkeypatch.setattr(render, "run", Renders(rule=lambda _self: ok()))
+
+    downloads.fail_reason = "disk_full"
+    report = await generate.create([first], env)
+    assert env.disk_full and report.disk_full
+    assert first.status is PlanEntryStatus.FAILED and "disk_full" in (first.skip_reason or "")
+
+    downloads.fail_reason = ""  # the disk did not heal: the latch is what stops the next download
+    fetched = len(downloads.fetched)
+    later = await generate.create([second], env)
+
+    assert len(downloads.fetched) == fetched  # nothing was downloaded after the latch
+    assert later.disk_full and second.status is PlanEntryStatus.FAILED
+    assert "downloads stopped" in (second.skip_reason or "")
+
+
+# --------------------------------------------------------------------------- FR-108 / FR-201
+
+
+async def test_grace_window_abandons_in_flight_work_with_a_ledger_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FR-108/201/203: at the stop, in-flight jobs get ONE grace window; what is still running is
+    abandoned — entry terminal, folder terminal (never pending meta, NFR-21), taskId in the ledger,
+    and the spend it already incurred still counted, because it was billed at submission."""
+    monkeypatch.setattr(generate, "GRACE_S", 0.05)
+    monkeypatch.setattr(generate, "_HALT_POLL_S", 0.01)
+    entry = make_entry()
+    env = make_env(tmp_path, [entry])
+    on_intent, on_submitted = generate.ledger_hooks(env.ledger)
+
+    async def hang(profile, params, refs, priority) -> RenderOutcome:
+        on_intent("tok_hung")  # exactly what the seam does, inside the caller's task (FR-203)
+        on_submitted("tok_hung", "kie_hung")
+        env.stop.set()  # Ctrl+C lands while this job is in flight
+        await asyncio.sleep(30)
+        raise AssertionError("the grace window must have cancelled this job")
+
+    monkeypatch.setattr(render, "run", hang)
+
+    report = await asyncio.wait_for(generate.create([entry], env), timeout=5)
+
+    assert entry.status is PlanEntryStatus.ABANDONED
+    record = report.records[entry.asset_id]
+    assert record.status is AssetStatus.FAILED  # terminal, not pending (NFR-21)
+    assert DegradationTag.ABANDONED in record.degradations
+    assert read_meta(tmp_path / entry.asset_id)["status"] == "failed"
+    assert (tmp_path / entry.asset_id / "SKIP_REASON.txt").is_file()
+    assert (tmp_path / entry.asset_id / "caption.txt").is_file()  # the paid copy survives (FR-74)
+
+    last = ledger_lines(tmp_path)[-1]
+    assert last.endswith("abandoned") and "kie_hung" in last
+    assert env.budget.remaining_usd < env.budget.cap_usd  # billed at submission, never released
+    assert "grace_poll" in env.log.types()
+
+
+async def test_halt_before_create_leaves_every_entry_terminal_and_orders_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FR-201: the first Ctrl+C stops ORDERING. Entries that never reached a submission are
+    abandoned with an honest reason and cost nothing."""
+    entry = make_entry()
+    env = make_env(tmp_path, [entry])
+    env.stop.set()
+    renders = Renders()
+    monkeypatch.setattr(render, "run", renders)
+
+    report = await generate.create([entry], env)
+
+    assert renders.calls == [] and env.budget.spent_usd == 0.0
+    assert entry.status is PlanEntryStatus.ABANDONED
+    assert DegradationTag.ABANDONED in report.records[entry.asset_id].degradations
+    assert not (tmp_path / "LEDGER.txt").exists() or ledger_lines(tmp_path) == []
+
+
+async def test_expired_deadline_halts_ordering_exactly_like_ctrl_c(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FR-108's deadline and FR-201's interrupt reach `generate` through one flag, `env.halted`,
+    measured on the monotonic clock (`util.Deadline`, FR-243)."""
+    from hypesocials.util import Deadline
+
+    entry = make_entry()
+    env = make_env(tmp_path, [entry], deadline=Deadline(seconds=0.0))
+    renders = Renders()
+    monkeypatch.setattr(render, "run", renders)
+
+    await generate.create([entry], env)
+
+    assert env.halted and renders.calls == []
+    assert entry.status is PlanEntryStatus.ABANDONED
+
+
+def test_partial_deck_ships_but_the_run_exits_partial(tmp_path: Path) -> None:
+    """FR-202: code 1 is "completed with at least one creative skipped, failed, budget-trimmed or
+    abandoned". A carousel that ships four of six slides is `SUCCESS` + `incomplete` + a
+    `skip_reason` naming the missing ones (FR-20, 10 §10) — delivered, but a loss, so exit 1."""
+    from hypesocials.runner import EXIT_OK, EXIT_PARTIAL, decide_exit_code
+
+    whole = make_entry(0, "carousel", status=PlanEntryStatus.SUCCESS)
+    partial = make_entry(1, "carousel", status=PlanEntryStatus.SUCCESS,
+                         skip_reason="slide 5: provider_fail; slide 6: provider_fail")
+
+    assert decide_exit_code([whole]) == EXIT_OK
+    assert decide_exit_code([whole, partial]) == EXIT_PARTIAL
+
+
+# --------------------------------------------------------------------------- FR-167
+
+
+async def test_kie_out_of_credits_latches_and_skips_every_later_creative(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FR-167: 402 is a whole-run condition. The first creative releases its reservation (nothing
+    was submitted), latches the flag, and every later creative is skipped with the top-up message
+    instead of re-proving a certainty."""
+    first, second = make_entry(0), make_entry(1)
+    env = make_env(tmp_path, [first, second])
+    renders = Renders([render.KieOutOfCredits("HTTP 402"), ok()])
+    monkeypatch.setattr(render, "run", renders)
+
+    await generate.create([first], env)
+    assert env.credits_exhausted and env.budget.spent_usd == 0.0  # released: nothing was submitted
+    assert "kie_credits_exhausted" in (first.skip_reason or "")
+
+    report = await generate.create([second], env)
+
+    assert len(renders.calls) == 1  # the latch, not a second 402
+    assert second.status is PlanEntryStatus.FAILED
+    assert report.records[second.asset_id].status is AssetStatus.FAILED
