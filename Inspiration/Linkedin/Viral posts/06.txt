@@ -1,0 +1,36 @@
+Arrêtez de payer des commerciaux. Claude vient de plier le game.
+
+Les commerciaux passent 80% de leur temps à :
+
+- Scraper des listes éclatées.
+- Chercher une "accroche" sur le profil du prospect.
+- Envoyer des copier-coller qui finissent en "Vu".
+
+En vrai c'est même plus de la vente !
+C'est limite du secrétariat.
+
+Du coup on a testé un petit hack :
+Brancher Claude + cet outil directement à mon flux LinkedIn.
+
+Ca a permis :
+
+→ L'IA identifie mes cibles idéales.
+→ Elle lit leurs 3 derniers posts et l'actualité de leur boîte.
+→ Elle détecte les vrais signaux d'achat.
+→ Elle rédige une approche 100% unique
+→ Elle gère le suivi.
+
+On a réussi à générer 26 RDV qualifiés VS 20 min de taff.
+
+Pas mal du tout !
+(Surtout qu'on est vraiment naze en outbound haha)
+
+Bilan de la semaine : 50 RDV qualifiés obtenus.
+
+J’ai documenté l'intégralité du système (prompts, setup d'intention, limites d'envoi pour zéro ban) dans un guide complet.
+
+Tu veux transformer ton acquisition ?
+Commente “COWORK” 👇
+
+P.S : pense BIEN a m'ajouter sur linkedin que je puisse te l'envoyer ! 
+P.S 2 : Repost et t’es prio 

@@ -1,0 +1,158 @@
+Gojiberry's 7 Figure GTM Playbook
+Peter Wong
+Peter Wong
+Flywheel | Content that Drives Pipeline
+
+
+21. května 2026
+In 9 months, Gojiberry went from $0 to $2M ARR with over 2,000 customers and a core team of 3. They fully bootstrapped to $1M by booking hundreds of demos a month with a 50% reply rate and 60% connection acceptance. 
+
+We're sharing their playbook as part of our Inside the Stack series.
+
+Roman Czerny is the co-founder and CMO of Gojiberry AI. Before Gojiberry, he and co-founders Pierre-Eliott and Dylan built and sold separate companies. Roman and Pierre exited CoCo AI, a Shopify app that hit ~$500K ARR. Dylan exited Edusign, a paperless attendance SaaS that scaled to 7 figs ARR. The playbook they ran at those companies is what became Gojiberry: manually searching LinkedIn for people engaging with topics relevant to their product, finding signals, then reaching out. 
+
+Gojiberry is a GTM tool that combines intent signals and outreach in one platform. Instead of using two products: one to find who was showing buying signals, another to reach out, you can use it to do both. 
+
+Quick takeaways from the conversation
+
+Competitive markets are an advantage. Customers are already trained to pay. The work is standing out, not explaining the category.
+Lead magnets posted weekly on new AI tools (Claude, GPT, Gemini) are the highest-ROI LinkedIn play right now. People comment to get the resource, visit the site, and self-onboard. Some download 7 lead magnets before buying.
+The hardest part of growing on X or LinkedIn is the 0 to 500 follower range. Roman's solution: tag the founders of tools you use with your results. Get reposted by bigger accounts. That builds the first 100-200.
+One excellent post per day, written by hand. Never batch. "If you try to do three or four in the same day, it's not going to work."
+On outbound: reference the subject, not the action. "Cold mailing might be useful to you" beats "I saw you liked this post." Reply rates on the non-AI lead magnet sequence hit 60-70%.
+Intent-based outbound gets 35% reply rates vs 2.3% for traditional cold. 10 messages to land one meeting instead of 100.
+A single video drove +$30K in MRR and 1M+ views. They now run it as a paid ad at $300/day.
+One customer booked 120+ meetings in 30 days from 2 sales rep accounts after switching from cold lists to live signal tracking.
+
+The Gojiberry playbook
+1/ Crowded markets are good to compete in
+The GTM space has dozens of tools. Roman's take is that competitive markets mean customers already understand the problem and are already paying for solutions. You don't spend the first year educating anyone.
+
+In a non-competitive space, you're convincing people the problem exists before you can sell the solution. In a crowded space, you just need to get attention. The product insight is: how can you combine intent signals and outreach in one tool. People were paying for two products and now it can be done in one.
+
+2/ Go multi-channel from day one
+Roman didn't pick one platform and build from there. Gojiberry launched on LinkedIn, X, Reddit, YouTube, and email marketing simultaneously.
+
+95% of Gojiberry's buyers never talk to anyone. They find the content, visit the site, and self-onboard and 5% take a call. 
+
+3/ Lead magnets are the number one growth loop
+Every week, or close to it, Roman posts a lead magnet on a new AI tool. Claude ships a new feature, he documents it and posts. GPT releases something, he builds a resource on how to use it for outbound. People comment to get the resource, they visit the site, they self-onboard.
+
+Some customers downloaded 7 lead magnets before buying. 
+
+"Creating one excellent post is genuinely hard. If you sit down and try to write four great ones in the same session, you won't get four great ones."
+
+Roman writes one post per day by hand. No batching. His daily split: 8am to 2pm is content, posting, and replying to every comment. 2pm to 8pm is sales calls.
+
+The scale of the content operation now: 6 posts per day across 6 LinkedIn accounts (mostly lead magnets), plus 3 paid LinkedIn influencer posts per week and Facebook retargeting ads.
+
+4/ Tap and activate the ecosystem
+The hardest stretch on any platform is 0 to 500 followers. Roman's approach: tag the founders of tools you're getting results with. If a product is working for you, screenshot the results and tag the founder. 
+
+On outbound, the same principle applies at the message level. Two sequences run simultaneously. The non-AI sequence takes whatever lead magnet is performing best on LinkedIn or X and crafts outreach around it. Reply rates are 60-70%.
+
+The AI-assisted sequence follows one rule: reference the subject, not the action. "Cold mailing seems like something you're working on" rather than "I saw you liked this post." Or if someone is hiring for sales: "looks like your sales team is expanding" rather than "I saw your job posting." People clock action-level personalization immediately.
+
+5/ Use intent-based outbound 
+This is the core of what Gojiberry sells. 
+
+Traditional cold outbound: 1% reply rates. 100 messages to land one reply.
+
+Intent-based outbound with AI personalization: 35% reply rate. 10 messages to land one meeting.
+
+Their best LinkedIn campaigns hit 62% connection acceptance and 49% reply rate. 
+
+Roman's best-performing DM is c.20 words. He books 40+ demos per month from LinkedIn alone. His system runs mostly on autopilot. 20 minutes per day on outreach personally. The rest is handled by Gojiberry. 
+
+One customer switched from cold lists to live signal tracking and booked 120+ meetings in 30 days from just 2 sales rep accounts.
+
+6/ Content as a revenue channel
+A single video Roman made drove +$30K in MRR and hit 1M+ views across social media. They now run it as a Facebook ad at $300/day and plan to scale to $1,000/day.
+
+A cold email campaign targeting people who had engaged with Roman's LinkedIn posts over the previous 6 months: 8,900 emails sent, 101 replies, 60 lead magnet requests, 5 demos booked, 9 self-serve customers. All from an audience that had already been warming up through content.
+
+One customer closed over $75K in pipeline in their first month after switching to Gojiberry workflows.
+
+7/ The Gojiberry tool stack
+Gojiberry for intent signals and outreach (their own product)
+Claude for the backend: lead qualification, personalized message generation, and outbound workflows
+ChatGPT + Gemini for Roman's own writing and content
+Claude Code for engineering (CTO maxes out tokens daily)
+Stripe for payments
+TrustMRR for transparent revenue tracking
+
+The full conversation
+Why did you build Gojiberry? Why this space?
+
+Cold outreach without context doesn't work. The reply rates are bad and the connection invites are limited. LinkedIn caps how many connection invites you can send each week, so if you're spraying cold messages to people who've shown zero interest, you're burning through those slots on people who'll never respond.
+
+At my last company, Pierre and I would go on LinkedIn, search for keywords related to what we were selling, and find the people actively engaging with those topics. Commenting, posting, asking questions. Then we'd reach out. It sounds manual because it was, but it worked. Higher reply rates. More relevant conversations.
+
+We built Gojiberry to productize that motion. Then we realized something later in the process: no GTM tool was actually doing both sides. You had signal tools and you had outreach tools. Everyone was using two products. We put them in one.
+
+How did you get from $0 to $1M bootstrapped?
+
+We used our own tool on ourselves. That was the entire strategy at the start. Gojiberry detecting high-intent leads, and us reaching out with personalized messages based on real signals.
+
+The first milestone was $10K MRR. At that stage, you know almost nothing about your market. We didn't spend 6 months building. We made a simple 7-slide deck explaining the problem, the solution, and the outcome, then started outbound immediately. We used Gojiberry to find high-intent leads and contact them directly.
+
+95% of buyers self-served through the content. 5% took a call. We hit $1M ARR in under 9 months, fully bootstrapped. 
+
+What changed after getting into Y Combinator?
+
+We went from $1M to $1.5M ARR within weeks of starting the batch. Then $2M shortly after. January we had 200 customers. April, 800. Now over 2,000. The growth rate is 44% month-over-month.
+
+The next target is $10M ARR. We're hiring our first sales rep in Europe to convert the inbound pipeline. 
+
+How do you grow in such a competitive market?
+
+Multi-channel from day one. We took every platform we know how to go viral on and made it part of the strategy: LinkedIn, X, Reddit, YouTube, email marketing. The only gap is short-form video and UGC. We haven't figured that out yet and need to hire for it.
+
+Every week, or close to it, we post a lead magnet on new AI tools. Someone drops a new Claude feature, we build a resource around how to use it for outbound. Someone uses GPT for a new workflow, we document it and post it. People comment to get the resource, they go to the site, they self-onboard. 95% of buyers never talk to us. They come through the content and onboard without a call.
+
+The bigger players in GTM have been around 5 to 10 years. They're slow to react to new AI releases. We can have something out the week a tool launches. That speed gap is where the growth happens.
+
+How do you engineer virality?
+
+Follower count doesn't matter much on LinkedIn. Going viral there is extremely hard, harder than X. The approach that works is lead magnets: post something where people comment to get a resource. Change the resource every week. Some of our customers downloaded 7 lead magnets before they converted. Each one is a new touchpoint, brings new people in, and gives the algorithm something to run with.
+
+On X it's different. You just tell stories. Share results from outbound experiments, cold email tests, things that worked or didn't. It has a different distribution dynamic and stories travel faster there.
+
+The hardest stretch is 0 to 500 followers on either platform. The way out of it: tag the founders of tools you're getting results with. If you're using a product and it's working, screenshot the results and tag the founder. They repost it, their audience sees you, and you pick up followers you'd never have reached otherwise. That's how you get the first 100 to 200.
+
+My schedule is 8am to 2pm: post everywhere, reply to every comment, stay in every conversation. 2pm to 8pm is sales calls only. That's the split.
+
+Now we run 6 posts per day across 6 accounts. Most are lead magnets. We also pay for 3 LinkedIn influencer posts per week and run Facebook retargeting. The content operation scaled, but the principle stayed the same: give away something useful, get people to the site.
+
+What are your actual outbound numbers?
+
+Two sequences running at the same time. The first is non-AI. We take whatever lead magnet is performing best on LinkedIn or X and craft the outreach around it. The message is: here's this resource, it's been useful for people doing X, want me to send it over? That sequence gets 60 to 70% reply rates.
+
+The second is AI-assisted. The rule there is never reference a specific action. Don't say "I saw you liked this post" or "I noticed you commented on this thread." People clock it immediately. Instead, go to the subject level. "Cold mailing seems like something you're working on" rather than "I saw you engage with this cold email post." Or if someone is hiring for a sales role, the message is "looks like your sales team is expanding, might be good timing to talk" rather than "I saw your job posting."
+
+My best-performing DM is 23 words. I book 40+ demos per month from LinkedIn alone. We run 5 accounts sending 150 connection requests and DMs daily, focused exclusively on warm leads.
+
+Our best campaigns hit 62% acceptance rate with 49% reply rate. Out of 100 people contacted, that's 30 replies. Market average is about 5. That's 6x.
+
+We also ran a cold email blast to people who engaged with my LinkedIn content over the past 6 months. 8,900 emails, 101 replies, 5 demos, 9 self-serve customers. Past engagement is an underrated lead source.
+
+How do you use AI tools day to day?
+
+Claude runs the Gojiberry backend. Lead qualification, writing personalized messages. Our developer, who is also the CTO, uses Claude Code every day and maxes out the tokens.
+
+For my own writing I use ChatGPT and Gemini. I don't write posts with Claude.
+
+The content itself is all hand-written and I do one post per day. No batching. Creating one excellent post is genuinely hard. If you sit down and try to write four great ones in the same session, you won't get four great ones. You might get one.
+
+How do you think about platform risk?
+
+LinkedIn has removed a tonne of players in the ecosystem. We won't name names but it's ultimately a lot of big damage to a brand. 
+
+Everyone building in this space is building on someone else's property. That's the reality. LinkedIn can remove you if they want to. The hedge is to not be dependent on one channel. We're multi-channel by design, and we pull data from multiple sources, not just LinkedIn. From what I know, LinkedIn has never actually shut down a company like ours. 
+
+--
+
+When we signed up to Gojiberry out of curiosity, the platform identified 898 hot opportunities, engaged 258 leads, and started 100+ conversations. That was straight out of the box with minimal set up. 
+
+Obsah článku
+If you're doing outbound and stitching together a signal tool with a separate outreach platform, Gojiberry is worth a look. They're offering a free trial at gojiberry.ai.

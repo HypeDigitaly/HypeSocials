@@ -1,0 +1,33 @@
+I built 3 sales AI agents using Claude Opus 4.7 + GojiberryAI.
+
+(and I’m giving all 3 away for free)
+
+➤ A research agent
+➤ A qualification agent
+➤ A closing agent
+
+Most B2B teams are still doing outbound like it’s 2019.
+
+A rep doing manual research, qualifying leads based on gut feeling, and improvising every call.
+
+Meanwhile, their competitors are using AI agents that research accounts in 60 seconds, score every lead automatically, and prep every meeting before it even starts.
+
+So I built, with the same system from one of my previous post, 3 specialized agents inside Claude that cover the entire sales workflow with the most trendy tool of the moment.
+
+You give them your product, your ICP, and your pipeline.
+
+They handle the rest.
+
+Here’s what’s inside:
+
+→ 𝗥𝗲𝘀𝗲𝗮𝗿𝗰𝗵 𝗮𝗴𝗲𝗻𝘁: analyzes any prospect in 60 seconds. Company insights, pain points, competitors, and a precise angle of approach
+
+→ 𝗤𝘂𝗮𝗹𝗶𝗳𝗶𝗰𝗮𝘁𝗶𝗼𝗻 𝗮𝗴𝗲𝗻𝘁: scores leads based on fit and intent, builds your objection database, and tells you exactly where to focus
+
+→ 𝗖𝗹𝗼𝘀𝗶𝗻𝗴 𝗮𝗴𝗲𝗻𝘁: prepares every call in 3 minutes, writes proposals, creates follow-ups, and makes sure no deal slips through
+
+→ Plus: how to connect all 3 with GojiberryAI to build a complete acquisition system
+
+Want the 3 agents?
+
+Full access here: https://lnkd.in/dr2yb3rZ

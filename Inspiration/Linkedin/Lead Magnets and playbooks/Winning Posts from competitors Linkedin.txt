@@ -1,0 +1,634 @@
+# WINNING LINKEDIN POSTS FROM COMPETITORS
+
+We turned Claude COWORK + GojiberryAI into a LinkedIn SDR that runs 24/7.
+
+At YASO, we don’t spend on paid marketing, but we do a lot of direct outreach. We send 250+ LinkedIn messages a week to prospects and potential clients.
+
+We needed a system that could keep up. So we built one, and we added 7-figures of revenue in Q1! 🚀 
+
+This is the exact process high-growth tech companies use to book meetings for B2B clients 
+
+The problem with traditional prospecting? You spend 80% of your time figuring out WHO to contact.
+
+And 20% writing messages nobody reads.
+
+We do it differently
+
+Our system doesn't prospect. It captures.
+
+Here's what runs while I focus on other tasks:
+→ Scans 1,000+ profiles to detect real buying signals 
+→ Adapts tone based on the prospect's seniority level
+→ Manages conversation threads over multiple days without losing context 
+→ Knows exactly when to push for a call and when to back off
+
+Our average reply rate is well above average! 🔥 
+
+The whole system is in one doc. 
+→ The 7 AI agents that scan LinkedIn for you 
+→ The multi-step conversation framework that never feels like spam 
+→ How Claude cross-references signals to score buying intent 
+→ The exact triggers that tell you a lead is ready for a call
+
+Want to set this up yourself?
+
+EDIT: After so many requests, here's the playbook - https://lnkd.in/eWRwn3N4
+
+----------
+
+Claude Cowork has just killed manual prospecting 😳 And I'm never going back. Before, I could spend hours crafting personalized LinkedIn messages. Now? My AI stack does it better than me. No more copy-pasted templates. No more "hey {{first_name}}" spam. No more getting tired after the 47th message. Here's what Claude Cowork actually does: → Find prospects and write relevant opening lines → Conduct natural, multi-stage conversations → Handle objections and qualify leads → Stay consistent with your brand across hundreds of messages. The result for me? 12+ hours saved every week. The entire system I use is in one document: - How to train Claude on your KPI and your offer - Prompts that generate messages people actually respond to - The workflow to stay within LinkedIn's boundaries. Goal: 2 to 5 qualified calls per day. Want the complete system? Add me and comment “COWORK”
+
+
+------------
+
+Claude Cowork + GojiberryAI just killed manual prospecting.
+
+And I’m never going back.
+
+Before, I used to spend hours writing personalized LinkedIn messages.
+
+Now? My AI stack does it better than I ever could.
+
+No more copy-paste templates.
+No more “hey {{first_name}}” spam.
+No more burnout after the 47th message.
+
+After testing all the major models this year, here’s what actually works today:
+
+Claude Cowork = LinkedIn outreach that genuinely gets replies.
+
+What these models can now do:
+
+→ Research prospects and write relevant hooks
+→ Run natural, multi-step conversations
+→ Handle objections and qualify leads
+→ Stay consistent with your brand across hundreds of messages
+
+The difference? 12+ hours saved.
+
+Everything I use is documented in one place:
+
+→ How to train Claude on your ICP and offer
+→ The prompts that generate messages people actually reply to
+→ The workflow to stay within LinkedIn limits
+→ When humans should step in to maintain quality
+
+Goal: 2 to 5 qualified calls per day.
+
+Want the full system?
+
+After so many requests here's the playbook: https://lnkd.in/dubft4AE
+
+----------------------------
+
+La prospection telle que vous la connaissez est morte.
+Claude SCHEDULE vient de le prouver.
+
+Agences. Équipes commerciales. Prospection manuelle.
+Tout est en train d’être remplacé.
+
+J’ai testé tous les modèles d’intelligence artificielle pour la prospection sur LinkedIn. Gemini 3, GPT-5.2, Llama.
+
+Toujours les mêmes problèmes :
+Messages génériques. Mauvais timing. Peu de réponses.
+
+Puis Claude SCHEDULE est arrivé.
+
+Et là, tout a changé.
+
+J’ai donc construit un système autour de ça :
+Un prompt optimisé pour écrire des messages qui obtiennent des réponses
++
+Un moteur de signaux pour contacter les prospects au moment exact où ils sont prêts à acheter
+
+Résultat :
+Des messages qui semblent écrits pour une seule personne
+Un timing basé sur de vrais signaux d’intention
+Des conversations qui se transforment en rendez-vous
+Une prospection entièrement automatisée
+
+Plus de listes à construire.
+Plus de messages à écrire.
+Plus de relances à gérer.
+
+Juste des résultats.
+
+Ce système :
+→ trouve automatiquement des prospects à fort potentiel
+→ écrit des messages ultra pertinents dans votre ton
+→ contacte au bon moment
+→ génère 2 à 5 fois plus de réponses
+→ vous fait gagner plusieurs heures chaque jour
+
+Je partage le prompt exact + le système complet.
+
+Si vous faites encore de la prospection à l’ancienne, vous êtes déjà en retard.
+
+Commentez « SCHEDULE » et je vous l’envoie.
+(On doit être connectés pour que je puisse vous répondre)
+
+
+-----------------
+
+Arrêtez de payer des commerciaux. Claude vient de plier le game.
+
+Les commerciaux passent 80% de leur temps à :
+
+- Scraper des listes éclatées.
+- Chercher une "accroche" sur le profil du prospect.
+- Envoyer des copier-coller qui finissent en "Vu".
+
+En vrai c'est même plus de la vente !
+C'est limite du secrétariat.
+
+Du coup on a testé un petit hack :
+Brancher Claude + cet outil directement à mon flux LinkedIn.
+
+Ca a permis :
+
+→ L'IA identifie mes cibles idéales.
+→ Elle lit leurs 3 derniers posts et l'actualité de leur boîte.
+→ Elle détecte les vrais signaux d'achat.
+→ Elle rédige une approche 100% unique
+→ Elle gère le suivi.
+
+On a réussi à générer 26 RDV qualifiés VS 20 min de taff.
+
+Pas mal du tout !
+(Surtout qu'on est vraiment naze en outbound haha)
+
+Bilan de la semaine : 50 RDV qualifiés obtenus.
+
+J’ai documenté l'intégralité du système (prompts, setup d'intention, limites d'envoi pour zéro ban) dans un guide complet.
+
+Tu veux transformer ton acquisition ?
+Commente “COWORK” 👇
+
+P.S : pense BIEN a m'ajouter sur linkedin que je puisse te l'envoyer ! 
+P.S 2 : Repost et t’es prio
+
+------------------
+
+La prospection telle que vous la connaissez est morte.
+Claude MCP vient de le prouver.
+ 
+Agences. Équipes commerciales. Prospection manuelle.
+ 
+Tout est en train d’être remplacé.
+ 
+J’ai testé tous les modèles d’intelligence artificielle pour la prospection sur LinkedIn. Gemini 3, GPT-5.2, Llama.
+ 
+Toujours les mêmes problèmes :
+ 
+Messages génériques. Mauvais timing. Peu de réponses.
+ 
+Puis Claude MCP est arrivé.
+ 
+Et là, tout a changé.
+ 
+J’ai donc construit un système à l’aide d’un outil autour de ça :
+ 
+Un prompt optimisé pour écrire des messages qui obtiennent des réponses
+ 
+ +
+ 
+Un moteur de signaux pour contacter les prospects au moment exact où ils sont prêts à acheter
+ 
+Résultat :
+ 
+ - Des messages qui semblent écrits pour une seule personne
+ - Un timing basé sur de vrais signaux d’intention
+ - Des conversations qui se transforment en rendez-vous
+ - Une prospection entièrement automatisée
+ 
+Plus de listes à construire.
+ 
+Plus de messages à écrire.
+ 
+Plus de relances à gérer.
+ 
+Juste des résultats.
+ 
+Ce système :
+ 
+ → trouve automatiquement des prospects à fort potentiel
+ 
+ → écrit des messages ultra pertinents dans votre ton
+ 
+ → contacte au bon moment
+ 
+ → génère 2 à 5 fois plus de réponses
+ 
+ → vous fait gagner plusieurs heures chaque jour
+ 
+Je partage le prompt exact + le système complet que j’ai suivi. 
+Et bien sûr l’outil. 
+ 
+Si vous faites encore de la prospection à l’ancienne, vous êtes déjà en retard.
+ 
+Commentez « MCP » et je vous l’envoie.
+ 
+(On doit être connectés pour que je puisse vous répondre)
+ 
+Repost pour un accès direct
+
+---------------
+
+CONNECTER Claude À Linkedin en 30 SECONDES ? 🤯 
+J’arrive après la hype, mais j’pensais pas que c’était si puissant ! 
+
+Au début, noyée sous les posts sur Claude, j’y ai pas cru. 
+Encore un outil qui promet l’automatisation parfaite. 
+
+Puis j’ai testé de le connecter avec Linkedin, via un outil qui utilise Claude.
+Et là…j’ai compris le problème : c’est beaucoup TROP efficace. 
+
+⚡️ Concrètement, voilà ce que ça fait : 
+
+1. Il détecte les signaux d’achat AVANT tout le monde : 
+Fini les listes froides éclatées, il cible des gens déjà en train de bouger. 
+
+2. Il te crée des listes de prospects ultra-ciblée : 
+“Trouve-moi des fondateurs qui viennent de lever ET recrutent des commerciaux” j’ai une liste prête + sans effort. 
+
+3. Il écrit des messages qui font répondre : 
+Basés sur du réel, pas du copier-coller dégueu. 
+
+4. Il envoie au timing parfait : 
+Quand l’intérêt est là, pas 3 semaines trop tard. 
+
+5. Il gère les réponses et filtre pour toi : 
+Tu récupères uniquement les leads intéressants. 
+
+6. Il peut passer à l’échelle sur plusieurs comptes : 
+Multi-comptes, et toujours personnalisé. 
+
+7. Il s’améliore tout seul : 
+Chaque réponse = il devient meilleur. 
+
+Je suis passé de : “je prospecte jamais” 
+À : “la machine prospecte H24 pour moi” 
+ET en ce moment : “MAIS COMMENT JE VAIS GÉRER TOUS CES LEADS ?” 😅
+
+⚠️ Par contre, soyons clairs : 
+
+L’outil va exécuter ta logique (cible, angle, offre). 
+Mal utilisé = spam ignoble + accélération de ton échec. 
+Bien utilisé = pipeline blindé + RDV qui s’enchaînent.
+
+Si tu veux le guide + l’outil : commente “CLAUDE” 👇 
+Je t’envoie tout. 
+Ajoute moi et repost pour un accès prio !! 
+
+PS : le guide est gratuit, l’outil est payant (logique 😅)
+
+--------------
+
+Connectez Claude à LinkedIn en un clic
+Il trouve des prospects, rédige des messages et réserve des rendez-vous
+
+J’ai découvert un connecteur avec plus de 300 actions
+Ainsi, Claude ne se contente plus de suggérer : il exécute réellement
+
+30 secondes pour le connecter
+Puis votre prospection fonctionne en pilote automatique
+
+𝐕𝐨𝐢𝐜𝐢 𝐜𝐞 𝐪𝐮𝐞 𝐯𝐨𝐮𝐬 𝐝𝐞́𝐛𝐥𝐨𝐪𝐮𝐞𝐳 :
+1/ Détecter les signaux d’achat en temps réel
+Claude identifie les personnes déjà en intention
+Pas des prospects froids au hasard
+
+2/ Créer des listes de prospects ultra ciblées
+« Trouve des fondateurs qui viennent de lever des fonds
+et recrutent des commerciaux »
+
+3/ Transformer les signaux en messages
+Chaque message repose sur un élément réel, ce qui génère des réponses
+
+4/ Lancer les conversations au bon moment
+Claude contacte au moment où l’intérêt est maximal
+
+5/ Qualifier les prospects et obtenir des rendez-vous
+Il gère les réponses, filtre les contacts
+
+6/ Passer à l’échelle sur plusieurs comptes
+Lancez des campagnes sur plusieurs profils LinkedIn
+Sans perdre en personnalisation
+
+7/ S’améliorer chaque jour
+
+Claude apprend à partir des réponses
+Et améliore ses performances en continu
+Commentez « MCP » et je vous envoie le guide d’installation + Outil 
+
+*ce post est sponsorisé par un outil que j'utilise quotidiennement
+
+--------------
+
+Transforme Claude en un SDR à 4 000€ /mois qui ne dort jamais.
+12 compétences d’outbound. 
+Un système complet de pipeline opérationnel en moins de 2 heures.
+
+La plupart des gens utilisent Claude pour écrire des emails ou résumer des documents.
+
+C’est comme utiliser une Lamborghini pour livrer des pizzas.
+Claude peut gérer tout ton pipeline outbound : détection de signaux, recherche de prospects, prospection, relances, gestion du pipeline.
+
+Mais seulement si tu le configures comme un système, pas comme un simple chatbot.
+
+L’outil que j’ai mis en place suit un système de 12 compétences, réparties en 3 catégories :
+
+→ Suivi des signaux d’achat
+→ Alertes d’engagement chez les concurrents
+→ Suivi des changements de poste
+→ Notifications de levées de fonds
+→ Analyse de correspondance avec l’ICP
+→ Analyse approfondie d’entreprise
+→ Cartographie de la stack technique
+→ Identification des décideurs
+→ Rédaction de messages personnalisés
+→ Génération de séquences de relance
+→ Analyse des réponses
+→ Résumé des conversations
+
+Chaque compétence est un prompt, que tu n’as pas à appliquer toi même. En revanche les gars qui ont créé le système t’expliquent tout dans un document.
+
+Tu peux tout mettre en place sans API. Mais avec un outil bien précis. Et oui, c’est bien celui dont tout le monde parle.
+
+Un système outbound complet en moins de 2 heures. Tu peux le tester gratuitement.
+
+Commente « SDR » ci-dessous
+
+
+-------------
+
+J’ai construit une équipe de commerciaux composée de 3 agents IA avec Claude Opus 4.7 PARTIE 2
+Je fais suite à un précédent post (et je donne les 3 gratuitement 👇)
+
+➤Un agent de recherche
+➤Un agent de qualification
+➤ Un agent de closing
+
+La plupart des équipes B2B font encore leur prospection comme en 2019.
+
+Un commercial qui fait ses recherches à la main, qui qualifie au feeling, et qui improvise chaque appel.
+
+Pendant ce temps, leurs concurrents utilisent des agents IA qui font la recherche en 60 secondes, scorent chaque lead automatiquement, et préparent chaque rendez-vous avant même qu’il commence.
+
+Du coup, j’ai construit avec l’outil dont je parlais dans un post précédent, 3 agents spécialisés dans Claude qui couvrent tout le travail d’une équipe commerciale. 
+
+Bien sûr que j’ai pas fait ça tout seul...
+
+Tu leur donnes ton produit, ton ICP et ton pipeline.
+Ils s’occupent du reste.
+
+Voici ce qu’il y a dedans :
+
+→ Agent de recherche : analyse n’importe quel prospect en 60 secondes. Infos sur la boîte, pain points, concurrents, et angle d’approche précis
+
+→ Agent de qualification : score les leads selon le fit et l’intention, construit ta base d’objections, et te dit exactement sur quoi te concentrer
+
+→ Agent de closing : prépare chaque call en 3 minutes, rédige les propositions, crée les follow-ups, et s’assure qu’aucun deal ne passe à côté
+
+→ Comment connecter les 3 avec GojiberryAI pour créer un système d’acquisition complet
+
+Tu veux les 3 agents ?
+
+Commente "AGENTS" et je t'envoie tout ! 👇
+
+(Il faut qu'on soit connecté pour que je puisse l'envoyer)
+
+-------------
+
+I built 3 sales AI agents using Claude Opus 4.7 + GojiberryAI.
+
+(and I’m giving all 3 away for free)
+
+➤ A research agent
+➤ A qualification agent
+➤ A closing agent
+
+Most B2B teams are still doing outbound like it’s 2019.
+
+A rep doing manual research, qualifying leads based on gut feeling, and improvising every call.
+
+Meanwhile, their competitors are using AI agents that research accounts in 60 seconds, score every lead automatically, and prep every meeting before it even starts.
+
+So I built, with the same system from one of my previous post, 3 specialized agents inside Claude that cover the entire sales workflow with the most trendy tool of the moment.
+
+You give them your product, your ICP, and your pipeline.
+
+They handle the rest.
+
+Here’s what’s inside:
+
+→ 𝗥𝗲𝘀𝗲𝗮𝗿𝗰𝗵 𝗮𝗴𝗲𝗻𝘁: analyzes any prospect in 60 seconds. Company insights, pain points, competitors, and a precise angle of approach
+
+→ 𝗤𝘂𝗮𝗹𝗶𝗳𝗶𝗰𝗮𝘁𝗶𝗼𝗻 𝗮𝗴𝗲𝗻𝘁: scores leads based on fit and intent, builds your objection database, and tells you exactly where to focus
+
+→ 𝗖𝗹𝗼𝘀𝗶𝗻𝗴 𝗮𝗴𝗲𝗻𝘁: prepares every call in 3 minutes, writes proposals, creates follow-ups, and makes sure no deal slips through
+
+→ Plus: how to connect all 3 with GojiberryAI to build a complete acquisition system
+
+Want the 3 agents?
+
+Full access here: https://lnkd.in/dr2yb3rZ
+
+------------------
+
+After so many requests, here's the playbook: https://lnkd.in/eUuvRehu
+
+
+R.I.P generic cold emails. GojiberryAI trained Claude on millions of outbound interactions.
+
+Now it’s outperforming entire outreach teams for some of the best leaders and revenue organizations in my network.
+
+They tested every major AI model on cold outreach.
+
+GPT.
+Gemini.
+Grok.
+Llama.
+
+Most of them can write decent emails.
+But “decent” does not generate pipeline.
+
+Claude stood out for one reason:
+It understands context better than any other model we tested.
+
+So they use a tool to built a custom outbound system around it.
+Not just prompts.
+
+A full workflow trained on years of winning campaigns, reply patterns, intent signals, and real conversations.
+
+Here’s what it does:
+→ Detects high-intent prospects automatically
+→ Scores leads using dozens of buying signals
+→ Generates hyper-personalized emails based on live context
+→ Creates and tests multiple outreach angles
+→ Optimizes copy for deliverability and replies
+→ Learns from previous campaign performance
+→ Removes generic templates completely
+→ Handles outreach infrastructure from A to Z
+→ Writes emails in seconds, not hours
+
+The result?
+Outbound that feels human.
+At scale.
+
+While most teams are still paying thousands every month for average outreach…
+This system can generate better emails in under a minute.
+
+Comment “CLAUDE” and I’ll send you access 👇
+
+-----------------
+
+LK prospecting is still 90% guesswork.
+
+Claude Opus 4.7 + GojiberryAI just killed that. PART 3 of the series
+
+I’ve been testing this stack for the past 3 weeks.
+The difference is ridiculous.
+
+Here’s what most people are still doing:
+
+❌ Copy-pasting LK profiles into ChatGPT
+❌ Manually exporting leads from Sales Navigator
+❌ Writing “personalized” messages one by one
+❌ Launching campaigns blindly, with zero intent signals
+
+That worked 12 months ago.
+Not anymore.
+
+Today, a TOOL can connect Claude directly to your LK workflow through MCP.
+
+What does that actually unlock?
+→ Lead qualification based on your ICP
+→ Live prospect data enrichment
+→ Automatic buying intent signal detection
+→ Hyper-personalized messaging based on prospect activity
+→ Follow-ups that adapt to replies and objections
+→ LK + email campaigns managed from one interface
+
+The real unlock isn’t the writing.
+
+It’s the intelligence layer.
+
+Opus 4.7 decides WHO to contact, WHEN to contact them, and WHAT to say based on 100% real signals.
+
+Setup time: 10 minutes max.
+
+They documented everything they built into a complete guide:
+
+→ Prompts to automate lead qualification
+→ Full MCP setup for LK from A to Z
+→ Hyper-personalized messaging scripts
+→ The highest-value intent signals to track
+→ Follow-up sequence logic
+→ Email outreach integration
+
+Want the guide? And the tool of course ? 
+
+- Like + connect with me
+- Comment “MCP”
+
+PS: if you’re still doing cold outbound without intent signals, at least read the section on intent detection.
+
+♻️ Repost to share this guide with your network
+
+After so many requests, here is the playbook: https://lnkd.in/deAHbRDB 
+
+---------------------
+
+BYE BYE manual outreach.
+Claude + LinkedIn just ended the grind ↓
+
+Most people use Claude to write their posts.
+That's just 1% of what Claude can do.
+
+I woke up to this email today: "Your AI Agent Just Delivered 126 Fresh Leads."
+
+126 people who matched a specific ICP and showed buying signals.
+
+People who are likely worth contacting right now.
+
+The system is built on Claude + LinkedIn and one tool I already talked about in a previous post.
+
+The workflow is surprisingly simple:
+
+1. Define your ICP once
+
+2. Add the signals you care about
+
+Examples:
+
+→ Profile visitors
+→ Job changers
+→ People engaging with specific creators
+→ People engaging with specific topics
+→ Followers of specific companies
+→ Lookalikes of your best customers
+
+3. Let the agent continuously monitor LinkedIn.
+
+4. Then every day it finds leads with buying signals
+
+5. Writes DMs with Claude that read like a human
+
+The results:
+—> A list of people with a much higher likelihood of responding.
+—> Going from 1-2% cold reply rates to 25%+ warm ones
+
+The difference is intent.
+You're not interrupting strangers.
+You're joining conversations people already started.
+
+They put the whole thing into one playbook:
+--> How to set up agents that surface warm leads every day
+--> The 4-week plan to go from 0 to 9+ calls
+
+Want it?
+Here is the playbook: https://lnkd.in/e5YutbKb
+
+♻️ Repost to help any founder still doing this by hand.
+
+P.S. Start treating LinkedIn as a warm lead engine. Every post is a net. Every comment is a signal. Make that shift and see meetings booked in your calendar.
+
+------------
+
+BYE BYE manual outreach.
+Claude + LK just ended the grind ↓
+
+After so many request here is the link you’ll requested: https://lnkd.in/gFcYH4xq
+
+Most people use Claude to write their posts.
+
+That's just 1% of what Claude can do.
+
+Last week we booked 12 demos in 5 days using Claude + LK.
+
+Here's what the system actually does:
+
+1. Finds leads already showing buying signals, not cold scraped lists
+2. Writes DMs with Claude that read like a human, not a template
+3. Turns 1-2% cold reply rates into 25-40% warm ones
+4. Books the meeting in under 30 words, no 3,000-word pitch
+5. Runs the follow-ups on autopilot so nothing slips
+
+The difference is intent. You're not interrupting strangers. You're joining conversations people already started.
+
+I put the whole thing into one playbook:
+
+- The exact 3 DM scripts we use to book calls
+- The Claude prompts that write like a human (copy-paste)
+- How to set up agents that surface warm leads every day
+- The 4-week plan to go from 0 to 9+ calls
+
+Want it?
+
+Comment "CLAUDE" and I'll send the full playbook over.
+
+After so many request here is the link you’ll requested: https://lnkd.in/gFcYH4xq
+
+♻️ Repost to help any founder still doing this by hand.
+

@@ -1,0 +1,54 @@
+LK prospecting is still 90% guesswork.
+
+Claude Opus 4.7 + GojiberryAI just killed that. PART 3 of the series
+
+I’ve been testing this stack for the past 3 weeks.
+The difference is ridiculous.
+
+Here’s what most people are still doing:
+
+❌ Copy-pasting LK profiles into ChatGPT
+❌ Manually exporting leads from Sales Navigator
+❌ Writing “personalized” messages one by one
+❌ Launching campaigns blindly, with zero intent signals
+
+That worked 12 months ago.
+Not anymore.
+
+Today, a TOOL can connect Claude directly to your LK workflow through MCP.
+
+What does that actually unlock?
+→ Lead qualification based on your ICP
+→ Live prospect data enrichment
+→ Automatic buying intent signal detection
+→ Hyper-personalized messaging based on prospect activity
+→ Follow-ups that adapt to replies and objections
+→ LK + email campaigns managed from one interface
+
+The real unlock isn’t the writing.
+
+It’s the intelligence layer.
+
+Opus 4.7 decides WHO to contact, WHEN to contact them, and WHAT to say based on 100% real signals.
+
+Setup time: 10 minutes max.
+
+They documented everything they built into a complete guide:
+
+→ Prompts to automate lead qualification
+→ Full MCP setup for LK from A to Z
+→ Hyper-personalized messaging scripts
+→ The highest-value intent signals to track
+→ Follow-up sequence logic
+→ Email outreach integration
+
+Want the guide? And the tool of course ? 
+
+- Like + connect with me
+- Comment “MCP”
+
+PS: if you’re still doing cold outbound without intent signals, at least read the section on intent detection.
+
+♻️ Repost to share this guide with your network
+
+After so many requests, here is the playbook: https://lnkd.in/deAHbRDB

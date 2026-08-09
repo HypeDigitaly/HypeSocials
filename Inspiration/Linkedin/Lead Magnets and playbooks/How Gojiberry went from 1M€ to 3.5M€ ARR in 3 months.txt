@@ -1,0 +1,377 @@
+Title: OBVIOUS - 1M€ to 3.5M€ in 3 months for Gojiberry.ai
+
+URL Source: https://obvious-gojiberry-people-led-growth.lovable.app/
+
+Markdown Content:
+## How Gojiberry went from 1M€ to 3.5M€ ARR in 3 months
+
+Everything below is the exact acquisition system we built for Gojiberry: the content strategy, creator activation, Thought Leader Ads, outbound workflow and attribution.
+
+No generic LinkedIn advice. Just the campaign we actually ran.
+
+ARR growth · 3 months€M, internal data
+
+## The strategy: People-Led Growth
+
+Instead of pushing more ads or scaling cold outbound, we deployed a People-Led Growth system for Gojiberry: turn their team and trusted creators into the distribution channel, amplify what resonates, and convert the attention into pipeline.
+
+The framework below breaks down into five steps. The next sections walk through exactly how we executed each one.
+
+The framework
+
+People-Led Growth
+
+Turn attention into pipeline.
+
+1
+
+Content Strategy
+
+Lead-magnet content that attracts and educates your ICP.
+
+Guides
+
+Templates
+
+Benchmarks
+
+Reports
+
+Playbooks
+
+2
+
+Organic Distribution
+
+Distributed by creators and employees.
+
+in
+
+in
+
+in
+
+in
+
+in
+
+in
+
+3
+
+Thought Leader Ads
+
+We boost 100% of posts. Scale what works, kill what doesn't.
+
+Scale
+
+Stop
+
+4
+
+Outbound on Engagement
+
+We contact ICPs who engaged but didn't convert.
+
+━━
+
+Liked but didn't convert
+
+━━
+
+Commented but didn't convert
+
+━━
+
+Engaged but didn't convert
+
+5
+
+Pipeline
+
+Inbound leads + outbound conversations generate pipeline and revenue.
+
+Inbound leads
+
+organic + TLA
+
++
+
+Outbound
+
+from engagement
+
+→
+
+Pipeline
+
+→
+
+Revenue
+
+The exact system we applied to Gojiberry below.
+
+## Step 1 — Building the Content Strategy
+
+Everything started with research.
+
+We wanted to understand what was already proven to generate engagement with Gojiberry's exact buyers, instead of brainstorming ideas from scratch.
+
+### 1. Analyze Gojiberry's historical content
+
+First, we reviewed everything Gojiberry had already published.
+
+We identified:
+
+*   which posts generated the most engagement
+*   which topics resonated
+*   which formats worked
+*   what their audience naturally interacted with
+
+### 2. Benchmark the niche
+
+Then we moved outside Gojiberry.
+
+Using Favikon, we collected the highest-performing LinkedIn posts in their niche.
+
+Specifically, we looked for posts around:
+
+*   LinkedIn outreach
+*   outbound prospecting
+*   sales automation
+*   lead generation
+
+The goal wasn't inspiration.
+
+It was to build a database of posts that had already generated hundreds or thousands of comments from the exact audience Gojiberry wanted to reach.
+
+### 3. Extract the patterns with Claude
+
+Once we had:
+
+*   Gojiberry's best historical posts
+*   the best-performing posts from the niche
+
+we sent everything to Claude.
+
+Instead of asking it to write posts, we asked it to identify:
+
+*   recurring hooks
+*   recurring structures
+*   recurring content angles
+*   recurring lead magnet formats
+
+In other words:
+
+_What patterns consistently produce engagement in this market?_
+
+### 4. Build the campaign assets
+
+From those patterns, Claude generated:
+
+*   content pillars
+*   post intentions
+*   hook ideas
+*   lead magnet ideas
+*   supporting assets
+
+At the end of this phase we already knew:
+
+*   what topics we'd cover
+*   which lead magnets we'd promote
+*   which hooks we'd test
+*   which assets creators would distribute
+
+Everything else in the campaign was built from this foundation.
+
+If you want us to build this exact acquisition system for your company.
+
+[Book a call](https://obvious-gojiberry-people-led-growth.lovable.app/#book)
+
+## Step 2 — Creator Activation
+
+Once the content strategy was ready, we selected who would distribute it.
+
+Today we work with a network of more than 5,000 LinkedIn creators.
+
+Follower count wasn't our selection criteria.
+
+Instead we looked at two things.
+
+### ICP proximity
+
+We wanted creators who looked like Gojiberry's buyers.
+
+Typically:
+
+*   founders
+*   sales leaders
+*   solopreneurs
+*   SDRs
+*   AE's
+
+The closer a creator's audience was to Gojiberry's ICP, the better.
+
+### Average engagement
+
+The second criterion was simple:
+
+_How much engagement does this creator consistently generate?_
+
+A creator with 3,000 followers generating hundreds of comments every post is significantly more valuable than someone with 50,000 followers and little interaction.
+
+Engagement quality mattered far more than audience size.
+
+If you want us to build this exact acquisition system for your company.
+
+[Book a call](https://obvious-gojiberry-people-led-growth.lovable.app/#book)
+
+## Step 3 — Organic Distribution
+
+Once creators were selected, we started distributing the content.
+
+Almost every post was built around a lead magnet.
+
+We mainly used two formats.
+
+### Type A — Educational Lead Magnet
+
+The post teaches part of the system.
+
+Readers are then directed toward a detailed resource explaining step-by-step how to generate outbound leads using Gojiberry.
+
+Usually this was hosted on a Notion page.
+
+### Type B — Tool Reveal
+
+The post showcases a strong result.
+
+Instead of immediately revealing the tool, readers are asked to comment.
+
+In exchange, they receive a tracked link leading directly to Gojiberry's signup page.
+
+### Comment workflow
+
+When someone commented, we had two possible flows.
+
+Either:
+
+*   reply publicly with a tracked link
+
+or
+
+*   send the resource by DM.
+
+Depending on the campaign.
+
+Those links pointed either to:
+
+*   a detailed Notion guide
+*   or Gojiberry's signup landing page.
+
+Every click was tracked.
+
+## Real Posts From The Campaign
+
+Top posts · engagement Likes & comments
+
+[TP Theodor P. FR · LinkedIn post Claude Cowork vient de tuer la prospection manuelle 😳 Et je ne reviendrai jamais en arrière. Avant, je pouvais passer des heures à rédiger 103 405 Open on LinkedIn](https://www.linkedin.com/posts/theodorp_claude-cowork-vient-de-tuer-la-prospection-activity-7449712409314738176-OD52)[JP Jonny Plein EN · LinkedIn post We turned Claude COWORK + GojiberryAI into a LinkedIn SDR that runs 24/7. At YASO, we don’t spend on paid marketing, but we do a lot of direct outreach. We send 250+ LinkedIn messages a week to prosp 326 1,006 Open on LinkedIn](https://www.linkedin.com/posts/jonnyplein_we-turned-claude-cowork-into-a-linkedin-sdr-share-7449848214154797056-SlqP)[SS Sheriff Shahen EN · LinkedIn post Claude Cowork + GojiberryAI just killed manual prospecting. And I’m never going back. Before, I used to spend hours writing personalized LinkedIn messages. 216 880 Open on LinkedIn](https://www.linkedin.com/posts/sheriff-shahen-384930164_claude-cowork-just-killed-manual-prospecting-activity-7450120775732301824-AaS7)[SN Simon Nabet FR · LinkedIn post La prospection telle que vous la connaissez est morte. Claude SCHEDULE vient de le prouver. Agences. Équipes commerciales. Prospection manuelle. 169 823 Open on LinkedIn](https://www.linkedin.com/posts/simon-nabet-85379182_la-prospection-telle-que-vous-la-connaissez-activity-7450128292462002177-dJZh)[HG Harold Gardas FR · LinkedIn post Arrêtez de payer des commerciaux. Claude vient de plier le game. Les commerciaux passent 80% de leur temps à : - Scraper des listes éclatées. 394 1,766 Open on LinkedIn](https://www.linkedin.com/posts/harold-gardas_arr%C3%AAtez-de-payer-des-commerciaux-claude-share-7452245567621038080-lx5a)[JG Jeremy Goillot FR · LinkedIn post La prospection telle que vous la connaissez est morte. Claude MCP vient de le prouver. Agences. Équipes commerciales. Prospection manuelle. 203 1,302 Open on LinkedIn](https://www.linkedin.com/posts/jeremygoillot_la-prospection-telle-que-vous-la-connaissez-share-7452417797051162624-TQAQ)[ID Iryna Desmarchelier FR · LinkedIn post CONNECTER Claude À Linkedin en 30 SECONDES ? 🤯 J’arrive après la hype, mais j’pensais pas que c’était si puissant ! Au début, noyée sous les posts sur Claude, j’y ai pas cru. 628 1,793 Open on LinkedIn](https://www.linkedin.com/posts/iryna-desmarchelier_connecter-claude-%C3%A0-linkedin-en-30-secondes-share-7452966652750483458-AR73)[FF Fiona Fawaz FR · LinkedIn post Connectez Claude à LinkedIn en un clic Il trouve des prospects, rédige des messages et réserve des rendez-vous J’ai découvert un connecteur avec plus de 300 actions 213 921 Open on LinkedIn](https://www.linkedin.com/posts/fionafawaz_connectez-claude-%C3%A0-linkedin-en-un-clic-il-share-7454583448926752768-9jym)[SN Simon Nabet FR · LinkedIn post Transforme Claude en un SDR à 4 000€ /mois qui ne dort jamais. 12 compétences d’outbound. Un système complet de pipeline opérationnel en moins de 2 heures. 131 472 Open on LinkedIn](https://www.linkedin.com/posts/simon-nabet-vente_transforme-claude-en-un-sdr-%C3%A0-4-000-mois-activity-7455155310698328064-Dt52)[HG Harold Gardas FR · LinkedIn post J’ai construit une équipe de commerciaux composée de 3 agents IA avec Claude Opus 4.7 PARTIE 2 Je fais suite à un précédent post (et je donne les 3 gratuitement 👇) ➤Un agent de recherche 193 615 Open on LinkedIn](https://www.linkedin.com/posts/harold-gardas_jai-construit-une-%C3%A9quipe-de-commerciaux-share-7455506967453724672-j74G)[SS Sheriff Shahen EN · LinkedIn post I built 3 sales AI agents using Claude Opus 4.7 + GojiberryAI. (and I’m giving all 3 away for free) ➤ A research agent 476 873 Open on LinkedIn](https://www.linkedin.com/posts/sheriff-shahen-384930164_i-built-3-sales-ai-agents-using-claude-opus-share-7455440865084284928-v_jD)[MH Michael Hoffman EN · LinkedIn post R.I.P generic cold emails. GojiberryAI trained Claude on millions of outbound interactions. Now it’s outperforming entire outreach teams for some of the best leaders and revenue organizations in my n 148 997 Open on LinkedIn](https://www.linkedin.com/posts/mfhoffman_rip-generic-cold-emails-they-trained-claude-share-7459942272042782720-BJEE)[SS Sheriff Shahen EN · LinkedIn post LK prospecting is still 90% guesswork. Claude Opus 4.7 + GojiberryAI just killed that. PART 3 of the series I’ve been testing this stack for the past 3 weeks. 284 624 Open on LinkedIn](https://www.linkedin.com/posts/sheriff-shahen-384930164_linkedin-prospecting-is-still-90-guesswork-share-7466668064349208576-b1Xn)[MH Michael Hoffman EN · LinkedIn post Stop Guesswork with LinkedIn Prospecting - MCP Guide GojiberryAI + Claude Opus 4.7 + MCP just killed that. I’ve been testing this stack for the past 3 weeks. 390 835 Open on LinkedIn](https://www.linkedin.com/posts/mfhoffman_linkedin-prospecting-is-still-90-guesswork-share-7468293982108696576-oiau)[ID Iryna Desmarchelier FR · LinkedIn post Il y a une nouvelle façon de prospecter sur Linkedin. Opus 4.7 + MCP + GB : cette combinaison change tout. Chez mes clients, je vois encore beaucoup trop de prospection au pif. 272 485 Open on LinkedIn](https://www.linkedin.com/posts/iryna-desmarchelier_il-y-a-une-nouvelle-fa%C3%A7on-de-prospecter-sur-share-7469987740390957056-WAPN)[AE Alexander Estner EN · LinkedIn post BYE BYE manual outreach. Claude + LinkedIn just ended the grind ↓ Most people use Claude to write their posts. 142 597 Open on LinkedIn](https://www.linkedin.com/posts/alexander-estner_bye-bye-manual-outreach-claude-linkedin-share-7475205711417884673-GuaD)[DS Divyanshi S. EN · LinkedIn post BYE BYE manual outreach. Claude + LinkedIn just ended the grind ↓ Most people use Claude to write their posts. 204 859 Open on LinkedIn](https://www.linkedin.com/posts/divyanshis-saasleadgen_bye-bye-manual-outreach-claude-linkedin-share-7477668981282156544-IFKY)
+
+Want posts like these driving pipeline for your company?
+
+[Book a call](https://obvious-gojiberry-people-led-growth.lovable.app/#book)
+
+## Step 4 — Thought Leader Ads
+
+Organic content gave us proof.
+
+Paid distribution gave us scale.
+
+Every winning post was turned into a Thought Leader Ad.
+
+### Audience strategy
+
+We built three types of audiences.
+
+### ABM lists
+
+Specific target companies.
+
+### Buyer Groups
+
+Lists of companies sharing similar characteristics.
+
+### Classic LinkedIn targeting
+
+Firmographics, job titles and company filters.
+
+### Repetition over reach
+
+The objective wasn't maximum reach.
+
+It was maximum familiarity.
+
+We deliberately kept audiences small enough that, given the available budget, our ICP would see Gojiberry content roughly 10 times per month.
+
+Repeated exposure consistently outperformed showing one post once to a much larger audience.
+
+If you want us to build this exact acquisition system for your company.
+
+[Book a call](https://obvious-gojiberry-people-led-growth.lovable.app/#book)
+
+## Step 5 — Triggered Outbound
+
+Every interaction became a sales signal.
+
+Everyone who:
+
+*   liked a post
+*   commented
+*   engaged
+
+was automatically extracted.
+
+Those people then entered an outbound sequence referencing the content they had interacted with.
+
+Instead of cold outreach, every conversation started from an existing interaction.
+
+That context dramatically improved reply rates.
+
+If you want us to build this exact acquisition system for your company.
+
+[Book a call](https://obvious-gojiberry-people-led-growth.lovable.app/#book)
+
+## Step 6 — Attribution
+
+Everything was measurable.
+
+Pipeline influence · share% of attributed pipeline
+
+### Tolt — affiliate & creator tracking
+
+Gojiberry already had Tolt in place, so we plugged into it. For every post and every creator, we could track:
+
+*   clicks
+*   sign-ups
+*   paying customers
+*   revenue generated
+
+This told us exactly which creators and which posts were driving actual revenue.
+
+### What we usually set up on top
+
+When a client doesn't already have Tolt, we typically deploy LeadJourney to do the same job — attributing clicks, sign-ups and paying customers back to each post and creator.
+
+And on top of that, we generally add Fibbler to measure pipeline influence from our Thought Leader Ads. By connecting it to the CRM, we can see, for every deal and every customer, whether they've been exposed to our posts or clicked on our ads.
+
+The point: we move beyond first-click / last-click and get a real view of LinkedIn's impact on pipeline and revenue.
+
+Next step
+
+## Want to build the same system?
+
+At Obvious, we run this exact acquisition system for Gojiberry and 100+ other SaaS like Notion and Collective.work.
+
+On the call, we'll dig into your target audience, your goals, and walk you through the exact strategy we'd put in place to get you there.
+
+No pitch, no slides.

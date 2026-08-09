@@ -1,0 +1,45 @@
+La prospection telle que vous la connaissez est morte.
+Claude SCHEDULE vient de le prouver.
+
+Agences. Équipes commerciales. Prospection manuelle.
+Tout est en train d’être remplacé.
+
+J’ai testé tous les modèles d’intelligence artificielle pour la prospection sur LinkedIn. Gemini 3, GPT-5.2, Llama.
+
+Toujours les mêmes problèmes :
+Messages génériques. Mauvais timing. Peu de réponses.
+
+Puis Claude SCHEDULE est arrivé.
+
+Et là, tout a changé.
+
+J’ai donc construit un système autour de ça :
+Un prompt optimisé pour écrire des messages qui obtiennent des réponses
++
+Un moteur de signaux pour contacter les prospects au moment exact où ils sont prêts à acheter
+
+Résultat :
+Des messages qui semblent écrits pour une seule personne
+Un timing basé sur de vrais signaux d’intention
+Des conversations qui se transforment en rendez-vous
+Une prospection entièrement automatisée
+
+Plus de listes à construire.
+Plus de messages à écrire.
+Plus de relances à gérer.
+
+Juste des résultats.
+
+Ce système :
+→ trouve automatiquement des prospects à fort potentiel
+→ écrit des messages ultra pertinents dans votre ton
+→ contacte au bon moment
+→ génère 2 à 5 fois plus de réponses
+→ vous fait gagner plusieurs heures chaque jour
+
+Je partage le prompt exact + le système complet.
+
+Si vous faites encore de la prospection à l’ancienne, vous êtes déjà en retard.
+
+Commentez « SCHEDULE » et je vous l’envoie.
+(On doit être connectés pour que je puisse vous répondre)
