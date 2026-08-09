@@ -26,6 +26,8 @@ from typing import TYPE_CHECKING
 from hypesocials.config import Config
 from hypesocials.models import TrendItem
 from hypesocials.sources import virlo as _virlo
+from hypesocials.sources.inspiration import InspirationPool, Mix, apply_mix, load_pool
+from hypesocials.sources.notion import BrandContext, fetch_brand_context
 from hypesocials.sources.virlo import cleanup, list_monitors, reference_paths
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -70,4 +72,7 @@ async def fetch(
     return items
 
 
-__all__ = ["SOURCE_STATUS", "cleanup", "fetch", "list_monitors", "reference_paths"]
+__all__ = [
+    "SOURCE_STATUS", "BrandContext", "InspirationPool", "Mix", "apply_mix", "cleanup", "fetch",
+    "fetch_brand_context", "list_monitors", "load_pool", "reference_paths",
+]

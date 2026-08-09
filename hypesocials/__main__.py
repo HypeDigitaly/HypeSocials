@@ -34,7 +34,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from hypesocials import cli, runner
+from hypesocials import cli, menu, previews, runner
 
 #: Repo root — `.env` sits beside `run.bat`, never inside the package.
 ROOT = Path(__file__).resolve().parent.parent
@@ -45,24 +45,26 @@ _PHASE_2_NOTE = (
     "prds/60-publishing-postiz.md.\n"
     "Nothing was published and no billable call was made (FR-175)."
 )
-_PREVIEW_NOTE = (
-    "{flag} is built in Wave 5 (plan §2 T5.2) — it will replay this run's Collect/Select "
-    "(and Analyze/Write) stages verbatim rather than a parallel dry-run path (D19).\n"
-    "Nothing was spent."
-)
 
 
 def main(argv: list[str] | None = None) -> int:
     """Parse, dispatch, and return the exit code. `run.bat` propagates it to Task Scheduler."""
     load_dotenv(ROOT / ".env")
     opts = cli.parse_args(argv)  # unknown flag: argparse exits 2 here, before any load (FR-63)
+    config = None
+
+    # The wizard is synchronous by contract and runs BEFORE the loop (30 §4, menu.py): it asks,
+    # it never starts anything. Standalone actions never reach it, and `--yes` skips it (FR-60);
+    # a run with no console falls through to `runner.run()`, which refuses per FR-66.
+    if opts.action is cli.Action.RUN and opts.interactive and cli.console_refusal(opts) is None:
+        result = menu.run_menu(opts)
+        if result is None:  # quit at any step: nothing started, nothing spent (FR-59)
+            return runner.EXIT_OK
+        opts, config = result.options, result.config  # the Config carries the source pick, FR-135
 
     if opts.action in (cli.Action.PUBLISH, cli.Action.PROMOTE):
-        print(_PHASE_2_NOTE)
+        print(_PHASE_2_NOTE)  # also the wizard's publish action (FR-175) — one honest message
         return runner.EXIT_OK
-    if opts.action in (cli.Action.PREVIEW_SOURCES, cli.Action.PREVIEW_ANALYSIS):
-        print(_PREVIEW_NOTE.format(flag=f"--{opts.action.value}"))
-        return runner.EXIT_PREFLIGHT
 
     loop = asyncio.ProactorEventLoop()  # explicit: subprocess support on Windows depends on it
     asyncio.set_event_loop(loop)
@@ -71,7 +73,13 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if opts.action is cli.Action.LIST_MONITORS:
             return loop.run_until_complete(runner.list_monitors(opts))
-        return loop.run_until_complete(runner.run(opts, control))
+        # Previews never prompt, so `console_refusal` must not gate them: headless
+        # `--preview-sources` without `--yes` is legal (30 §5, FR-139/140).
+        if opts.action is cli.Action.PREVIEW_SOURCES:
+            return loop.run_until_complete(previews.preview_sources(opts, control))
+        if opts.action is cli.Action.PREVIEW_ANALYSIS:
+            return loop.run_until_complete(previews.preview_analysis(opts, control))
+        return loop.run_until_complete(runner.run(opts, control, config=config))
     except KeyboardInterrupt:  # a press that landed outside the handler window
         return runner.EXIT_INTERRUPTED
     finally:

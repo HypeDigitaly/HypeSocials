@@ -44,12 +44,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from hypesocials import analyze, cli, copywrite, generate, plan, preflight, render, sources
+from hypesocials import analyze, cli, copywrite, generate, menu, plan, preflight, render, sources
 from hypesocials.budget import Budget, Estimate, SpendCategory, SpendSummary, estimate, format_usd
 from hypesocials.config import CONFIGS_DIR, Config, ConfigError, load_config
 from hypesocials.generate import video_ref
 from hypesocials.llm import LLMClient, RoleSettings
-from hypesocials.models import ParsedResult, PlanEntry, PlanEntryStatus, StyleBrief, TrendItem
+from hypesocials.models import (
+    Brief, ParsedResult, PlanEntry, PlanEntryStatus, StyleBrief, TrendItem)
 from hypesocials.outputs import (
     Ledger,
     LogWriter,
@@ -117,6 +118,9 @@ class _Session:
     llm: LLMClient | None = None
     render_ready: bool = False
     video_refs: video_ref.Prefetch | None = None  # D23 chain, launched alongside Analyze
+    campaign_briefs: dict[str, Brief] = field(default_factory=dict)  # D26, by brief name
+    brand: sources.BrandContext = field(default_factory=sources.BrandContext)  # FR-34/36
+    pool: sources.InspirationPool = field(default_factory=sources.InspirationPool)  # D13
 
     def say(self, text: str) -> None:
         """Print one operator-facing block and put the identical (redacted) text in run.log."""
@@ -131,11 +135,17 @@ class _Session:
 # --------------------------------------------------------------------------- public actions
 
 
-async def run(opts: cli.Options, control: Control | None = None) -> int:
-    """Execute one full run and return its FR-202 exit code. Never raises for a run outcome."""
+async def run(opts: cli.Options, control: Control | None = None, *,
+              config: Config | None = None) -> int:
+    """Execute one full run and return its FR-202 exit code. Never raises for a run outcome.
+
+    `config` is the file the interactive wizard already loaded and mutated (`menu.MenuResult`).
+    It must travel: `sources.active` is the one menu answer with no CLI flag behind it (FR-135),
+    so re-loading from `opts.config_name` here would silently drop the operator's source pick.
+    """
     control = control or Control()
     try:
-        config = load_config(opts.config_name)
+        config = load_config(opts.config_name) if config is None else config
     except ConfigError as exc:  # one plain line, before any run_id exists (FR-69, 30 §8)
         print(f"config error: {exc}")
         return EXIT_PREFLIGHT
@@ -247,6 +257,7 @@ async def _pipeline(session: _Session, overrides: Sequence[str]) -> int:
         opts.briefs, config, assume_yes=opts.yes)
     for line in brief_warnings:
         session.log.warn("brief_dropped", line)
+    session.campaign_briefs = {request.brief.name: request.brief for request in briefs}
 
     resolved = plan.build_plan(config, briefs=briefs)
     for note in resolved.notes:
@@ -269,7 +280,10 @@ async def _pipeline(session: _Session, overrides: Sequence[str]) -> int:
     live, _pre_confirm_estimate = await _confirm(session, resolved.entries)
     _configure_providers(session)
 
-    trends = await _collect(session)
+    # 10 §10's brief-only carve-out: a plan of pure override briefs consumes no trend at all
+    # (FR-144), so Collect opens no Virlo session and a trend famine can never abort it.
+    brief_only = all(entry.brief_influence == "override" for entry in resolved.entries)
+    trends = await _collect(session, fetch_trends=not brief_only)
     assignment = _select(session, trends, resolved.entries)
     # Re-priced with the trends actually assigned: the shared analysis/copy calls of FR-12/FR-99
     # are per distinct trend, so the per-entry shares only become real once assignment has run.
@@ -284,9 +298,11 @@ async def _pipeline(session: _Session, overrides: Sequence[str]) -> int:
     copy_result = await _write(session, live, by_key, briefs_by_trend)
     report = await _create(session, resolved.entries, live, by_key, briefs_by_trend, copy_result)
 
-    # The brief-only carve-out (10 §10): a trend famine is fatal only when nothing was deliverable.
+    # The brief-only carve-out (10 §10): a trend famine is fatal only when nothing was deliverable,
+    # and a brief-only plan never had a trend supply to fail — its losses are ordinary (exit 1).
     return await _package(session, resolved.entries, plan_estimate, report,
-                          trend_supply_failed=not any(e.trend_key for e in resolved.entries))
+                          trend_supply_failed=not brief_only
+                          and not any(e.trend_key for e in resolved.entries))
 
 
 async def _confirm(session: _Session, entries: list[PlanEntry]) -> tuple[list[PlanEntry], Estimate]:
@@ -309,11 +325,33 @@ async def _confirm(session: _Session, entries: list[PlanEntry]) -> tuple[list[Pl
             session.log.warn("skipped_budget", f"{trimmed.asset_id}: {trimmed.skip_reason}",
                              asset_id=trimmed.asset_id,
                              estimated_usd=trimmed.estimated_cost_usd)
+    if not outcome.approved and outcome.exit_code == EXIT_PREFLIGHT and session.opts.interactive:
+        outcome = await _offer_reduced(session, entries, outcome)  # FR-28's interactive half
     if not outcome.approved:
         raise _Abort(outcome.exit_code, outcome.reason)
     session.log.event("confirmed", "spend approved", expected_usd=outcome.estimate.expected_usd,
                       cap_usd=session.config.run.spend_cap_usd, unattended=session.opts.yes)
     return list(outcome.entries), outcome.estimate
+
+
+async def _offer_reduced(session: _Session, entries: Sequence[PlanEntry],
+                         outcome: cli.ConfirmOutcome) -> cli.ConfirmOutcome:
+    """FR-28: an interactive run refuses over cap — but OFFERS the plan `--yes` would have run.
+
+    `menu.offer_reduced_plan()` shows `budget.trim()`'s deterministic result (reverse plan order,
+    atomic groups never split): the same rule, shown instead of silently applied. Accepted, the
+    kept entries proceed and the trimmed ones stay in the plan as `skipped_budget` (FR-4), so the
+    run exits 1; declined, the untouched refusal stands and nothing was spent (exit 2).
+    """
+    kept = await menu.offer_reduced_plan(session.config, entries,
+                                         console=menu.Console(say=session.say))
+    if kept is None:
+        return outcome
+    for entry in entries:
+        if entry.status is PlanEntryStatus.SKIPPED_BUDGET:
+            session.log.warn("skipped_budget", f"{entry.asset_id}: {entry.skip_reason}",
+                             asset_id=entry.asset_id, estimated_usd=entry.estimated_cost_usd)
+    return cli.ConfirmOutcome(True, tuple(kept), estimate(session.config, kept))
 
 
 def _configure_providers(session: _Session) -> None:
@@ -330,6 +368,16 @@ def _configure_providers(session: _Session) -> None:
                    config.models.video_profile: config.models.video},
         on_intent=on_intent, on_submitted=on_submitted))
     session.render_ready = True
+    _configure_llm(session)
+
+
+def _configure_llm(session: _Session) -> None:
+    """The LLM seam alone — the only provider a preview may build (FR-140, previews.py).
+
+    Split out of `_configure_providers()` so `--preview-analysis` reuses the paid run's own
+    construction verbatim (D19) instead of a second one that would drift.
+    """
+    config = session.config
     session.llm = LLMClient(
         {role: _role_settings(config, role) for role in ("analysis", "copy")},
         max_inflight_llm_calls=config.models.max_inflight_llm_calls,
@@ -352,9 +400,20 @@ def _role_settings(config: Config, role: str) -> RoleSettings:
 # --------------------------------------------------------------------------- stages
 
 
-async def _collect(session: _Session) -> list[TrendItem]:
-    """Collect: every active adapter, through the bounded Virlo MCP session pool (20 §3)."""
+async def _collect(session: _Session, *, fetch_trends: bool = True) -> list[TrendItem]:
+    """Collect: every active adapter through the bounded Virlo MCP session pool (20 §3), plus the
+    two optional channels riding this stage — the local Inspiration pool (D13) and Notion brand
+    context (FR-34/36, fetched once). Each gates itself: no folders scans nothing, and
+    `notion_influence: off` opens no session. `fetch_trends=False` is 10 §10's brief-only
+    carve-out — a pure-override plan needs no trend, so no Virlo session is opened at all.
+    """
     watch = Stopwatch()
+    session.pool = await sources.load_pool(session.config, log=session.log)
+    session.brand = await sources.fetch_brand_context(session.config, log=session.log)
+    if not fetch_trends:
+        session.say("brief-only plan: every creative is an override brief, so no trend is "
+                    "consumed and no Virlo session is opened (FR-144, 10 §10)")
+        return []
     try:
         trends = await sources.fetch(session.config, log=session.log)
     except Exception as exc:  # noqa: BLE001 — 10 §10 row 1: a dead source is exit 3, not a crash
@@ -480,6 +539,8 @@ async def _write(session: _Session, live: Sequence[PlanEntry], trends: dict[str,
     watch = Stopwatch()
     result = await copywrite.write_copy(
         live, trends=trends, style_briefs=briefs, call=_metered(session), engine=session.engine,
+        campaign_briefs=session.campaign_briefs,  # FR-146: the brief's directives steer the copy
+        brand_context=session.brand.text,  # FR-109: Notion text reaches the copywriter only
         text_budgets=config.run.text_budgets,
         conventions={name: config.platform(name).conventions for name in config.run.platforms},
         onimage_languages={entry.asset_id: config.onimage_language_for(entry.platform)
@@ -507,11 +568,17 @@ async def _create(session: _Session, entries: Sequence[PlanEntry], live: Sequenc
                 entry.status = PlanEntryStatus.ABANDONED
                 entry.skip_reason = "run deadline elapsed or interrupted before submission"
     checking = bool(session.config.run.vision_check) and session.llm is not None
+    # FR-91: `mix.trends` is the RENDER-side view of Collect — trend references trimmed to make
+    # room for an inspiration image. The originals stay bound to Select, Analyze and the gallery.
+    mix = sources.apply_mix(live, trends, session.pool, session.config, log=session.log)
     env = generate.Env(
         config=session.config, run_dir=session.run_dir, engine=session.engine,
-        budget=session.budget, log=session.log, ledger=session.ledger, trends=trends,
+        budget=session.budget, log=session.log, ledger=session.ledger, trends=mix.trends,
         style_briefs=briefs, copy=copy_result.copy, copy_degraded=copy_result.degraded,
         copy_trimmed=copy_result.trimmed, niche_descriptor=session.config.niche.as_text(),
+        local_refs=_local_refs(session, live, mix.local_refs),
+        campaign_briefs=session.campaign_briefs, brand_accent=session.brand.accent,
+        brand_product_nouns=session.brand.product_nouns,
         llm_call=_metered(session) if checking else None, video_refs=session.video_refs,
         stop=session.control.stop, deadline=session.deadline)
     watch = Stopwatch()
@@ -537,10 +604,30 @@ async def _package(session: _Session, entries: Sequence[PlanEntry], plan_estimat
     code = decide_exit_code(entries, interrupted=session.control.stop.is_set(),
                             trend_supply_failed=trend_supply_failed)
     session.say(_final_line(session, entries, summary, code))
+    # FR-232: one optional 1–3 rating per run, asked after the summary. `menu` suppresses it under
+    # `--yes` and with no console attached, so nothing unattended ever waits on it.
+    if (rating := await menu.ask_fidelity_rating(session.opts)) is not None:
+        session.log.event("fidelity_rating", f"operator fidelity rating {rating}/3 (FR-232)",
+                          rating=rating)
     return code
 
 
 # --------------------------------------------------------------------------- helpers
+
+
+def _local_refs(session: _Session, live: Sequence[PlanEntry],
+                mix_refs: Any) -> dict[str, list[Path]]:
+    """Every local file a job uploads before it can reference it (FR-200), in FR-91's order: a
+    brief's own images FIRST (they are what an `override` creative is about), the inspiration
+    image `apply_mix()` picked LAST — which is exactly the `minority` rule."""
+    refs: dict[str, list[Path]] = {}
+    for entry in live:
+        brief = session.campaign_briefs.get(entry.brief_name or "")
+        merged = [*(brief.reference_image_paths if brief else ()),
+                  *mix_refs.get(entry.asset_id, ())]
+        if merged:
+            refs[entry.asset_id] = merged
+    return refs
 
 
 def _metered(session: _Session) -> Any:

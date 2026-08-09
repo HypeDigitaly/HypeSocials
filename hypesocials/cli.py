@@ -110,7 +110,7 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=PROG, allow_abbrev=False,
         description="HypeSocials — viral social creatives from live Virlo trends.",
-        epilog="No flags and a console attached shows the interactive menu (Wave 5).")
+        epilog="No flags and a console attached shows the interactive menu (30 §4).")
     parser.add_argument("--config", metavar="NAME", help="config file in configs/ (FR-61)")
     parser.add_argument("--images", type=int, metavar="N", help="override the image count")
     parser.add_argument("--carousels", type=int, metavar="N", help="override the carousel count")

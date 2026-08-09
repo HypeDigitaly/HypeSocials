@@ -38,6 +38,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from hypesocials import briefs
 from hypesocials.config import Config
 from hypesocials.plan import BriefRequest
 from hypesocials.prompts_engine import validate_template_set
@@ -104,21 +105,24 @@ def collect_secrets() -> tuple[str, ...]:
 def resolve_briefs(
     requests: Sequence[tuple[str, int]], config: Config, *, assume_yes: bool = False
 ) -> tuple[list[BriefRequest], list[str], list[str]]:
-    """Resolve `--brief <name>:<count>` requests. **W3 stub: no brief loader exists yet.**
+    """Resolve every `--brief <name>:<count>` request against the active config's `briefs_dir`.
 
-    `briefs.load()` is W5 (plan §2 T5.3), so every requested brief is unresolvable today and is
-    reported exactly the way a missing brief file will be: one clear line naming the request,
-    before any billable call. Interactively that refuses the run; under `--yes` only that brief's
-    creatives are dropped and the rest of the plan runs (FR-172/FR-252).
+    `briefs.load()` owns the whole FR-172 shape check, so a missing or malformed brief arrives
+    here as one operator-facing line naming the exact file. Interactively that line is an *error*
+    and refuses the run before any billable call; under `--yes` it is a *warning* and only that
+    brief's creatives are dropped, so one stale file never costs a scheduled batch (FR-252).
 
-    Returns `(resolved, errors, warnings)` — `resolved` is empty until W5 wires the loader in.
+    Returns `(resolved, errors, warnings)` — `resolved` feeds `plan.build_plan(briefs=...)`.
     """
-    if not requests:
-        return [], [], []
-    folder = config.briefs_dir
-    lines = [f"--brief {name}:{count} cannot be resolved from {folder!r} — campaign briefs are "
-             "built in Wave 5 (briefs.py, FR-172/D26)" for name, count in requests]
-    return ([], [], lines) if assume_yes else ([], lines, [])
+    resolved: list[BriefRequest] = []
+    lines: list[str] = []
+    folder = Path(config.briefs_dir)
+    for name, count in requests:
+        try:
+            resolved.append(BriefRequest(brief=briefs.load(name, folder), count=int(count)))
+        except briefs.BriefError as exc:
+            lines.append(str(exc))
+    return (resolved, [], lines) if assume_yes else (resolved, lines, [])
 
 
 def check(

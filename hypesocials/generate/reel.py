@@ -467,6 +467,11 @@ def _context(entry: PlanEntry, env: Env, copyset: CopySet | None, **slots: Any) 
         style_brief=(env.style_briefs.get(entry.trend_key or "")
                      if entry.variant == "analyzed" else None),
         copy=copyset, creative_format="reel", niche_descriptor=env.niche_descriptor,
+        # FR-144/145 + FR-109 `full` (only the seed-frame role allowlists `brand_accent`), read
+        # through `getattr`: this module targets the duck-typed Env surface, not its dataclass.
+        campaign_brief=getattr(env, "campaign_briefs", {}).get(entry.brief_name or ""),
+        brand_accent=getattr(env, "brand_accent", ""),
+        brand_product_nouns=getattr(env, "brand_product_nouns", ()),
         text_budgets=env.config.run.text_budgets, **slots)
 
 

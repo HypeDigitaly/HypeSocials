@@ -2,7 +2,7 @@
 
 ## § 1. What This Repo Is
 
-HypeSocials MVP (Phase 1): a single-operator Windows CLI tool that generates viral social media creatives (images, carousels, reels) from Virlo trends in ~3 min (images/carousels only) or ~8–10 min (with reels). **Status:** Waves 0–4 complete — W4 added the full-format generation engine: `generate/carousel.py` (anchor chain), `generate/reel.py` + `generate/video_ref.py` (seed-frame chain, yt-dlp motion references), the two-wave submission engine with FR-106 a/b/c money kinds and the FR-108 ~30 s grace-abandon path, vision-check wiring (FR-105 ordering, render + re-check retries), and the v1.6.5 estimator fidelity fixes. **M1 barrier passed 2026-08-09** (2/2 images, exit 0, $0.23). Reel pricing amended per D15 (PRD v1.6.6): `reel_second` is a worst-case-honest per-output-second scalar. Waves 5–6 follow per `plans/mvp-implementation-plan.md`. No database. All state is files.
+HypeSocials MVP (Phase 1): a single-operator Windows CLI tool that generates viral social media creatives (images, carousels, reels) from Virlo trends in ~3 min (images/carousels only) or ~8–10 min (with reels). **Status:** Waves 0–5 complete — W5 added the full operator surface: `menu.py` (interactive wizard, FR-28 over-cap offer, FR-232 fidelity rating), `previews.py` (FR-139/140 preview modes reusing runner's own stages per D19), `briefs.py` + `niches/hypedigitaly/briefs/ai-audit-cta/` (campaign briefs, FR-172), `sources/notion.py` (brand context, influence tiers) + `sources/inspiration.py` (D13 mix), the T5.6 wiring (brief-only runs open no Virlo session; FR-109 `full` brand-accent pass-through), and the W5 test completion (exit codes, config, ids, ledger, redaction). **M1 barrier passed 2026-08-09** (2/2 images, exit 0, $0.23); **M2 barrier passed 2026-08-09**. Reel pricing amended per D15 (PRD v1.6.6): `reel_second` is a worst-case-honest per-output-second scalar. Wave 6 (hardening + verification) follows per `plans/mvp-implementation-plan.md`. No database. All state is files.
 
 ---
 
@@ -34,20 +34,18 @@ HypeSocials MVP (Phase 1): a single-operator Windows CLI tool that generates vir
 - `CODING_GUIDELINES.md` — Development standards
 - `CLAUDE.md` — Project conductor config
 - `Inspiration/` — Example reference images (optional source)
-- `hypesocials/` — Production Python package. Built in W1: `models.py` (shared contracts), `util.py`, `config.py`, `llm.py`, `mcp_client.py`, `virlo_mcp/` (5-tool stdio MCP server), `outputs/` (logwriter, state), `render/` (seam, kie, profiles). Built in W2: `sources/` (facade + Virlo adapter, FR-91 reference-set builder), `plan.py` (select/build_plan/assign), `budget.py` (estimate/trim/Budget ledger), `analyze.py` + `copywrite.py` + `prompts_engine.py` (`PromptEngine`), `outputs/packager.py` + `outputs/gallery.py`. Built in W3: `cli.py` (argparse + Confirm gate + FR-252 routing), `preflight.py` (exit-2 producer), `runner.py` (lifecycle conductor), `__main__.py` (ProactorEventLoop + SIGINT dispatch), `generate/__init__.py` (wave-1 image generation), `vision_check.py` (pure module). Built in W4: `generate/carousel.py` (anchor chain FR-20/95, deck vision checks), `generate/reel.py` (seed-frame chain FR-24, Seedance clip, content-audit silent retry v1.6.6), `generate/video_ref.py` (yt-dlp probe→qualify→download→upload FR-160–163, scratch owner FR-249), `generate/__init__.py` extended (format dispatch, one `submit` money path FR-106 a/b/c, `GRACE_S` 30 s abandon path FR-108), estimator fidelity fixes in `budget.py` + `runner.py` (analysis per distinct assigned trend, truncation-retry allowances, `job_projection`)
+- `hypesocials/` — Production Python package. Built in W1: `models.py` (shared contracts), `util.py`, `config.py`, `llm.py`, `mcp_client.py`, `virlo_mcp/` (5-tool stdio MCP server), `outputs/` (logwriter, state), `render/` (seam, kie, profiles). Built in W2: `sources/` (facade + Virlo adapter, FR-91 reference-set builder), `plan.py` (select/build_plan/assign), `budget.py` (estimate/trim/Budget ledger), `analyze.py` + `copywrite.py` + `prompts_engine.py` (`PromptEngine`), `outputs/packager.py` + `outputs/gallery.py`. Built in W3: `cli.py` (argparse + Confirm gate + FR-252 routing), `preflight.py` (exit-2 producer), `runner.py` (lifecycle conductor), `__main__.py` (ProactorEventLoop + SIGINT dispatch), `generate/__init__.py` (wave-1 image generation), `vision_check.py` (pure module). Built in W4: `generate/carousel.py` (anchor chain FR-20/95, deck vision checks), `generate/reel.py` (seed-frame chain FR-24, Seedance clip, content-audit silent retry v1.6.6), `generate/video_ref.py` (yt-dlp probe→qualify→download→upload FR-160–163, scratch owner FR-249), `generate/__init__.py` extended (format dispatch, one `submit` money path FR-106 a/b/c, `GRACE_S` 30 s abandon path FR-108), estimator fidelity fixes in `budget.py` + `runner.py` (analysis per distinct assigned trend, truncation-retry allowances, `job_projection`). Built in W5: `menu.py` (wizard + `offer_reduced_plan` + `ask_fidelity_rating`), `previews.py` (calls runner's stage helpers directly — D19), `briefs.py` (`load`/`list_briefs` per the `models.BriefLoader` pin), `sources/notion.py` (`fetch_brand_context` → `BrandContext`) + `sources/inspiration.py` (`load_pool`/`apply_mix`), wiring in `__main__.py`/`runner.py`/`preflight.py` (real `resolve_briefs`, brief-only carve-out, notion/inspiration in Collect/Write/Create)
 - `logs/` — Runtime state (`trend_history.json`); real since the M1 run
 - `output/` — Per-run asset folders + `latest.txt` + `latest/` junction; real since the M1 run
 - `configs/` — Config YAML files (`default.yaml`, `hypedigitaly.yaml`)
 - `prompts/` — Editable prompt templates (3 global flat + `gpt-image-2/` ×5 + `seedance-2-5/` ×1, plus operator README)
-- `tests/` — W2 suites: `test_plan.py`, `test_budget.py` (incl. named reservation race), `test_prompts_engine.py`, `test_copywrite.py`; W4 suites: `test_carousel.py` + `test_reel.py` (named FR-105 ordering tests), `test_video_ref.py`, `test_render_gate.py` (named permit-starvation test), `test_generate_waves.py` (grace-abandon, money kinds); completion in W5
+- `tests/` — W2 suites: `test_plan.py`, `test_budget.py` (incl. named reservation race), `test_prompts_engine.py`, `test_copywrite.py`; W4 suites: `test_carousel.py` + `test_reel.py` (named FR-105 ordering tests), `test_video_ref.py`, `test_render_gate.py` (named permit-starvation test), `test_generate_waves.py` (grace-abandon, money kinds); W5 completion: `test_exit_codes.py` (all 5 FR-202 codes + brief-only edges), `test_config.py`, `test_ids.py`, `test_ledger.py`, `test_redaction.py` (incl. one strict xfail documenting the known multi-line-digest defect in `logwriter._digest`, W6 fix)
 - `spikes/` — Day-one spikes, **RETIRED** (never imported by production code); `spikes/RESULTS.md` is the authoritative record of live API findings + real monitor ids
 - `run.bat` — Windows entry point (venv bootstrap + pinned Notion MCP install + `python -m hypesocials`)
 - `pyproject.toml` — Python project config (pinned deps, pytest config)
 - `.env` — Secrets (never committed; use `.env.example`)
 
-**Planned (Wave N):**
-- `hypesocials/` remaining pipeline modules **(W5)** — menu, previews, briefs, sources/notion + sources/inspiration
-- `niches/hypedigitaly/` **(W5)** — Niche pack: Inspiration folder, briefs subdir, optional prompt overrides
+- `niches/hypedigitaly/` — Niche pack (real since W5): `briefs/ai-audit-cta/brief.yaml` (shipped campaign brief, `influence: override`)
 
 ---
 
@@ -59,8 +57,8 @@ HypeSocials MVP (Phase 1): a single-operator Windows CLI tool that generates vir
 
 **Main module:** `hypesocials/__main__.py` (built, W3)
 - Explicit `ProactorEventLoop` + `signal.signal`/`call_soon_threadsafe` SIGINT (spikes/RESULTS.md §F pattern)
-- Dispatches CLI actions: `run` (default), `--list-monitors` (live), `--publish`/`--promote` (Phase-2 placeholders); `--preview-*` flags parse but exit with a "built in Wave 5" message
-- `menu.py` interactive wizard lands in W5; flagless interactive launch prints a hint and exits
+- Dispatches CLI actions: `run` (default), `--list-monitors` (live), `--preview-sources`/`--preview-analysis` (live since W5, log-only folders), `--publish`/`--promote` (Phase-2 placeholders)
+- Flagless launch with a console attached opens the `menu.py` wizard (W5); the menu's Config travels into `runner.run(config=…)` so the FR-135 source pick survives
 
 **Pipeline runnable since W3; all three formats since W4** — image/carousel/reel runs work end-to-end (M1: 2 images, exit 0; M2: `run.bat --config hypedigitaly.yaml --images 1 --carousels 1 --reels 1 --yes --budget 5`). Also runnable standalone: the Virlo MCP wrapper (`python -m hypesocials.virlo_mcp`, stdio).
 
@@ -193,5 +191,5 @@ All commands assume venv is activated or run via `run.bat`. No global Python cal
 
 ---
 
-**Last updated:** 2026-08-09 (Wave 4 / M2 barrier — §1, §3, §4 updated)
+**Last updated:** 2026-08-09 (Wave 5 barrier — §1, §3, §4 updated)
 **Updated at every wave barrier:** Mark affected sections (§1–§11) in session reports.

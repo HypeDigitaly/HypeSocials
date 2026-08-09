@@ -54,6 +54,7 @@ from hypesocials.budget import Budget, SpendCategory, job_projection
 from hypesocials.config import Config
 from hypesocials.models import (
     AssetRecord,
+    Brief,
     CopySet,
     DegradationTag,
     PlanEntry,
@@ -123,6 +124,9 @@ class Env:
     copy_degraded: frozenset[str] = frozenset()
     copy_trimmed: frozenset[str] = frozenset()
     local_refs: Mapping[str, Sequence[Path]] = field(default_factory=dict)  # FR-200 upload path
+    campaign_briefs: Mapping[str, Brief] = field(default_factory=dict)  # FR-144/145, by name
+    brand_accent: str = ""  # FR-109 `full` only: one accent colour inside the trend's own palette
+    brand_product_nouns: Sequence[str] = ()  # FR-109 `full` only: nouns for the on-image text
     niche_descriptor: str = ""
     llm_call: Any = None  # metered `StructuredCall` for the FR-27 vision check; None = off
     video_refs: Any = None  # `video_ref.Prefetch` for the D23 motion reference, or None
@@ -431,8 +435,13 @@ def _assemble(entry: PlanEntry, env: Env, urls: Sequence[str]) -> str | None:
         trend=env.trends.get(entry.trend_key or ""),
         style_brief=brief,
         copy=env.copy.get(entry.asset_id),
+        # FR-144/145: `override` visual directives REPLACE render_prompt/layout_zones; `blend`
+        # states the precedence — trend wins visuals, brief wins message and CTA.
+        campaign_brief=env.campaign_briefs.get(entry.brief_name or ""),
         creative_format="image",
         niche_descriptor=env.niche_descriptor,
+        brand_accent=env.brand_accent,  # FR-109's only render-side brand influence, `full` only
+        brand_product_nouns=env.brand_product_nouns,
         text_budgets=env.config.run.text_budgets,
         reference_roles=roles,
         reference_image_count=len(urls),

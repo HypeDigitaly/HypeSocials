@@ -338,6 +338,12 @@ class _Deck:
             context = build_context(
                 trend=env.trends.get(self.entry.trend_key or ""), style_brief=self.brief,
                 copy=copyset, creative_format="carousel", niche_descriptor=env.niche_descriptor,
+                # FR-144/145 + FR-109 `full`, both allowlisted for `carousel_slide.md`; read
+                # through `getattr` like `local_refs` above (duck-typed Env surface).
+                campaign_brief=getattr(env, "campaign_briefs", {}).get(
+                    self.entry.brief_name or ""),
+                brand_accent=getattr(env, "brand_accent", ""),
+                brand_product_nouns=getattr(env, "brand_product_nouns", ()),
                 text_budgets=env.config.run.text_budgets,
                 budget_scale=plan.budget_scale if plan is not None else 1.0,
                 reference_roles=roles, reference_image_count=len(urls),

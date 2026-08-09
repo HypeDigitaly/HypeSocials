@@ -1,0 +1,88 @@
+# HypeDigitaly AI-Audit CTA — the shipped first brief (PRD 30 §2 "Shipped first brief", v1.5.1).
+# Reached through configs/hypedigitaly.yaml's `briefs_dir`. Request it with:
+#     run.bat --config hypedigitaly.yaml --brief ai-audit-cta:2
+# or the menu's Briefs step. The FOLDER NAME is the brief name; drop your own images beside this
+# file and list them under `reference_image_paths` to make the creatives use them (D32/FR-200).
+# Plain YAML, tunable in Notepad (D26) — this file is also the reference implementation of the
+# brief format, so keep every field present when you edit it.
+
+name: ai-audit-cta
+description: "Direct-response CTA post offering HypeDigitaly's free AI audit of one real workflow."
+
+# override = this creative consumes NO trend (FR-144): no analysis call, no trend-history entry,
+# no reuse budget spent, and the visual directives below take the place of the style brief's
+# render prompt. The campaign post is the point here, not mimicry of whatever is trending.
+influence: override
+
+# Formats this brief applies to; the requested count spreads across them, then across the
+# platforms that allow each format (FR-143/FR-2). Reels deliberately excluded: a CTA post does
+# not need a $2+ video render.
+formats: [image, carousel]
+
+copy_directives:
+  message: >-
+    HypeDigitaly builds AI automations that actually ship. The honest way to find out what AI is
+    worth in a specific business is to audit ONE real workflow end to end — not to buy a strategy
+    deck about it.
+  # EDIT THIS LINE whenever the offer on hypedigitaly.ai changes — it is the only place the run
+  # learns what is being promised.
+  offer: >-
+    A free 30-minute AI audit: we map one workflow step by step, name where AI removes hours,
+    and say plainly where it does not. You leave with a written next step, not a proposal call.
+  cta: >-
+    Close with exactly one unambiguous action — "Book the free AI audit at hypedigitaly.ai" on
+    LinkedIn, or "Comment AUDIT and I'll send the link" on Instagram and TikTok where links are
+    weak. Never two calls to action in one creative.
+  hook_angle: >-
+    Contrarian practitioner: most AI pilots stall because nobody measured the workflow before
+    automating it. Lead with the cost of guessing, never with the word "AI" as the hook itself.
+  structure: >-
+    Image: one-line claim hook, one supporting line, then the CTA line. Carousel: slide 1 is the
+    claim hook alone, slides 2 to N walk one audit step each in the same voice (what we look at,
+    then what comes out of it), and the final slide carries the CTA on its own.
+  proof: >-
+    Concrete and checkable only — hours per week, number of steps in a process, tools in the
+    stack. Never invent client names, revenue figures, percentages or case studies: if a number is
+    not in this brief or the source material, leave it out entirely.
+  tone: >-
+    Practitioner to practitioner, English, short sentences, no hype vocabulary — no
+    "revolutionary", no "game-changing", no "unlock the power of AI". Written for founders,
+    marketing leads and ops people at SMBs and agencies who are evaluating AI, not shopping for
+    inspiration.
+  avoid: >-
+    No fear-mongering about job loss, no "AI will replace you", no fabricated urgency or
+    countdowns, no guarantees that cannot be verified, no emoji-stuffed bullet lists.
+
+visual_directives:
+  subject: >-
+    The creative IS the claim: a bold direct-response statement typeset as the artwork itself, set
+    on near-black, with one electric accent colour carrying the two or three words that matter.
+    No people, no stock photography, no mascot.
+  composition: >-
+    Poster-flat and centred. One dominant headline block occupying the upper two thirds, generous
+    negative space around it, and the CTA line at the bottom edge as a small high-contrast bar or
+    pill. Nothing decorative may cross the headline.
+  palette: >-
+    Near-black background, off-white type, exactly one electric accent in the cyan-to-violet
+    range used on at most two words or a single rule. No full-frame gradients, no second accent.
+  typography: >-
+    Heavy geometric sans for the headline in sentence case with tight tracking, light sans for the
+    supporting line. A strict two-level hierarchy: never more than three type sizes in one frame.
+  layout: >-
+    Carousel decks read as numbered playbook cards — a small step index in the top-left corner,
+    one idea per slide, identical margins and type scale on every slide so the deck looks like one
+    object. The final slide is the CTA alone, inverted onto the accent colour.
+  texture: >-
+    Optional dark-UI motif behind the type at very low contrast — a dimmed dashboard panel, an
+    automation-graph fragment, or a terminal block. Decoration only; it must never compete with
+    the headline or carry legible text of its own.
+  avoid: >-
+    No other company's logo or wordmark, no invented HypeDigitaly logo or brand lockup, no
+    platform stickers or app UI chrome, no faux screenshots showing fabricated metrics, no
+    watermarks, no usernames.
+
+# Optional. Paths are relative to this folder (or absolute); every one must exist and be an image
+# file. Left out on purpose — this brief ships no images of its own, so its creatives render from
+# the directives above.
+# reference_image_paths:
+#   - product-shot-01.png
