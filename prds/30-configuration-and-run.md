@@ -381,6 +381,7 @@ All flags override the loaded config for that run only (they never rewrite the c
 | `--carousels N` | Overrides carousel count. |
 | `--reels N` | Overrides reel count. (The CLI keeps counts as separate flags even though the menu groups them into one prompt, FR-136.) |
 | `--platforms <list>` | Overrides the platform list (comma-separated) — CLI-only, no menu equivalent (FR-137). |
+| `--sources <list>` | Overrides `sources.active` (comma-separated) — the CLI twin of the menu's source picker (FR-135), closing the FR-65 parity gap. **Approved v1.6.8 at the W5 barrier; built in Wave 6.** |
 | `--budget X` | Overrides the spend cap in dollars. |
 | `--mode <analyzed|direct|both>` | Overrides generation mode. |
 | `--notion <off|copy|full>` | Overrides Notion influence level. |

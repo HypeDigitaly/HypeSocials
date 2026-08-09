@@ -92,7 +92,7 @@ run.bat
 # Run tests (after venv activated)
 pytest tests/
 
-# Line-count checkpoint (hard ceiling 13,000 per G2 v1.6.7)
+# Line-count checkpoint (hard ceiling 13,500 per G2 v1.6.8)
 wc -l hypesocials/**/*.py
 
 # Import check (Wave 0 barrier)
