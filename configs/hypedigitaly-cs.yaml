@@ -1,0 +1,80 @@
+# HypeDigitaly - AI-agency marketing niche (EN, LinkedIn-led); the shipped default selection
+# See prds/30-configuration-and-run.md §2 for the full field reference
+
+# A niche is an ordinary config file (D27, v1.6.1): this `niche:` block plus three ordinary path
+# keys IS the whole mechanism. Picking this file is switching the niche. Only overrides appear
+# below - every key not listed here inherits its documented default from §2, not from default.yaml.
+
+niche:
+  audience: "founders, marketing leads and ops people at SMBs and agencies evaluating AI automation - EN, LinkedIn-led, Instagram/TikTok secondary"
+  vibe: "no-fluff practitioner proof: specific numbers, real workflows, contrarian takes on AI hype; we ship the thing, we don't theorise about it"
+  visual_world: "dark UI and dashboard screenshots, terminal/automation-graph fragments, one electric accent on near-black, heavy geometric sans headlines, numbered playbook cards, whiteboard-style arrows"
+
+run:
+  formats: { image: 4, carousel: 2, reel: 0 }
+  # The reel-pricing D15 amendment LANDED (v1.6.6, 2026-08-09): reel_second below is the
+  # worst-case-honest scalar for this config's reel shape. formats.reel stays 0 as the everyday
+  # default (a 5 s 720p reel is ~$2.85); enable per run with --reels N when a reel is wanted.
+  platforms: [linkedin, instagram, tiktok]
+  languages: { linkedin: cs, instagram: cs, tiktok: cs }
+  # Cost lever (30 §2 v1.6.6): the motion reference's seconds are BILLED at the full with-video
+  # rate. 20 s (operator decision v1.6.7, was 10) lets most real TikToks qualify for motion
+  # mimicry at a worst case of ~$4.75 per 5 s 720p reel; the break-even vs no-reference is
+  # input < 0.65 x output (~3 s for a 5 s reel). The provider ceiling 28/30 s is a cost trap.
+  reel_reference_max_s: 20
+
+sources:
+  # The three REAL monitor ids recorded live in spikes/RESULTS.md §A (2026-08-09).
+  virlo_monitor_ids:
+    - "623203a9-c09c-4763-85e0-1c177b5af760"   # AI Trends Tracker v2 - data_intelligence_enabled
+    - "9c96fddf-dc35-4be0-bbd9-12f4d22aea12"   # AI Trends Tracker - analysis_data fully populated
+    - "65bf412a-2a8a-4e95-bf35-9f21dca208a6"   # CZ coverage probe - AI/business Czech market
+  # Curated local reference material (D13). This is the repo's existing top-level folder; when
+  # T5.3 seeds niches/hypedigitaly/Inspiration/, point this there instead.
+  # "Inspiration/Linkedin/Viral posts" is the other candidate pool (proven copy + images).
+  inspiration_folders: ["Inspiration/Tiktok and IG"]
+  inspiration_mix: minority        # at most 1 inspiration image alongside 2 trend references
+
+# Niche asset paths (D27). A missing folder is not an error - the contribution is simply absent
+# for that run, logged once at info level (30 §8).
+briefs_dir: niches/hypedigitaly/briefs   # holds ai-audit-cta/ (shipped first brief, W5 T5.3)
+prompts_dir: null                        # set to niches/hypedigitaly/prompts once that folder exists
+
+models:
+  # 600 is now the PRD default too (FR-259 amended in v1.6.7); kept explicit here for clarity.
+  video_job_timeout_s: 600
+
+  price_per_unit:
+    reel_second:
+      # ---------------------------------------------------------------------------------------
+      # MEASURED, WORST-CASE-HONEST reel pricing for THIS config's reel shape (PRD v1.6.6:
+      # this derivation is now the documented meaning of reel_second - 30 §2 / FR-258).
+      #
+      # Kie's published Seedance 2.5 formula (spikes/RESULTS.md §C, confirmed to the credit):
+      #     no video reference   ->  cost = unit x  output_s
+      #     with video reference ->  cost = unit x (input_s + output_s)      <- the ref is BILLED
+      #     720p: 38 credits/s with video | 63 credits/s without   ($0.005 per credit)
+      #     480p: 17 credits/s with video | 28 credits/s without
+      #   Live measurement: 5 s / 720p / 1 image ref / 10 s video ref = 570 credits = $2.85.
+      #
+      # The estimator has only ONE scalar per resolution, multiplied by reel_duration_s, and it
+      # runs BEFORE the yt-dlp probe - so the reference's real duration is unknown at estimate
+      # time. The value below therefore prices the WORST CASE this config can produce, with
+      # run.reel_reference_max_s: 20 (operator decision v1.6.7 - most real TikToks qualify):
+      #     720p: 38 x (reel_reference_max_s 20 + reel_duration_s 5) = 950 cr = $4.75 / 5 s
+      #           = 0.950 per output second
+      #     480p: 17 x (20 + 5)                                      = 425 cr = $2.125 / 5 s
+      #           = 0.425 per output second
+      #   Understating is the one unacceptable error here (D11/FR-282), so the scalar overstates
+      #   the cheaper branches on purpose:
+      #     no video reference at all, 720p -> 0.315 / output second ($1.575 per 5 s reel)
+      #
+      # HOW TO MAKE REELS CHEAPER STILL: attaching a reference is cheaper than not attaching one
+      # only while input_s < 0.65 x output_s - about 3 s for a 5 s reel. Lowering
+      # run.reel_reference_max_s to ~3 would drop the honest 720p scalar to 0.315, at the cost
+      # of disqualifying most real TikTok references (0 of 8 probed candidates were <=3 s).
+      #
+      # IF YOU CHANGE reel_reference_max_s OR reel_duration_s, RECOMPUTE THESE TWO NUMBERS.
+      # ---------------------------------------------------------------------------------------
+      480p: 0.425
+      720p: 0.950

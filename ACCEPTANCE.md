@@ -145,3 +145,18 @@ README "Unattended usage".)
 | 2 full-batch stress | | | ☐ | ☐ | ☐ | ☐ |
 | 3 Czech run (opt) | | | ☐ | ☐ | ☐ | ☐ |
 | 4 Task Scheduler | | | ☐ | ☐ | ☐ | ☐ |
+
+## First execution record (2026-08-09, automated at the W6 barrier — operator re-run optional)
+
+| Scenario | Run | Exit | Result |
+|---|---|---|---|
+| 1a (cap floor $0.02 + over-cap $1 variants) | `221509_au79` | 2 | Both refusal paths correct; estimate + FR-282 provenance shown; $0 |
+| 1b/1c (`--yes` $0.02 floor + $0.10 real trim) | `221735_zzom`, `221750_5tfs` | 2 / 3 | Floor refusal; then "4 entries trimmed, now $0.07" → honest famine abort; $0 |
+| 2 stress 2+2+1 `--yes` $6 | `221816_0316` | 1 | 4/5 delivered, $5.53 counted (worst case $5.73); **reel hit the 600 s timeout** — honestly skipped, worst-case charge counted per no-resubmit policy (meta actual $0.03 seed frame; check the Kie dashboard for the clip's real charge); 949 s; no orphans |
+| 3 Czech interactive $1 | `223503_ax10` | 0 | 3/3, $0.60, 361 s; 30 §2 Czech hint printed; captions in real diacritics — on-image glyphs still want your eyeball |
+| 4 Task Scheduler `--yes` $1 | `224147_wrsg` | 0 | 3/3, $0.68, 381 s, Last Result 0, task deleted after; no orphans |
+
+Trend history was set aside per the famine note for scenarios 2–4 and merged back afterwards
+(all run_ids preserved). Estimator note for the barrier round: actuals nudged past the
+worst-case line twice ($0.72 vs $0.69; $0.60 vs $0.56) — the FR-127 retry allowances read
+slightly thin when analysis needs both truncation AND parse retries.
