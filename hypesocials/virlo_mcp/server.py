@@ -81,8 +81,13 @@ async def get_trends() -> dict[str, Any]:
 
 @server.tool()
 async def get_monitor_analysis(monitor_id: str) -> dict[str, Any]:
-    """Why one monitored theme is working: the monitor's own analysis text, intent and keywords."""
+    """Why one monitored theme is working: analysis text, themes with tactics, timing and threads."""
     agent = await _get(f"/agents/{monitor_id}")
+    # RESULTS.md §A: tactics[], per-theme why_it_works/confidence, timing_analysis and the
+    # connecting thread — which 20 §3's table attributes to `get_trends` — live HERE, under
+    # `analysis_data`, and are the style brief's real raw material. Absent-safe when there is none.
+    data = agent.get("analysis_data") or {}
+    timing = data.get("timing_analysis") or {}
     return {
         "monitor_id": agent.get("id"),
         "name": agent.get("name"),
@@ -92,6 +97,12 @@ async def get_monitor_analysis(monitor_id: str) -> dict[str, Any]:
         "platforms": agent.get("platforms") or [],
         "active": agent.get("active"),
         "last_run_at": agent.get("last_run_at"),
+        "themes": [_norm_theme(theme) for theme in data.get("themes") or []],
+        "viral_tactics": data.get("viral_tactics") or [],
+        "key_highlight": data.get("key_highlight"),
+        "connecting_thread": data.get("connecting_thread"),
+        "timing_pattern": timing.get("pattern"),
+        "peak_hours": timing.get("peak_hours") or [],
     }
 
 
@@ -154,6 +165,12 @@ def _norm_digest_trend(row: dict[str, Any]) -> dict[str, Any]:
         "last_seen_at": row.get("last_seen_at"),
         "exemplar_count": row.get("exemplar_count"),
     }
+
+
+def _norm_theme(theme: dict[str, Any]) -> dict[str, Any]:
+    """One `analysis_data.themes[]` entry, kept to the five fields Analyze/Write actually use."""
+    return {key: theme.get(key)
+            for key in ("name", "tactics", "why_it_works", "confidence", "video_count")}
 
 
 def _norm_video(video: dict[str, Any]) -> dict[str, Any]:

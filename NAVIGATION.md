@@ -2,7 +2,7 @@
 
 ## § 1. What This Repo Is
 
-HypeSocials MVP (Phase 1): a single-operator Windows CLI tool that generates viral social media creatives (images, carousels, reels) from Virlo trends in ~3 min (images/carousels only) or ~8–10 min (with reels) for <$1 per post. **Status:** Waves 0–1 complete (docs, scaffold, shared contracts, infrastructure modules, prompt templates, day-one spikes); Waves 2–6 follow per `plans/mvp-implementation-plan.md`. No database. All state is files.
+HypeSocials MVP (Phase 1): a single-operator Windows CLI tool that generates viral social media creatives (images, carousels, reels) from Virlo trends in ~3 min (images/carousels only) or ~8–10 min (with reels) for <$1 per post. **Status:** Waves 0–2 complete (docs, scaffold, shared contracts, infrastructure, prompt templates, day-one spikes, and the W2 pipeline stages: sources, plan, budget, analyze/copywrite/prompts engine, packager/gallery); Waves 3–6 follow per `plans/mvp-implementation-plan.md`. No database. All state is files.
 
 ---
 
@@ -34,17 +34,17 @@ HypeSocials MVP (Phase 1): a single-operator Windows CLI tool that generates vir
 - `CODING_GUIDELINES.md` — Development standards
 - `CLAUDE.md` — Project conductor config
 - `Inspiration/` — Example reference images (optional source)
-- `hypesocials/` — Production Python package. Built in W1: `models.py` (shared contracts), `util.py`, `config.py`, `llm.py`, `mcp_client.py`, `virlo_mcp/` (5-tool stdio MCP server), `outputs/` (logwriter, state), `render/` (seam, kie, profiles)
+- `hypesocials/` — Production Python package. Built in W1: `models.py` (shared contracts), `util.py`, `config.py`, `llm.py`, `mcp_client.py`, `virlo_mcp/` (5-tool stdio MCP server), `outputs/` (logwriter, state), `render/` (seam, kie, profiles). Built in W2: `sources/` (facade + Virlo adapter, FR-91 reference-set builder), `plan.py` (select/build_plan/assign), `budget.py` (estimate/trim/Budget ledger), `analyze.py` + `copywrite.py` + `prompts_engine.py` (`PromptEngine`), `outputs/packager.py` + `outputs/gallery.py`
 - `configs/` — Config YAML files (`default.yaml`, `hypedigitaly.yaml`)
 - `prompts/` — Editable prompt templates (3 global flat + `gpt-image-2/` ×5 + `seedance-2-5/` ×1, plus operator README)
-- `tests/` — Test skeleton (conftest); full suite W2–W5
+- `tests/` — W2 suites: `test_plan.py`, `test_budget.py` (incl. reservation race), `test_prompts_engine.py`, `test_copywrite.py`; completion in W5
 - `spikes/` — Day-one spikes, **RETIRED** (never imported by production code); `spikes/RESULTS.md` is the authoritative record of live API findings + real monitor ids
 - `run.bat` — Windows entry point (venv bootstrap + pinned Notion MCP install + `python -m hypesocials`)
 - `pyproject.toml` — Python project config (pinned deps, pytest config)
 - `.env` — Secrets (never committed; use `.env.example`)
 
 **Planned (Wave N):**
-- `hypesocials/` pipeline modules **(W2–W5)** — plan, budget, analyze, copywrite, prompts_engine, sources/, generate/, vision_check, runner, cli, menu, preflight, previews, briefs
+- `hypesocials/` remaining pipeline modules **(W3–W5)** — generate/, vision_check, runner, cli, menu, preflight, previews, briefs, sources/notion + sources/inspiration
 - `niches/hypedigitaly/` **(W5)** — Niche pack: Inspiration folder, briefs subdir, optional prompt overrides
 - `logs/` — Runtime output (trend_history.json); created at first run
 - `output/` — Per-run asset folders, gallery.html, meta.yaml files; created at first run
@@ -137,7 +137,9 @@ All commands assume venv is activated or run via `run.bat`. No global Python cal
 | `output/latest.txt` | Canonical run pointer (atomic temp+rename) | Text: run_id | Rewritten per run |
 | `output/latest/` | Convenience junction to latest run folder | Symlink via `mklink /J` | Rewritten per run |
 | `logs/trend_history.json` | Trend usage log (prevent reuse within 7 days) | JSON object keyed by trend key (FR-82) | Update + prune window |
-| `output/<run_id>/meta.yaml` | Per-asset metadata (caption, hashtags, status, render params) | YAML, pending→terminal via temp+rename | Terminal on success/skip |
+| `output/<run_id>/<asset_id>/meta.yaml` | Per-asset metadata (AssetRecord field-for-field, FR-73) | YAML, pending→terminal via temp+rename | Terminal on success/skip |
+| `output/<run_id>/<asset_id>/{caption.txt, SKIP_REASON.txt, SELECTED.marker}` | Publishing caption (hand-editable), skip cause, selection marker | Text / empty marker | Written by packager; caption never rewritten |
+| `output/<run_id>/{gallery.html, refs/}` | Self-contained review gallery + downloaded reference media | HTML (one template string) / media files | Gallery rebuilt from disk per call (NFR-22) |
 | `output/<run_id>/run.log` | Run summary (times, spend, errors; no secrets) | Text | Append per event |
 | `output/<run_id>/events.jsonl` | Detailed per-API-call log (secrets redacted; full prompts logged here) | JSONL | Append per call |
 | `configs/*.yaml` | Run config (formats, budget, language, niche, render models) | YAML | User-edited |
@@ -157,7 +159,7 @@ All commands assume venv is activated or run via `run.bat`. No global Python cal
 ### Add a prompt template
 1. Create `prompts/<filename>.md` (global templates: `style_brief_system.md`, `copywriter_system.md`, `vision_check_question.md`)
 2. Or create `prompts/<profile>/<role>.md` for render-model-specific templates
-3. Load via `prompts_engine.assemble()` (T2.4)
+3. Load via `prompts_engine.PromptEngine(...).render(role, context, ...)` (T2.4)
 4. Document in `prds/50-promptcraft.md`
 
 ### Add a render model profile
@@ -190,5 +192,5 @@ All commands assume venv is activated or run via `run.bat`. No global Python cal
 
 ---
 
-**Last updated:** 2026-08-09 (Wave 1 barrier — §1, §3, §4, §9, §10 updated)
+**Last updated:** 2026-08-09 (Wave 2 barrier — §1, §3, §9, §10 updated)
 **Updated at every wave barrier:** Mark affected sections (§1–§11) in session reports.
