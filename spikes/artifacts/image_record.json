@@ -1,0 +1,44 @@
+{
+  "request_input": {
+    "prompt": "Recreate this visual template as a new social post. Mimic the reference images' layout structure, colour palette, typography weight and composition. Replace all headline copy with exactly this text, spelled correctly: SPIKE TEST. Do NOT copy any text, watermark, username, logo or platform UI element from the references. No TikTok/Instagram interface chrome. Clean edges, text fully inside frame.",
+    "input_urls": [
+      "https://auth.virlo.ai/storage/v1/object/public/slideshow-images/e9ec7832-9f10-4833-b870-eac5aa5f750e.webp",
+      "https://auth.virlo.ai/storage/v1/object/public/slideshow-images/59f99925-56e0-4d5e-b80d-6b7554e03072.webp",
+      "https://auth.virlo.ai/storage/v1/object/public/slideshow-images/c24ec8fc-f330-4aa4-8e88-3f0a485d1a26.webp"
+    ],
+    "aspect_ratio": "1:1",
+    "resolution": "1K"
+  },
+  "record": {
+    "code": 200,
+    "msg": "success",
+    "data": {
+      "taskId": "86606c19495af145b6ada4a32b769753",
+      "model": "gpt-image-2-image-to-image",
+      "state": "success",
+      "param": "{\"input\":\"{\\\"aspect_ratio\\\":\\\"1:1\\\",\\\"prompt\\\":\\\"Recreate this visual template as a new social post. Mimic the reference images' layout structure, colour palette, typography weight and composition. Replace all headline copy with exactly this text, spelled correctly: SPIKE TEST. Do NOT copy any text, watermark, username, logo or platform UI element from the references. No TikTok/Instagram interface chrome. Clean edges, text fully inside frame.\\\",\\\"resolution\\\":\\\"1K\\\",\\\"input_urls\\\":[\\\"https://auth.virlo.ai/storage/v1/object/public/slideshow-images/e9ec7832-9f10-4833-b870-eac5aa5f750e.webp\\\",\\\"https://auth.virlo.ai/storage/v1/object/public/slideshow-images/59f99925-56e0-4d5e-b80d-6b7554e03072.webp\\\",\\\"https://auth.virlo.ai/storage/v1/object/public/slideshow-images/c24ec8fc-f330-4aa4-8e88-3f0a485d1a26.webp\\\"]}\",\"model\":\"gpt-image-2-image-to-image\"}",
+      "resultJson": "{\"resultUrls\":[\"https://tempfile.aiquickdraw.com/images/chatgpt/file_00000000fbcc81fda3e9d26e1cd3b224.png\"]}",
+      "failCode": null,
+      "failMsg": null,
+      "costTime": 90,
+      "completeTime": 1786275889901,
+      "createTime": 1786275799042,
+      "creditsConsumed": 6.0
+    },
+    "__states_observed__": [
+      [
+        0.0,
+        "waiting"
+      ],
+      [
+        3.2,
+        "generating"
+      ],
+      [
+        91.8,
+        "success"
+      ]
+    ],
+    "__elapsed_s__": 92.0
+  }
+}

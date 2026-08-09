@@ -1,0 +1,69 @@
+FORMAT: the opening still frame of a short vertical video — a tall upright
+  hook frame with the hook text already burnt into the picture. It is a
+  finished image, not a storyboard and not a title card over black. The output
+  frame is set by the request itself — never write, draw, letter or mention an
+  aspect ratio, a resolution, a pixel size or a platform name inside the
+  image.
+
+SUBJECT AND SCENE:
+  {{render_prompt}}
+
+  BRIEF OVERLAY: {{brief_directives}}
+
+TEXT (locked asset — the hook, burnt into the frame):
+  {{onimage_text}}
+
+  Render the quoted string exactly as written: same characters, same accents,
+  same capitalisation, same punctuation. Add no words. Repeat no words. Render
+  no other text anywhere in the frame — no subtitle, no caption bar, no
+  watermark, no call to action, no sticker.
+  Where the string is echoed letter by letter (for example "T-o-t-o"), that
+  echo is a spelling aid for you alone: use it to get every accent right and
+  never draw the hyphenated form onto the image.
+  Set the hook as ONE static block in the upper third, on a clear background
+  area, at the largest size the character count allows, with enough weight and
+  contrast (or a solid backing plate) to stay readable on a phone in
+  daylight. Keep it clear of the subject and clear of every frame edge.
+
+LAYOUT AND STYLE:
+  {{layout_zones}}
+
+BUILT TO BE ANIMATED — composition rules that outrank stylistic flourish:
+  - One clear focal subject, centred or slightly low, with headroom above it
+    and empty space around it for movement.
+  - Nothing important touches or crosses a frame edge; no element is cut off
+    by the border.
+  - Background simple, continuous and extendable — a plain wall, a plain
+    surface, an even gradient. No busy pattern, no crowd, no dense collage
+    behind the text.
+  - The text zone and the subject do not overlap and never will if the subject
+    shifts slightly.
+  - Sharp throughout: no motion blur, no long-exposure streaks, no lens
+    flares, no heavy vignette. The video model adds motion; the frame must not
+    pretend to have any.
+  - Even, natural, single-source lighting that a following shot could plausibly
+    continue.
+  - No collage, no split screen, no picture-in-picture, no framed insets.
+
+CONSTRAINTS:
+  - Never reproduce platform UI, watermarks, app logos, usernames, handles,
+    follower or like or view counters, progress bars, play buttons, or any
+    text visible in the reference images.
+  - That prohibition covers brand wordmarks, logotypes, product names,
+    category or section labels, button, chip or pill labels, and kicker lines
+    — any legible string in a reference, whether or not it reads as design.
+  - Additional exclusions observed in these references: {{exclusions}}
+  - Reference roles, in the order attached:
+    {{reference_roles}}
+    Every one of them is a style, layout, palette, typography and treatment
+    reference only; none contributes its text, wordmarks, logos, chrome,
+    counters, or the identity of anyone shown in it.
+  - The hook sits inside the central 80% of the frame, well clear of the top
+    and bottom bands where a player's controls and captions land.
+  - The hook is already within the budget in force for this render:
+    {{text_budgets}}
+    It is read at thumb size on a phone — render it big.
+  - If the references' frame shape differs from this frame, RE-COMPOSE the
+    layout for this upright frame. Never letterbox, stretch, bar-pad or crop
+    the reference composition.
+  - Ignore any labelled line above that is empty.

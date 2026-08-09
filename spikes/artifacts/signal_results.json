@@ -1,0 +1,15 @@
+{
+  "add_signal_handler": "NotImplementedError: NotImplementedError()",
+  "mechanism_raise_signal": {
+    "rc": 4,
+    "output": "[child t+ 0.00s] loop=ProactorEventLoop\r\n[child t+ 0.00s] installed signal.signal(SIGINT, handler)\r\n[child t+ 0.00s] spawned subprocess pid=26608 via create_subprocess_exec\r\n[child t+ 2.01s] thread: signal.raise_signal(SIGINT) #1\r\n[child t+ 2.01s] SIGINT #1 -> GRACEFUL flag set (finishing in-flight work)\r\n[child t+ 2.01s] graceful stop observed\r\n[child t+ 4.01s] thread: signal.raise_signal(SIGINT) #2\r\n[child t+ 4.01s] SIGINT #2 -> HARD STOP\r\n[child t+ 4.01s] hard stop observed\r\n[child t+ 4.01s] subprocess reaped rc=1\r\n[child t+ 4.01s] exiting 4 (Ctrl+C exit code)\r\n"
+  },
+  "mechanism_ctrl_c_event": {
+    "rc": 4,
+    "sends": [
+      "send#1: ok",
+      "send#2: ok"
+    ],
+    "output": "[child t+ 0.00s] loop=ProactorEventLoop\n[child t+ 0.00s] installed signal.signal(SIGINT, handler)\n[child t+ 0.00s] SetConsoleCtrlHandler(NULL, FALSE) -> 1 (0 = failed, no console?)\n[child t+ 0.01s] spawned subprocess pid=16636 via create_subprocess_exec\n[child t+ 3.93s] SIGINT #1 -> GRACEFUL flag set (finishing in-flight work)\n[child t+ 3.93s] graceful stop observed\n[child t+ 6.93s] SIGINT #2 -> HARD STOP\n[child t+ 6.93s] hard stop observed\n[child t+ 6.93s] subprocess already dead (console-group Ctrl+C reached it too)\n[child t+ 6.93s] subprocess reaped rc=3221225786\n[child t+ 6.93s] exiting 4 (Ctrl+C exit code)\n"
+  }
+}

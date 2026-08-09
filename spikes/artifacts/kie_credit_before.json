@@ -1,0 +1,30 @@
+{
+  "/api/v1/chat/credit": {
+    "status": 200,
+    "body": {
+      "code": 200,
+      "msg": "success",
+      "data": 9398.0
+    }
+  },
+  "/api/v1/common/credit": {
+    "status": 404,
+    "body": {
+      "timestamp": 1786276049613,
+      "status": 404,
+      "error": "Not Found",
+      "message": "No message available",
+      "path": "/api/v1/common/credit"
+    }
+  },
+  "/api/v1/user/credit": {
+    "status": 404,
+    "body": {
+      "timestamp": 1786276049817,
+      "status": 404,
+      "error": "Not Found",
+      "message": "No message available",
+      "path": "/api/v1/user/credit"
+    }
+  }
+}

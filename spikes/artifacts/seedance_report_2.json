@@ -1,0 +1,132 @@
+{
+  "attempt": "2",
+  "generate_audio": false,
+  "image_ref": "https://tempfile.aiquickdraw.com/images/chatgpt/file_00000000fbcc81fda3e9d26e1cd3b224.png",
+  "video_candidates": [
+    "https://www.tiktok.com/@soulog.ai/video/7671208398817348895",
+    "https://www.tiktok.com/@aracne.ai/video/7671347803985136928",
+    "https://www.tiktok.com/@marcinteodoru/video/7671470941230140702",
+    "https://www.tiktok.com/@marcinteodoru/video/7671470941230140702",
+    "https://www.tiktok.com/@ai.honeycove/video/7671419649484983566",
+    "https://www.tiktok.com/@nathanhodgson.ai/video/7671723497319714070",
+    "https://www.tiktok.com/@lerabyte/video/7666557265775758622",
+    "https://www.tiktok.com/@nofacerevealed/video/7671807001067818261"
+  ],
+  "credit_before": {
+    "/api/v1/chat/credit": {
+      "status": 200,
+      "body": {
+        "code": 200,
+        "msg": "success",
+        "data": 9398.0
+      }
+    },
+    "/api/v1/common/credit": {
+      "status": 404,
+      "body": {
+        "timestamp": 1786276454700,
+        "status": 404,
+        "error": "Not Found",
+        "message": "No message available",
+        "path": "/api/v1/common/credit"
+      }
+    },
+    "/api/v1/user/credit": {
+      "status": 404,
+      "body": {
+        "timestamp": 1786276454902,
+        "status": 404,
+        "error": "Not Found",
+        "message": "No message available",
+        "path": "/api/v1/user/credit"
+      }
+    }
+  },
+  "probes": [],
+  "video_url_used": "https://tempfile.redpandaai.co/kieai/1241400/hypesocials-spike/spike_c_ref_video.mp4",
+  "create_status": 200,
+  "create_response": {
+    "code": 200,
+    "msg": "success",
+    "data": {
+      "taskId": "0155b15a27ea2f6007f66a804fc175d1",
+      "recordId": "0155b15a27ea2f6007f66a804fc175d1"
+    }
+  },
+  "request_input": {
+    "prompt": "Subject: the still frame in @Image1 comes alive. Camera: slow push-in, subtle handheld drift, matching the pacing and cut rhythm of @Video1. Motion: gentle parallax on the background, the on-frame text stays perfectly static, sharp and legible for the full clip. Lighting: keep the reference frame's palette and contrast. Silent clip — no music, no song, no melody, no vocals, no soundtrack of any kind. Do not add captions, watermarks or platform UI.",
+    "reference_image_urls": [
+      "https://tempfile.aiquickdraw.com/images/chatgpt/file_00000000fbcc81fda3e9d26e1cd3b224.png"
+    ],
+    "duration": 5,
+    "resolution": "720p",
+    "aspect_ratio": "9:16",
+    "generate_audio": false,
+    "nsfw_checker": true,
+    "output_format": "mp4",
+    "reference_video_urls": [
+      "https://tempfile.redpandaai.co/kieai/1241400/hypesocials-spike/spike_c_ref_video.mp4"
+    ]
+  },
+  "record": {
+    "code": 200,
+    "msg": "success",
+    "data": {
+      "taskId": "0155b15a27ea2f6007f66a804fc175d1",
+      "model": "bytedance/seedance-2-5",
+      "state": "success",
+      "param": "{\"input\":\"{\\\"duration\\\":5,\\\"aspect_ratio\\\":\\\"9:16\\\",\\\"output_format\\\":\\\"mp4\\\",\\\"generate_audio\\\":false,\\\"prompt\\\":\\\"Subject: the still frame in @Image1 comes alive. Camera: slow push-in, subtle handheld drift, matching the pacing and cut rhythm of @Video1. Motion: gentle parallax on the background, the on-frame text stays perfectly static, sharp and legible for the full clip. Lighting: keep the reference frame's palette and contrast. Silent clip — no music, no song, no melody, no vocals, no soundtrack of any kind. Do not add captions, watermarks or platform UI.\\\",\\\"resolution\\\":\\\"720p\\\",\\\"reference_image_urls\\\":[\\\"https://tempfile.aiquickdraw.com/images/chatgpt/file_00000000fbcc81fda3e9d26e1cd3b224.png\\\"],\\\"nsfw_checker\\\":true,\\\"reference_video_urls\\\":[\\\"https://tempfile.redpandaai.co/kieai/1241400/hypesocials-spike/spike_c_ref_video.mp4\\\"]}\",\"model\":\"bytedance/seedance-2-5\"}",
+      "resultJson": "{\"resultUrls\":[\"https://tempfile.aiquickdraw.com/seedance/1786276832084-wigf4z6c8km.mp4\"]}",
+      "failCode": null,
+      "failMsg": null,
+      "costTime": 378,
+      "completeTime": 1786276834850,
+      "createTime": 1786276456043,
+      "creditsConsumed": 570.0
+    },
+    "__states_observed__": [
+      [
+        0.0,
+        "waiting"
+      ],
+      [
+        379.4,
+        "success"
+      ]
+    ],
+    "__elapsed_s__": 379.6
+  },
+  "result_urls": [
+    "https://tempfile.aiquickdraw.com/seedance/1786276832084-wigf4z6c8km.mp4"
+  ],
+  "credit_after": {
+    "/api/v1/chat/credit": {
+      "status": 200,
+      "body": {
+        "code": 200,
+        "msg": "success",
+        "data": 8828.0
+      }
+    },
+    "/api/v1/common/credit": {
+      "status": 404,
+      "body": {
+        "timestamp": 1786276836953,
+        "status": 404,
+        "error": "Not Found",
+        "message": "No message available",
+        "path": "/api/v1/common/credit"
+      }
+    },
+    "/api/v1/user/credit": {
+      "status": 404,
+      "body": {
+        "timestamp": 1786276837141,
+        "status": 404,
+        "error": "Not Found",
+        "message": "No message available",
+        "path": "/api/v1/user/credit"
+      }
+    }
+  }
+}

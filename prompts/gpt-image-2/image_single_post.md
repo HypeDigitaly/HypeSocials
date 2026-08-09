@@ -1,0 +1,67 @@
+FORMAT: one single social-media post creative, rendered as a finished graphic.
+  The output frame is set by the request itself — never write, draw, letter or
+  mention an aspect ratio, a resolution, a pixel size or a platform name
+  anywhere inside the image.
+
+SUBJECT AND SCENE:
+  {{render_prompt}}
+
+  BRIEF OVERLAY: {{brief_directives}}
+
+TEXT (locked asset — this is the exact content of the creative):
+  {{onimage_text}}
+
+  Render every quoted string above exactly as written: same characters, same
+  accents, same capitalisation, same punctuation. Add no words. Repeat no
+  words. Invent no caption, no tagline, no label, no signature, no sticker
+  text. Render no text that is not quoted above.
+  Where a string is echoed letter by letter (for example "R-y-c-h-l-e-j-š-í"),
+  that echo is a spelling aid for you alone: read it, use it to get every
+  accent right, and never draw the hyphenated form onto the image.
+  Typography, weight, case and placement come from the LAYOUT section below;
+  where the two disagree about a word's case, the quoted string wins.
+
+LAYOUT AND STYLE:
+  {{layout_zones}}
+
+  Reproduce these zones in the order given, top of frame to bottom. Keep the
+  proportions, the margins and the text treatment of each zone. If the target
+  frame is a different shape from the reference images, RE-COMPOSE the layout
+  for this frame — re-flow the zones so they fit natively. Never letterbox,
+  never stretch, never bar-pad, never crop the reference composition.
+
+REFERENCES:
+  {{reference_roles}}
+
+  Every attached image is a style, layout, palette, typography and treatment
+  reference ONLY. Whatever else a reference contributes, none of them ever
+  contributes a legible string: not their headlines, captions or subtitles;
+  not their brand wordmarks, logotypes, product names, category or section
+  labels, button, chip or pill labels, kicker lines, badges or price tags; not
+  their watermarks or app marks; not their usernames, handles or profile
+  pictures; not their engagement counters; not their platform UI; not the
+  identity of any person shown in them.
+  Where two references disagree, follow the first one listed.
+
+CONSTRAINTS:
+  - Never reproduce platform UI, watermarks, app logos, usernames, handles,
+    follower or like or view counters, progress bars, play buttons, or any
+    text visible in the reference images.
+  - That prohibition covers brand wordmarks, logotypes, product names,
+    category or section labels, button, chip or pill labels, and kicker lines
+    — any legible string in a reference, whether or not it reads as design.
+    A word set in the template's own typeface is still that reference's word.
+  - If the reference template has a text zone for which no string is quoted
+    above, leave that zone empty or fill it with a non-text graphic element
+    (a rule, a bar, a shape, negative space) — never carry the reference's
+    words into it, and never invent replacement words for it.
+  - Additional exclusions observed in these references: {{exclusions}}
+  - All rendered text sits inside the central 80% of the frame, clear of every
+    edge, so a platform crop or a UI overlay can never amputate it.
+  - The text block above is already within the budget in force for this
+    render: {{text_budgets}}
+    Render it at a size that stays legible at thumbnail scale; do not shrink
+    type to fit extra words, because there are no extra words.
+  - One text block only. No duplicate subject, no duplicate headline, no
+    mirrored copy of the text elsewhere in the frame.
+  - Ignore any labelled line above that is empty.

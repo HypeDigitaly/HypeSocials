@@ -1,0 +1,44 @@
+{
+  "image result (spike B)": {
+    "status": 200,
+    "headers": {
+      "date": "Sun, 09 Aug 2026 12:04:40 GMT",
+      "content-type": "image/png",
+      "content-length": "1041680",
+      "etag": "\"d35fa24e937cf63f5c4ad3512844b5ba\"",
+      "last-modified": "Sun, 09 Aug 2026 11:44:48 GMT"
+    },
+    "url_host": "tempfile.aiquickdraw.com"
+  },
+  "video result (spike C)": {
+    "status": 200,
+    "headers": {
+      "date": "Sun, 09 Aug 2026 12:04:41 GMT",
+      "content-type": "video/mp4",
+      "content-length": "3211127",
+      "etag": "\"b6cd9a47bb0650deafe8d7e272751722\"",
+      "last-modified": "Sun, 09 Aug 2026 12:00:33 GMT"
+    },
+    "url_host": "tempfile.aiquickdraw.com"
+  },
+  "uploaded mp4 (file-stream-upload)": {
+    "status": 200,
+    "headers": {
+      "date": "Sun, 09 Aug 2026 12:04:41 GMT",
+      "content-type": "video/mp4",
+      "cache-control": "public, max-age=86400",
+      "etag": "\"719ecdd710afd924673c6a2e20738777\""
+    },
+    "url_host": "tempfile.redpandaai.co"
+  },
+  "uploaded mkv (file-stream-upload)": {
+    "status": 200,
+    "headers": {
+      "date": "Sun, 09 Aug 2026 12:04:42 GMT",
+      "content-type": "application/octet-stream",
+      "cache-control": "public, max-age=86400",
+      "etag": "\"ae87b3386da46ab736d08f53c03017f8\""
+    },
+    "url_host": "tempfile.redpandaai.co"
+  }
+}

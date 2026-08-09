@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=80.9"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hypesocials"
+version = "0.1.0"
+description = "Single-operator Windows CLI that turns Virlo trends into viral social creatives (images, carousels, reels)."
+requires-python = ">=3.12"
+license = "LicenseRef-Proprietary"
+authors = [{ name = "HypeDigitaly s.r.o." }]
+
+# Production dependencies — pinned exactly (plan §1a grants the §13 approval for this set).
+# Verified installable on CPython 3.13 / Windows 11 at scaffold time (2026-08-09).
+dependencies = [
+    "httpx==0.28.1",           # all async HTTP: OpenRouter, Kie.ai, Virlo CDN downloads
+    "PyYAML==6.0.3",           # config + meta.yaml
+    "mcp==2.0.0",              # official MCP Python SDK: Virlo wrapper + Notion stdio client
+    "yt-dlp==2026.7.4",        # reel video-reference download (D23); routine-bump policy NFR-160
+    "Pillow==12.3.0",          # image downscale ONLY (FR-93, NFR-25) — never re-encode/compose
+    "python-dotenv==1.2.2",    # .env loading; secrets never leave headers/env dicts (D30)
+    "pywin32==312; sys_platform == 'win32'",  # win32job kill-on-close job objects (FR-111)
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==9.1.1",
+    "pytest-asyncio==1.4.0",
+]
+
+[project.urls]
+Homepage = "https://hypedigitaly.ai"
+
+[tool.setuptools.packages.find]
+include = ["hypesocials*"]
+
+[tool.pytest.ini_options]
+# Every test in this project exercises async code paths; auto mode means plain
+# `async def test_*` functions run without a per-test marker.
+asyncio_mode = "auto"
+testpaths = ["tests"]

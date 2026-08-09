@@ -1,0 +1,104 @@
+{
+  "request_body": {
+    "model": "openai/gpt-5.6-luna",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a short-form social copywriter. Reply only with the schema."
+      },
+      {
+        "role": "user",
+        "content": "Write one Instagram post for an AI automation agency. Hook under 8 words, caption under 200 chars, 5 hashtags."
+      }
+    ],
+    "response_format": {
+      "type": "json_schema",
+      "json_schema": {
+        "name": "social_copy",
+        "strict": true,
+        "schema": {
+          "type": "object",
+          "properties": {
+            "hook": {
+              "type": "string"
+            },
+            "caption": {
+              "type": "string"
+            },
+            "hashtags": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "hook",
+            "caption",
+            "hashtags"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    "reasoning": {
+      "effort": "low"
+    },
+    "max_tokens": 1200,
+    "provider": {
+      "require_parameters": true
+    },
+    "usage": {
+      "include": true
+    }
+  },
+  "status": 200,
+  "response": {
+    "id": "gen-1786276967-fbELtZnioBs8Zdg8Dwel",
+    "object": "chat.completion",
+    "created": 1786276967,
+    "model": "openai/gpt-5.6-luna",
+    "provider": "OpenAI",
+    "system_fingerprint": null,
+    "service_tier": "default",
+    "choices": [
+      {
+        "index": 0,
+        "logprobs": null,
+        "finish_reason": "stop",
+        "native_finish_reason": "completed",
+        "message": {
+          "role": "assistant",
+          "content": "{\"hook\":\"Automate the busywork. Grow faster.\",\"caption\":\"Your team shouldn’t waste hours on repetitive tasks. We build AI automations that save time, reduce costs, and help your business scale smarter. Ready to work less manually?\",\"hashtags\":[\"#AIAutomation\",\"#BusinessGrowth\",\"#WorkflowAutomation\",\"#Productivity\",\"#ScaleSmarter\"]}",
+          "refusal": null,
+          "reasoning": null
+        }
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 93,
+      "completion_tokens": 80,
+      "total_tokens": 173,
+      "cost": 5.73e-05,
+      "is_byok": false,
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "cache_write_tokens": 0,
+        "audio_tokens": 0,
+        "video_tokens": 0
+      },
+      "cost_details": {
+        "upstream_inference_cost": 5.73e-05,
+        "upstream_inference_prompt_cost": 9.3e-06,
+        "upstream_inference_completions_cost": 4.8e-05
+      },
+      "completion_tokens_details": {
+        "reasoning_tokens": 0,
+        "image_tokens": 0,
+        "audio_tokens": 0
+      }
+    }
+  },
+  "schema_valid": true,
+  "headers_billing": {}
+}

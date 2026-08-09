@@ -1,7 +1,7 @@
 # HypeSocials MVP — Implementation Plan (Phase 1)
 
 **Status:** REVIEWED (architect + python/async + PRD-coverage panels applied) · **Source of truth:** `prds/00-overview.md` … `prds/50-promptcraft.md` (v1.6.2)
-**Goal:** Full MVP per PRD. Line budget: honest estimate ~4,100–4,400 production Python vs **hard ceiling 4,500 (G2)** — tracked at every wave barrier (`wc -l`), levers pre-committed (§1a).
+**Goal:** Full MVP per PRD. Line budget: **hard ceiling 6,500 (G2 v1.6.3, raised at the W1 barrier by operator decision; was 4,500)** — Wave 1 actual 3,919, remaining estimate ~3,300 — tracked at every wave barrier (`wc -l`), levers pre-committed (§1a).
 **Execution model:** flat-wave conductor dispatch per `CODING_GUIDELINES.md` §21. Operator decisions: minimal deterministic test suite (money/logic math), repo docs authored in Wave 0, day-one paid spikes (~$1–2) auto-run from `.env`.
 
 **Standing child-prompt preamble (every spawn, every level):** (1) read `CODING_GUIDELINES.md` in full; (2) model/effort policy per `CLAUDE.md` §9 — never pass a `model` param at spawn; (3) subagent output contract — conclusion first, bullets, `path:line`, no preamble; (4) read this plan file and the named PRD files fully.
@@ -283,6 +283,20 @@ Then:
 5. **Windows job objects** — pywin32 pre-approved; `mklink /J` for junctions, never `os.symlink`.
 6. **API drift vs PRD facts** — RESULTS.md is authoritative; deviations surface via D15, never silently coded around.
 
+## 5a. W1 barrier review directives (2026-08-09 — binding on W2+ owners)
+
+The W1 barrier review (ACCEPT-WITH-FIXES; blocking fixes applied in-wave) issued these spec corrections that W2+ tasks MUST honor:
+
+- **T2.4 `prompts_engine` — FR-102 is "delimiter INTEGRITY", not "delimiter insertion".** The fences already live in `style_brief_system.md`/`copywriter_system.md` (FR-181/182: templates own shape). The engine (i) never adds a fence, (ii) neutralizes `<<<BEGIN` / `<<<END` / `>>>` sequences inside every injected value before substitution (an escapable delimiter is decorative). Named test required. The §1/§2 wording "delimiter insertion at fill time" is superseded.
+- **T2.4 FR-261 hardening (three conditions, structural not incidental):** (1) context resolves from an explicit `Mapping[str, str]` built by one `build_context()` from typed domain objects only — never `os.environ`, never a wholesale `Config`; (2) `assert set(context) <= models.PLACEHOLDERS` at build time + unit test; (3) per-role placeholder allowlists (per `prompts/README.md` mapping) so an out-of-role name resolves to *unresolved* (FR-260) — prevents FR-109 brand-content leak into render prompts.
+- **T2.4/T3.1 FR-263 validator:** derive a new profile's required template names from `RenderProfile.kind` (`image` → the five gpt-image-2 role names, `video` → `reel_director.md`) — no second registry.
+- **T2.4 fill conventions:** `{{slide_index}}` filled as `"3 of 6"`; `{{style_dna}}` built ONCE per carousel and byte-identical across slides (FR-189, assertion test); `{{output_format}}` (FR-92 field list) and analyze's `json_schema` generated from `StyleBrief` field names by one generator; note `RenderParams.output_format` vs placeholder `output_format` name collision — never build context by attribute-mapping a dataclass.
+- **T2.4 `copywrite.py` both-mode rule:** ONE sibling line per `pair_id` (not per asset), then clone the CopySet to the sibling's asset_id — else FR-16/FR-22/FR-8 break. Named test required.
+- **T2.1 `sources/virlo.py`:** consume `has_face_visible`/`has_text_overlay`/`visual_complexity` (surfaced by the wrapper at the barrier) in the FR-91 builder; require `len(images) >= 3` before treating a slideshow as a reference source (RESULTS.md §A: 14/50 are single-image); dedupe videos by id/url (live duplicates observed).
+- **W4 reel degrade path (D15-gated):** on CONTENT_AUDIT fail (new `RenderFailCause` member), retry once with `generate_audio: false` — needs a 10-pipeline amendment + a new DegradationTag (conductor edit) before build.
+- **G2 escalation (B0) — RESOLVED by operator (2026-08-09):** ceiling raised to 6,500 (00-overview v1.6.3). W1 ended at 3,919; lever 3 (merge `analyze.py`+`copywrite.py` → `content.py`) remains available but is no longer forced for W2. Keep W2+ modules disciplined — the new ceiling is sized to the current density, not to slack.
+- **Reels — operator decision (2026-08-09): stay OFF.** `formats.reel: 0` holds; the reel-pricing D15 amendment (§6) is deferred until the operator revisits. No W2–W4 task may enable reels or price them.
+
 ## 6. PRD amendments expected (all via D15 cycle)
 
 - FR-124 char-budget key name added to 30 §2 (conductor-approved) — at W1.
@@ -292,3 +306,11 @@ Then:
 - **FR-59 vs FR-70 tension** (decline-confirm "no output" vs run folder created at launch): resolve as "folder + log survive; FR-59 means no *assets*, no spend" — editorial.
 - 30 §2 image price prose (two tiers) vs FR-258 (three tiers): T1.1 follows FR-258; prose fixed.
 - Only if lever #4 fires: D21 amendment (wrapper → official Virlo MCP).
+
+**Added at the W1 barrier (from spikes/RESULTS.md + live builds — all pending operator approval):**
+- **Reel pricing (OQ-2, BLOCKER for reels):** Kie bills `rate × (input_video_s + output_s)`; `price_per_unit.reel_second` scalar can't express `resolution × has_video_ref` + input-seconds basis; 00-overview's "$0.40–0.60/reel" metric unreachable at 720p. Amend FR-258 shape + the metric + reconsider `reel_reference_max_s: 28` (break-even: ref ≤ 0.65 × duration) before `formats.reel` > 0.
+- **`video_job_timeout_s` 300 → ≥600** (both live Seedance renders took 302 s/378 s; a timeout is paid + never resubmitted).
+- **FR-129 temperature:** unsupported by both shipped models; 404s under FR-125's `require_parameters`. Amend to "omit unless the configured model advertises it".
+- **20 §3 tool-return table:** digest vs monitor-analysis field ownership swapped in reality; `images[{image_url, position}]` not `image_urls[]`; no `panel_count` (use `intelligence.image_count`); intelligence fields gated on `intelligence_status == "ready"`; pagination idioms differ (`page` vs `offset`).
+- **10-pipeline §10:** new CONTENT_AUDIT failure class + silent-retry degrade path + new DegradationTag (W4-gated).
+- **Virlo digest is the only metered call ($0.25/run):** consider a config gate; `--preview-sources` is $0 only if the digest is skipped.

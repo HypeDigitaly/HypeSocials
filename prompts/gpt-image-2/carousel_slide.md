@@ -1,0 +1,72 @@
+FORMAT: one slide of a social-media carousel — slide {{slide_index}}. It is
+  one panel of a deck that must read as a single designed set. The output
+  frame is set by the request itself — never write, draw, letter or mention an
+  aspect ratio, a resolution, a pixel size or a platform name inside the
+  image.
+
+STYLE_DNA (identical on every slide of this deck — reproduce it exactly):
+  {{style_dna}}
+
+  This block is byte-for-byte the same in every slide's instruction. Treat it
+  as the deck's template: same palette, same type family and weights, same
+  grid, same margins, same motif, same treatment on every slide. Nothing in
+  it changes because the slide index changed. Only the SLIDE CONTENT below
+  differs between slides.
+
+SLIDE CONTENT:
+  {{render_prompt}}
+
+  BRIEF OVERLAY: {{brief_directives}}
+
+TEXT (locked asset — this slide's exact content):
+  {{onimage_text}}
+
+  Render every quoted string above exactly as written: same characters, same
+  accents, same capitalisation, same punctuation. Add no words. Repeat no
+  words. Render no text that is not quoted above — no invented body copy, no
+  invented label, no signature.
+  Where a string is echoed letter by letter (for example "V-ě-t-š-i-n-a"),
+  that echo is a spelling aid for you alone: use it to get every accent right
+  and never draw the hyphenated form onto the image.
+  If STYLE_DNA's layout includes a slide-position badge, that badge shows this
+  slide's position exactly as stated in the FORMAT line above, in the badge
+  style STYLE_DNA describes, and carries no other characters.
+
+REFERENCES:
+  {{reference_roles}}
+
+  Whatever else a reference contributes, none of them ever contributes a
+  legible string: not their headlines, captions or subtitles; not their brand
+  wordmarks, logotypes, product names, category or section labels, button,
+  chip or pill labels, kicker lines, badges or price tags; not their
+  watermarks or app marks; not their usernames, handles or profile pictures;
+  not their engagement counters; not their platform UI; not the identity of
+  any person shown in them; not their focal subject.
+  Where references disagree, follow the first one listed.
+
+CONSTRAINTS:
+  - Match STYLE_DNA exactly. A slide that drifts in palette, type or grid has
+    failed even if it looks good on its own.
+  - Never reproduce platform UI, watermarks, app logos, usernames, handles,
+    follower or like or view counters, progress bars, play buttons, or any
+    text visible in the reference images.
+  - That prohibition covers brand wordmarks, logotypes, product names,
+    category or section labels, button, chip or pill labels, and kicker lines
+    — any legible string in a reference, whether or not it reads as design.
+    A word set in the deck's own typeface is still that reference's word.
+  - If STYLE_DNA or a reference has a text zone for which no string is quoted
+    above, leave that zone empty or fill it with a non-text graphic element
+    (a rule, a bar, a shape, negative space) — never carry the reference's
+    words into it, and never invent replacement words for it.
+  - Additional exclusions observed in these references: {{exclusions}}
+  - All rendered text sits inside the central 80% of the frame, clear of every
+    edge.
+  - If the references' frame shape differs from this slide's frame, RE-COMPOSE
+    the layout for this frame. Never letterbox, stretch, bar-pad or crop the
+    reference composition.
+  - The text above is already within the budget in force for this render:
+    {{text_budgets}}
+    Render it large enough to stay legible at thumbnail scale.
+  - One text block, one focal element. No duplicate subject, no duplicate
+    headline, no mirrored copy of the text elsewhere in the frame.
+  - Ignore any labelled line above that is empty.

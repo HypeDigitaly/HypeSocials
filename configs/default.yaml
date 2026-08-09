@@ -1,0 +1,181 @@
+# Balanced default run across all three platforms - images and carousels, reels off
+# See prds/30-configuration-and-run.md §2 for the full field reference
+
+run:
+  formats: { image: 4, carousel: 2, reel: 0 }   # reels ship OFF (PRD v1.6): raise only after price_per_unit.reel_second is real (FR-131)
+  platforms: [linkedin, instagram, tiktok]
+  languages: { linkedin: en, instagram: en, tiktok: en }   # en | cs per platform (D6)
+  generation_mode: analyzed        # analyzed | direct | both
+  notion_influence: off            # off | copy | full (needs NOTION_TOKEN + pages shared once)
+  vision_check: false              # cs platforms get a startup hint to turn this on
+  spend_cap_usd: 10.00             # pre-flight control; --yes trims to fit, interactive refuses
+  trend_history_days: 7            # 0 disables the repeat-prevention window
+  max_trend_reuses_per_run: 2      # how many creatives may share one trend
+  carousel_anchor: true            # slide 1 renders first and references slides 2-N
+  reel_overlay_text: seed_frame    # seed_frame | in_model | none
+  reel_audio: true                 # Seedance generate_audio; false ships a silent clip
+  reel_video_reference: true       # yt-dlp -> Kie upload -> Seedance motion ref; degrades on failure
+  reel_reference_max_s: 28         # qualifying duration bound for that motion reference
+                                   # COST TRAP (spikes/RESULTS.md §C): the reference's seconds are
+                                   # BILLED. 28 s makes a 5 s reel ~4x more expensive than no
+                                   # reference at all; break-even is input_s < 0.65 x output_s.
+  reel_duration_s: 5               # 4-30 (Seedance verified range); out-of-range is CLAMPED at pre-flight
+  reel_resolution: 720p            # 480p | 720p (480p = the cheap test option)
+  nsfw_checker: true               # provider knob, always sent (provider's own default is false)
+  require_reference_image: true    # a text_only trend is last resort unless this is false
+  onimage_text_language: {}        # per-platform override for on-image text; else the caption language
+  text_budgets:                    # on-image character ceilings, enforced BEFORE submission (FR-101)
+    image_headline: 42
+    image_subline: 60
+    reel_seed_headline: 32
+    retry_reduction_pct: 40        # cut budgets by this % on a vision-check retry
+  run_deadline_min: 25             # soft elapsed ceiling, monotonic clock (FR-108)
+
+sources:
+  active: [virlo]                  # google_trends, hacker_news: named in the picker, not built yet
+  virlo_monitor_ids: []            # run `run.bat --list-monitors` to print yours (FR-251)
+  virlo_session_pool: 3            # bounded wrapper sessions; never one subprocess per monitor
+  media_download_cap: 6            # reference IMAGES per trend (the video ref is bounded separately)
+  reference_images_per_job: 3      # references attached to one render job, as a coherent set
+  inspiration_folders: []          # flat global list of local folders (D13); empty = off
+  inspiration_mix: minority        # off | minority | exclusive
+
+platforms:
+  # `formats` is each platform's allowlist (FR-132): a requested format outside it is dropped from
+  # the plan with a logged reason, never an error. `carousel_slides` is the ONE slide-count key in
+  # the PRD - both the deck ceiling and the estimate basis (FR-257). Aspect-ratio defaults are
+  # owned by prds/10-pipeline.md FR-21; `aspect_ratios` here is an OVERRIDE map only.
+  linkedin:
+    formats: [image, carousel]
+    carousel_slides: 5
+    aspect_ratios: {}              # e.g. { image: "1:1" } to deviate from the FR-21 default
+    conventions: {}                # caption length / tone / hashtag hints - prompt guidance only
+  instagram:
+    formats: [image, carousel]
+    carousel_slides: 5             # keep within Instagram's own 2-10 (FR-257)
+    aspect_ratios: {}
+    conventions: {}
+  tiktok:
+    formats: [image, carousel, reel]   # reels default to TikTok only
+    carousel_slides: 5
+    aspect_ratios: {}
+    conventions: {}
+
+models:
+  analysis: anthropic/claude-sonnet-5       # OpenRouter chat id - style briefs + vision check
+  copy: openai/gpt-5.6-luna                 # OpenRouter chat id - captions/hooks/on-image text
+  image: gpt-image-2-image-to-image         # Kie route, reference-bearing (input_urls <= 16);
+                                            #   the profile routes reference-free jobs to
+                                            #   gpt-image-2-text-to-image (OQ-17 closed)
+  video: bytedance/seedance-2-5             # Kie route; needs price_per_unit.reel_second to plan
+  # Profiles change ONLY on a model FAMILY change (e.g. Seedance -> Kling). A same-family swap is
+  # just the id line above. An unknown profile is a pre-flight refusal, exit code 2 (FR-281).
+  image_profile: gpt-image-2
+  video_profile: seedance-2-5
+  reasoning_effort: low            # models.copy role only; Luna bills reasoning tokens
+  temperature: {}                  # DELIBERATELY EMPTY: neither shipped model advertises
+                                   # `temperature`, and sending it with provider.require_parameters
+                                   # returns HTTP 404 (spikes/RESULTS.md §E). Set it only for a
+                                   # model whose OpenRouter catalog lists it. FR-129 needs D15.
+  max_tokens: { analysis: 2000, copy: 3000 }   # sized for the GROUPED calls, not single answers
+  max_tokens_floor: { analysis: 600, copy: 1000 }   # NFR-111: a smaller max_tokens is clamped UP
+                                   # to the floor with a warning - a tiny cap otherwise truncates
+                                   # every call and makes the truncation retry the normal path.
+  price_per_unit:                  # ESTIMATOR INPUTS ONLY - never billing-authoritative.
+                                   # These belong to the models named above; a swap leaves them
+                                   # untouched and the pre-flight prints which model each price is
+                                   # assumed for (FR-282). Unset/zero prints as "unpriced".
+    llm:                           # per-million-token rates (OpenRouter price page, 2026-08-09)
+      sonnet: { input_per_mtok: 2.00, output_per_mtok: 10.00 }
+      luna:   { input_per_mtok: 0.10, output_per_mtok: 0.60, reasoning_per_mtok: 0.60 }
+    image: { 1k: 0.03, 2k: 0.05, 4k: 0.08 }    # three tiers per FR-258; measured exactly in
+                                   # spikes/RESULTS.md §B (6 / 10 / 16 credits at $0.005/credit).
+    reel_second:
+      # ---------------------------------------------------------------------------------------
+      # UNSET ON PURPOSE (OQ-2, FR-131/FR-258). Reels are simply not planned until a real number
+      # is typed in - the engine refuses to guess with your money.
+      #
+      # OQ-2 IS NOW MEASURED (spikes/RESULTS.md §C) AND THE FINDING IS WORSE THAN A MISSING PRICE:
+      #   Kie bills Seedance 2.5 as  Price x (Input + Output) seconds when a video reference is
+      #   attached, and  Price x Output  when none is.
+      #     720p: 38 credits/s WITH a video ref  |  63 credits/s with none
+      #     480p: 17 credits/s WITH a video ref  |  28 credits/s with none   ($0.005 per credit)
+      #   Measured live: 5 s / 720p / 1 image ref / 10 s video ref = 570 credits = $2.85.
+      #
+      # A FLAT PER-SECOND SCALAR UNDERSTATES THE REAL COST whenever a video reference is attached,
+      # because the reference's own seconds are billed too - and its duration is only known after
+      # the yt-dlp probe, i.e. AFTER the pre-flight estimate is shown. With the shipped
+      # reel_reference_max_s: 28 a single 5 s 720p reel costs 1254 credits = $6.27.
+      #
+      # A D15 amendment to FR-258's `reel_second` shape (resolution x with_video/no_video, on an
+      # input+output basis) is PENDING and must land before formats.reel is raised above 0.
+      # An operator config may set a worst-case scalar meanwhile - see configs/hypedigitaly.yaml.
+      # ---------------------------------------------------------------------------------------
+      480p: null
+      720p: null
+  image_job_timeout_s: 180         # measured image render: ~90 s, comfortable
+  video_job_timeout_s: 300         # PRD canonical (FR-259). NOTE: both live Seedance renders took
+                                   # 302 s and 378 s (spikes/RESULTS.md §C), so this default times
+                                   # out real jobs - a D15 amendment candidate (>= 600), NOT
+                                   # silently changed here. Override per config: hypedigitaly.yaml.
+  poll_interval_s: 3               # gap between Kie recordInfo polls
+  http_max_attempts: 3             # EVERY bounded-retry path: OpenRouter, Kie, Virlo, Postiz
+  max_inflight_llm_calls: 8        # keep at or under your provider account's concurrency limit
+  max_inflight_render_jobs: 8
+
+mcp_servers:
+  # NO SECRETS HERE, IN ANY FORM. The engine builds each server's env dict from .env at spawn time,
+  # and config loading has no ${VAR} interpolation - a placeholder would stay a literal string
+  # (and is rejected outright). Entries name environment VARIABLES, never values (FR-130/D30).
+  mcp_startup_timeout_s: 20        # how long a spawned server has to become usable
+  mcp_call_timeout_s: 30           # ceiling on any single tool call
+  virlo:
+    transport: stdio
+    command: python -m hypesocials.virlo_mcp      # first-party wrapper, same venv, no Node needed
+    env_vars: [VIRLO_API_KEY]
+  notion:
+    transport: stdio
+    # run.bat pre-installs the PINNED package into ./node_modules (FR-113), so this resolves
+    # locally and never hits the network at run time. Never `npx -y <pkg>` / `<pkg>@latest`.
+    command: npx --no-install @notionhq/notion-mcp-server
+    env_vars: [NOTION_TOKEN]
+  postiz:                          # Phase 2, optional, ops-query only - parsed and unused in MVP
+    transport: streamable_http
+    url: ""
+    auth_env: POSTIZ_API_KEY
+
+# Notion brand context (optional; only fetched when notion_influence is copy or full).
+# IDs are grouped by context type (FR-35); an unset type is simply omitted from the block.
+notion_pages:
+  brand_voice: []
+  offers: []
+  icp: []
+  topics: []
+
+# FR-124: the brand-context block is TRUNCATED to these fixed per-context-type character budgets -
+# a plain cut, no summarization model call. Sized so all four together stay well inside the
+# analysis/copy token caps above. (Key name added to 30 §2 via the plan §6 D15 amendment.)
+notion_char_budgets:
+  brand_voice: 2000
+  offers: 1500
+  icp: 1500
+  topics: 1000
+
+briefs_dir: briefs                 # campaign briefs (D26); one folder per run, no collision rules
+prompts_dir: null                  # optional: checked BEFORE the global prompts/ folder (FR-174)
+
+output:
+  dir: output/
+  gallery: { title: "HypeSocials Run" }
+  log_verbosity: normal            # normal | verbose (verbose adds full prompts to events.jsonl)
+
+# Phase 2 publishing pointer (FR-176) - present, parsed, and completely unused in the MVP.
+# Authoritative shape: prds/60-publishing-postiz.md §6. Distinct from mcp_servers.postiz above,
+# which is connection config; this block is publish BEHAVIOUR config.
+postiz:
+  base_url_env: POSTIZ_BASE_URL    # variable NAME only, like everything else here
+  api_key_env: POSTIZ_API_KEY
+  default_post_type: draft         # draft | schedule
+  auto_publish: false              # the operator approves in the Postiz UI unless turned on
+  channel_map: {}
+  schedule_slots: {}

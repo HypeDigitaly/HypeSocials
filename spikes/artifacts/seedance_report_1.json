@@ -1,0 +1,280 @@
+{
+  "image_ref": "https://tempfile.aiquickdraw.com/images/chatgpt/file_00000000fbcc81fda3e9d26e1cd3b224.png",
+  "video_candidates": [
+    "https://www.tiktok.com/@soulog.ai/video/7671208398817348895",
+    "https://www.tiktok.com/@aracne.ai/video/7671347803985136928",
+    "https://www.tiktok.com/@marcinteodoru/video/7671470941230140702",
+    "https://www.tiktok.com/@marcinteodoru/video/7671470941230140702",
+    "https://www.tiktok.com/@ai.honeycove/video/7671419649484983566",
+    "https://www.tiktok.com/@nathanhodgson.ai/video/7671723497319714070",
+    "https://www.tiktok.com/@lerabyte/video/7666557265775758622",
+    "https://www.tiktok.com/@nofacerevealed/video/7671807001067818261"
+  ],
+  "credit_before": {
+    "/api/v1/chat/credit": {
+      "status": 200,
+      "body": {
+        "code": 200,
+        "msg": "success",
+        "data": 9398.0
+      }
+    },
+    "/api/v1/common/credit": {
+      "status": 404,
+      "body": {
+        "timestamp": 1786276049613,
+        "status": 404,
+        "error": "Not Found",
+        "message": "No message available",
+        "path": "/api/v1/common/credit"
+      }
+    },
+    "/api/v1/user/credit": {
+      "status": 404,
+      "body": {
+        "timestamp": 1786276049817,
+        "status": 404,
+        "error": "Not Found",
+        "message": "No message available",
+        "path": "/api/v1/user/credit"
+      }
+    }
+  },
+  "video_upload": {
+    "success": true,
+    "code": 200,
+    "msg": "File uploaded successfully",
+    "data": {
+      "success": true,
+      "fileName": "spike_c_ref_video.mp4",
+      "filePath": "kieai/1241400/hypesocials-spike/spike_c_ref_video.mp4",
+      "downloadUrl": "https://tempfile.redpandaai.co/kieai/1241400/hypesocials-spike/spike_c_ref_video.mp4",
+      "fileSize": 1854333,
+      "mimeType": "video/mp4",
+      "uploadedAt": "2026-08-09T11:47:36.377Z"
+    },
+    "__http_status__": 200
+  },
+  "probes": [
+    {
+      "duration": 10,
+      "ext": "mp4",
+      "title": "I need to buy one too!!#aivoicerecorder #soulogsense #aitool",
+      "extractor": "TikTok",
+      "formats": [
+        {
+          "id": "bytevc1_540p_447519-0",
+          "w": 576,
+          "h": 1024,
+          "px": 589824,
+          "fps": null,
+          "ext": "mp4",
+          "acodec": "aac",
+          "px_ok": true
+        },
+        {
+          "id": "bytevc1_540p_447519-1",
+          "w": 576,
+          "h": 1024,
+          "px": 589824,
+          "fps": null,
+          "ext": "mp4",
+          "acodec": "aac",
+          "px_ok": true
+        },
+        {
+          "id": "h264_720p_1459099-0",
+          "w": 720,
+          "h": 1280,
+          "px": 921600,
+          "fps": null,
+          "ext": "mp4",
+          "acodec": "aac",
+          "px_ok": true
+        },
+        {
+          "id": "h264_720p_1459099-1",
+          "w": 720,
+          "h": 1280,
+          "px": 921600,
+          "fps": null,
+          "ext": "mp4",
+          "acodec": "aac",
+          "px_ok": true
+        },
+        {
+          "id": "bytevc1_720p_576491-0",
+          "w": 720,
+          "h": 1280,
+          "px": 921600,
+          "fps": null,
+          "ext": "mp4",
+          "acodec": "aac",
+          "px_ok": true
+        },
+        {
+          "id": "bytevc1_720p_576491-1",
+          "w": 720,
+          "h": 1280,
+          "px": 921600,
+          "fps": null,
+          "ext": "mp4",
+          "acodec": "aac",
+          "px_ok": true
+        },
+        {
+          "id": "bytevc1_1080p_1189390-0",
+          "w": 1080,
+          "h": 1920,
+          "px": 2073600,
+          "fps": null,
+          "ext": "mp4",
+          "acodec": "aac",
+          "px_ok": false
+        },
+        {
+          "id": "bytevc1_1080p_1189390-1",
+          "w": 1080,
+          "h": 1920,
+          "px": 2073600,
+          "fps": null,
+          "ext": "mp4",
+          "acodec": "aac",
+          "px_ok": false
+        }
+      ],
+      "px_ok_formats": [
+        {
+          "id": "h264_720p_1459099-0",
+          "w": 720,
+          "h": 1280,
+          "px": 921600,
+          "fps": null,
+          "ext": "mp4",
+          "acodec": "aac",
+          "px_ok": true
+        },
+        {
+          "id": "h264_720p_1459099-1",
+          "w": 720,
+          "h": 1280,
+          "px": 921600,
+          "fps": null,
+          "ext": "mp4",
+          "acodec": "aac",
+          "px_ok": true
+        },
+        {
+          "id": "bytevc1_720p_576491-0",
+          "w": 720,
+          "h": 1280,
+          "px": 921600,
+          "fps": null,
+          "ext": "mp4",
+          "acodec": "aac",
+          "px_ok": true
+        },
+        {
+          "id": "bytevc1_720p_576491-1",
+          "w": 720,
+          "h": 1280,
+          "px": 921600,
+          "fps": null,
+          "ext": "mp4",
+          "acodec": "aac",
+          "px_ok": true
+        },
+        {
+          "id": "bytevc1_540p_447519-0",
+          "w": 576,
+          "h": 1024,
+          "px": 589824,
+          "fps": null,
+          "ext": "mp4",
+          "acodec": "aac",
+          "px_ok": true
+        },
+        {
+          "id": "bytevc1_540p_447519-1",
+          "w": 576,
+          "h": 1024,
+          "px": 589824,
+          "fps": null,
+          "ext": "mp4",
+          "acodec": "aac",
+          "px_ok": true
+        }
+      ],
+      "url": "https://www.tiktok.com/@soulog.ai/video/7671208398817348895"
+    }
+  ],
+  "video_url_used": "https://tempfile.redpandaai.co/kieai/1241400/hypesocials-spike/spike_c_ref_video.mp4",
+  "create_status": 200,
+  "create_response": {
+    "code": 200,
+    "msg": "success",
+    "data": {
+      "taskId": "ae6e023d7c2d07e57b299fc5b2a24dfa",
+      "recordId": "ae6e023d7c2d07e57b299fc5b2a24dfa"
+    }
+  },
+  "record": {
+    "code": 200,
+    "msg": "success",
+    "data": {
+      "taskId": "ae6e023d7c2d07e57b299fc5b2a24dfa",
+      "model": "bytedance/seedance-2-5",
+      "state": "fail",
+      "param": "{\"input\":\"{\\\"duration\\\":5,\\\"aspect_ratio\\\":\\\"9:16\\\",\\\"output_format\\\":\\\"mp4\\\",\\\"generate_audio\\\":true,\\\"prompt\\\":\\\"Subject: the still frame in @Image1 comes alive. Camera: slow push-in, subtle handheld drift, matching the pacing and cut rhythm of @Video1. Motion: gentle parallax on the background, the on-frame text stays perfectly static, sharp and legible for the full clip. Lighting: keep the reference frame's palette and contrast. Audio: light ambient room tone. Do not add captions, watermarks or platform UI.\\\",\\\"resolution\\\":\\\"720p\\\",\\\"reference_image_urls\\\":[\\\"https://tempfile.aiquickdraw.com/images/chatgpt/file_00000000fbcc81fda3e9d26e1cd3b224.png\\\"],\\\"nsfw_checker\\\":true,\\\"reference_video_urls\\\":[\\\"https://tempfile.redpandaai.co/kieai/1241400/hypesocials-spike/spike_c_ref_video.mp4\\\"]}\",\"model\":\"bytedance/seedance-2-5\"}",
+      "resultJson": "",
+      "failCode": "400",
+      "failMsg": "Content security audit did not pass. The output audio may be related to copyright restrictions.",
+      "costTime": 302,
+      "completeTime": 1786276360777,
+      "createTime": 1786276057692,
+      "creditsConsumed": 0.0
+    },
+    "__states_observed__": [
+      [
+        0.0,
+        "waiting"
+      ],
+      [
+        307.0,
+        "fail"
+      ]
+    ],
+    "__elapsed_s__": 307.2
+  },
+  "result_urls": [],
+  "credit_after": {
+    "/api/v1/chat/credit": {
+      "status": 200,
+      "body": {
+        "code": 200,
+        "msg": "success",
+        "data": 9398.0
+      }
+    },
+    "/api/v1/common/credit": {
+      "status": 404,
+      "body": {
+        "timestamp": 1786276365630,
+        "status": 404,
+        "error": "Not Found",
+        "message": "No message available",
+        "path": "/api/v1/common/credit"
+      }
+    },
+    "/api/v1/user/credit": {
+      "status": 404,
+      "body": {
+        "timestamp": 1786276365831,
+        "status": 404,
+        "error": "Not Found",
+        "message": "No message available",
+        "path": "/api/v1/user/credit"
+      }
+    }
+  }
+}

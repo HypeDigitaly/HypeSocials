@@ -1,0 +1,23 @@
+# Python environment & build artifacts
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+
+# Secrets — keys live only in .env / real environment variables (D30, FR-177)
+.env
+
+# Node bootstrap for the pinned Notion MCP server (run.bat installs it; the
+# authoritative pin is NOTION_MCP_PIN in run.bat, not these generated files)
+node_modules/
+package.json
+package-lock.json
+
+# Run artifacts & scratch
+output/
+logs/
+scratch/
+spikes/artifacts/spike_c_ref_video.mp4

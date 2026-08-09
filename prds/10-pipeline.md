@@ -448,7 +448,7 @@ This table covers **plan-entry consequences only**. Transport-level behaviour �
 
 **NFR-6 — Cost predictability.** Actual run cost stays within a small margin of the pre-flight estimate whenever no failures occur, and the summary always shows estimate versus actual.
 
-**NFR-7 — Leanness.** The whole pipeline fits comfortably inside the project's ~3,000-line budget, as a handful of small modules with no framework abstraction layers, no plugin registries and no strategy hierarchies.
+**NFR-7 — Leanness.** The whole pipeline fits inside the project's G2 line budget (target ~6,000, hard ceiling 6,500 — 00-overview v1.6.3), as a handful of small modules with no framework abstraction layers, no plugin registries and no strategy hierarchies.
 
 **NFR-8 — Resource discipline.** Reference images and generated assets are streamed to disk rather than accumulated in memory; analysis inputs are downscaled (FR-93); concurrency limits keep in-flight requests within provider rate limits without manual tuning.
 

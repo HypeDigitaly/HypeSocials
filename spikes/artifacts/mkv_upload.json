@@ -1,0 +1,15 @@
+{
+  "success": true,
+  "code": 200,
+  "msg": "File uploaded successfully",
+  "data": {
+    "success": true,
+    "fileName": "test.mkv",
+    "filePath": "kieai/1241400/hypesocials-spike/test.mkv",
+    "downloadUrl": "https://tempfile.redpandaai.co/kieai/1241400/hypesocials-spike/test.mkv",
+    "fileSize": 4100,
+    "mimeType": "application/octet-stream",
+    "uploadedAt": "2026-08-09T12:02:19.227Z"
+  },
+  "__http_status__": 200
+}
