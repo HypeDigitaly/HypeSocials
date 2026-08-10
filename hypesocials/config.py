@@ -93,7 +93,10 @@ class RunConfig:
     require_reference_image: bool = True
     onimage_text_language: dict[str, str] = field(default_factory=dict)
     text_budgets: TextBudgets = field(default_factory=TextBudgets)
-    run_deadline_min: int = 25  # soft ceiling on the monotonic clock (FR-108/243)
+    # Soft ceiling, monotonic clock (FR-108/243). DEPENDS ON models.video_job_timeout_s: a reel
+    # reaches its own timeout only while this exceeds it plus the analyze/copy/image stages. 25
+    # stands because the default ships reels OFF; reel-capable configs use 45 and `_validate` warns.
+    run_deadline_min: int = 25
 
 
 @dataclass(slots=True)
@@ -166,7 +169,10 @@ class ModelsConfig:
         default_factory=lambda: {"analysis": 600, "copy": 1000})
     price_per_unit: PriceTable = field(default_factory=PriceTable)
     image_job_timeout_s: int = 180
-    video_job_timeout_s: int = 600  # PRD canonical (FR-259, v1.6.7); measured renders ran 302–378 s
+    # 1800 (operator decision 2026-08-10, was 600): W6's run 20260809_221816_0316 failed a Seedance
+    # reel at the 600 s ceiling and wasted ~$4.78 — a timed-out job is paid and never resubmitted
+    # (20 §8). Live renders measured 302 s and 378 s; 1800 s is headroom, not an expected wait.
+    video_job_timeout_s: int = 1800
     poll_interval_s: int = 3
     http_max_attempts: int = 3  # EVERY bounded-retry path in the engine (NFR-14)
     max_inflight_llm_calls: int = 8
@@ -650,6 +656,15 @@ def _validate(cfg: Config, ctx: _Ctx) -> None:
         ctx.warn(  # never an error: FR-131/252 drop reels at pre-flight, they never fail the load
             f"reels requested but {cfg.reel_price_key} is unset — reels will not be planned "
             "until a real per-second rate is entered (FR-131, OQ-2)")
+    # Reel-capable = priced (so `--reels N` can turn them on later too) or already requested.
+    reel_capable = cfg.reels_plannable or cfg.run.formats.get("reel", 0) > 0
+    if reel_capable and cfg.run.run_deadline_min * 60 < cfg.models.video_job_timeout_s:
+        ctx.warn(  # warn, not fail: this combination silently WASTES reel money (20 §8, FR-108)
+            f"run.run_deadline_min {cfg.run.run_deadline_min} min is under "
+            f"models.video_job_timeout_s {cfg.models.video_job_timeout_s} s — the deadline "
+            "abandons the run before a slow reel can reach its own timeout, and that reel is "
+            "paid for and never resubmitted; raise run_deadline_min above the job timeout plus "
+            "the analyze/copy/image stages")
 
 
 def _clamp_token_limits(models: ModelsConfig, ctx: _Ctx) -> None:

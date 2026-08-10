@@ -29,7 +29,11 @@ run:
     image_subline: 60
     reel_seed_headline: 32
     retry_reduction_pct: 40        # cut budgets by this % on a vision-check retry
-  run_deadline_min: 25             # soft elapsed ceiling, monotonic clock (FR-108)
+  run_deadline_min: 25             # soft elapsed ceiling, monotonic clock (FR-108). DEPENDS ON
+                                   # models.video_job_timeout_s below: this file ships reels OFF,
+                                   # so 25 stands; turn reels on and it must exceed that timeout
+                                   # (30 min) plus the analyze/copy/image stages, or the deadline
+                                   # abandons the run before a slow reel can ever finish.
 
 sources:
   active: [virlo]                  # google_trends, hacker_news: named in the picker, not built yet
@@ -123,10 +127,14 @@ models:
       480p: null
       720p: null
   image_job_timeout_s: 180         # measured image render: ~90 s, comfortable
-  video_job_timeout_s: 600         # PRD canonical (FR-259, amended 300->600 in v1.6.7): both live
-                                   # Seedance renders took 302 s and 378 s (spikes/RESULTS.md §C);
-                                   # a timed-out job is paid and never resubmitted, so 300 s would
-                                   # have discarded real results seconds before arrival.
+  video_job_timeout_s: 1800        # 30 min (operator decision 2026-08-10, was 600). At the W6
+                                   # acceptance run a Seedance reel hit the 600 s ceiling and was
+                                   # declared failed, wasting ~$4.78: a timed-out job is paid and
+                                   # never resubmitted (20 §8), so a tight ceiling buys nothing.
+                                   # Live renders measured 302 s and 378 s (spikes/RESULTS.md §C);
+                                   # 1800 s is headroom for a slow one, not an expected wait.
+                                   # PAIR WITH run_deadline_min above - 25 min < 30 min means the
+                                   # deadline fires first (the engine warns when reels are on).
   poll_interval_s: 3               # gap between Kie recordInfo polls
   http_max_attempts: 3             # EVERY bounded-retry path: OpenRouter, Kie, Virlo, Postiz
   max_inflight_llm_calls: 8        # keep at or under your provider account's concurrency limit

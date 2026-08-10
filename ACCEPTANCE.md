@@ -157,6 +157,15 @@ README "Unattended usage".)
 | 4 Task Scheduler `--yes` $1 | `224147_wrsg` | 0 | 3/3, $0.68, 381 s, Last Result 0, task deleted after; no orphans |
 
 Trend history was set aside per the famine note for scenarios 2–4 and merged back afterwards
-(all run_ids preserved). Estimator note for the barrier round: actuals nudged past the
-worst-case line twice ($0.72 vs $0.69; $0.60 vs $0.56) — the FR-127 retry allowances read
-slightly thin when analysis needs both truncation AND parse retries.
+(all run_ids preserved).
+
+**Both findings from this record are now CLOSED (operator decisions 2026-08-10, PRD v1.7.0):**
+- *Estimator under-ran twice* ($0.72 vs $0.69; $0.60 vs $0.56) — **fixed.** The LLM retry
+  allowance now prices FR-127's truncation retry and FR-41's parse retry as the independent,
+  compounding, widened-cap calls they actually are. Re-scored against those same two runs the
+  worst case is now $0.85 and $0.80, both comfortably above the actuals; the *expected* figures
+  are unchanged, so the confirm prompt reads the same.
+- *Reel timed out at 600 s and its ~$4.78 was paid and discarded* — **fixed.** The video job
+  timeout is now 1800 s (30 min), and `run_deadline_min` is 45 min in the reel-capable configs
+  so the deadline cannot abandon a job before its own timeout. Re-run scenario 2 to confirm on
+  live hardware; the earlier reel's real charge is worth one glance at the Kie dashboard.

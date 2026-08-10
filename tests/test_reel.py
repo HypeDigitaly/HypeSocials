@@ -353,22 +353,33 @@ async def test_seed_frame_render_failure_degrades_to_in_model_and_keeps_the_moti
     assert record.actual_cost_usd == pytest.approx(2.88)  # the failed frame was still billed
 
 
-async def test_seed_url_rejected_at_submission_resubmits_once_without_it(tmp_path: Path) -> None:
-    """20 §10's second seed-frame row: the render succeeded and was paid for; the handoff broke."""
+async def test_seed_url_rejection_is_named_but_never_buys_a_second_clip(tmp_path: Path) -> None:
+    """20 §10's second seed-frame row is DETECTED and logged — and that is all it does.
+
+    The resubmission that used to follow was a third paid Seedance clip on a heuristic string
+    match, outside 20 §8's two sanctioned resubmissions; the operator deleted it (2026-08-10).
+    What must survive is the diagnosis: exactly one clip ordered, the tag on the record, the
+    named log line, and an honest terminal failure that keeps every paid artifact (FR-74).
+    """
     env = make_env(tmp_path)
     entry, folder = make_entry(), make_folder(tmp_path)
     submit = Submitter([
         ok(SEED_URL, task="job_seed"),
-        failed(RenderFailCause.PROVIDER_FAIL, "reference image url could not be downloaded"),
-        ok(CLIP_URL, task="job_clip"),
+        failed(RenderFailCause.PROVIDER_FAIL, "reference image url could not be downloaded",
+               task="job_clip"),
+        ok(CLIP_URL, task="job_clip_never_ordered"),  # must stay in the queue
     ])
 
     record = await reel.render_reel(entry, env, folder, submit=submit)
 
-    clips = submit.of("clip")
-    assert len(clips) == 2 and clips[1]["refs"].image_urls == []
+    assert len(submit.of("clip")) == 1  # no second ~$4.75 clip, ever
+    assert "seed_frame_url_unreachable" in env.log.types()  # the diagnosis survives
     assert DegradationTag.SEED_FRAME_URL_UNREACHABLE in record.degradations
-    assert record.status is AssetStatus.SUCCESS  # never a whole-reel failure
+    assert record.status is AssetStatus.FAILED
+    assert "reference image url could not be downloaded" in (record.skip_reason or "")
+    assert entry.status is PlanEntryStatus.FAILED
+    assert (folder.path / "seed_frame.jpg").is_file()  # the paid frame is still packaged (FR-74)
+    assert not (folder.path / "reel.mp4").exists()
 
 
 async def test_video_reference_degradation_ships_a_seed_frame_only_reel(tmp_path: Path) -> None:

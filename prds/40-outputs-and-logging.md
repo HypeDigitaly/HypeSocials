@@ -25,7 +25,7 @@ Each run creates a timestamped folder on disk (`output/YYYYMMDD_HHMMSS_random/`)
 **Identity & sourcing:**
 - source (trend key / "brief/<name>")
 - source_name (human-readable trend or brief name)
-- platform, format
+- platform, creative_format
 - variant (analyzed | direct)
 - pair_id (if A/B mode; pairs both-mode creatives for gallery side-by-side)
 - asset_id (full folder name including ordinal)
@@ -50,7 +50,7 @@ Each run creates a timestamped folder on disk (`output/YYYYMMDD_HHMMSS_random/`)
 - estimated_cost_usd, actual_cost_usd
 - estimated_tokens, actual_tokens
 - job_submission_timestamp, job_completion_timestamp (ISO 8601)
-- kie_job_id(s)
+- kie_job_ids
 
 **Quality & skip reasons:**
 - vision_check_result (passed | retried_passed | retried_failed | not_checked — 10-pipeline FR-27's four-state vocabulary; three states cannot express "retried")
@@ -77,7 +77,7 @@ Each run creates a timestamped folder on disk (`output/YYYYMMDD_HHMMSS_random/`)
 
 **FR-74:** If a creative fails to generate or is skipped (e.g., Kie.ai job timeout, budget exhausted), the asset folder still exists and contains: the already-paid artifacts (caption.txt and meta.yaml with status: failed) alongside a `SKIP_REASON.txt` file with a one-line reason. Example: `SKIP_REASON.txt` contains "Kie job timeout after 180s (job id kie_xyz789)". This ensures the run log can always reference a folder, and the user sees why assets are incomplete.
 
-**NFR-21:** Asset folder creation is atomic: the folder and its `SKIP_REASON.txt` (if needed) are written immediately after a decision to skip; final image/video is copied only after successful generation and optional vision-check. **`meta.yaml` is written at folder creation with `status: pending` and rewritten by temp-file+rename at terminal status** — a kill between image download and metadata write must never leave an asset folder containing media but no meta, because the gallery and the Phase 2 publisher both read it. This avoids partial-asset confusion.
+**NFR-21:** Asset folder creation is atomic: the folder and its `SKIP_REASON.txt` (if needed) are written immediately after a decision to skip. **`meta.yaml` is written at folder creation with `status: pending` and rewritten by temp-file+rename at terminal status; the final image/video is stored to disk afterward, and any optional vision-check reads from disk and overwrites in place on retry.** The core invariant: media is never present in a folder without its corresponding `meta.yaml`, because the gallery and the Phase 2 publisher both read it. This avoids partial-asset confusion.
 
 ---
 
@@ -85,7 +85,7 @@ Each run creates a timestamped folder on disk (`output/YYYYMMDD_HHMMSS_random/`)
 
 **FR-75:** One HTML file per run, named `gallery.html`, resides at `output/<run_id>/gallery.html`. It is **entirely self-contained**: all CSS is inlined in a `<style>` block, all images/videos are referenced via relative paths to sibling asset folders (e.g., `./Li_car_dance_analyzed_01/slide_01.jpg`) or the `refs/` folder, and no external CDN resources are loaded. Small inline scripts are allowed; no external resources, no rating widgets. The file works offline in any browser. **Atomic writing:** every incremental rewrite uses a temporary file + rename, ensuring that a crash mid-write never leaves a truncated file for an open browser tab.
 
-**FR-76:** The gallery is written **incrementally**: as soon as images land from Kie.ai, a first version is written to disk, allowing the user to review finished images while reel generation continues. The gallery is refreshed at run end with final counts and any newly completed reels. Each card displays: a preview (image thumbnail; reels render as `<video preload="metadata">` so the browser shows the first frame itself — **no poster-frame extraction, which would need ffmpeg** — with `seed_frame.jpg` as the `poster` attribute when it exists), the caption text, platform/format badges, estimated cost, source reference image(s) from `output/<run_id>/refs/`, the source hook text, and a link to the source Virlo URL. When A/B mode was used, both variants are automatically placed side by side and paired by `pair_id` (no configuration needed). **Pair-integrity badge:** when a both-mode pair has one side carrying `analysis_missing: true`, the gallery labels the pair "A/B invalid — analysis fell back to direct" instead of presenting a misleading comparison. The gallery title is set from config value `gallery.title` only; no grouping, toggle, or ranking widgets. The gallery header documents the selection mechanism (see FR-236 below).
+**FR-76:** The gallery is written **incrementally**: as soon as images land from Kie.ai, a first version is written to disk, allowing the user to review finished images while reel generation continues. The gallery is refreshed at run end with final counts and any newly completed reels. Each card displays: a preview (image thumbnail; reels render as `<video preload="metadata">` so the browser shows the first frame itself — **no poster-frame extraction, which would need ffmpeg** — with `seed_frame.jpg` as the `poster` attribute when it exists), the caption text, platform/format badges, estimated cost, source reference image(s) from `output/<run_id>/refs/`, the source hook text, and a link to the source Virlo URL. When A/B mode was used, both variants are automatically placed side by side and paired by `pair_id` (no configuration needed). **Pair-integrity badge:** when a both-mode pair has one side carrying `analysis_missing: true`, the gallery labels the pair "A/B invalid — analysis fell back to direct" instead of presenting a misleading comparison. The gallery title is set from config value `gallery.title` only; no grouping, toggle, or ranking widgets. The gallery header documents the selection mechanism (see FR-231 below).
 
 **FR-150:** Fidelity is judged in the gallery by comparing each creative against its source reference images shown alongside.
 

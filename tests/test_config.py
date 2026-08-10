@@ -279,6 +279,25 @@ def test_fr131_reels_requested_without_a_price_warn_rather_than_fail_the_load(
     assert priced.reel_price_per_second == 0.19
 
 
+def test_a_run_deadline_under_the_video_job_timeout_warns_on_a_reel_capable_config(
+    tmp_path: Path,
+) -> None:
+    """Operator decision 2026-08-10: `video_job_timeout_s` is 30 min because the W6 run threw away
+    a paid reel at 600 s (a timed-out job is never resubmitted, 20 §8). A 25-min deadline would
+    abandon the run before that ceiling could ever fire, so the pairing is warned about — but only
+    where reels are actually reachable, otherwise every default load would carry the noise."""
+    assert Config().models.video_job_timeout_s == 1800
+
+    priced = "models:\n  price_per_unit:\n    reel_second: { '720p': 0.95 }\n"
+    warned = load(tmp_path, priced)  # deadline defaults to 25 min = 1500 s < 1800 s
+    assert any("run_deadline_min" in w and "video_job_timeout_s" in w for w in warned.warnings)
+
+    quiet = load(tmp_path, "run:\n  run_deadline_min: 45\n" + priced)
+    assert not any("run_deadline_min" in w for w in quiet.warnings)
+    # Reels unreachable (default.yaml's shape): the same 25/1800 pairing is silent.
+    assert not any("run_deadline_min" in w for w in load(tmp_path, "run: {}\n").warnings)
+
+
 # --------------------------------------------------------------------------- the YAML 1.1 trap
 
 

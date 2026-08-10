@@ -57,6 +57,7 @@ _TIER_LONG_EDGE: dict[str, int] = {"1k": 1024, "2k": 2048, "4k": 4096}
 #: Reasoning allowance per configured effort, measured in RESULTS.md §E: exactly 0 tokens at
 #: `low`, ~32 % of completion at `medium`. `high` is extrapolated at 2x medium and labelled so.
 _REASONING_FRACTION: dict[str, float] = {"low": 0.0, "medium": 0.32, "high": 0.64}
+_RETRY_TOKEN_BUMP = 8192  # llm._TRUNCATION_BUMP_MAX: a retried call's cap grows by min(cap, this)
 #: Which `price_per_unit.llm.<key>` block prices each role. Keyed by ROLE, not by model id: a rate
 #: belongs to whatever model was configured when it was typed in, so a swap keeps it (FR-282).
 _ROLE_PRICE_KEY: dict[str, str] = {"analysis": "sonnet", "copy": "luna"}
@@ -391,18 +392,21 @@ def _llm_lines(config: Config, entries: Sequence[PlanEntry], lines: list[Estimat
         images = min(config.sources.media_download_cap, _ANALYSIS_IMAGE_CAP)
         prompt = _ANALYSIS_PROMPT_TOKENS + images * _image_tokens(_ANALYSIS_IMAGE_PX,
                                                                  _ANALYSIS_IMAGE_ASPECT)
-        priced = _llm_call_price(config, "analysis", prompt, config.max_tokens_for("analysis"), 0)
+        out = config.max_tokens_for("analysis")
+        priced = _llm_call_price(config, "analysis", prompt, out, 0)
         orders = [order for orders in analyzed.values() for order in orders]
         lines.append(_line("analysis_call", f"style-brief analysis calls ({len(analyzed)})",
                            SpendCategory.LLM, "call", len(analyzed), priced, orders))
-        # FR-127 truncation retry (v1.6.5 fidelity fix, M1 finding): a truncated answer is re-sent
-        # WIDER — the whole prompt, downscaled images included, at up to double the completion cap.
-        # M1 billed $0.23 against a $0.16 worst case for exactly this, so the worst case now
-        # carries one extra FULL-cost call per analysis call. It is an allowance: FR-106a's
-        # expected projection stays ungated by a contingency that mostly never happens.
-        lines.append(_line("analysis_truncation_allowance",
-                           f"analysis truncation-retry allowance ({len(analyzed)})",
-                           SpendCategory.LLM, "retry", len(analyzed), priced, orders,
+        # FR-127 and FR-41 are INDEPENDENT retries, each capped at 1, and ONE call can spend BOTH
+        # (llm._run_attempts) — W6 measured it: run 20260809_220436_wrfc billed $0.72 against a
+        # $0.69 worst case, run 20260809_223503_ax10 $0.60 against $0.56. So the worst case carries
+        # TWO extra calls per analysis call, each at the cap FR-127 widens to and FR-41's retry
+        # then inherits. Allowance only: FR-106a's expected projection stays ungated by a
+        # contingency that mostly never happens (v1.6.5 fidelity fix, padded 2026-08-10).
+        wide = _llm_call_price(config, "analysis", prompt, out + min(out, _RETRY_TOKEN_BUMP), 0)
+        lines.append(_line("analysis_retry_allowance",
+                           f"analysis truncation + parse retry allowance ({2 * len(analyzed)})",
+                           SpendCategory.LLM, "retry", 2 * len(analyzed), wide, orders,
                            allowance=True))
 
     groups: dict[tuple[str, str], list[PlanEntry]] = {}
@@ -413,30 +417,31 @@ def _llm_lines(config: Config, entries: Sequence[PlanEntry], lines: list[Estimat
     if not groups:
         return
     completion = config.max_tokens_for("copy")
-    reasoning = round(completion * _REASONING_FRACTION.get(config.models.reasoning_effort, 0.0))
+    effort = _REASONING_FRACTION.get(config.models.reasoning_effort, 0.0)
+    reasoning = round(completion * effort)
     brand = (sum(config.notion_char_budgets.values()) // _CHARS_PER_TOKEN
              if config.run.notion_influence != "off" else 0)
     def siblings_of(members: Sequence[PlanEntry]) -> int:
         """One sibling line per pair_id, not per asset — a both-mode pair shares one CopySet."""
         return len({e.pair_id or e.asset_id for e in members})
 
-    per_group: list[Priced] = []
     for (subject, language), members in groups.items():
         tokens = _COPY_PROMPT_TOKENS + brand + siblings_of(members) * _COPY_TOKENS_PER_SIBLING
         priced = _llm_call_price(config, "copy", tokens, completion, reasoning)
-        per_group.append(priced)
         lines.append(_line("copy_call",
                            f"copy call · {subject} ({language}, {siblings_of(members)} siblings)",
                            SpendCategory.LLM, "call", 1, priced, [e.order for e in members]))
-    # FR-127 applies to EVERY role — `llm._run_attempts` widens and re-sends whatever was
-    # truncated, and `max_tokens.copy` is sized for the grouped FR-99 call precisely because a
-    # small cap "would pay for FR-127's retry as the normal path" (30 §2). So copy carries the
-    # same one-extra-full-call allowance, priced at the widest group's call: the worst case this
-    # config can actually produce.
-    widest = max(per_group, key=lambda priced: priced[0] or 0.0)
-    lines.append(_line("copy_truncation_allowance",
-                       f"copy truncation-retry allowance ({len(groups)})", SpendCategory.LLM,
-                       "retry", len(groups), widest, [e.order for e in planned], allowance=True))
+    # Both retries apply to EVERY role — and 30 §2 sizes `max_tokens.copy` for the grouped FR-99
+    # call precisely so FR-127's retry is not the normal path — so copy carries the same two wide
+    # calls, priced at the widest group: the worst case this config can actually produce.
+    wide_out = completion + min(completion, _RETRY_TOKEN_BUMP)
+    wide_tokens = (_COPY_PROMPT_TOKENS + brand
+                   + max(siblings_of(m) for m in groups.values()) * _COPY_TOKENS_PER_SIBLING)
+    wide = _llm_call_price(config, "copy", wide_tokens, wide_out, round(wide_out * effort))
+    lines.append(_line("copy_retry_allowance",
+                       f"copy truncation + parse retry allowance ({2 * len(groups)})",
+                       SpendCategory.LLM, "retry", 2 * len(groups), wide,
+                       [e.order for e in planned], allowance=True))
     # FR-107: FR-99's split per-creative calls are a real conditional contributor — carried as a
     # worst-case allowance of one call per sibling, not as expected spend.
     split_calls = sum(siblings_of(members) for members in groups.values())

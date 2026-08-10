@@ -310,7 +310,7 @@ def test_analysis_priced_per_distinct_assigned_trend(cfg: Config) -> None:
 
 def test_truncation_retry_allowance_in_worst_case_not_expected(cfg: Config) -> None:
     """The other half of the v1.6.5 fix: FR-127's retry re-sends a truncated call WIDER, which
-    roughly doubled M1's per-call analysis cost. It is carried as one extra full-cost call per LLM
+    roughly doubled M1's per-call analysis cost. It is carried as extra full-cost calls per LLM
     call — in `worst_case_usd` only, because FR-106a's expected projection is never gated on a
     contingency that mostly never happens.
     """
@@ -319,17 +319,46 @@ def test_truncation_retry_allowance_in_worst_case_not_expected(cfg: Config) -> N
 
     _stamp_provisional(plan)
     est = estimate(cfg, plan)
-    analysis, retry = one(est, "analysis_call"), one(est, "analysis_truncation_allowance")
-    copy_retry = one(est, "copy_truncation_allowance")
+    analysis, retry = one(est, "analysis_call"), one(est, "analysis_retry_allowance")
+    copy_retry = one(est, "copy_retry_allowance")
 
     assert retry.allowance and copy_retry.allowance and retry.category is SpendCategory.LLM
-    assert retry.quantity == analysis.quantity  # one extra full-cost call per analysis call
-    assert retry.unit_price == analysis.unit_price
-    assert copy_retry.quantity == len(lines(est, "copy_call"))
+    assert retry.quantity == 2 * analysis.quantity  # FR-127's retry AND FR-41's, per analysis call
+    assert retry.unit_price is not None and analysis.unit_price is not None
+    assert retry.unit_price > analysis.unit_price  # ... each at FR-127's widened token cap
+    assert copy_retry.quantity == 2 * len(lines(est, "copy_call"))
     # Worst case carries them; expected does not, and no entry's share is inflated by an allowance.
     assert est.worst_case_usd - est.expected_usd >= retry.amount_usd + copy_retry.amount_usd
     bare = round(sum(l.amount_usd for l in est.lines if not l.allowance), 6)
     assert est.expected_usd == pytest.approx(bare)
+
+
+def test_worst_case_covers_a_call_that_truncation_retries_and_parse_retries(cfg: Config) -> None:
+    """W6 live evidence (ACCEPTANCE.md): run `20260809_220436_wrfc` billed $0.72 against a $0.69
+    worst case and run `20260809_223503_ax10` billed $0.60 against $0.56 — both times because one
+    analysis call spent FR-127's truncation-widening retry AND FR-41's schema-parse retry, while
+    the estimate priced only the first. `llm._run_attempts` bumps `max_tokens` on the truncation
+    retry and FR-41's retry inherits that widened body, so the worst case now carries TWO calls at
+    the WIDE cap per LLM call — and the expected line is untouched.
+    """
+    from hypesocials.runner import _stamp_provisional
+
+    # ax10's shape: three analyzed creatives (2 images + one deck), built-in default prices.
+    plan = [entry(0, variant="analyzed"), entry(1, variant="analyzed"),
+            entry(2, "carousel", variant="analyzed")]
+    _stamp_provisional(plan)
+    est = estimate(cfg, plan)
+    call, allowance = one(est, "analysis_call"), one(est, "analysis_retry_allowance")
+    assert call.unit_price is not None and allowance.unit_price is not None
+
+    # One call billing three times (first + widened truncation retry + inherited parse retry) is
+    # inside the allowance for that call — that is the bound the two runs escaped.
+    compound = call.unit_price + 2 * allowance.unit_price
+    assert allowance.quantity * allowance.unit_price / call.quantity >= compound - call.unit_price
+    assert est.worst_case_usd >= 0.60  # ax10's actual, previously $0.56 of worst case
+    assert est.expected_usd == pytest.approx(
+        round(sum(l.amount_usd for l in est.lines if not l.allowance), 6))
+    assert est.expected_usd < 0.60  # the confirm prompt's expected line stays informative
 
 
 def test_job_projection_is_the_one_per_submission_price(cfg: Config) -> None:

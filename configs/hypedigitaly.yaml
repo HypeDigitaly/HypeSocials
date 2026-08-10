@@ -22,6 +22,11 @@ run:
   # mimicry at a worst case of ~$4.75 per 5 s 720p reel; the break-even vs no-reference is
   # input < 0.65 x output (~3 s for a 5 s reel). The provider ceiling 28/30 s is a cost trap.
   reel_reference_max_s: 20
+  # 45 min (operator decision 2026-08-10, default is 25). This is a REEL-CAPABLE config, so the
+  # deadline MUST exceed models.video_job_timeout_s (1800 s = 30 min) plus the analyze/copy/image
+  # stages - otherwise the run is abandoned before a slow reel can reach its own timeout and the
+  # 30 min ceiling is decorative. Still a soft ceiling on the monotonic clock (FR-108).
+  run_deadline_min: 45
 
 sources:
   # The three REAL monitor ids recorded live in spikes/RESULTS.md §A (2026-08-09).
@@ -41,8 +46,11 @@ briefs_dir: niches/hypedigitaly/briefs   # holds ai-audit-cta/ (shipped first br
 prompts_dir: null                        # set to niches/hypedigitaly/prompts once that folder exists
 
 models:
-  # 600 is now the PRD default too (FR-259 amended in v1.6.7); kept explicit here for clarity.
-  video_job_timeout_s: 600
+  # 30 min (operator decision 2026-08-10, was 600). The W6 acceptance run declared a Seedance reel
+  # failed at the 600 s ceiling and wasted ~$4.78 - a timed-out job is paid and never resubmitted
+  # (20 §8), so the ceiling only ever discards work already bought. Measured renders took 302 s
+  # and 378 s; 1800 is headroom for the slow tail. Needs run_deadline_min: 45 above to be reachable.
+  video_job_timeout_s: 1800
 
   price_per_unit:
     reel_second:

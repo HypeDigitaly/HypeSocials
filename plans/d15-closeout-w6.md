@@ -64,15 +64,27 @@ trail:
 
 ## What remains open for the operator (the whole remaining D15 trail)
 
-**One editorial batch (pre-approved in substance, could ride a single v1.6.9 entry):**
+> **UPDATE 2026-08-10 (PRD v1.7.0):** the editorial batch below has been **APPLIED**, and the
+> reel-retry decision was taken (**delete** — the resubmission is gone, FR-24 and both failure
+> rows amended). Two acceptance findings were also closed by code: the reel job timeout
+> (600 → 1800 s, deadline 45 min on reel-capable configs) and the LLM retry allowance
+> (now `base + 2 × widened` per call). **Five items remain open**, listed at the very bottom.
+
+**One editorial batch (pre-approved in substance, could ride a single v1.6.9 entry) — APPLIED v1.7.0:**
 №2 (FR-76 pointer) · №4 (G2 numbers in NFR-7/NFR-110/D21/D34 prose) · №5 (FR-59 wording) ·
 №6 (30 §2 two-tier prose) · plus the audit's editorial rows above (FR-23, FR-92/17 carve-out,
 10 §10 row, NFR-16/FR-56, FR-73 spellings, NFR-21, FR-270 carve-out, FR-180 sentence).
 
-**Needing an explicit operator yes (they change requirement meaning or spend money):**
+**Still needing an explicit operator yes — FIVE items (v1.7.0 status):**
 №10 (FR-129 temperature) · №11 (20 §3 tool-return table) · FR-139 verdict labelling ·
-FR-73 token fields (apportion vs delete) · NFR-13 image-resolution key ·
-20 §8 reel retry (only if you want the removed resubmission back).
+FR-73 token fields (apportion vs delete) · NFR-13 image-resolution key.
+*(The 20 §8 reel retry left this list on 2026-08-10 — the operator chose deletion.)*
+
+**One new item raised by that deletion (not urgent, not a bug):** the PRD's original promise
+was that a rejected seed-frame URL still ships a clip with `in_model` text. That is only
+achievable with a **pre-submission URL reachability check**, which was never built. Today the
+case is an honest logged failure. Build the pre-check if delivered-clip-always matters more
+than the ~20 lines it costs.
 
 Per v1.6.3 precedent, the deferred full PRD.html/artifact republish comes due with whichever
 content-level amendment closes these.

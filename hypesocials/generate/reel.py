@@ -10,10 +10,13 @@ injected `submit` does all three (FR-106 a/b/c, FR-203).
 Public API: `await render_reel(entry, env, folder, submit=...) -> AssetRecord`.
 
 Invariants enforced here, once:
-- **A reel is delivered or honestly skipped, never half-built.** Losing the seed frame costs
-  legibility, not a clip (FR-24): `seed_frame_render_failed` (never rendered) and
-  `seed_frame_url_unreachable` (rendered, then rejected at Seedance submission) both degrade to
-  `in_model` overlay text, KEEP the motion reference, and still count as delivered.
+- **A seed frame that never rendered costs legibility, not a clip (FR-24).**
+  `seed_frame_render_failed` degrades to `in_model` overlay text, KEEPS the motion reference, and
+  still counts as delivered. Its sibling `seed_frame_url_unreachable` — the frame rendered, then
+  Seedance rejected the reference — is detected, tagged and logged, but the clip that already
+  failed is **not re-bought** (operator decision 2026-08-10): a heuristic message match may not
+  order a second ~$4.75 render, so that reel ends as an honest render failure keeping every paid
+  artifact. This is the one place the code is deliberately stricter than 10 §10's ":422" row.
 - **The seed frame is checked BEFORE the clip is submitted (FR-105).** A re-render has to replace
   the frame the video is built from, not arrive after the clip is paid for. A successful re-render
   is checked once more — the estimator's `vision_retry_allowance` prices that pair, "render +
@@ -25,9 +28,9 @@ Invariants enforced here, once:
 - **A content-security audit failure is not a moderation refusal (FR-141, v1.6.6).** Its remedy is
   silencing the clip, never stripping references — one retry with `generate_audio: false` plus the
   explicit silent-clip clause, same references, the failed attempt billed $0 (RESULTS.md §C).
-- **One retry per class (NFR-4).** Four separate single retries live here and none of them stacks:
-  the seed frame's moderation retry (FR-97), its vision-check re-render (FR-105), the clip's
-  content-audit silent retry, and the clip's seed-URL-rejected resubmission.
+- **One retry per class (NFR-4).** Three separate single retries live here and none of them stacks:
+  the seed frame's moderation retry (FR-97), its vision-check re-render (FR-105), and the clip's
+  content-audit silent retry — 20 §8's whole sanctioned list. There is no fourth.
 - **9:16 always.** A reel's seed frame inherits the reel's ratio, never the platform's image ratio
   (FR-21), and the clip passes 9:16 explicitly — the provider's `adaptive` is never used.
 
@@ -81,7 +84,7 @@ _CLEAN_CLIP_REF_LINE = ("No seed frame is attached to this job, and this clip ca
                         "of lettering.")
 #: A task-creation / reference-validation failure whose message implicates the seed-frame URL
 #: (20 §10 `seed_frame_url_unreachable`). Deliberately narrow: an unmatched message is an ordinary
-#: failed render, and one wrong resubmission costs a whole clip.
+#: failed render, and this match only NAMES a failure — it never orders anything.
 _SEED_URL_HINTS = ("reference", "input url", "image url", "invalid url", "unreachable",
                    "not accessible", "download", "fetch", "expired", "404")
 
@@ -169,21 +172,14 @@ async def _chain(
 
     if outcome is not None and seed_url and _seed_url_rejected(outcome):
         # FR-24's second failure: the frame rendered and was paid for; the handoff is what broke.
-        # 10 §10 requires the clip to still be generated and delivered, so this resubmission
-        # stays — but as DISCRETIONARY work (FR-106c): a second full Seedance clip is not in the
-        # wave-1 projection the operator approved, so the cap may refuse it (20 §8, CLAUDE.md #7).
+        # NAMED, never re-bought (operator decision 2026-08-10) — 20 §8 sanctions exactly two
+        # resubmissions and this was neither, so the failed outcome falls straight through to the
+        # terminal path below carrying this tag and this line as its explanation.
         env.log.warn("seed_frame_url_unreachable",
                      f"{entry.asset_id}: Seedance rejected the seed-frame reference "
-                     f"({outcome.fail_message}); one resubmission with in-model overlay text",
+                     f"({outcome.fail_message}); the clip is not resubmitted",
                      asset_id=entry.asset_id)
         folder.mark(DegradationTag.SEED_FRAME_URL_UNREACHABLE)
-        seed_url = None
-        retry = await _submit_clip(entry, env, submit, spend, copyset, seed_url=None,
-                                   video_url=video_url, audio_on=audio_on, mode="in_model",
-                                   kind="discretionary")
-        # Nothing re-ordered: an interrupt still packages as abandoned, a cap refusal keeps the
-        # rejection this reel already paid for as its honest terminal reason.
-        outcome = retry or (None if env.halted else outcome)
 
     if outcome is None:  # nothing was ordered: Ctrl+C / deadline, or a prompt that would not fill
         if not env.halted:
@@ -383,8 +379,7 @@ async def _motion_reference(entry: PlanEntry, env: Env, folder: AssetFolder) -> 
 
 async def _submit_clip(
     entry: PlanEntry, env: Env, submit: Any, spend: _Spend, copyset: CopySet | None, *,
-    seed_url: str | None, video_url: str | None, audio_on: bool, mode: str,
-    extra: str = "", kind: str = "precommitted",
+    seed_url: str | None, video_url: str | None, audio_on: bool, mode: str, extra: str = "",
 ) -> RenderOutcome | None:
     """One Seedance submission (FR-23). `None` means nothing was ordered — halt or a bad prompt."""
     if env.halted:  # FR-201/108: stop ORDERING; whatever is already paid for is packaged
@@ -405,7 +400,7 @@ async def _submit_clip(
     refs = RenderRefs(image_urls=[seed_url] if seed_url else [],  # FR-24: @Image1 leads
                       video_urls=[video_url] if video_url else [])
     return spend.add(await submit(entry, params, refs, job="clip", priority=RenderPriority.WAVE2,
-                                  kind=kind,  # FR-106b, except the seed-URL retry (see `_chain`)
+                                  kind="precommitted",  # FR-106b: every clip this chain orders
                                   label=f"reel clip · {entry.asset_id}"))
 
 
