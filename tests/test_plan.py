@@ -35,7 +35,9 @@ def _worked_example_config(*, mode: str = "analyzed") -> Config:
 
 
 def _trend(key: str, *, strength: float = 0.5, slideshow: bool = False, images: bool = True,
-           name: str | None = None, why: str = "strong pattern interrupt") -> TrendItem:
+           name: str | None = None, why: str = "strong pattern interrupt",
+           posts: tuple[str, ...] = ()) -> TrendItem:
+    """`posts` is what the adapter recorded as the CHOSEN reference set's ids (FR-7)."""
     return TrendItem(
         history_key=key,
         monitor_id="m1",
@@ -44,6 +46,7 @@ def _trend(key: str, *, strength: float = 0.5, slideshow: bool = False, images: 
         is_slideshow=slideshow,
         why_it_works=why,
         reference_groups=[["https://cdn/1.jpg", "https://cdn/2.jpg"]] if images else [],
+        chosen_post_ids=posts,
     )
 
 
@@ -188,7 +191,8 @@ def test_fr7_verdicts_cover_eligible_excluded_and_unusable() -> None:
 
     excluded = selection.excluded[0]
     assert excluded.last_used == _days_ago(2)
-    assert excluded.label == f"excluded (history, last used {_days_ago(2)})"
+    assert excluded.label == (f"excluded (history, last used {_days_ago(2)}, "
+                              "no unused post left)")
 
     unusable = selection.unusable[0]
     assert "text substance" in unusable.reason
@@ -200,6 +204,71 @@ def test_fr7_zero_days_disables_the_history_window() -> None:
     selection = select([_trend("stale")], _config(trend_history_days=0), history)
 
     assert [v.verdict for v in selection.verdicts] == ["eligible"]
+
+
+def test_fr7_chosen_post_ids_skip_the_monitor_level_window() -> None:
+    """The §1.2 fix: a monitor used yesterday is eligible again on a FRESH set of posts.
+
+    Under monitor identity this trend was locked out for a week — 3 monitors ÷ 7 days = 3 runs a
+    week, forever. `chosen_post_ids` means the adapter already excluded every post used inside the
+    window, so Select must not exclude the monitor a second time on the same fact.
+    """
+    history = {"m1": {"last_used": _days_ago(1), "run_ids": ["r1"],
+                      "posts": {"post-used": _days_ago(1)}}}
+    trend = _trend("m1", posts=("post-fresh-a", "post-fresh-b"))
+
+    selection = select([trend], _config(trend_history_days=7), history)
+
+    assert [v.verdict for v in selection.verdicts] == ["eligible"]
+    assert [t.history_key for t in selection.eligible] == ["m1"]
+
+
+def test_fr7_without_post_identity_the_monitor_window_still_applies() -> None:
+    """No `chosen_post_ids` is the ONLY case monitor identity still decides.
+
+    Two shapes reach it: a `text_only` trend, which has no post identity at all, and a monitor
+    whose every candidate set was already used (the adapter reports that as an empty tuple).
+    """
+    history = {"wordy": {"last_used": _days_ago(2)}, "used-up": {"last_used": _days_ago(2)}}
+    trends = [_trend("wordy", strength=0.9, images=False), _trend("used-up", strength=0.8)]
+
+    selection = select(trends, _config(trend_history_days=7), history)
+
+    assert [v.verdict for v in selection.verdicts] == ["excluded", "excluded"]
+    assert [v.trend.chosen_post_ids for v in selection.excluded] == [(), ()]
+    assert selection.eligible == []
+
+
+def test_fr7_zero_days_disables_the_window_for_a_trend_with_no_post_identity() -> None:
+    """`0` still disables the window entirely — the post-level predicate never re-enables it."""
+    history = {"used-up": {"last_used": _days_ago(0)}}
+
+    selection = select([_trend("used-up")], _config(trend_history_days=0), history)
+
+    assert [v.verdict for v in selection.verdicts] == ["eligible"]
+
+
+def test_fr7_exclusion_label_carries_the_date_and_the_post_exhaustion_reason() -> None:
+    """FR-139 renders this label verbatim, so it states BOTH facts and cites no FR."""
+    history = {"used-up": {"last_used": _days_ago(3)}}
+
+    verdict = select([_trend("used-up")], _config(trend_history_days=7), history).excluded[0]
+
+    assert verdict.label == f"excluded (history, last used {_days_ago(3)}, no unused post left)"
+    assert verdict.reason == "used within the last 7 day(s)"
+    assert "FR-" not in verdict.label  # §2.4: citations belong in events.jsonl, not on the console
+
+
+def test_fr7_select_mutates_no_source_owned_reference_data() -> None:
+    """`select()`'s purity contract: it reads `chosen_post_ids`, it never rewrites the item."""
+    trend = _trend("m1", posts=("post-a", "post-b"))
+    groups_before = [list(group) for group in trend.reference_groups]
+    history = {"m1": {"last_used": _days_ago(1), "posts": {"post-a": _days_ago(1)}}}
+
+    select([trend], _config(trend_history_days=7), history)
+
+    assert trend.chosen_post_ids == ("post-a", "post-b")
+    assert trend.reference_groups == groups_before  # no rotation, no reordering (plan.py:10-13)
 
 
 def test_fr7_a_trend_older_than_the_window_is_eligible_again() -> None:

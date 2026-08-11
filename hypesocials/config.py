@@ -33,6 +33,9 @@ logger = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parent.parent
 CONFIGS_DIR = ROOT / "configs"
+#: Run-log folder (`trend_history.json`). ONE definition, and it lives here rather than beside its
+#: readers because `preflight` needs it and cannot import `runner` — `runner` imports `preflight`.
+LOGS_DIR = ROOT / "logs"
 DEFAULT_CONFIG_NAME = "default"
 
 _INTERPOLATION = re.compile(r"\$\{")
@@ -229,7 +232,8 @@ class Config:
 
     name: str = DEFAULT_CONFIG_NAME
     path: Path = field(default_factory=lambda: CONFIGS_DIR / "default.yaml")
-    description: str = ""  # niche descriptor, else the line-1 comment (FR-56/173)
+    description: str = ""  # resolved picker line: `label`, else niche, else line 1 (FR-56/173)
+    label: str = ""  # optional one-line self-description a file writes for the picker (FR-173)
     run: RunConfig = field(default_factory=RunConfig)
     sources: SourcesConfig = field(default_factory=SourcesConfig)
     models: ModelsConfig = field(default_factory=ModelsConfig)
@@ -283,14 +287,35 @@ class Config:
         price = self.reel_price_per_second
         return price is not None and price > 0
 
+    @property
+    def min_single_creative_usd(self) -> float:
+        """The cheapest creative this config could buy — the ONE price floor (30 §8).
+
+        The lowest priced image tier, because every creative renders at least one image. `0.0` =
+        no image tier is priced, and the floor stops applying rather than refusing every cap.
+        Pre-flight and the wizard's cap step both READ this, so the number the wizard warns with
+        is the number that refuses.
+        """
+        priced = [price for price in self.models.price_per_unit.image.values() if price and price > 0]
+        return min(priced) if priced else 0.0
+
 
 @dataclass(slots=True)
 class ConfigSummary:
-    """One row of the menu's config picker (FR-56/173)."""
+    """One row of the menu's config picker (FR-56/173).
+
+    `description` is the resolved line (`label:`, else the niche join, else line 1's comment);
+    `label` is non-empty only when the file wrote one, so the picker can tell an author's own
+    one-liner from a derived string it must truncate. The scalars are the row's readiness facts.
+    """
 
     name: str
     path: Path
     description: str
+    label: str = ""
+    language: str = "en"  # caption languages in force, joined when one file mixes them
+    monitor_count: int = 0  # `len(sources.virlo_monitor_ids)`; 0 means the config cannot run
+    formats: dict[str, int] = field(default_factory=lambda: dict(RunConfig().formats))
 
 
 # --------------------------------------------------------------------------- public API
@@ -343,7 +368,7 @@ def list_configs(configs_dir: Path | None = None) -> list[ConfigSummary]:
         except (OSError, yaml.YAMLError):
             summaries.append(ConfigSummary(path.stem, path, ""))
             continue
-        summaries.append(ConfigSummary(path.stem, path, _describe(text, raw)))
+        summaries.append(_summarize(path, text, raw))
     return summaries
 
 
@@ -392,15 +417,45 @@ def _reject_interpolation(node: Any, file: str, key: str) -> None:
             _reject_interpolation(value, file, f"{key}[{index}]")
 
 
+def _section(node: Any, key: str) -> Mapping[str, Any]:
+    """One block of an UNVALIDATED parse, or an empty mapping — the picker never raises (FR-56)."""
+    block = node.get(key) if isinstance(node, Mapping) else None
+    return block if isinstance(block, Mapping) else {}
+
+
 def _describe(text: str, raw: Any) -> str:
-    """The picker line: the niche descriptor when there is one, else line 1's comment (FR-173)."""
-    niche = raw.get("niche") if isinstance(raw, Mapping) else None
-    if isinstance(niche, Mapping):
-        parts = [str(niche.get(k, "")).strip() for k in ("audience", "vibe", "visual_world")]
-        if joined := " · ".join(p for p in parts if p):
-            return joined
+    """The picker line: the file's own `label:`, else the niche descriptor, else line 1 (FR-173).
+
+    `label:` leads because a niche join is three sentences long and two sibling niches can share a
+    byte-identical `niche:` block, so no truncation width can tell them apart. Naming itself is the
+    file's job.
+    """
+    if isinstance(raw, Mapping) and (label := str(raw.get("label") or "").strip()):
+        return label
+    niche = _section(raw, "niche")
+    parts = [str(niche.get(k, "")).strip() for k in ("audience", "vibe", "visual_world")]
+    if joined := " · ".join(p for p in parts if p):
+        return joined
     first = text.splitlines()[0].strip() if text.strip() else ""
     return first.lstrip("#").strip() if first.startswith("#") else ""
+
+
+def _summarize(path: Path, text: str, raw: Any) -> ConfigSummary:
+    """One picker row off the already-parsed file — no validation, no `Config` build.
+
+    Every scalar falls back to its schema dataclass, never to a second literal, so a row and the
+    `Config` the run then loads cannot disagree about what an absent key means.
+    """
+    run, sources = _section(raw, "run"), _section(raw, "sources")
+    formats = {**RunConfig().formats, **{key: value for key, value in _section(run, "formats").items()
+                                         if isinstance(value, int) and not isinstance(value, bool)}}
+    languages = {**RunConfig().languages, **_section(run, "languages")}
+    ids = sources.get("virlo_monitor_ids")
+    return ConfigSummary(
+        path.stem, path, _describe(text, raw),
+        label=str(raw.get("label") or "").strip() if isinstance(raw, Mapping) else "",
+        language="/".join(sorted({str(value) for value in languages.values()})),
+        monitor_count=len(ids) if isinstance(ids, list) else 0, formats=formats)
 
 
 # --------------------------------------------------------------------------- building
@@ -683,7 +738,7 @@ def _clamp_token_limits(models: ModelsConfig, ctx: _Ctx) -> None:
 
 
 __all__ = [
-    "CONFIGS_DIR", "DEFAULT_CONFIG_NAME", "Config", "ConfigError", "ConfigSummary",
+    "CONFIGS_DIR", "DEFAULT_CONFIG_NAME", "LOGS_DIR", "Config", "ConfigError", "ConfigSummary",
     "GalleryConfig", "McpConfig", "ModelsConfig", "NicheConfig", "OutputConfig", "PLATFORMS",
     "PlatformConfig", "PriceTable", "RunConfig", "SourcesConfig", "TextBudgets", "list_configs",
     "load_config",

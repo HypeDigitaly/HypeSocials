@@ -20,6 +20,7 @@ additive influence pool (D13), so they join this facade without joining the pick
 
 from __future__ import annotations
 
+from collections.abc import Callable, Collection
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -46,6 +47,8 @@ async def fetch(
     cache_dir: Path | None = None,
     log: LogWriter | None = None,
     include_digest: bool = True,
+    used_posts: Collection[str] | None = None,
+    say: Callable[[str], None] | None = None,
 ) -> list[TrendItem]:
     """Run every active source adapter and return their items, strongest first.
 
@@ -54,6 +57,11 @@ async def fetch(
         cache_dir: where reference images are downloaded; a private temp folder when omitted.
         log: the run's LogWriter, so every per-source degrade is on the record.
         include_digest: `False` skips Virlo's metered digest, keeping a preview honestly at $0.
+        used_posts: post ids already used inside the history window, as one flat set — Virlo post
+            ids are globally unique, so an adapter needs no per-trend split (FR-7, FR-153). An
+            adapter picks a reference set whose posts are absent from it.
+        say: the run's console seam, for the rare degrade an operator must see on screen and not
+            only in `run.log` — an empty monitor list being the one that cost a real run.
 
     Returns:
         Normalized trend items from all active adapters. Select (`plan.py`) owns every verdict
@@ -67,7 +75,8 @@ async def fetch(
             if log is not None:
                 log.warn("source_not_implemented", message, source=name)
             continue
-        items.extend(await adapter(cfg, cache_dir=cache_dir, log=log, include_digest=include_digest))
+        items.extend(await adapter(cfg, cache_dir=cache_dir, log=log, include_digest=include_digest,
+                                   used_posts=used_posts, say=say))
     items.sort(key=lambda item: item.strength, reverse=True)
     return items
 

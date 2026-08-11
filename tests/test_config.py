@@ -368,6 +368,61 @@ def test_fr173_the_picker_describes_each_config_and_survives_a_broken_sibling(
     assert picker["broken"] == ""  # listed, described as nothing, never raised
 
 
+def test_fr173_an_author_written_label_wins_over_the_derived_niche_join(tmp_path: Path) -> None:
+    """`label:` leads in `_describe` because a niche join is three sentences and two sibling niches
+    can share a byte-identical `niche:` block — no truncation width can tell them apart, so naming
+    itself is the file's job. The same file without the key keeps yesterday's behaviour exactly."""
+    niche = "niche:\n  audience: SME owners\n  vibe: blunt\n"
+    labelled = load(tmp_path, 'label: "the file names itself"\n' + niche)
+
+    assert labelled.description == "the file names itself"
+    assert labelled.label == "the file names itself"
+    assert labelled.warnings == ()  # `label:` is a known key, not a typo to warn about
+
+    derived = load(tmp_path, niche)
+    assert derived.description == "SME owners · blunt"  # unchanged fallback
+    assert derived.label == ""  # nothing was authored, so nothing is claimed
+
+
+def test_fr173_a_blank_label_is_no_label_and_a_label_also_beats_the_line_one_comment(
+    tmp_path: Path,
+) -> None:
+    """Three rungs, in order: `label:`, else the niche join, else line 1's comment. A whitespace-only
+    label is not a self-description, so it must fall through rather than print an empty picker row."""
+    blank = load(tmp_path, 'label: "   "\nniche:\n  audience: SME owners\n')
+    assert blank.description == "SME owners"
+
+    comment = load(tmp_path, "# a balanced default run\nrun: {}\n")
+    assert comment.description == "a balanced default run"
+
+    over_comment = load(tmp_path, '# a balanced default run\nlabel: "picked by the file"\n')
+    assert over_comment.description == "picked by the file"
+
+
+def test_fr173_the_picker_summary_separates_an_authored_label_from_a_derived_line(
+    tmp_path: Path,
+) -> None:
+    """`list_configs` carries both, so the menu can tell an author's one-liner (already short
+    enough) from a derived string it must truncate before printing."""
+    write(tmp_path, 'label: "authored and short"\nniche:\n  audience: SME owners\n', "named.yaml")
+    write(tmp_path, "niche:\n  audience: SME owners\n  vibe: blunt\n", "derived.yaml")
+
+    rows = {s.name: s for s in list_configs(tmp_path)}
+
+    assert (rows["named"].label, rows["named"].description) == ("authored and short",) * 2
+    assert rows["derived"].label == ""
+    assert rows["derived"].description == "SME owners · blunt"
+
+
+def test_fr173_the_two_shipped_sibling_niches_resolve_distinct_picker_lines() -> None:
+    """The reason the key exists: `hypedigitaly.yaml` and `hypedigitaly-cs.yaml` differ in exactly
+    one behavioural line and used to describe themselves identically."""
+    rows = {s.name: s.description for s in list_configs()}
+
+    assert rows["hypedigitaly"] and rows["hypedigitaly-cs"]
+    assert rows["hypedigitaly"] != rows["hypedigitaly-cs"]
+
+
 def test_config_default_path_points_at_the_repo_configs_folder() -> None:
     """A `Config()` built in code (tests, previews) still resolves the shipped folder."""
     assert Config().path.parent == CONFIGS_DIR

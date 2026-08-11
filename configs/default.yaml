@@ -1,6 +1,15 @@
 # Balanced default run across all three platforms - images and carousels, reels off
 # See prds/30-configuration-and-run.md §2 for the full field reference
 
+# FR-173: the config picker prints this line verbatim, so the file names ITSELF rather than
+# letting the menu derive a line from `niche:` (two sibling niches can share a byte-identical
+# block and would then render identically). Budget: <= 55 chars, and ASCII only - the picker
+# row must survive a legacy cp437/cp852 console, so no box drawing, no check marks, no colour.
+# This template ships with `sources.virlo_monitor_ids: []` DELIBERATELY (see that key below),
+# which is why the label says so out loud instead of leaving the operator to discover it at
+# pre-flight.
+label: "neutral template - no monitor ids yet, not runnable"
+
 run:
   formats: { image: 4, carousel: 2, reel: 0 }   # reels ship OFF (PRD v1.6): raise only after price_per_unit.reel_second is real (FR-131)
   platforms: [linkedin, instagram, tiktok]

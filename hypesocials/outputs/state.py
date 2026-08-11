@@ -5,14 +5,17 @@ Module contract
 Purpose: own every cross-run shared file (`logs/trend_history.json`, `output/latest.txt`, the
 `output/latest/` junction) plus the run folder's `LEDGER.txt`, with their locking, atomicity
 and corruption rules inside — no caller re-implements them.
-Public API: `read_history()` · `days_since_use()` · `record_trends()` · `set_latest()` ·
-`resolve_latest()` · `Ledger`.
+Public API: `read_history()` · `days_since_use()` · `used_posts()` · `record_use()` ·
+`set_latest()` · `resolve_latest()` · `Ledger`.
 Invariants:
 - Every shared-file write is atomic (temp+rename, same directory) — FR-254.
 - History is guarded by an advisory pid+timestamp lock; a busy lock degrades to read-only with
   one warning and NEVER blocks or fails a run, a lock older than 60 s is stale and gets broken
   (FR-254); missing/corrupt history warns and starts fresh (FR-83); every write prunes entries
-  past `max(trend_history_days, 90)` days — rolling window, not an archive (FR-82).
+  past `max(trend_history_days, 90)` days, and each survivor's `posts` map on the same pass
+  against the same horizon — rolling window, not an archive (FR-82, FR-153).
+- An entry with no `posts` key reads as "no posts used", so FR-153 needs no migration and there
+  is never a window in which post-level recency protection is silently off.
 - `latest.txt` is canonical; `latest/` is a best-effort junction made by `mklink /J` **as a
   subprocess** (`os.symlink` needs admin/Developer Mode and is never used), failures logged,
   never raised (NFR-20).
@@ -33,7 +36,7 @@ import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Protocol
+from typing import Any, Iterable, Mapping, Protocol, Sequence
 
 from hypesocials.util import atomic_write, now_iso, open_utf8, read_text, today_iso
 
@@ -63,7 +66,8 @@ def read_history(logs_dir: str | Path, log: _Log | None = None) -> dict[str, dic
     """Return `logs/trend_history.json`, or `{}` after one warning (FR-83).
 
     Missing, unreadable, non-JSON and wrong-shaped files are the same case: the engine never
-    crashes on history state, it just loses recency protection for this run.
+    crashes on history state, it just loses recency protection for this run. A junk `posts` value
+    inside an otherwise valid entry is the same trade, absorbed by `used_posts()` (FR-153).
     """
     path = Path(logs_dir) / HISTORY_FILE
     try:
@@ -91,23 +95,42 @@ def days_since_use(history: dict[str, dict[str, Any]], trend_key: str) -> float 
     return _age_days(history.get(trend_key) or {})
 
 
-async def record_trends(
+def used_posts(history: dict[str, dict[str, Any]], *, within_days: float) -> dict[str, set[str]]:
+    """Per trend key, the post ids used inside the window — NFR-24 at post granularity (FR-153).
+
+    The map Collect needs to choose a reference set and a motion reference that were not used
+    recently. A trend key missing from the result — including every entry written before FR-153,
+    which carries no `posts` key at all — means "no posts used", so every candidate is fresh; that
+    is the whole of the no-migration guarantee. `within_days <= 0` disables the window (FR-7).
+    """
+    if within_days <= 0:
+        return {}
+    fresh = {key: set(_fresh_posts(entry.get("posts"), within_days))
+             for key, entry in history.items()}
+    return {key: ids for key, ids in fresh.items() if ids}
+
+
+async def record_use(
     logs_dir: str | Path,
-    trend_keys: Iterable[str],
+    uses: Mapping[str, Sequence[str]],
     run_id: str,
     *,
     history_days: int = 7,
     log: _Log | None = None,
 ) -> bool:
-    """Record successfully-packaged trends and prune the window. Returns False if read-only.
+    """Record packaged trends with the post ids they used, and prune. False if read-only.
 
-    FR-82: the CALLER decides which keys qualify (at least one creative packaged); this function
-    owns the lock, the entry shape (`first_used` / `last_used` / capped `run_ids`), the prune and
-    the atomic write. FR-254: when the lock cannot be taken in a short wait, the run continues
-    read-only — one warning, no update, no exception, no hang.
+    The single writer of `trend_history.json` (FR-82, FR-153). The CALLER decides what qualifies:
+    a trend key only for a trend that packaged a creative, and under it only the post ids that
+    creative genuinely ATTACHED — an empty sequence is legitimate and still records the trend
+    (`inspiration_mix: exclusive` attaches zero trend images, and a reel whose motion reference
+    failed to download never used it). One lock, one critical section, one status: the entry and
+    its `posts` map are written together, never in two calls. FR-254: when the lock cannot be
+    taken in a short wait, the run continues read-only — one warning, no update, no exception.
     """
-    keys = [key for key in dict.fromkeys(trend_keys) if key]
-    if not keys:
+    wanted = {key: [pid for pid in dict.fromkeys(posts) if pid]
+              for key, posts in uses.items() if key}
+    if not wanted:
         return True
     logs = Path(logs_dir)
     logs.mkdir(parents=True, exist_ok=True)
@@ -115,37 +138,60 @@ async def record_trends(
         if log:
             log.warn("trend_history_locked",
                      "trend_history.json is locked by another run; continuing read-only, "
-                     "this run's history update is skipped", trends=len(keys))
+                     "this run's history update is skipped", trends=len(wanted))
         return False
     try:
         history = read_history(logs, log)
         today = today_iso()
-        for key in keys:
+        for key, post_ids in wanted.items():
             entry = history.get(key) or {"first_used": today, "run_ids": []}
             entry["last_used"] = today
             entry.setdefault("first_used", today)
             previous = [rid for rid in entry.get("run_ids", []) if rid != run_id]
             entry["run_ids"] = (previous + [run_id])[-RUN_IDS_KEPT:]
-            history[key] = entry
+            seen = entry.get("posts")  # a junk value is discarded, never a crash (FR-83)
+            entry["posts"] = ((dict(seen) if isinstance(seen, dict) else {})
+                              | {pid: today for pid in post_ids})
+            history[key] = entry  # `posts` is dropped again by _prune when it stays empty
         pruned = _prune(history, history_days)
         atomic_write(logs / HISTORY_FILE,
                      json.dumps(history, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
     finally:
         (logs / LOCK_FILE).unlink(missing_ok=True)
     if log:
-        log.event("trend_history_updated", f"recorded {len(keys)} trend(s)",
-                  trends=keys, pruned=pruned)
+        log.event("trend_history_updated", f"recorded {len(wanted)} trend(s)",
+                  trends=list(wanted), posts=sum(len(ids) for ids in wanted.values()),
+                  pruned=pruned)
     return True
 
 
 def _prune(history: dict[str, dict[str, Any]], history_days: int) -> int:
-    """Drop entries past `max(trend_history_days, 90)` days, and undatable junk with them."""
+    """Drop entries past `max(trend_history_days, 90)` days, and undatable junk with them —
+    plus, on the same pass and the same horizon, each survivor's stale `posts` (FR-153). Returns
+    the number of ENTRIES dropped; an emptied `posts` map is deleted, since absent means the same.
+    """
     horizon = max(int(history_days or 0), MIN_PRUNE_DAYS)
-    stale = [key for key, entry in history.items()
-             if (age := _age_days(entry)) is None or age > horizon]
+    stale: list[str] = []
+    for key, entry in history.items():
+        if (age := _age_days(entry)) is None or age > horizon:
+            stale.append(key)
+        elif "posts" in entry:
+            if fresh := _fresh_posts(entry["posts"], horizon):
+                entry["posts"] = fresh
+            else:
+                del entry["posts"]
     for key in stale:
         del history[key]
     return len(stale)
+
+
+def _fresh_posts(posts: Any, within_days: float) -> dict[str, str]:
+    """The `posts` entries still inside a window. Dates go through `_age_days`, so both shapes it
+    already tolerates work here and no second date parser exists; anything else is junk, dropped."""
+    if not isinstance(posts, dict):
+        return {}
+    return {str(pid): str(seen) for pid, seen in posts.items()
+            if (age := _age_days({"last_used": seen})) is not None and age <= within_days}
 
 
 def _age_days(entry: dict[str, Any]) -> float | None:

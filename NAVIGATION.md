@@ -36,7 +36,7 @@ HypeSocials MVP (Phase 1): a single-operator Windows CLI tool that generates vir
 - `CODING_GUIDELINES.md` — Development standards
 - `CLAUDE.md` — Project conductor config
 - `Inspiration/` — Example reference images (optional source)
-- `hypesocials/` — Production Python package. Built in W1: `models.py` (shared contracts), `util.py`, `config.py`, `llm.py`, `mcp_client.py`, `virlo_mcp/` (5-tool stdio MCP server), `outputs/` (logwriter, state), `render/` (seam, kie, profiles). Built in W2: `sources/` (facade + Virlo adapter, FR-91 reference-set builder), `plan.py` (select/build_plan/assign), `budget.py` (estimate/trim/Budget ledger), `analyze.py` + `copywrite.py` + `prompts_engine.py` (`PromptEngine`), `outputs/packager.py` + `outputs/gallery.py`. Built in W3: `cli.py` (argparse + Confirm gate + FR-252 routing), `preflight.py` (exit-2 producer), `runner.py` (lifecycle conductor), `__main__.py` (ProactorEventLoop + SIGINT dispatch), `generate/__init__.py` (wave-1 image generation), `vision_check.py` (pure module). Built in W4: `generate/carousel.py` (anchor chain FR-20/95, deck vision checks), `generate/reel.py` (seed-frame chain FR-24, Seedance clip, content-audit silent retry v1.6.6), `generate/video_ref.py` (yt-dlp probe→qualify→download→upload FR-160–163, scratch owner FR-249), `generate/__init__.py` extended (format dispatch, one `submit` money path FR-106 a/b/c, `GRACE_S` 30 s abandon path FR-108), estimator fidelity fixes in `budget.py` + `runner.py` (analysis per distinct assigned trend, truncation-retry allowances, `job_projection`). Built in W5: `menu.py` (wizard + `offer_reduced_plan` + `ask_fidelity_rating`), `previews.py` (calls runner's stage helpers directly — D19), `briefs.py` (`load`/`list_briefs` per the `models.BriefLoader` pin), `sources/notion.py` (`fetch_brand_context` → `BrandContext`) + `sources/inspiration.py` (`load_pool`/`apply_mix`), wiring in `__main__.py`/`runner.py`/`preflight.py` (real `resolve_briefs`, brief-only carve-out, notion/inspiration in Collect/Write/Create). Built in W6: `generate/refs.py` (reference provenance — trend/inspiration/brief role lines, per-job cap, reference-free marking), standalone-image vision check in `generate/__init__.py`, FR-77 observability events (`render/kie.py`, `mcp_client.py`, `sources/virlo.py`), `--sources` CLI flag, platform-vocabulary validation, UTF-8 + stale-scratch guards in `__main__.py`
+- `hypesocials/` — Production Python package. Built in W1: `models.py` (shared contracts), `util.py`, `config.py`, `llm.py`, `mcp_client.py`, `virlo_mcp/` (5-tool stdio MCP server), `outputs/` (logwriter, state), `render/` (seam, kie, profiles). Built in W2: `sources/` (facade + Virlo adapter, FR-91 reference-set builder), `plan.py` (select/build_plan/assign), `budget.py` (estimate/trim/Budget ledger), `analyze.py` + `copywrite.py` + `prompts_engine.py` (`PromptEngine`), `outputs/packager.py` + `outputs/gallery.py`. Built in W3: `cli.py` (argparse + Confirm gate + FR-252 routing), `preflight.py` (exit-2 producer), `runner.py` (lifecycle conductor), `__main__.py` (ProactorEventLoop + SIGINT dispatch), `generate/__init__.py` (wave-1 image generation), `vision_check.py` (pure module). Built in W4: `generate/carousel.py` (anchor chain FR-20/95, deck vision checks), `generate/reel.py` (seed-frame chain FR-24, Seedance clip, content-audit silent retry v1.6.6), `generate/video_ref.py` (yt-dlp probe→qualify→download→upload FR-160–163, scratch owner FR-249), `generate/__init__.py` extended (format dispatch, one `submit` money path FR-106 a/b/c, `GRACE_S` 30 s abandon path FR-108), estimator fidelity fixes in `budget.py` + `runner.py` (analysis per distinct assigned trend, truncation-retry allowances, `job_projection`). Built in W5: `menu.py` (wizard + `offer_reduced_plan` + `ask_fidelity_rating`), `previews.py` (calls runner's stage helpers directly — D19), `briefs.py` (`load`/`list_briefs` per the `models.BriefLoader` pin), `sources/notion.py` (`fetch_brand_context` → `BrandContext`) + `sources/inspiration.py` (`load_pool`/`apply_mix`), wiring in `__main__.py`/`runner.py`/`preflight.py` (real `resolve_briefs`, brief-only carve-out, notion/inspiration in Collect/Write/Create). Built in W6: `generate/refs.py` (reference provenance — trend/inspiration/brief role lines, per-job cap, reference-free marking), standalone-image vision check in `generate/__init__.py`, FR-77 observability events (`render/kie.py`, `mcp_client.py`, `sources/virlo.py`), `--sources` CLI flag, platform-vocabulary validation, UTF-8 + stale-scratch guards in `__main__.py`. Built in Wave 6.5: `wizard_help.md` (the `?` help text, read lazily by `menu.py` on first help request), `util.py` module-level `fit()` function (FR-286 width fitting for the menu picker and console output)
 - `logs/` — Runtime state (`trend_history.json`); real since the M1 run
 - `output/` — Per-run asset folders + `latest.txt` + `latest/` junction; real since the M1 run
 - `configs/` — Config YAML files (`default.yaml`, `hypedigitaly.yaml`)
@@ -95,8 +95,13 @@ run.bat
 # Run tests (after venv activated)
 pytest tests/
 
-# Line-count checkpoint (hard ceiling 13,500 per G2 v1.6.8)
-wc -l hypesocials/**/*.py
+# Line-count checkpoint - measured and reported, NO ceiling (CLAUDE.md rule 5, v2.0.0)
+# Use find, never `wc -l hypesocials/**/*.py`: globstar is off in this shell, so that
+# glob counts ~20 of 39 files and misses everything at depth 3.
+find hypesocials -name "*.py" | xargs wc -l | tail -1
+
+# Per-file attribution for a barrier report
+find hypesocials -name "*.py" | xargs wc -l | sort -rn | head -20
 
 # Import check (Wave 0 barrier)
 python -c "import hypesocials"
@@ -132,13 +137,28 @@ All commands assume venv is activated or run via `run.bat`. No global Python cal
 
 ---
 
-## § 9. State Files
+## § 9. CLI Flags & Pre-flight (FR-283–286)
+
+**Entry points:** `run.bat` (default), `run.bat --quick` (skips config/source pickers, picks first runnable), `run.bat --config <name>`, `run.bat --list-monitors` (Virlo setup helper, $0), `run.bat --preview-sources` (trends + verdicts), `run.bat --preview-analysis` (with style briefs and copy).
+
+**New flags (Wave 6):**
+- `--quick` — Skips the config picker, source picker, and format pickers; selects the first runnable config automatically and goes straight to the cost estimate (still interactive, still requires approval). Mutually exclusive with `--yes`. Routes through the same menu action [2].
+- `--history-days N` — Overrides the recency exclusion window for this run only. `0` disables the window. Any value outside the allowed range is refused at the flag boundary (before config load) with one line, never silently clamped — a typo is a user error, not a safety clamp (FR-285).
+- `--sources <list>` — Selects the source(s) for this run (comma-separated), e.g. `--sources virlo`. Validates the list at the flag boundary, refusing unknown or unbuilt sources before any config load (FR-135).
+
+**Pre-flight refusal (FR-283):** When `sources.active` contains `virlo` AND the action is a run (not `--list-monitors` or a preview) AND `sources.virlo_monitor_ids` is empty AND the plan contains at least one trend-dependent creative, the engine refuses before Collect with exit code 2, naming `virlo_monitor_ids` and directing to `--list-monitors`. A brief-only plan (all entries override-briefs) is never refused — it consumes no trend. A mixed brief+trend plan with no monitor ids produces only briefs with a warning and exit code 1.
+
+**Help:** `run.bat --help` enumerates the real config names, marks Phase-2 flags as not implemented, and includes worked examples.
+
+---
+
+## § 10. State Files
 
 | File | Purpose | Format | Lifecycle |
 |---|---|---|---|
 | `output/latest.txt` | Canonical run pointer (atomic temp+rename) | Text: run_id | Rewritten per run |
 | `output/latest/` | Convenience junction to latest run folder | Symlink via `mklink /J` | Rewritten per run |
-| `logs/trend_history.json` | Trend usage log (prevent reuse within 7 days) | JSON object keyed by trend key (FR-82) | Update + prune window |
+| `logs/trend_history.json` | Trend and post usage log (prevent reuse within 7 days per post) | JSON object keyed by trend key (FR-82); each entry has optional `posts` map (FR-153) | Update + prune window |
 | `output/<run_id>/<asset_id>/meta.yaml` | Per-asset metadata (AssetRecord field-for-field, FR-73) | YAML, pending→terminal via temp+rename | Terminal on success/skip |
 | `output/<run_id>/<asset_id>/{caption.txt, SKIP_REASON.txt, SELECTED.marker}` | Publishing caption (hand-editable), skip cause, selection marker | Text / empty marker | Written by packager; caption never rewritten |
 | `output/<run_id>/{gallery.html, refs/}` | Self-contained review gallery + downloaded reference media | HTML (one template string) / media files | Gallery rebuilt from disk per call (NFR-22) |
@@ -150,7 +170,7 @@ All commands assume venv is activated or run via `run.bat`. No global Python cal
 
 ---
 
-## § 10. Common Tasks
+## § 11. Common Tasks
 
 ### Add a config key
 1. Edit `hypesocials/config.py` schema (T1.1)
@@ -178,7 +198,7 @@ All commands assume venv is activated or run via `run.bat`. No global Python cal
 
 ---
 
-## § 11. Glossary & Key Terms
+## § 12. Glossary & Key Terms
 
 **Authoritative:** See CLAUDE.md Glossary section (full definitions). Quick reference:
 
@@ -194,5 +214,5 @@ All commands assume venv is activated or run via `run.bat`. No global Python cal
 
 ---
 
-**Last updated:** 2026-08-09 (Wave 6 barrier, MVP DONE — §1, §3, §4, §5 updated; measured `wc -l` 13,471 vs ceiling 13,500)
-**Updated at every wave barrier:** Mark affected sections (§1–§11) in session reports.
+**Last updated:** 2026-08-10 (Wave 6.5 documentation pass, technical-writer — §3 wizard_help.md + fit(), §9 new (CLI/pre-flight), §10 State Files (posts map), §12 Glossary renumbered)
+**Updated at every wave barrier:** Mark affected sections (§1–§12) in session reports.

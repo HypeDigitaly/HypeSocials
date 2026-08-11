@@ -126,15 +126,17 @@ Each run creates a timestamped folder on disk (`output/YYYYMMDD_HHMMSS_random/`)
 
 **FR-152 — Secret redaction at the logging boundary (D30).** No API key or Authorization header ever reaches run.log or events.jsonl: auth headers are stripped from logged request/response payloads before writing, and any value matching a configured secret is replaced with `[REDACTED]`. Since prompts are logged in full, this pairs with D30's guarantee that secrets are never interpolated into any prompt or template in the first place — redaction is the backstop, not the primary defense.
 
+**FR-153 — Post recency tracking in trend history (D33).** The file `logs/trend_history.json` gains an optional `posts` key holding a map of post IDs (Virlo UUIDs) used on that trend, with ISO 8601 dates when each post was last used: `"posts": { "<post_id>": "2026-08-10", ... }`. This tracks **both** image-set post IDs (from reference-set selection) **and** motion-reference video post IDs, held in one namespace because Virlo UUIDs are globally unique. **An entry without the `posts` key reads as "no post-level recency tracked"** — the feature is fully backward compatible and requires no migration. When this key is present, it is pruned on the same pass as entries, against the same `max(trend_history_days, 90)` horizon. Writing is serialized through a single lock alongside FR-254's update to `trend_history.json`, ensuring atomic updates and never two concurrent writes.
+
 ---
 
 ## 6. Trend History & Recency Exclusion (FR-82, FR-83, NFR-24)
 
-**FR-82:** The file `logs/trend_history.json` is a simple JSON object where keys are trend keys (Virlo agent id when present, else the normalized name slug defined in 20-integrations §3's normalization spec) and values are objects containing: first_used (ISO 8601 date), last_used (ISO 8601 date), and run_ids (array of run IDs, **capped at the most recent 5**). **A trend is recorded in history ONLY if at least one creative on that trend was packaged successfully** (i.e., final image/video/carousel delivered to the asset folder, not skipped). This file is read at trend-selection time and updated after packaging. **On every write, entries whose `last_used` is older than `max(trend_history_days, 90)` days are pruned** — the file is a rolling window, not an unbounded archive rewritten under a lock on every run.
+**FR-82:** The file `logs/trend_history.json` is a simple JSON object where keys are trend keys (Virlo agent id when present, else the normalized name slug defined in 20-integrations §3's normalization spec) and values are objects containing: first_used (ISO 8601 date), last_used (ISO 8601 date), run_ids (array of run IDs, **capped at the most recent 5**), and optionally posts (an object mapping post IDs to their last-used date — FR-153). **A trend is recorded in history ONLY if at least one creative on that trend was packaged successfully** (i.e., final image/video/carousel delivered to the asset folder, not skipped). This file is read at trend-selection time and updated after packaging. **On every write, entries whose `last_used` is older than `max(trend_history_days, 90)` days are pruned, and the `posts` map within each entry is also pruned on the same pass** — the file is a rolling window, not an unbounded archive rewritten under a lock on every run. An entry without the `posts` key reads as "no posts recorded for this trend" and requires no migration.
 
 **FR-83:** If `trend_history.json` does not exist or is corrupted, the engine logs a warning ("trend_history.json missing or invalid; starting fresh") and proceeds without penalties. It never crashes due to history state. The file is created fresh if missing.
 
-**NFR-24:** The recency window is configured via `trend_history_days` (default 7; cross-ref 30-configuration.md); at selection time, any trend with `last_used` within the past N days is skipped. **When a run is interrupted, rerunning safely skips only successfully-packaged trends** (those in history) and tries remaining trends again.
+**NFR-24:** The recency window is configured via `trend_history_days` (default 7; cross-ref 30-configuration.md); at selection time, any trend or post with `last_used` within the past N days is excluded. **When a run is interrupted, rerunning safely skips only successfully-packaged trends and posts** (those recorded in history) and tries remaining trends and unused posts again — the interrupted-run resume property applies at both trend and post granularity because both dimensions share the same history file.
 
 ---
 
@@ -177,13 +179,15 @@ Each run creates a timestamped folder on disk (`output/YYYYMMDD_HHMMSS_random/`)
 
 **FR-232:** The end-of-run spend summary line printed to console and logged records: total cost, grand total time, count of creatives generated, count skipped (with reason summary), run success/partial-success/failed status, **and the process exit code**. Interactive runs may additionally prompt for an optional 3-point operator fidelity rating (skippable, absent under `--yes` or headless mode): **one rating per run** — how well the batch as a whole matched the trends visually/tonally — recorded in run.log and consumed by 00-overview's success metric, which is correspondingly stated per run ("≥80% of rated runs score 2+"), not per creative. Operator eyeball; no aggregate scoring.
 
+**FR-154 — Preview-mode exit codes (amended v1.8.0).** `--preview-sources` and `--preview-analysis` SHALL exit 0 (success) when at least one trend is eligible for a run; they SHALL exit 3 (fatal — zero usable trends) when zero trends are eligible after filtering; they SHALL exit 2 on config error or missing credentials, matching the general exit-code vocabulary of FR-202. A preview mode that returns trends but all are excluded (history, usability) is a zero-eligible situation and exits 3.
+
 ---
 
 ## Design Decisions
 
 **D9 — Output = per-asset folders + gallery.html:** Self-contained asset folders enable easy share/archive/republish; the gallery provides a single-page overview. Simple folders + structured logs reduce complexity.
 
-**D12 — State = trend-history JSON + full run log:** Trend history (dates + keys) enables simple recency checks without a database. Full human-readable + machine-parseable logs enable audit trails and future analytics without a query interface.
+**D12 — State = trend-history JSON + full run log:** Trend history (dates + keys, plus an optional post-recency map per trend — FR-153) enables simple recency checks without a database. Full human-readable + machine-parseable logs enable audit trails and future analytics without a query interface.
 
 ---
 

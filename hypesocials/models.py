@@ -80,6 +80,29 @@ class VisionCheckResult(str, Enum):
 
 
 @dataclass(slots=True)
+class ReferenceSet:
+    """ONE coherent reference set and every field derived from it — chosen as a single unit.
+
+    A candidate is all panels of one slideshow, or one creator's video thumbnails (FR-91 forbids
+    mixing sources inside a job's reference set). Its urls, the posts they came from and the panel
+    metadata the style brief and copy read are ONE decision, so no caller ever aligns a url list
+    against an id list by hand — that invariant reappearing means the sets have desynchronised.
+    `post_ids` is what FR-7's post-level window is checked against and what history records once
+    the set was actually attached; `author` is the handle the reel's motion reference prefers, so a
+    slideshow's copy is not animated by a stranger's clip.
+    """
+
+    urls: list[str] = field(default_factory=list)  # CDN image urls, in panel order
+    post_ids: tuple[str, ...] = ()  # stable Virlo ids of the posts these urls came from
+    is_slideshow: bool = False  # drives format affinity (FR-90) for the item that picks this set
+    panel_texts: list[str] = field(default_factory=list)  # per-slide word-count rhythm (FR-13)
+    narrative_arc: str = ""
+    text_density: str = ""
+    source_url: str | None = None  # this set's own Virlo permalink
+    author: str | None = None  # creator handle, for motion-reference coherence
+
+
+@dataclass(slots=True)
 class TrendItem:
     """One normalized trend item, assembled per configured monitor id (20 §3 join rule):
     `get_monitor_analysis` gives theme/confidence/why_it_works/tactics, `get_top_videos` +
@@ -114,6 +137,11 @@ class TrendItem:
     newest_published_at: datetime | None = None  # velocity/momentum input (FR-5)
     engagement: dict[str, int] = field(default_factory=dict)  # likes/shares/comments/bookmarks
     cross_monitor_context: str = ""  # digest timing analysis + connecting threads (20 §3)
+    # FR-7 at post granularity: the posts the CHOSEN `ReferenceSet` came from, so freshness is
+    # already enforced when this is non-empty. Empty on a `text_only` item — it has no post
+    # identity at all — and then the monitor-level window applies exactly as before.
+    chosen_post_ids: tuple[str, ...] = ()
+    winning_video_post_id: str | None = None  # the motion reference's own post id, for history
 
 
 @dataclass(slots=True)

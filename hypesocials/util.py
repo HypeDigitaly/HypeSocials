@@ -148,3 +148,38 @@ def new_run_id() -> str:
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     suffix = "".join(random.choices(_RUN_ID_ALPHABET, k=4))
     return f"{stamp}_{suffix}"
+
+
+def fit(text: str, width: int) -> str:
+    """One line, ≤ `width`, cut on a nearby word boundary and marked `…` (FR-286).
+
+    Lives here because the menu, the runner and the estimate all print text they do not control —
+    niche descriptors, monitor names, trend names, paths — and a hard slice is what produced the
+    557-char line that mangled a real operator's console. `·`, `—`, `…` and `←` are the only
+    non-ASCII glyphs proven safe on legacy conhost.
+    """
+    text = " ".join(str(text).split())
+    if len(text) <= width:
+        return text
+    cut = text[:max(width - 1, 0)]
+    head = cut.rpartition(" ")[0]
+    return (head if len(head) >= width - 12 else cut).rstrip(" ,;:-·") + "…"
+
+
+def wrapped(text: str, width: int) -> list[tuple[bool, str]]:
+    """`text` split on word boundaries into `(is_first_line, part)` pairs, each ≤ `width`.
+
+    The counterpart to `fit()` for text that must stay COMPLETE: a blocked estimate line names the
+    config key the operator has to go and set, and an override list is the record of what this run
+    actually changed — truncating either would hide the thing worth reading. FR-286 is a rule about
+    what the tool prints, so both live at the printer and never in the data.
+    """
+    lines, current = [], ""
+    for word in str(text).split():
+        if current and len(current) + 1 + len(word) > width:
+            lines.append(current)
+            current = word
+        else:
+            current = f"{current} {word}".strip()
+    lines.append(current)
+    return [(index == 0, line) for index, line in enumerate(lines)]

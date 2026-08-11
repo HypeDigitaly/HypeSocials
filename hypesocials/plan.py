@@ -68,7 +68,8 @@ class TrendVerdict:
     def label(self) -> str:
         """The exact operator-facing wording of FR-139's three verdicts."""
         if self.verdict == "excluded":
-            return f"excluded (history, last used {self.last_used or 'unknown'})"
+            return (f"excluded (history, last used {self.last_used or 'unknown'}, "
+                    "no unused post left)")
         if self.verdict == "unusable":
             return f"unusable ({self.reason})"
         return "eligible (text_only — last resort)" if self.text_only else "eligible"
@@ -108,8 +109,10 @@ def select(trends: Sequence[TrendItem], config: Config,
     that would not have helped.
 
     `history` is `outputs.read_history()`'s dict, keyed by `TrendItem.history_key`;
-    `run.trend_history_days` is the window and `0` disables it entirely. Returns every input trend
-    as a verdict, with `Selection.eligible` as the ranked shortlist `assign()` consumes.
+    `run.trend_history_days` is the window and `0` disables it entirely. The window is applied at
+    MONITOR granularity only to a trend carrying no `chosen_post_ids`, because a trend that carries
+    them had FR-7 enforced upstream at POST granularity already. Returns every input trend as a
+    verdict, with `Selection.eligible` as the ranked shortlist `assign()` consumes.
     """
     known = dict(history or {})
     window = max(int(config.run.trend_history_days or 0), 0)
@@ -121,8 +124,12 @@ def select(trends: Sequence[TrendItem], config: Config,
             verdicts.append(TrendVerdict(trend, "unusable", reason=reason))
             continue
         trend.text_only = _is_text_only(trend)  # item-level flag, re-derived from what arrived
+        # The adapter that chose this trend's reference set had already dropped every post used
+        # inside the window, so excluding the monitor as well would re-impose a throughput cap of
+        # monitors ÷ trend_history_days. An empty tuple — a `text_only` item, or a monitor whose
+        # every candidate set is used up — leaves monitor identity as the only recency signal.
         age = days_since_use(known, trend.history_key)
-        if window and age is not None and age < window:
+        if window and not trend.chosen_post_ids and age is not None and age < window:
             entry = known.get(trend.history_key) or {}
             verdicts.append(TrendVerdict(
                 trend, "excluded", reason=f"used within the last {window} day(s)",

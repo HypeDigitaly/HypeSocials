@@ -11,7 +11,10 @@ Callers import `hypesocials.sources`, never this module. Behind that facade:
 - **Strength (FR-5):** views .35, median views .15, velocity .30, confidence .20, each min-max
   normalized inside the run's candidate pool. Hardcoded weights, by PRD decision.
 - **Coherent reference sets (FR-91):** every group is ONE source — a single slideshow's panels (in
-  `position` order) or one creator's thumbnails — screened and capped as `_reference_groups` says.
+  `position` order) or one creator's thumbnails — built as `ReferenceSet` units, ALL of them.
+- **Post-level freshness (FR-7):** `used_posts` picks the freshest unused set and EVERY field the
+  creative is shaped by comes from that set; the same map picks the reel's motion reference (FR-24,
+  three tiers, best-effort — tier 3 repeats a source rather than lose a paid reel).
 - **Per-image download (FR-32/33/247):** independent per image; a dead URL drops that image only.
 
 Invariants: no direct `api.virlo.ai` call (NFR-11); no retry on top of the wrapper's bounded retry
@@ -31,7 +34,7 @@ import json
 import logging
 import statistics
 import tempfile
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from contextlib import suppress
 from datetime import datetime, timezone
 from pathlib import Path
@@ -41,7 +44,7 @@ import httpx
 
 from hypesocials.config import Config
 from hypesocials.mcp_client import MCPClientError, MCPError, ServerConfig, Session, SessionPool
-from hypesocials.models import TrendItem
+from hypesocials.models import ReferenceSet, TrendItem
 from hypesocials.util import slugify
 from hypesocials.virlo_mcp import VirloToolError, translate
 
@@ -74,7 +77,8 @@ _CACHE_DIR_OWNED = False
 # ------------------------------------------------------------------------------- public API
 
 async def fetch(cfg: Config, *, cache_dir: Path | None = None, log: LogWriter | None = None,
-                include_digest: bool = True) -> list[TrendItem]:
+                include_digest: bool = True, used_posts: Collection[str] | None = None,
+                say: Callable[[str], None] | None = None) -> list[TrendItem]:
     """Collect every configured monitor into ranked, reference-bearing trend items.
 
     Args:
@@ -84,6 +88,10 @@ async def fetch(cfg: Config, *, cache_dir: Path | None = None, log: LogWriter | 
         log: the run's LogWriter, so every degrade lands in run.log/events.jsonl.
         include_digest: `False` skips `get_trends`, the one metered call, leaving
             `cross_monitor_context` empty — how a preview stays honestly at $0.
+        used_posts: post ids already used inside the `trend_history_days` window (FR-7) — a set,
+            or the `posts` mapping itself, since iterating it yields its keys. Omitted means
+            "nothing is used yet", which is also what a history without `posts` means.
+        say: the console seam, for the one refusal an operator must not have to find in run.log.
 
     Returns:
         Items strongest first. A failed monitor contributes nothing and is logged; an empty list
@@ -91,11 +99,13 @@ async def fetch(cfg: Config, *, cache_dir: Path | None = None, log: LogWriter | 
     """
     ids = list(dict.fromkeys(str(i).strip() for i in cfg.sources.virlo_monitor_ids if str(i).strip()))
     if not ids:
-        _warn(log, "virlo_no_monitors", "sources.virlo_monitor_ids is empty — run --list-monitors")
+        _warn(log, "virlo_no_monitors", "sources.virlo_monitor_ids is empty — run --list-monitors",
+              say=say)
         return []
+    used = frozenset(str(post) for post in used_posts or ())
     size = max(1, min(cfg.sources.virlo_session_pool, len(ids) + (1 if include_digest else 0)))
     async with SessionPool(_server(cfg), size, log=log) as pool:
-        jobs: list[Any] = [_monitor_item(pool, mid, cfg, log) for mid in ids]
+        jobs: list[Any] = [_monitor_item(pool, mid, cfg, log, used) for mid in ids]
         if include_digest:
             jobs.append(_digest(pool, log))
         results = await asyncio.gather(*jobs, return_exceptions=True)
@@ -167,7 +177,8 @@ def _server(cfg: Config) -> ServerConfig:
 
 
 async def _monitor_item(pool: SessionPool, monitor_id: str, cfg: Config,
-                        log: LogWriter | None = None) -> TrendItem:
+                        log: LogWriter | None = None,
+                        used: Collection[str] = frozenset()) -> TrendItem:
     """One monitor's three calls on one borrowed session (FR-115 serializes them anyway)."""
     args = {"monitor_id": monitor_id, "limit": _MEDIA_LIMIT}
     async with pool.acquire() as session:
@@ -175,7 +186,7 @@ async def _monitor_item(pool: SessionPool, monitor_id: str, cfg: Config,
         videos = await _call(session, "get_top_videos", args)
         shows = await _call(session, "get_top_slideshows", args)
     clips, panels = videos.get("videos") or [], shows.get("slideshows") or []
-    item = _build_item(monitor_id, analysis, clips, panels, cfg)
+    item = _build_item(monitor_id, analysis, clips, panels, cfg, used=used, log=log)
     _payload_event(log, item, len(clips), len(panels))
     return item
 
@@ -239,14 +250,21 @@ async def _call(session: Session, tool: str, args: dict[str, Any] | None = None)
 # --------------------------------------------------------------------------- normalization
 
 def _build_item(monitor_id: str, analysis: Mapping[str, Any], videos: list[Any], shows: list[Any],
-                cfg: Config) -> TrendItem:
-    """Assemble one normalized trend item from this monitor's three tool returns (20 §3)."""
+                cfg: Config, *, used: Collection[str] = frozenset(),
+                log: LogWriter | None = None) -> TrendItem:
+    """Assemble one normalized trend item from this monitor's three tool returns (20 §3).
+
+    One `ReferenceSet` is chosen here — the freshest unused candidate (FR-7) — and every field the
+    creative is shaped by is read off THAT set, so a second run against the same monitor changes
+    the headline, the panel rhythm and the layout, not only three CDN urls.
+    """
     videos, shows = _dedupe(videos), _dedupe(shows)  # RESULTS.md §A: the live arrays repeat posts
     name = str(analysis.get("name") or "").strip() or f"monitor {monitor_id}"
-    groups, primary = _reference_groups(videos, shows, cfg)
+    chosen, ordered, fresh = _pick_set(_reference_groups(videos, shows, cfg, monitor_id), used)
     media = [*videos, *shows]
     views = [_num(entry.get("views")) for entry in media]
-    top_video = max(videos, key=lambda entry: _num(entry.get("views")), default=None)
+    motion = _pick_motion([(row, _post_id(row, monitor_id, index))
+                           for index, row in enumerate(videos, start=len(shows))], chosen, used)
     why, tactics, context, confidence = _analysis_fields(analysis)
     item = TrendItem(
         history_key=str(monitor_id) or slugify(name, 0),  # agent id, else the name slug (20 §3)
@@ -258,15 +276,19 @@ def _build_item(monitor_id: str, analysis: Mapping[str, Any], videos: list[Any],
         cross_monitor_context=context,  # `fetch` prefixes the global digest onto this
         hook_texts=_texts(media, "hook_text"),
         text_overlay_contents=_texts(videos, "text_overlay_content"),
-        panel_texts=[str(text) for text in (primary or {}).get("panel_texts") or []],
-        narrative_arc=str((primary or {}).get("narrative_arc") or ""),
-        text_density=str((primary or {}).get("text_density") or ""),
+        panel_texts=list(chosen.panel_texts),
+        narrative_arc=chosen.narrative_arc,
+        text_density=chosen.text_density,
         video_descriptions=_texts(media, "description"),
-        reference_groups=groups,
-        is_slideshow=primary is not None,  # drives FR-90's carousel affinity
-        text_only=not groups,  # provisional: a dead CDN URL can still empty this (FR-247)
-        winning_video_url=str(top_video.get("url")) if top_video and top_video.get("url") else None,
-        virlo_url=str((top_video or primary or {}).get("url") or "") or None,
+        reference_groups=[list(candidate.urls) for candidate in ordered],  # group 0 = the chosen set
+        is_slideshow=chosen.is_slideshow,  # drives FR-90's carousel affinity
+        text_only=not ordered,  # provisional: a dead CDN URL can still empty this (FR-247)
+        winning_video_url=str(motion[0]["url"]) if motion else None,
+        winning_video_post_id=motion[1] if motion else None,
+        # FR-7 is already enforced when this is non-empty; empty means the monitor-level window
+        # decides (a `text_only` item, or a monitor whose every candidate set is used up).
+        chosen_post_ids=chosen.post_ids if fresh else (),
+        virlo_url=chosen.source_url or (str(motion[0]["url"]) if motion else None),
         total_views=int(sum(views)),
         median_views=int(statistics.median(views)) if views else 0,
         newest_published_at=max((when for when in map(_when, media) if when), default=None),
@@ -278,51 +300,130 @@ def _build_item(monitor_id: str, analysis: Mapping[str, Any], videos: list[Any],
     item.strength_components = {"total_views": float(item.total_views),
                                 "median_views": float(item.median_views),
                                 "velocity": _velocity(media)}
+    if log is not None:  # FR-7/FR-24: a repeat, of a set or of a motion source, stays explainable
+        log.event("reference_choice",
+                  f"{name}: {'fresh' if fresh else 'repeat'} set of {len(ordered)} candidate(s), "
+                  f"motion {motion[2] if motion else 'none'}",
+                  trend=item.history_key, candidate_sets=len(ordered), set_fresh=fresh,
+                  post_ids=list(item.chosen_post_ids), motion_post=item.winning_video_post_id,
+                  motion_tier=motion[2] if motion else "none")
     return item
 
 
-def _reference_groups(videos: list[Any], shows: list[Any], cfg: Config) -> tuple[list[list[str]], Any]:
-    """FR-91's coherent-set builder: candidates that each come from ONE source, best first.
+def _reference_groups(videos: list[Any], shows: list[Any], cfg: Config,
+                      monitor_id: str) -> list[ReferenceSet]:
+    """FR-91's coherent-set builder: EVERY qualifying candidate as a `ReferenceSet`, best first.
 
     Panels lead thumbnails; a slideshow qualifies only at `_MIN_PANELS`+ (RESULTS.md §A); a creator
     family needs `_MIN_THUMBS`+ once face-dominant frames are dropped, and UI-dense/complex frames
-    sink inside it. `reference_images_per_job` caps a group, `media_download_cap` the whole trend.
-    Returns the groups plus the slideshow behind group 0, when group 0 is one.
+    sink inside it. `reference_images_per_job` caps ONE set. `media_download_cap` is deliberately
+    NOT applied here: it bounds downloads, and gating candidates on it left exactly two sets per
+    monitor where a live monitor qualifies ~36 (spikes/RESULTS.md:163) — FR-7 chooses among all.
     """
-    per_job, cap = max(1, cfg.sources.reference_images_per_job), max(1, cfg.sources.media_download_cap)
-    candidates: list[tuple[int, float, float, list[str], Any]] = []
-    for show in shows:
+    per_job = max(1, cfg.sources.reference_images_per_job)
+    ranked: list[tuple[int, float, float, ReferenceSet]] = []
+    for index, show in enumerate(shows):
         panels = [url for url in show.get("image_urls") or [] if isinstance(url, str) and url]
         if len(panels) >= _MIN_PANELS:  # the wrapper already sorted them by `position`
-            candidates.append((2, 1.0, _num(show.get("views")), panels[:per_job], show))
+            ranked.append((2, 1.0, _num(show.get("views")),
+                           _set(panels[:per_job], [(show, _post_id(show, monitor_id, index))], True)))
 
-    families: dict[str, list[Any]] = {}
-    for video in videos:
+    families: dict[str, list[tuple[Any, str]]] = {}
+    for index, video in enumerate(videos, start=len(shows)):
         if isinstance(video.get("thumbnail_url"), str) and video["thumbnail_url"]:
-            families.setdefault(str(video.get("author_username") or video.get("id")), []).append(video)
+            families.setdefault(str(video.get("author_username") or video.get("id")), []).append(
+                (video, _post_id(video, monitor_id, index)))
     for family in families.values():
-        ranked = sorted(family, key=lambda v: (_frame_quality(v), _num(v.get("views"))), reverse=True)
-        chosen = ([v for v in ranked if v.get("has_face_visible") is not True] or ranked)[:per_job]
-        if len(chosen) >= _MIN_THUMBS:
-            candidates.append((1, sum(map(_frame_quality, chosen)) / len(chosen),
-                               _num(chosen[0].get("views")), [v["thumbnail_url"] for v in chosen], None))
+        order = sorted(family, key=lambda p: (_frame_quality(p[0]), _num(p[0].get("views"))),
+                       reverse=True)
+        picked = ([p for p in order if p[0].get("has_face_visible") is not True] or order)[:per_job]
+        if len(picked) >= _MIN_THUMBS:
+            ranked.append((1, sum(_frame_quality(row) for row, _ in picked) / len(picked),
+                           _num(picked[0][0].get("views")),
+                           _set([row["thumbnail_url"] for row, _ in picked], picked, False)))
 
-    if not candidates:  # last resort: any image at all beats a text_only trend (FR-6/FR-90)
-        loose = [v["thumbnail_url"] for v in videos if isinstance(v.get("thumbnail_url"), str)]
-        loose += [url for show in shows for url in show.get("image_urls") or [] if isinstance(url, str)]
+    if not ranked:  # last resort: any image at all beats a text_only trend (FR-6/FR-90)
+        loose = [(row["thumbnail_url"], (row, _post_id(row, monitor_id, index)))
+                 for index, row in enumerate(videos, start=len(shows))
+                 if isinstance(row.get("thumbnail_url"), str) and row["thumbnail_url"]]
+        loose += [(url, (show, _post_id(show, monitor_id, index)))
+                  for index, show in enumerate(shows)
+                  for url in show.get("image_urls") or [] if isinstance(url, str) and url]
         if loose:
-            candidates.append((0, 0.0, 0.0, loose[:per_job], None))
+            ranked.append((0, 0.0, 0.0, _set([url for url, _ in loose[:per_job]],
+                                             [row for _, row in loose[:per_job]], False)))
+    return [candidate for *_key, candidate in sorted(ranked, key=lambda row: row[:3], reverse=True)]
 
-    groups: list[list[str]] = []
-    primary = None
-    for kind, _quality, _views, urls, show in sorted(candidates, key=lambda row: row[:3], reverse=True):
-        room = cap - sum(len(group) for group in groups)
-        if room <= 0:
-            break
-        groups.append(urls[:room])
-        if primary is None and kind == 2 and len(groups) == 1:
-            primary = show
-    return groups, primary
+
+def _set(urls: list[str], rows: Sequence[tuple[Any, str]], is_slideshow: bool) -> ReferenceSet:
+    """One candidate built as a UNIT — urls, the posts behind them, and everything the creative
+    derives from choosing it. `rows` are `(row, post_id)` pairs; the FIRST row is the set's own
+    source, so a slideshow's panel metadata and a family's leading thumbnail agree by construction
+    instead of by a hand-kept index alignment.
+    """
+    lead: Mapping[str, Any] = rows[0][0] if rows else {}
+    return ReferenceSet(
+        urls=[str(url) for url in urls],
+        post_ids=tuple(dict.fromkeys(post for _, post in rows)),
+        is_slideshow=is_slideshow,
+        panel_texts=[str(text) for text in lead.get("panel_texts") or []],
+        narrative_arc=str(lead.get("narrative_arc") or ""),
+        text_density=str(lead.get("text_density") or ""),
+        source_url=str(lead.get("url") or "") or None,
+        author=str(lead.get("author_username") or "") or None)
+
+
+def _post_id(row: Mapping[str, Any], monitor_id: str, index: int) -> str:
+    """This post's identity for FR-7's window: Virlo's own stable `id` (20 §3), else its url, else
+    its monitor-scoped position — `index` runs across slideshows THEN videos, so the two arrays
+    cannot collide. NEVER `id(row)`: `_dedupe`'s memory-address fallback differs on every run and
+    would silently turn freshness off while reporting success.
+    """
+    return str(row.get("id") or row.get("url") or f"{monitor_id}:{index}")
+
+
+def _pick_set(sets: list[ReferenceSet],
+              used: Collection[str]) -> tuple[ReferenceSet, list[ReferenceSet], bool]:
+    """FR-7's choice: the freshest unused candidate, then the other fresh ones, then the used ones.
+
+    `sets` arrives strongest-first, so "freshest unused" is the strongest candidate none of whose
+    posts appear in the history window — deterministic on identical input. Returns that set (an
+    empty `ReferenceSet` when the monitor offered no candidate at all, so callers branch on nothing),
+    the candidate list reordered so the chosen set is group 0 and top-ups prefer fresh material, and
+    whether the choice was actually fresh. When every candidate is used the strongest is still chosen
+    — an image-less trend is worse than a repeated one — but reported stale, so `chosen_post_ids`
+    stays empty and the monitor-level window decides the exclusion.
+    """
+    fresh, stale = [], []
+    for candidate in sets:
+        (stale if any(post in used for post in candidate.post_ids) else fresh).append(candidate)
+    ordered = fresh + stale
+    return (ordered[0] if ordered else ReferenceSet()), ordered, bool(fresh)
+
+
+def _pick_motion(videos: Sequence[tuple[Any, str]], chosen: ReferenceSet,
+                 used: Collection[str]) -> tuple[Mapping[str, Any], str, str] | None:
+    """The reel's motion reference (FR-24) as `(row, post_id, tier)`, in three tiers of preference:
+
+    1. `fresh_same_creator` — an unused video by the chosen set's own creator: fresh AND topically
+       coherent, so a slideshow's copy is not animated by a stranger's clip;
+    2. `fresh` — else the highest-viewed unused video;
+    3. `repeat` — else the highest-viewed video regardless, logged as a repeat.
+
+    **Tier 3 is the point.** Freshness must never cost a reel: a repeated motion source is a
+    cosmetic loss, a failed reel is a paid one ($4.78 measured). This returns None only when no
+    video carries a url at all — never because everything has been used.
+    """
+    ranked = sorted((pair for pair in videos if pair[0].get("url")),
+                    key=lambda pair: _num(pair[0].get("views")), reverse=True)
+    fresh = [pair for pair in ranked if pair[1] not in used]
+    handle = chosen.author or ""
+    same = [pair for pair in fresh
+            if handle and str(pair[0].get("author_username") or "") == handle]
+    for tier, pool in (("fresh_same_creator", same), ("fresh", fresh), ("repeat", ranked)):
+        if pool:
+            return pool[0][0], pool[0][1], tier
+    return None
 
 
 def _analysis_fields(analysis: Mapping[str, Any]) -> tuple[str, list[str], str, float | None]:
@@ -451,13 +552,23 @@ def _minmax(values: list[float | None]) -> list[float]:
 
 async def _download_references(items: list[TrendItem], cfg: Config, cache_dir: Path | None,
                                log: LogWriter | None) -> None:
-    """Fetch every candidate reference independently, then prune what died (FR-32/33/247).
+    """Fetch the chosen set first, top up to `media_download_cap`, then prune what died.
 
-    One dead image removes itself and nothing else; a group that ends up short still ships and the
-    shortfall is logged; a trend left with zero images becomes `text_only` (FR-6/FR-90).
+    The chosen set (group 0, FR-7) is downloaded whole so the render job's own set is never the
+    part that got rationed; the remaining candidates — fresh ones first, since `_pick_set` ordered
+    them that way — top the trend up to `media_download_cap`, which is what keeps the analysis call
+    at FR-9's six images. One dead image removes itself and nothing else (FR-32/33/247); a group
+    that ends up short still ships and the shortfall is logged; a trend left with zero images
+    becomes `text_only` (FR-6/FR-90).
     """
-    wanted = [url for url in dict.fromkeys(
-        url for item in items for group in item.reference_groups for url in group) if url not in _CACHE]
+    cap = max(1, cfg.sources.media_download_cap)
+    queued: list[str] = []
+    for item in items:
+        budget = cap
+        for group in item.reference_groups:  # group 0 is the chosen set and is never trimmed here
+            queued += group[:max(0, budget)]
+            budget -= len(group)
+    wanted = [url for url in dict.fromkeys(queued) if url not in _CACHE]
     if wanted:
         target, limiter = _cache_dir(cache_dir), asyncio.Semaphore(_MAX_PARALLEL)
         attempts = max(1, cfg.models.http_max_attempts)
@@ -473,16 +584,19 @@ async def _download_references(items: list[TrendItem], cfg: Config, cache_dir: P
 
     per_job = max(1, cfg.sources.reference_images_per_job)
     for item in items:
-        groups = ([url for url in group if url in _CACHE] for group in item.reference_groups)
-        item.reference_groups = [group for group in groups if group]
+        alive = [[url for url in group if url in _CACHE] for group in item.reference_groups]
+        chosen = alive[0] if alive else []  # the CHOSEN set, judged before the empties are dropped
+        item.reference_groups = [group for group in alive if group]
         item.text_only = not item.reference_groups
+        if not chosen:  # its urls all died, so none of its posts was attached to anything
+            item.chosen_post_ids = ()
+        judged = chosen or (item.reference_groups[0] if item.reference_groups else [])
         if item.text_only:
             _warn(log, "trend_text_only", f"{item.name}: no usable reference image — last-resort "
                   "trend (FR-6/90)", trend=item.history_key)
-        elif len(item.reference_groups[0]) < per_job:
-            _warn(log, "reference_shortfall", f"{item.name}: {len(item.reference_groups[0])} of "
-                  f"{per_job} references survived — the job proceeds with fewer (FR-247)",
-                  trend=item.history_key)
+        elif len(judged) < per_job:
+            _warn(log, "reference_shortfall", f"{item.name}: {len(judged)} of {per_job} references "
+                  "survived — the job proceeds with fewer (FR-247)", trend=item.history_key)
 
 
 async def _download(client: httpx.AsyncClient, url: str, target: Path, attempts: int,
@@ -523,8 +637,13 @@ def _cache_dir(requested: Path | None) -> Path:
     return _CACHE_DIR
 
 
-def _warn(log: LogWriter | None, event: str, message: str, **data: Any) -> None:
-    """One degrade line: to the console logger, and to both run logs when a run owns one."""
+def _warn(log: LogWriter | None, event: str, message: str, *,
+          say: Callable[[str], None] | None = None, **data: Any) -> None:
+    """One degrade line: to the console logger, to both run logs when a run owns one, and — when
+    the caller passed the console seam — to the operator's screen, because a misconfiguration they
+    must fix is worth nothing buried in run.log."""
     logger.warning("%s", message)
+    if say is not None:
+        say(message)
     if log is not None:
         log.warn(event, message, **data)

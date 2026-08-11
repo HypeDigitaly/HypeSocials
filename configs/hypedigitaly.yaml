@@ -5,6 +5,13 @@
 # keys IS the whole mechanism. Picking this file is switching the niche. Only overrides appear
 # below - every key not listed here inherits its documented default from §2, not from default.yaml.
 
+# FR-173: the config picker prints this line verbatim. It MUST name the caption language in
+# words, because this file and configs/hypedigitaly-cs.yaml differ in exactly one behavioural
+# line (`run.languages`) and their `niche:` blocks are otherwise near-identical - a derived
+# picker line cannot tell them apart. Budget: <= 55 chars, ASCII only (legacy cp437/cp852
+# console), no box drawing, no check marks, no colour.
+label: "AI-agency niche - ENGLISH captions, LinkedIn-led"
+
 niche:
   audience: "founders, marketing leads and ops people at SMBs and agencies evaluating AI automation - EN, LinkedIn-led, Instagram/TikTok secondary"
   vibe: "no-fluff practitioner proof: specific numbers, real workflows, contrarian takes on AI hype; we ship the thing, we don't theorise about it"
@@ -29,11 +36,16 @@ run:
   run_deadline_min: 45
 
 sources:
-  # The three REAL monitor ids recorded live in spikes/RESULTS.md §A (2026-08-09).
+  # ONE monitor by operator decision (2026-08-11). GET /v1/agents returns three ids for this key,
+  # but only this one was created in Virlo's web app (source: web_app, team_id: null) and so is the
+  # only one the operator can see and manage on the Agents page. The other two were created through
+  # the API on 2026-08-06/07 into team 5b21bafd-...: "AI Trends Tracker v2" (the only id with
+  # data_intelligence_enabled) and "CZ coverage probe", a ONE-SHOT whose next_run_at is null and
+  # whose last collection was 2026-08-06 - it can never return anything newer. Dropping both trades
+  # the richer intelligence payload for a source the operator actually controls. Restore them by
+  # running `run.bat --list-monitors`, which still prints all three.
   virlo_monitor_ids:
-    - "623203a9-c09c-4763-85e0-1c177b5af760"   # AI Trends Tracker v2 - data_intelligence_enabled
-    - "9c96fddf-dc35-4be0-bbd9-12f4d22aea12"   # AI Trends Tracker - analysis_data fully populated
-    - "65bf412a-2a8a-4e95-bf35-9f21dca208a6"   # CZ coverage probe - AI/business Czech market
+    - "9c96fddf-dc35-4be0-bbd9-12f4d22aea12"   # AI Trends Tracker - weekly, analysis_data populated
   # Curated local reference material (D13). This is the repo's existing top-level folder; when
   # T5.3 seeds niches/hypedigitaly/Inspiration/, point this there instead.
   # "Inspiration/Linkedin/Viral posts" is the other candidate pool (proven copy + images).

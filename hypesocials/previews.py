@@ -21,7 +21,7 @@ Invariants:
   configured (so `KIE_API_KEY` is neither needed nor used) and `_launch_video_refs()` is never
   called, which is what keeps the D23 chain — and its scratch dir — completely inert.
 - **The run folder is log-only and never claims `latest`** (FR-253): `_package()` is not called,
-  so `set_latest()`, `record_trends()` and the gallery never run, and the empty `refs/` folder
+  so `set_latest()`, `record_use()` and the gallery never run, and the empty `refs/` folder
   `create_run_folder()` makes is removed again so the folder holds exactly `run.log` +
   `events.jsonl`.
 - **Virlo's metered digest is NOT skipped.** FR-139 requires zero *model* spend and states
@@ -40,10 +40,11 @@ from contextlib import suppress
 
 from hypesocials import cli, plan, preflight, runner
 from hypesocials.budget import format_usd
-from hypesocials.config import ConfigError, load_config
+from hypesocials.config import Config, ConfigError, load_config
 from hypesocials.copywrite import CopyResult
 from hypesocials.models import PlanEntry, PlanEntryStatus, StyleBrief, TrendItem
 from hypesocials.outputs import read_history
+from hypesocials.util import fit, wrapped
 
 # D19: the paid run's own stage calls, borrowed rather than copied (see the module contract).
 from hypesocials.runner import (
@@ -95,8 +96,8 @@ async def _preview(opts: cli.Options, control: runner.Control | None, *, deep: b
         (session.run_dir / _REFS_DIR).rmdir()
     try:
         session.say(_launch_summary(session, overrides))
-        session.say(f"{action}: no render job, no yt-dlp download and no Kie upload will happen; "
-                    "this folder is log-only and never repoints output/latest (FR-139/140/253)")
+        session.say(f"{action}: no render job, no video download, no upload. This folder\n"
+                    "is log-only and never becomes output/latest.")
         for line in brief_warnings:
             session.log.warn("brief_dropped", line)
         trends = await _collect(session)
@@ -105,6 +106,13 @@ async def _preview(opts: cli.Options, control: runner.Control | None, *, deep: b
         else:
             selection = plan.select(trends, config, read_history(runner.LOGS_DIR, session.log))
             session.say(_verdict_block(selection))
+            # FR-154: zero ELIGIBLE trends is a failed answer, not a clean one. Counting verdicts
+            # instead would call the 3-returned-all-excluded shape a success — the exact config
+            # that then exits 3 on a real run. The decision lives inside this branch because
+            # `selection` does not exist on the `deep` path, and reading it there would raise.
+            if not selection.eligible and not session.control.stop.is_set():
+                session.say(_nothing_eligible(selection, config))
+                return runner.EXIT_NOTHING_USABLE
         return runner.EXIT_INTERRUPTED if session.control.stop.is_set() else runner.EXIT_OK
     except _Abort as abort:  # dead source (exit 3), or a trend famine in the deep path
         session.say(str(abort))
@@ -142,25 +150,47 @@ async def _deep_stages(session: runner._Session, trends: Sequence[TrendItem],
 def _verdict_block(selection: plan.Selection) -> str:
     """FR-139's display: every returned trend, its verdict, and the material behind it."""
     lines = [f"{len(selection.verdicts)} trend(s) returned — {len(selection.eligible)} eligible, "
-             f"{len(selection.excluded)} excluded by history, {len(selection.unusable)} unusable "
-             "(zero model spend; Virlo's own API calls still bill your Virlo deposit — FR-139)"]
+             f"{len(selection.excluded)} excluded by history, "
+             f"{len(selection.unusable)} unusable",
+             "  no model spend; Virlo's own API calls still meter your Virlo deposit"]
     for item in selection.verdicts:
         trend = item.trend
         refs = [url for group in trend.reference_groups for url in group]
-        lines.append(f"  {trend.name}  [{item.label}]")
+        lines.append(f"  {fit(trend.name, 46)}  [{fit(item.label, 26)}]")
         lines.append(f"      strength {trend.strength:.3f} · "
                      f"{'slideshow' if trend.is_slideshow else 'video'} source · "
-                     f"views {trend.total_views:,} (median {trend.median_views:,}) · "
-                     f"{trend.virlo_url or 'no virlo url'}")
-        if trend.hook_texts:
-            lines.append(f"      hooks   {_short(' | '.join(trend.hook_texts[:3]), 200)}")
-        if trend.panel_texts:
-            lines.append(f"      panels  {_short(' | '.join(trend.panel_texts[:5]), 200)}")
+                     f"views {trend.total_views:,} (median {trend.median_views:,})")
+        # FR-286(a): a permalink and a CDN url have no word boundary, so each goes alone on its
+        # own line rather than being cut — the operator opens and copies these.
+        lines.append(f"      {trend.virlo_url or 'no virlo url'}")
+        for field, text in (("hooks ", trend.hook_texts[:3]), ("panels", trend.panel_texts[:5])):
+            for first, part in (wrapped(" | ".join(text), 62) if text else ()):
+                lines.append(f"      {field if first else '      '}  {part}")
         lines.append(f"      refs    {len(refs)} image(s)"
-                     + (f": {', '.join(refs[:3])}" if refs else " — text_only (FR-6/FR-90)"))
+                     + ("" if refs else " — text_only, this trend arrived with no pictures"))
+        lines.extend(f"        {url}" for url in refs[:3])
     if not selection.verdicts:
-        lines.append("  the active source(s) returned nothing — no trend to judge (10 §10)")
+        lines.append("  the active source(s) returned nothing — no trend to judge")
     return "\n".join(lines)
+
+
+def _nothing_eligible(selection: plan.Selection, config: Config) -> str:
+    """FR-154: say which cause applies and what to change, never 'see the lines above'.
+
+    This is the mode an operator runs *to check their config*, so a clean exit here was the most
+    misleading output in the tool — it blessed a config that then failed a paid run.
+    """
+    if not selection.verdicts:
+        ids = [str(i).strip() for i in config.sources.virlo_monitor_ids if str(i).strip()]
+        cause = ("no monitor ids are configured" if not ids else
+                 f"the {len(ids)} configured monitor id(s) returned nothing")
+        return f"  NOT USABLE: {cause} — run run.bat --list-monitors to see the real ids"
+    excluded, unusable = len(selection.excluded), len(selection.unusable)
+    parts = ([f"{excluded} have no unused reference set left"] if excluded else []) + \
+            ([f"{unusable} lack usable material"] if unusable else [])
+    return ("  NOT USABLE: " + ", ".join(parts) + " — a real run on this config would exit 3."
+            + ("\n  Widen the window with --history-days, or wait for new posts." if excluded
+               else "\n  Wait for the monitors to surface richer trends."))
 
 
 def _analysis_block(trends: Mapping[str, TrendItem], style_briefs: Mapping[str, StyleBrief],

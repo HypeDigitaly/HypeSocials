@@ -194,11 +194,18 @@ def _trimmed(item: TrendItem, keep: int) -> TrendItem:
 
     A copy, not an edit: Select's verdicts, `text_only` and the analysis call all read the
     originals, and only the render stage sees the room made for inspiration images.
+
+    `chosen_post_ids` travels WITH the urls it belongs to (FR-7): under `exclusive` no trend image
+    is attached at all, so the copy names no used posts and history cannot burn an id this run
+    never showed anyone. A trimmed-but-present set is still that one chosen set — the set, not the
+    individual url, is the unit FR-7 records, and splitting ids per url is exactly the index
+    alignment `ReferenceSet` exists to abolish.
     """
     if not item.reference_groups or all(len(group) <= keep for group in item.reference_groups):
         return item
-    return replace(item, reference_groups=[group[:keep] for group in item.reference_groups
-                                           if group[:keep]])
+    groups = [group[:keep] for group in item.reference_groups if group[:keep]]
+    return replace(item, reference_groups=groups,
+                   chosen_post_ids=item.chosen_post_ids if groups else ())
 
 
 def _note(log: LogWriter | None, event: str, level: str, message: str, **data: Any) -> None:

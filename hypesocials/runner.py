@@ -46,7 +46,7 @@ from typing import Any
 
 from hypesocials import analyze, cli, copywrite, generate, menu, plan, preflight, render, sources
 from hypesocials.budget import Budget, Estimate, SpendCategory, SpendSummary, estimate, format_usd
-from hypesocials.config import CONFIGS_DIR, Config, ConfigError, load_config
+from hypesocials.config import LOGS_DIR, Config, ConfigError, load_config
 from hypesocials.generate import video_ref
 from hypesocials.llm import CREDITS_EXHAUSTED_REASON, LLMClient, RoleSettings
 from hypesocials.models import (
@@ -57,13 +57,15 @@ from hypesocials.outputs import (
     close_downloads,
     create_run_folder,
     read_history,
-    record_trends,
+    read_meta,
+    record_use,
     save_reference,
     set_latest,
+    used_posts,
     write_gallery,
 )
 from hypesocials.prompts_engine import PromptEngine
-from hypesocials.util import Deadline, Stopwatch, new_run_id
+from hypesocials.util import Deadline, Stopwatch, fit, new_run_id, wrapped
 
 logger = logging.getLogger(__name__)
 
@@ -74,9 +76,18 @@ EXIT_PREFLIGHT = 2  # pre-flight refusal or config error, incl. a missing key �
 EXIT_NOTHING_USABLE = 3  # fatal after Collect began: no usable trend, or a transport-dead source
 EXIT_INTERRUPTED = 4  # SIGINT (FR-201)
 
-#: `logs/trend_history.json` is repo-global, not per run folder (40 §6, NFR-23).
-LOGS_DIR = CONFIGS_DIR.parent / "logs"
+#: `LOGS_DIR` is defined in `config.py` (one definition, reachable from `preflight` without a
+#: cycle) and re-exported here because `previews.py` reads it as `runner.LOGS_DIR`.
 _PROVISIONAL = "provisional-trend-"
+
+#: FR-286: the closing line spells its own exit code, so an operator never has to look one up.
+_EXIT_LEGEND = {
+    EXIT_OK: "everything planned was delivered",
+    EXIT_PARTIAL: "delivered with losses",
+    EXIT_PREFLIGHT: "refused before spending, nothing was billed",
+    EXIT_NOTHING_USABLE: "no usable trend after the source answered",
+    EXIT_INTERRUPTED: "interrupted with Ctrl+C",
+}
 
 
 @dataclass(slots=True)
@@ -117,6 +128,7 @@ class _Session:
     engine: PromptEngine
     llm: LLMClient | None = None
     render_ready: bool = False
+    virlo_contacted: bool = False  # FR-286: Virlo meters separately, so the total must say so
     video_refs: video_ref.Prefetch | None = None  # D23 chain, launched alongside Analyze
     campaign_briefs: dict[str, Brief] = field(default_factory=dict)  # D26, by brief name
     brand: sources.BrandContext = field(default_factory=sources.BrandContext)  # FR-34/36
@@ -195,9 +207,12 @@ async def list_monitors(opts: cli.Options) -> int:
     if not rows:
         print("no monitors are visible to this VIRLO_API_KEY — create one in the Virlo dashboard")
         return EXIT_NOTHING_USABLE
-    print(f"{len(rows)} Virlo monitor(s) — paste the ids into sources.virlo_monitor_ids:")
+    print(f"{len(rows)} Virlo monitor(s). Copy the block below into your config file under")
+    print("sources:, replacing the virlo_monitor_ids line. Keep the two-space indent.")
+    print("")
+    print("  virlo_monitor_ids:")
     for monitor_id, name in rows:
-        print(f'  {monitor_id}  {name}')
+        print(f"    - {monitor_id}  # {fit(name, 30)}")
     return EXIT_OK
 
 
@@ -308,11 +323,12 @@ async def _pipeline(session: _Session, overrides: Sequence[str]) -> int:
     _store_references(session, by_key, live)
     briefs_by_trend = await _analyze(session, live, by_key)
     copy_result = await _write(session, live, by_key, briefs_by_trend)
-    report = await _create(session, resolved.entries, live, by_key, briefs_by_trend, copy_result)
+    report, attached = await _create(session, resolved.entries, live, by_key, briefs_by_trend,
+                                     copy_result)
 
     # The brief-only carve-out (10 §10): a trend famine is fatal only when nothing was deliverable,
     # and a brief-only plan never had a trend supply to fail — its losses are ordinary (exit 1).
-    return await _package(session, resolved.entries, plan_estimate, report,
+    return await _package(session, resolved.entries, plan_estimate, report, attached,
                           trend_supply_failed=not brief_only
                           and not any(e.trend_key for e in resolved.entries),
                           plan_notes=resolved.notes)  # FR-252: pre-expansion drops exit 1
@@ -425,11 +441,19 @@ async def _collect(session: _Session, *, fetch_trends: bool = True) -> list[Tren
     session.pool = await sources.load_pool(session.config, log=session.log)
     session.brand = await sources.fetch_brand_context(session.config, log=session.log)
     if not fetch_trends:
-        session.say("brief-only plan: every creative is an override brief, so no trend is "
-                    "consumed and no Virlo session is opened (FR-144, 10 §10)")
+        session.say("brief-only plan: every creative is an override brief, so no trend\n"
+                    "is consumed and no Virlo session is opened")
         return []
+    # FR-7/FR-153: the adapter, not Select, chooses which reference set a trend arrives with, so
+    # the used-post map has to be read BEFORE Collect. Post ids are globally unique, so one flat
+    # union over the window is the whole input — no per-trend split.
+    window = session.config.run.trend_history_days
+    fresh_against = {post for posts in used_posts(read_history(LOGS_DIR, session.log),
+                                                  within_days=window).values() for post in posts}
+    session.virlo_contacted = "virlo" in session.config.sources.active
     try:
-        trends = await sources.fetch(session.config, log=session.log)
+        trends = await sources.fetch(session.config, log=session.log,
+                                     used_posts=fresh_against, say=session.say)
     except Exception as exc:  # noqa: BLE001 — 10 §10 row 1: a dead source is exit 3, not a crash
         session.log.error("collect_failed", f"{type(exc).__name__}: {exc}")
         raise _Abort(EXIT_NOTHING_USABLE,
@@ -470,14 +494,18 @@ def _select(session: _Session, trends: list[TrendItem],
 def _famine_message(selection: plan.Selection, config: Config) -> str:
     """10 §10: name the cause that actually applies, and only suggest the remedy that fits."""
     excluded, unusable = len(selection.excluded), len(selection.unusable)
+    ids = [str(i).strip() for i in config.sources.virlo_monitor_ids if str(i).strip()]
     if not selection.verdicts:
-        return ("Virlo returned no trends at all — check that sources.virlo_monitor_ids names "
-                f"monitors this key can see ({', '.join(config.sources.virlo_monitor_ids) or 'none configured'}); "
-                "run --list-monitors to print the real ids")
+        if not ids:  # FR-283 refuses this before the money gate; kept as a safety net only
+            return ("no Virlo monitor ids are configured, so Virlo was never asked for anything"
+                    " — run run.bat --list-monitors and paste the ids into your config")
+        return (f"Virlo was asked about {len(ids)} monitor(s) and returned nothing usable — the"
+                " ids may name monitors this key cannot see; run run.bat --list-monitors to"
+                " print the ids it can")
     if excluded and not unusable:
-        return (f"every usable trend ({excluded}) was used within the last "
-                f"{config.run.trend_history_days} day(s) — widen or disable trend_history_days, "
-                "or wait for the monitors to surface new material (FR-7)")
+        return (f"every usable trend ({excluded}) has no unused reference set left inside the"
+                f" last {config.run.trend_history_days} day(s) — use --history-days to widen or"
+                " disable the window, or wait for the monitors to surface new posts")
     reasons = "; ".join(sorted({v.reason for v in selection.unusable})) or "no usable material"
     return (f"no trend survived filtering: {unusable} rejected as unusable ({reasons})"
             + (f" and {excluded} excluded by the {config.run.trend_history_days}-day history "
@@ -588,8 +616,12 @@ async def _write(session: _Session, live: Sequence[PlanEntry], trends: dict[str,
 
 async def _create(session: _Session, entries: Sequence[PlanEntry], live: Sequence[PlanEntry],
                   trends: dict[str, TrendItem], briefs: dict[str, StyleBrief],
-                  copy_result: copywrite.CopyResult) -> generate.Report:
+                  copy_result: copywrite.CopyResult
+                  ) -> tuple[generate.Report, Mapping[str, TrendItem]]:
     """CREATE: images, carousels and reels in two waves. Terminal entries package as honest skips.
+
+    Returns the report **and** `mix.trends` — the render-side view — because FR-153 records the post
+    ids a creative actually attached, which is only knowable after the mix has trimmed them.
 
     The vision check is wired in here and nowhere else: `llm_call` is the same metered wrapper the
     Analyze and Write stages use, so every check call lands in the FR-84 tally — and it is `None`
@@ -620,19 +652,43 @@ async def _create(session: _Session, entries: Sequence[PlanEntry], live: Sequenc
     session.log.event("generation_complete",
                       f"{len(report.packaged_trends)} trend(s) produced packaged creatives",
                       duration_ms=watch.elapsed_ms, disk_full=report.disk_full)
-    return report
+    return report, mix.trends
+
+
+def _posts_used(session: _Session, report: generate.Report, attached: Mapping[str, TrendItem],
+                entries: Sequence[PlanEntry]) -> dict[str, list[str]]:
+    """FR-153: the post ids a packaged creative really ATTACHED, never merely the ones chosen.
+
+    Two ways a chosen post can end up unused, and burning its id either way would be a lie that
+    costs the operator a fresh reference set for nothing. Images: under `inspiration_mix:
+    exclusive` the mix attaches no trend image at all, which is why this reads the render-side
+    `attached` view rather than Collect's items. Motion: a reel keeps its reference through a
+    seed-frame degrade but loses it to a failed yt-dlp probe or download, so the truth is the
+    `reel_video_reference_url` the packager actually wrote — not the fact that a reel succeeded.
+    """
+    uses = {key: list(attached[key].chosen_post_ids) if key in attached else []
+            for key in report.packaged_trends}
+    for entry in entries:
+        trend = attached.get(entry.trend_key or "")
+        if (entry.status is not PlanEntryStatus.SUCCESS or trend is None
+                or not trend.winning_video_post_id or entry.trend_key not in uses):
+            continue
+        if read_meta(session.run_dir / entry.asset_id).get("reel_video_reference_url"):
+            uses[entry.trend_key].append(trend.winning_video_post_id)
+    return uses
 
 
 async def _package(session: _Session, entries: Sequence[PlanEntry], plan_estimate: Estimate,
-                   report: generate.Report, *, trend_supply_failed: bool,
+                   report: generate.Report, attached: Mapping[str, TrendItem],
+                   *, trend_supply_failed: bool,
                    plan_notes: Sequence[str] = ()) -> int:
     """PACKAGE: gallery, history, latest-pointer, spend summary, exit code (FR-75/82/84/232)."""
     _log_template_attribution(session)
     credits_line = _credits_exhausted_line(session, entries, report)  # FR-248, before the counts
     write_gallery(session.run_dir, title=session.config.output.gallery.title, log=session.log)
     if report.packaged_trends:  # FR-82: only trends that actually produced a packaged creative
-        await record_trends(LOGS_DIR, sorted(report.packaged_trends), session.run_id,
-                            history_days=session.config.run.trend_history_days, log=session.log)
+        await record_use(LOGS_DIR, _posts_used(session, report, attached, entries), session.run_id,
+                         history_days=session.config.run.trend_history_days, log=session.log)
     if any(entry.status is PlanEntryStatus.SUCCESS for entry in entries):
         await set_latest(session.config.output.dir, session.run_id, log=session.log)  # FR-254
 
@@ -788,7 +844,10 @@ def _launch_summary(session: _Session, overrides: Sequence[str]) -> str:
     config = session.config
     return "\n".join([
         f"HypeSocials run {session.run_id}",
-        f"  config      {config.path} — {config.description or 'no description'}",
+        # FR-286: the niche descriptor behind `description` ran to 400 chars and produced a
+        # 557-char line that conhost mangled. Path and label each get their own bounded line.
+        f"  config      {fit(str(config.path), 64)}",
+        f"              {fit(config.description or 'no description', 60)}",
         f"  formats     " + ", ".join(f"{name}={count}" for name, count in config.run.formats.items()),
         f"  platforms   " + ", ".join(
             f"{name}/{config.language_for(name)}" for name in config.run.platforms),
@@ -796,7 +855,10 @@ def _launch_summary(session: _Session, overrides: Sequence[str]) -> str:
         f"vision_check {str(config.run.vision_check).lower()}",
         f"  spend cap   {format_usd(config.run.spend_cap_usd)} · deadline "
         f"{config.run.run_deadline_min} min · output {session.run_dir}",
-        f"  overrides   " + (", ".join(overrides) or "none (config values as written)"),
+        # FR-286: an override list grows without bound, so it wraps onto its own indented lines.
+        "\n".join(f"  {'overrides' if first else '         '}   {part}"
+                  for first, part in wrapped(
+                      ", ".join(overrides) or "none (config values as written)", 62)),
     ])
 
 
@@ -808,13 +870,15 @@ def _money(amount: float) -> str:
 
 def _spend_table(summary: SpendSummary) -> str:
     """FR-84's ONE spend table: per creative, per format, then the grand total and cap status."""
+    # FR-286: asset ids run to ~46 chars, so a fixed 40-wide column both overflowed 78 AND ran
+    # into the format column with no space (`..._04image`). Fit the one variable column instead.
     lines = [summary.headline,
-             f"  {'asset':<40}{'format':<10}{'est':>9}{'billed':>10}  delivered"]
+             f"  {'asset':<38} {'format':<9}{'est':>9}{'billed':>10} ok"]
     for row in summary.rows:
         mark = "yes" if row.delivered else "no"
         billed = format_usd(row.billed_usd) + (" est" if row.estimated_only else "")
-        lines.append(f"  {row.asset_id:<40}{row.creative_format:<10}"
-                     f"{format_usd(row.estimated_usd):>9}{billed:>10}  {mark}")
+        lines.append(f"  {fit(row.asset_id, 38):<38} {row.creative_format:<9}"
+                     f"{format_usd(row.estimated_usd):>9}{billed:>10} {mark}")
     for name, amount in summary.by_format.items():
         lines.append(f"  subtotal {name:<47}{_money(amount):>10}")
     lines.append(f"  TOTAL  llm {_money(summary.llm_usd)} + render "
@@ -837,10 +901,16 @@ def _final_line(session: _Session, entries: Sequence[PlanEntry], summary: SpendS
     reasons = sorted({str(entry.skip_reason).split(":", 1)[0].split(" ", 1)[0]
                       for entry in entries if entry.skip_reason})
     skipped = len(summary.rows) - delivered
-    detail = f" ({', '.join(reasons)})" if reasons else ""
-    return (f"run {session.run_id} · total {_money(summary.total_usd)} · "
-            f"{session.clock.elapsed_s:.1f}s · generated {delivered} · skipped {skipped}{detail} · "
-            f"status {status} · exit code {code} · folder {session.run_dir}")
+    detail = f" ({fit(', '.join(reasons), 40)})" if reasons else ""
+    # FR-286: `total` covers Kie and OpenRouter only. Virlo's own calls meter against the Virlo
+    # deposit, so an unqualified `total $0.00` on a run that opened a session was a false statement.
+    metered = " + Virlo metering" if session.virlo_contacted else ""
+    return "\n".join([
+        f"run {session.run_id} · total {_money(summary.total_usd)} (Kie/OpenRouter){metered}",
+        f"  {session.clock.elapsed_s:.1f}s · generated {delivered} · skipped {skipped}{detail}",
+        f"  status {status} · exit code {code} ({_EXIT_LEGEND[code]})",
+        f"  folder {fit(str(session.run_dir), 68)}",
+    ])
 
 
 async def _cleanup(session: _Session) -> None:

@@ -38,11 +38,14 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 from hypesocials.budget import Estimate, TrimResult, estimate as estimate_plan, format_usd, trim
-from hypesocials.config import PLATFORMS, Config
+from hypesocials.config import (  # `_BOUNDS` is THE bound table — a flag must never retype a bound
+    CONFIGS_DIR, PLATFORMS, Config, _BOUNDS as _CONFIG_BOUNDS)
 from hypesocials.models import PlanEntry
 from hypesocials.sources import SOURCE_STATUS
+from hypesocials.util import wrapped
 
-PROG = "hypesocials"
+PROG = "run.bat"  # what the operator actually launches; `python -m hypesocials` is the inner call
+_WIDTH = 78  # FR-286: help wraps here, never at the console width, which legacy conhost mangles
 _MODES = ("analyzed", "direct", "both")
 _NOTION = ("off", "copy", "full")
 
@@ -73,6 +76,9 @@ class Options:
     vision_check: bool = False
     briefs: tuple[tuple[str, int], ...] = ()  # `--brief <name>:<count>`, repeatable (FR-171)
     yes: bool = False
+    quick: bool = False  # skip the wizard's questions, keep the confirm gate — a modifier, not an
+    #   `Action`: it still routes through `Action.RUN` (W2 wires the flag and the menu's [2])
+    history_days: int | None = None  # `--history-days`, the recency window for this run only
     target: str = ""  # `--publish <run_id>` / `--promote <run_id>`, incl. the literal "latest"
     at: str = ""  # Phase 2 schedule time for --promote
 
@@ -104,17 +110,29 @@ def parse_args(argv: Sequence[str] | None = None) -> Options:
         vision_check=bool(ns.vision_check),
         briefs=tuple(ns.brief or ()),
         yes=bool(ns.yes),
+        quick=bool(ns.quick),
+        history_days=ns.history_days,
         target=str(ns.publish or ns.promote or ""),
         at=str(ns.at or ""),
     )
 
 
+class _Help(argparse.RawDescriptionHelpFormatter):
+    """Fixed-width help: wrap at `_WIDTH`, print the epilog exactly as written (FR-286)."""
+
+    def __init__(self, prog: str) -> None:
+        super().__init__(prog, width=_WIDTH)
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog=PROG, allow_abbrev=False,
+        prog=PROG, allow_abbrev=False, formatter_class=_Help,
         description="HypeSocials — viral social creatives from live Virlo trends.",
-        epilog="No flags and a console attached shows the interactive menu (30 §4).")
-    parser.add_argument("--config", metavar="NAME", help="config file in configs/ (FR-61)")
+        epilog="Examples\n"
+               "  run.bat --config hypedigitaly --images 2 --budget 2\n"
+               "  run.bat --config hypedigitaly --brief ai-audit-cta:2 --yes --budget 2\n\n"
+               "No flags plus a console shows the menu. Walkthrough: README.md")
+    parser.add_argument("--config", metavar="NAME", help=f"config in configs/: {_config_names()}")
     parser.add_argument("--images", type=int, metavar="N", help="override the image count")
     parser.add_argument("--carousels", type=int, metavar="N", help="override the carousel count")
     parser.add_argument("--reels", type=int, metavar="N", help="override the reel count")
@@ -126,19 +144,45 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--mode", choices=_MODES, help="generation mode (D2)")
     parser.add_argument("--notion", choices=_NOTION, help="Notion influence level (D7)")
     parser.add_argument("--vision-check", action="store_true", help="enable the vision check (D3)")
+    parser.add_argument("--history-days", type=_history_days, metavar="N",
+                        help="recency window in days for this run; 0 turns the window off")
     parser.add_argument("--brief", action="append", type=_brief, metavar="NAME:COUNT",
                         help="request a campaign brief; repeatable (FR-171)")
-    parser.add_argument("--yes", action="store_true", help="skip the menu; unattended (FR-60/252)")
+    # Adjacent, one group: usage prints `[--quick | --yes]`; exclusive because --quick still asks.
+    gate = parser.add_mutually_exclusive_group()
+    gate.add_argument("--quick", action="store_true",
+                      help="skip the menu's questions but still ask before spending")
+    gate.add_argument("--yes", action="store_true", help="skip the menu; unattended (FR-60/252)")
     parser.add_argument("--list-monitors", action="store_true",
                         help="print every Virlo monitor id and name, then exit (FR-251)")
     parser.add_argument("--preview-sources", action="store_true",
-                        help="trends + eligibility verdicts, zero model spend (FR-139)")
+                        help="trends + verdicts, no model spend; Virlo's trend digest "
+                             "still meters against your Virlo deposit")
     parser.add_argument("--preview-analysis", action="store_true",
                         help="also style briefs and copy, LLM cost only (FR-140)")
-    parser.add_argument("--publish", metavar="RUN_ID", help="Phase 2 placeholder (FR-175)")
-    parser.add_argument("--promote", metavar="RUN_ID", help="Phase 2 placeholder (FR-175)")
-    parser.add_argument("--at", metavar="ISO", help="Phase 2 schedule time for --promote")
+    parser.add_argument("--publish", metavar="RUN_ID", help="(Phase 2, not implemented)")
+    parser.add_argument("--promote", metavar="RUN_ID", help="(Phase 2, not implemented)")
+    parser.add_argument("--at", metavar="ISO", help="(Phase 2, not implemented) --promote time")
     return parser
+
+
+def _config_names() -> str:
+    """The `--config` values that exist right now, so `--help` can answer "pass what?"."""
+    names = sorted(path.stem for path in CONFIGS_DIR.glob("*.yaml"))
+    return ", ".join(names) if names else "none found - expected default.yaml"
+
+
+def _history_days(value: str) -> int:
+    """`--history-days N` → the recency window, REFUSED out of range rather than clamped (FR-285).
+
+    The bound is `config.py`'s own table, the one that validates `run.trend_history_days` inside a
+    file, so the flag can never accept a number the config loader would reject. A clamp would hide
+    an operator typo until the run was over, which is the whole failure class this refusal removes.
+    """
+    low, high, _ = _CONFIG_BOUNDS["run.trend_history_days"]
+    if not value.strip().lstrip("+").isdigit() or not low <= int(value) <= high:
+        raise argparse.ArgumentTypeError(f"expected {int(low)}-{int(high)} days (0 = window off)")
+    return int(value)
 
 
 def _action(ns: argparse.Namespace) -> Action:
@@ -224,6 +268,9 @@ def apply_overrides(config: Config, opts: Options) -> list[str]:
     if opts.vision_check:
         config.run.vision_check = True
         applied.append("run.vision_check=true")
+    if opts.history_days is not None:  # already range-checked at the boundary by `_history_days`
+        config.run.trend_history_days = int(opts.history_days)
+        applied.append(f"run.trend_history_days={config.run.trend_history_days}")
     return applied
 
 
@@ -289,8 +336,11 @@ async def confirm_spend(
     if assume_yes:
         return ConfirmOutcome(True, tuple(entries), estimate)
 
-    question = (f"Proceed and spend up to {format_usd(estimate.expected_usd)} "
-                f"(worst case {format_usd(estimate.worst_case_usd)})? [y/N] ")
+    # The prompt states its own semantics because the wizard trains "Enter keeps the value" seven
+    # times before this line, and here Enter cancels. Only y/yes starts — now it says so.
+    question = (f"Start the run and spend up to {format_usd(estimate.expected_usd)} "
+                f"(worst case {format_usd(estimate.worst_case_usd)})?\n"
+                "  y = start · Enter or n = cancel, nothing is billed: ")
     answer = (await asyncio.to_thread(_ask, question)).strip().lower()
     if answer in ("y", "yes"):
         return ConfirmOutcome(True, tuple(entries), estimate)
@@ -332,15 +382,23 @@ def estimate_report(estimate: Estimate, entries: Sequence[PlanEntry], cap_usd: f
         rate = (f"${amount:.4f}" if 0 < amount < 0.01 else format_usd(amount)) if amount \
             else "unpriced — contributes $0.00"
         out.append(f"  {code:<28} x{quantity:<6g} {rate}{tail}")
-        out.append(f"      price {key[1]} [{origin}] — assumed for {model}")
+        out.append(f"      price {key[1]} [{origin}]")  # two lines, each ending in its variable
+        out.append(f"            assumed for {model}")  # part: a long model id never truncates
     for line in estimate.blocked:
-        out.append(f"  BLOCKED  {line.label}")
+        # FR-286: `label` carries FR-131's full diagnosis and runs past 100 chars with a real
+        # asset id, so the PRINTER wraps it. Shortening the label instead would drop the price
+        # key an operator needs to go and set.
+        out.extend(f"  {'BLOCKED  ' if first else '           '}{part}"
+                   for first, part in wrapped(line.label, _WIDTH - 11))
     if estimate.banner:
-        out.append(f"  {estimate.banner} — those lines contribute $0.00 to this total (FR-282)")
-    out.append(f"  expected {format_usd(estimate.expected_usd)} · "
+        out.append(f"  {estimate.banner}")
+        out.append("  those lines contribute $0.00 to this total")
+    # "(Kie/OpenRouter)" is not decoration: Virlo's trend calls meter against a prepaid deposit
+    # this estimator cannot price, so an unqualified total would read as "the whole run costs $X".
+    out.append(f"  expected {format_usd(estimate.expected_usd)} (Kie/OpenRouter) · "
                f"worst case {format_usd(estimate.worst_case_usd)} · "
                f"cap {format_usd(cap_usd)}")
-    out.append("  Nothing has been billed yet.")
+    out.append("  Nothing billed yet. Virlo trend calls meter against your Virlo deposit.")
     return "\n".join(out)
 
 

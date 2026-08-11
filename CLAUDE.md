@@ -63,7 +63,14 @@ Project configuration and agent coordination guide for HypeSocials MVP (Phase 1)
 - Leaked via error messages
 Redaction boundary enforced in logwriter; full prompts logged only to events.jsonl, never run.log.
 
-**5. G2 line ceiling: 13,500 lines (target ~13,200 — v1.6.8, operator decision 2026-08-09).** Tracked at every wave barrier with `wc -l hypesocials/**/*.py`. Wave 1 ended at 3,919, Wave 2 at 7,868, Wave 3 at 9,993, Wave 4 at 11,519, Wave 5 at 12,931; escalation past the ceiling stays an operator decision, never silent cuts.
+**5. No line ceiling. Line growth is measured and reported, never capped (v2.0.0, operator decision 2026-08-11).** The G2 numeric ceiling is **withdrawn**. What the ceiling was actually protecting — visibility into where the code is growing, and a bar against silent bloat — is now enforced directly:
+
+- **Measure at every wave barrier** with `find hypesocials -name "*.py" | xargs wc -l | tail -1`. **Never `wc -l hypesocials/**/*.py`** — globstar is off in this shell, so that glob silently counts only ~20 of 39 files (5,844 of 14,176 lines) and misses every file at depth 3.
+- **Report growth with per-task attribution**, never a bare total. "+217 (virlo.py +135, server.py +43, models.py +14, …)" is a report; "now at 14,393" is not.
+- **Never absorb growth by trimming docstrings, comments or error messages.** That was true under the ceiling and it is the part that still binds. Code that got longer because it does more is fine; code that looks shorter because it explains less is a regression.
+- **A file over ~500 lines is still a splitting candidate** (CODING_GUIDELINES §3a) and a deep-module review is still owed (§18) — but on design grounds, not arithmetic.
+
+History for reference: Wave 1 ended at 3,919, Wave 2 at 7,868, Wave 3 at 9,993, Wave 4 at 11,519, Wave 5 at 12,931, MVP at 13,471, post-MVP at 13,486, first-run usability round at 14,176 (corrected measurement).
 
 **6. Junctions, not symlinks.** Windows: `mklink /J` only. Never `os.symlink`.
 

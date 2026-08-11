@@ -151,7 +151,8 @@ class Estimate:
     def banner(self) -> str:
         """FR-107/FR-84's governance banner, or "" when every line carries a real rate."""
         count = len(self.unpriced_lines)
-        return f"governance partial — {count} lines unpriced" if count else ""
+        plural = "line" if count == 1 else "lines"
+        return f"governance partial — {count} {plural} unpriced" if count else ""
 
 
 # --------------------------------------------------------------------------- pricing helpers

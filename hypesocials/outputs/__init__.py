@@ -7,7 +7,9 @@ Callers import from `hypesocials.outputs` only, never from its modules (guidelin
     Ledger          append-only outstanding-task ledger in the run folder (FR-203, FR-89)
     read_history    logs/trend_history.json, warn-and-start-fresh on corruption (FR-82/83)
     days_since_use  a trend's recency in days, for Select's window check (NFR-24)
-    record_trends   lock-guarded, pruned, atomic history update; False = went read-only (FR-254)
+    used_posts      per trend, the post ids used inside the window, for Collect (FR-153, NFR-24)
+    record_use      lock-guarded, pruned, atomic history update — trend entry and its post ids
+                    written together; False = went read-only (FR-82, FR-153, FR-254)
     set_latest      canonical output/latest.txt + best-effort latest/ junction (FR-254, NFR-20)
     resolve_latest  the newest run folder that packaged assets, or None (Phase 2 --publish)
 
@@ -33,9 +35,10 @@ from hypesocials.outputs.state import (
     Ledger,
     days_since_use,
     read_history,
-    record_trends,
+    record_use,
     resolve_latest,
     set_latest,
+    used_posts,
 )
 from hypesocials.outputs.gallery import write_gallery
 from hypesocials.outputs.packager import (
@@ -60,9 +63,10 @@ __all__ = [
     "Ledger",
     "days_since_use",
     "read_history",
-    "record_trends",
+    "record_use",
     "resolve_latest",
     "set_latest",
+    "used_posts",
     "AssetFolder",
     "PackagingError",
     "PUBLISHED_MARKER",

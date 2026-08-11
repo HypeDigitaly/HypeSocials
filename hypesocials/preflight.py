@@ -4,7 +4,8 @@ Module contract
 ---------------
 Purpose: one pass, run before any MCP session and any billable call, that either clears the run
 or refuses it with plain lines an operator can act on (FR-45–47, FR-117, FR-135, FR-138, FR-255,
-FR-281, FR-263, FR-103, 30 §8). Callers get a verdict object, never a scattering of booleans.
+FR-281, FR-263, FR-283, FR-103, 30 §8). Callers get a verdict object, never a scattering of
+booleans.
 
 Public API: `check()` · `Preflight` · `collect_secrets()` · `resolve_briefs()` ·
 `EXIT_PREFLIGHT`.
@@ -40,6 +41,7 @@ from pathlib import Path
 
 from hypesocials import briefs
 from hypesocials.config import Config
+from hypesocials.models import PlanEntry
 from hypesocials.plan import BriefRequest
 from hypesocials.prompts_engine import validate_template_set
 from hypesocials.render import UnknownProfileError, get_profile
@@ -139,7 +141,7 @@ def check(
     config: Config,
     *,
     action: str = "run",
-    entries: Sequence[object] = (),
+    entries: Sequence[PlanEntry] = (),
     briefs_errors: Sequence[str] = (),
 ) -> Preflight:
     """The whole pre-flight pass. Mutates `config` where the PRD says to normalize, not refuse.
@@ -150,7 +152,8 @@ def check(
             absent (FR-47) — both in place, both reported as warnings.
         action: `run` | `preview-analysis` | `preview-sources` | `list-monitors`; picks which
             secrets are genuinely required (FR-46, FR-202's `--list-monitors` row).
-        entries: the expanded plan, used only to size FR-255's disk footprint.
+        entries: the expanded plan — sizes FR-255's disk footprint and tells FR-283's supply
+            check which creatives need a trend at all.
         briefs_errors: unresolved-brief lines from `resolve_briefs()`, folded in so a caller
             reports one verdict rather than two.
 
@@ -167,6 +170,7 @@ def check(
 
     _check_secrets(config, action, errors, warnings)
     _check_sources(config, errors, warnings)
+    _check_supply(config, action, entries, errors, warnings)
     _check_profiles(config, action, errors)
     _check_node(config, errors)
     _clamp_reel_duration(config, warnings)
@@ -211,6 +215,36 @@ def _check_sources(config: Config, errors: list[str], warnings: list[str]) -> No
         return
     errors.append(f"sources.active: {named} is named for a future adapter and is not built yet — "
                   "pick virlo (D20/FR-135)")
+
+
+def _check_supply(config: Config, action: str, entries: Sequence[PlanEntry],
+                  errors: list[str], warnings: list[str]) -> None:
+    """FR-283: an active source that cannot supply one trend refuses HERE, before the money gate.
+
+    Empty `virlo_monitor_ids` makes Virlo arithmetically incapable of returning a trend (20 §3),
+    and that is knowable from the config alone — so it must never be discovered after the
+    operator has approved a spend. Grade follows what the run can still deliver: nothing at all
+    is an error; briefs plus dropped trend creatives is a warning, because 10 §10 ships those
+    briefs and exits 1. Two carve-outs are load-bearing: `--list-monitors` is the cure and must
+    keep working with no runnable plan at all (FR-251), and an all-override plan needs no trend
+    and is never refused (FR-144). `blend` briefs still need a trend, so only `override` exempts.
+    """
+    if action != "run" or "virlo" not in config.sources.active:
+        return
+    if any(str(monitor_id).strip() for monitor_id in config.sources.virlo_monitor_ids):
+        return
+    dropped = [entry.asset_id for entry in entries if entry.brief_influence != "override"]
+    if entries and not dropped:  # brief-only: no trend consumed, no Virlo session, nothing to refuse
+        return  # an EMPTY plan is not brief-only and falls through: it cannot deliver either
+    if len(dropped) < len(entries):  # some override brief survives: exit 1 with briefs, not exit 2
+        named = ", ".join(dropped[:3]) + (f" +{len(dropped) - 3} more" if len(dropped) > 3 else "")
+        warnings.append(f"sources.virlo_monitor_ids is empty, so {len(dropped)} creative(s) that "
+                        f"need a trend will be dropped and only your briefs ship: {named} — run "
+                        "run.bat --list-monitors to get your monitor ids")
+        return
+    errors.append("sources.virlo_monitor_ids is empty, so virlo cannot return a single trend and "
+                  "not one planned creative can be made — run run.bat --list-monitors to print "
+                  "your monitor ids, then paste them into your config")
 
 
 def _check_profiles(config: Config, action: str, errors: list[str]) -> None:
@@ -271,8 +305,7 @@ def _clamp_reel_duration(config: Config, warnings: list[str]) -> None:
 
 def _check_prices(config: Config, errors: list[str], warnings: list[str]) -> None:
     """The cap floor (30 §8) and FR-131's unpriced-reel report."""
-    prices = [price for price in config.models.price_per_unit.image.values() if price and price > 0]
-    floor = min(prices) if prices else 0.0
+    floor = config.min_single_creative_usd  # ONE derivation: the wizard warns with this same number
     if floor and config.run.spend_cap_usd < floor:
         errors.append(f"spend cap ${config.run.spend_cap_usd:.2f} is below the minimum "
                       f"single-creative cost of ${floor:.2f}, derived from "
