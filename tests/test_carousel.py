@@ -391,6 +391,37 @@ async def test_a_failed_slide_download_ships_an_incomplete_deck(
     assert packager.read_meta(folder.path)["missing_slide_numbers"] == [3]
 
 
+async def test_an_incomplete_deck_carries_the_run_to_exit_one(
+    tmp_path: Path, downloads: SimpleNamespace
+) -> None:
+    """The 2026-08-11 regression, end to end: the deck the carousel really packages must reach
+    FR-202's code 1 through the tag it really writes.
+
+    `output/20260811_233910_wikf` delivered 6/6 creatives and exited **0** ("everything planned was
+    delivered") while `Li_car_ai-trends-tracker_analyzed_05/meta.yaml` said `status: success`,
+    `slide_count: 4`, `missing_slide_numbers: [2]`, `degradations: ['text_trimmed', 'incomplete']`
+    — slide 2 lost to "timeout — no terminal state within 180s". FR-202: "a delivered carousel
+    shipped incomplete … a lost slide is a loss even when the deck ships".
+
+    The entry deliberately carries **no `skip_reason`** — the deck shipped, so `package()` marks the
+    folder instead — which is precisely why `decide_exit_code` has to read the degradation tags.
+    """
+    from hypesocials.runner import EXIT_OK, EXIT_PARTIAL, decide_exit_code
+
+    entry = make_entry(slides=5)  # the live deck: five planned, four delivered, slide 2 timed out
+    env = make_env(tmp_path, entry, texts=[f"line {n}" for n in range(5)])
+    downloads.fail_contains = "slide-2-"
+
+    record = await render_carousel(entry, env, make_folder(tmp_path, entry), submit=FakeSubmit())
+
+    assert record.status is AssetStatus.SUCCESS and record.slide_count == 4
+    assert record.missing_slide_numbers == [2]
+    assert entry.status is PlanEntryStatus.SUCCESS and entry.skip_reason is None
+    degradations = {record.asset_id: record.degradations}  # the map `runner._package` builds
+    assert decide_exit_code([entry]) == EXIT_OK, "the pre-fix answer, blind to the tags"
+    assert decide_exit_code([entry], degradations=degradations) == EXIT_PARTIAL
+
+
 async def test_a_deck_that_delivers_nothing_keeps_its_paid_artifacts(tmp_path: Path) -> None:
     """FR-74: the copy was paid for, so the folder, the caption and a failed meta all survive."""
     entry = make_entry(slides=3)

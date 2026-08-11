@@ -1023,6 +1023,18 @@ against the real payload shape, and `_brand_marks`' regex extraction. Budget a s
 
 **Dispatch: FLAT (CLAUDE.md §9a).** No trigger fires; no orchestrating parent. Conductor applies wire-in.
 
+⛔ **DEFECT IN THIS TABLE, found 2026-08-11 by the A4 live run and kept visible per this plan's own
+convention.** The table below assigned **A0–A8 and A10–A25**. **A9 was assigned to no wave at all** and was
+therefore never built — while its PRD amendments (A-P5, A-P6) *did* land, leaving `prds/10-pipeline.md:319`
+documenting an exit-1 clause the code could not produce (a CLAUDE.md rule 3 violation).
+
+It surfaced the only way it could: a real paid run delivered a carousel **missing slide 2** (lost to a Kie
+timeout), tagged it `incomplete`, and still **exited 0** announcing *"everything planned was delivered"* —
+against FR-202's explicit *"a lost slide is a loss even when the deck ships"*. Both halves were fixed in a
+follow-up wave after A4. **Lesson for Increment B's table: diff the task ids in §3.2 against the task ids in
+the wave table before executing. A task specified but unscheduled is invisible — no barrier fails for work
+nobody was asked to do.**
+
 | Wave | Tasks | Assignee | Path set | Barrier |
 |---|---|---|---|---|
 | **A0** | A-P3…A-P9 | `technical-writer` | `prds/**`, `spikes/RESULTS.md` | **Conductor re-reads every amended anchor against the file.** The last Wave-0 agent on this repo shipped a wrong FR, missed 5 edits and deleted an abort cause — reports are not evidence |

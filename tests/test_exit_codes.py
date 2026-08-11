@@ -9,13 +9,14 @@ requirement quoted in the docstring so an assertion can be checked without leavi
 
 from __future__ import annotations
 
-from hypesocials.models import PlanEntry, PlanEntryStatus
+from hypesocials.models import DegradationTag, PlanEntry, PlanEntryStatus
 from hypesocials.runner import (
     EXIT_INTERRUPTED,
     EXIT_NOTHING_USABLE,
     EXIT_OK,
     EXIT_PARTIAL,
     EXIT_PREFLIGHT,
+    _analysis_degraded_line,
     decide_exit_code,
 )
 
@@ -29,16 +30,17 @@ def entry(
     brief: str | None = None,
     skip_reason: str | None = None,
     fmt: str = "image",
+    variant: str = "analyzed",
 ) -> PlanEntry:
-    """The minimal `PlanEntry` this decision reads: status, skip_reason and nothing else."""
+    """The minimal `PlanEntry` this decision reads: status, variant, skip_reason, asset_id."""
     return PlanEntry(  # type: ignore[arg-type]
         order=order,
-        asset_id=f"Li_{fmt[:3]}_trend_analyzed_{order + 1:02d}",
+        asset_id=f"Li_{fmt[:3]}_trend_{variant}_{order + 1:02d}",
         creative_format=fmt,
         platform="linkedin",
         language="en",
         aspect_ratio="16:9",
-        variant="analyzed",
+        variant=variant,
         status=status,
         skip_reason=skip_reason,
         brief_name=brief,
@@ -175,6 +177,148 @@ def test_fr202_a_whole_plan_of_incomplete_decks_is_partial_not_ok() -> None:
 def test_fr202_empty_skip_reason_string_does_not_manufacture_a_loss() -> None:
     """`skip_reason=""` is "no reason recorded", not a loss — only a real one-line cause is."""
     assert decide_exit_code([entry(0, skip_reason=""), entry(1)]) == EXIT_OK
+
+
+# ------------------------------------------------- the partial deck, as the live run produced it
+
+
+def test_fr202_partial_deck_from_the_live_run_exits_one_on_its_incomplete_tag() -> None:
+    """The 2026-08-11 regression, in the exact shape `output/20260811_233910_wikf` wrote.
+
+    `Li_car_ai-trends-tracker_analyzed_05/meta.yaml` recorded `status: success`, `slide_count: 4`,
+    `missing_slide_numbers: [2]` and `degradations: ['text_trimmed', 'incomplete']` after slide 2
+    hit "timeout — no terminal state within 180s". There is **no `skip_reason`** on that entry —
+    the deck shipped, so `carousel.package()` marks the folder `incomplete` instead — and the run
+    exited 0 with "everything planned was delivered". FR-202 code 1: "a lost slide is a loss even
+    when the deck ships".
+    """
+    deck = entry(4, fmt="carousel")
+    others = [entry(index) for index in range(4)]
+    tags = {deck.asset_id: [DegradationTag.TEXT_TRIMMED, DegradationTag.INCOMPLETE]}
+
+    assert deck.status is PlanEntryStatus.SUCCESS and deck.skip_reason is None
+    assert decide_exit_code([*others, deck]) == EXIT_OK  # the pre-fix answer, without the tags
+    assert decide_exit_code([*others, deck], degradations=tags) == EXIT_PARTIAL
+
+
+def test_fr202_text_trimmed_alone_is_not_a_loss() -> None:
+    """`_DELIVERED_LOSS_TAGS` is `incomplete` alone. `text_trimmed` is FR-101's character budget
+    being honoured — the same live deck carried both, and treating every tag as a loss would make
+    exit 0 unreachable for any run whose copy came back one word long."""
+    clean = entry(0)
+    tags = {clean.asset_id: [DegradationTag.TEXT_TRIMMED, DegradationTag.HOOK_PATTERN_GENERIC]}
+    assert decide_exit_code([clean], degradations=tags) == EXIT_OK
+
+
+def test_fr202_incomplete_on_a_creative_that_did_not_deliver_changes_nothing() -> None:
+    """The clause is about a DELIVERED creative. A failed entry is already a loss by status, and
+    an unrelated record in the map must never promote a clean plan to partial."""
+    tags = {"some_other_asset": [DegradationTag.INCOMPLETE]}
+    assert decide_exit_code([entry(0), entry(1)], degradations=tags) == EXIT_OK
+
+
+def test_fr202_an_empty_degradation_map_is_the_old_behaviour_exactly() -> None:
+    """Every caller that passes nothing gets the pre-A9 decision — the tags only ever ADD a loss."""
+    entries = [entry(0), entry(1, fmt="carousel")]
+    assert decide_exit_code(entries) == EXIT_OK
+    assert decide_exit_code(entries, degradations={}) == EXIT_OK
+    assert decide_exit_code(entries, degradations={entries[1].asset_id: []}) == EXIT_OK
+
+
+# --------------------------------------------------- FR-252 / A9: fully-degraded analysis
+
+
+def test_fr252_every_analyzed_creative_carrying_analysis_missing_exits_one() -> None:
+    """10 §7 FR-202, amended 2026-08-11: "or every analyzed creative delivered carries
+    `analysis_missing`". 30 §5 FR-252: "the run ships direct-mode creatives per FR-12 … Exit code
+    1". Nothing else was lost — every entry is SUCCESS with no skip_reason — and it is still a 1."""
+    entries = [entry(index) for index in range(6)]
+    tags = {item.asset_id: [DegradationTag.ANALYSIS_MISSING] for item in entries}
+
+    assert decide_exit_code(entries) == EXIT_OK  # the same plan with its briefs intact
+    assert decide_exit_code(entries, degradations=tags) == EXIT_PARTIAL
+
+
+def test_fr252_some_analyzed_creatives_degraded_is_still_a_clean_zero() -> None:
+    """**EVERY, never "at least one"** (plan §2.3). At the observed ~1-in-7 degrade rate over six
+    analysis calls, "at least one" fires on ~60 % of healthy runs — exit 0 becomes unreachable and
+    the code stops carrying information. One, two, five of six degraded: still 0."""
+    entries = [entry(index) for index in range(6)]
+    for degraded_count in (1, 2, 5):
+        tags = {item.asset_id: [DegradationTag.ANALYSIS_MISSING]
+                for item in entries[:degraded_count]}
+        assert decide_exit_code(entries, degradations=tags) == EXIT_OK, degraded_count
+
+
+def test_fr252_zero_analyzed_creatives_is_never_fully_degraded() -> None:
+    """Zero of zero is not "every". A direct-mode run and a brief-only run (FR-144 emits override
+    briefs `direct`) have no analyzed creative for the clause to speak about, and reading vacuous
+    truth here would make exit 1 unreachable-in-reverse — every clean direct run would exit 1."""
+    direct = [entry(0, variant="direct"), entry(1, variant="direct")]
+    assert decide_exit_code(direct, degradations={}) == EXIT_OK
+    # even with the tag present on a direct creative, which no FR-12 path emits
+    assert decide_exit_code(
+        direct, degradations={direct[0].asset_id: [DegradationTag.ANALYSIS_MISSING]}) == EXIT_OK
+
+    briefs = [entry(0, brief="ai-audit-cta", variant="direct")]
+    assert decide_exit_code(briefs, degradations={}) == EXIT_OK
+
+
+def test_fr252_a_both_mode_pair_counts_only_its_analyzed_half() -> None:
+    """FR-3's A/B ships a `direct` sibling that never had an analysis call to lose. A run whose
+    every ANALYZED creative degraded is fully degraded even though half the plan is direct."""
+    analyzed = [entry(0), entry(2)]
+    direct = [entry(1, variant="direct"), entry(3, variant="direct")]
+    tags = {item.asset_id: [DegradationTag.ANALYSIS_MISSING] for item in analyzed}
+    assert decide_exit_code([*analyzed, *direct], degradations=tags) == EXIT_PARTIAL
+
+
+def test_fr252_an_undelivered_analyzed_creative_is_outside_the_denominator() -> None:
+    """The clause reads "every analyzed creative **delivered**". A skipped entry is already a loss
+    by status; counting it as a clean analysis would let one skip hide a fully-degraded batch."""
+    shipped = [entry(0), entry(1)]
+    lost = entry(2, PlanEntryStatus.FAILED, skip_reason="kie_timeout")
+    tags = {item.asset_id: [DegradationTag.ANALYSIS_MISSING] for item in shipped}
+    assert decide_exit_code([*shipped, lost], degradations=tags) == EXIT_PARTIAL
+
+
+# ------------------------------------------------------------- FR-252's summary line
+
+
+def test_fr252_summary_line_names_the_count_of_degraded_creatives() -> None:
+    """FR-252: "The summary line names the count of degraded creatives (e.g. 'all 6 creatives
+    shipped in direct mode due to analysis failure')"."""
+    entries = [entry(index) for index in range(6)]
+    tags = {item.asset_id: [DegradationTag.ANALYSIS_MISSING] for item in entries}
+
+    line = _analysis_degraded_line(entries, tags)
+
+    assert line.startswith("all 6 analyzed creative(s) shipped in direct mode")
+    assert "analysis_missing" in line and "FR-252" in line
+
+
+def test_fr252_summary_line_respects_fr286s_78_column_bound() -> None:
+    """FR-286: no console line exceeds 78 columns, and `→` is never emitted (`util.fit` names the
+    glyphs proven safe on legacy conhost; `—` is one, the arrow is not). Checked at a three-digit
+    count too, since the count is the one variable-width token in the sentence."""
+    for count in (1, 6, 128):
+        entries = [entry(index) for index in range(count)]
+        tags = {item.asset_id: [DegradationTag.ANALYSIS_MISSING] for item in entries}
+        line = _analysis_degraded_line(entries, tags)
+        assert line, count
+        for text in line.splitlines():
+            assert len(text) <= 78, (count, len(text), text)
+            assert "→" not in text
+
+
+def test_fr252_summary_line_is_silent_unless_the_degrade_was_total() -> None:
+    """Same trigger as the exit code, from the same helper — a partially degraded run is already a
+    1 for whatever else it lost, and FR-252 legislates only the fully-degraded sentence."""
+    entries = [entry(0), entry(1)]
+    assert _analysis_degraded_line(entries, {}) == ""
+    assert _analysis_degraded_line(
+        entries, {entries[0].asset_id: [DegradationTag.ANALYSIS_MISSING]}) == ""
+    assert _analysis_degraded_line([entry(0, variant="direct")], {}) == ""
 
 
 # --------------------------------------------------------------------------- reduced plan (FR-252)

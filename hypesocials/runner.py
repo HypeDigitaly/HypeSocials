@@ -81,6 +81,17 @@ EXIT_INTERRUPTED = 4  # SIGINT (FR-201)
 #: cycle) and re-exported here because `previews.py` reads it as `runner.LOGS_DIR`.
 _PROVISIONAL = "provisional-trend-"
 
+#: What `decide_exit_code()` reads off `generate.Report.records`: asset id -> its FR-73
+#: `degradations` tags. A plain mapping rather than the `Report` itself, so the exit-code contract
+#: stays a pure function of two facts (the plan, the tags) and can be exercised without a run.
+DegradationMap = Mapping[str, Sequence[DegradationTag]]
+
+#: FR-202 code 1's *"a delivered carousel shipped incomplete"*: the only degradation tag that, on
+#: its own, turns a delivered creative into a loss. Deliberately NOT the whole FR-73 vocabulary —
+#: the 2026-08-11 live run shipped `['text_trimmed', 'incomplete']` on one deck, and `text_trimmed`
+#: is a character budget being honoured (FR-101), not a creative that lost what it was asked for.
+_DELIVERED_LOSS_TAGS = frozenset({DegradationTag.INCOMPLETE})
+
 #: FR-286: the closing line spells its own exit code, so an operator never has to look one up.
 _EXIT_LEGEND = {
     EXIT_OK: "everything planned was delivered",
@@ -225,6 +236,7 @@ def decide_exit_code(
     preflight_refused: bool = False,
     trend_supply_failed: bool = False,
     plan_reduced: bool = False,
+    degradations: DegradationMap | None = None,
 ) -> int:
     """FR-202's five codes, in one place, so a scheduler reads the same meaning every time.
 
@@ -237,10 +249,28 @@ def decide_exit_code(
     only when it left nothing deliverable. If override-brief creatives shipped anyway the run is
     a partial success (`1`), and a brief-only plan that delivered everything is a plain `0`.
 
-    A **delivered creative that still carries a `skip_reason` is a loss, not a clean success** —
-    that is the partial carousel of FR-20/10 §10, which ships its finished slides and names the
-    missing ones. FR-202's code 1 covers "at least one creative was skipped, failed,
-    budget-trimmed or abandoned", and a deck missing slides is exactly that, so it exits 1.
+    **`degradations` is the FR-73 tag list per asset id** — `generate.Report.records` mapped to
+    `AssetRecord.degradations` — and it is passed rather than re-derived because two of FR-202's
+    code-1 clauses are simply not visible on a `PlanEntry`:
+
+    - *"or a delivered carousel shipped incomplete (missing slides, FR-20/§10 — a lost slide is a
+      loss even when the deck ships; v1.6.7)"*. A partial deck ends `SUCCESS` with **no**
+      `skip_reason`: `carousel.package()` marks `incomplete` on the folder and logs the missing
+      numbers, because the deck DID ship and `skip_reason` means "this creative did not". The live
+      run of 2026-08-11 (`20260811_233910_wikf`) proved the gap — one deck lost slide 2 to a Kie
+      timeout, wrote `slide_count: 4`, `missing_slide_numbers: [2]`, `degradations:
+      ['text_trimmed', 'incomplete']`, and the run still exited 0 saying "everything planned was
+      delivered". `_DELIVERED_LOSS_TAGS` is what closes it; a `skip_reason` on a delivered creative
+      (FR-248's credits latch stamps one) remains a loss exactly as before.
+    - *"or every analyzed creative delivered carries `analysis_missing`"* (amended 2026-08-11).
+      **EVERY, never "at least one".** An earlier draft said "at least one"; with six analysis
+      calls at the observed ~1-in-7 degrade rate that is P ≈ 60 %, so exit 0 would be unreachable
+      on a majority of healthy runs and the code would stop carrying information. Fully-degraded
+      only — the FR-252 run that shipped direct-mode creatives end to end.
+
+    Zero analyzed creatives is **not** "every analyzed creative degraded": a direct-mode or
+    brief-only plan (FR-144's override briefs are always `direct`) has nothing for the clause to
+    speak about, and reading vacuous truth here would make exit 0 unreachable in reverse.
 
     `plan_reduced` (`plan.Plan.notes`) is why this decision cannot be read off the entries alone:
     a count dropped *before* expansion — unpriced reels (FR-131), a format no platform allows
@@ -252,13 +282,39 @@ def decide_exit_code(
         return EXIT_PREFLIGHT
     if interrupted:
         return EXIT_INTERRUPTED
+    tags: DegradationMap = degradations if degradations is not None else {}
     delivered = [entry for entry in entries if entry.status is PlanEntryStatus.SUCCESS]
     if trend_supply_failed and not delivered:
         return EXIT_NOTHING_USABLE
     if not entries:
         return EXIT_PREFLIGHT  # a zero-creative plan never starts (FR-64)
-    whole = [entry for entry in delivered if not entry.skip_reason]
-    return EXIT_OK if len(whole) == len(entries) and not plan_reduced else EXIT_PARTIAL
+    whole = [entry for entry in delivered
+             if not entry.skip_reason
+             and not _DELIVERED_LOSS_TAGS.intersection(tags.get(entry.asset_id, ()))]
+    analyzed, analysis_degraded = _analysis_degrade_counts(delivered, tags)
+    fully_degraded = analyzed > 0 and analysis_degraded == analyzed
+    if len(whole) != len(entries) or plan_reduced or fully_degraded:
+        return EXIT_PARTIAL
+    return EXIT_OK
+
+
+def _analysis_degrade_counts(delivered: Sequence[PlanEntry],
+                             degradations: DegradationMap) -> tuple[int, int]:
+    """`(analyzed creatives delivered, how many of them carry analysis_missing)` — FR-252's count.
+
+    One helper, two callers, so the exit code and the summary line that explains it can never
+    disagree about what "every analyzed creative" meant on this run.
+
+    `variant` is the whole test of "analyzed": FR-3's both-mode pairs deliberately ship a `direct`
+    sibling that never had an analysis call to lose, and an `override` brief (FR-144) is emitted
+    `direct` for the same reason. Neither belongs in the denominator. An analyzed entry with no
+    record in the map counts as clean rather than degraded — the safe direction, since a missing
+    record is a bookkeeping gap, not evidence that the analysis call failed.
+    """
+    analyzed = [entry for entry in delivered if entry.variant == "analyzed"]
+    degraded = sum(1 for entry in analyzed
+                   if DegradationTag.ANALYSIS_MISSING in degradations.get(entry.asset_id, ()))
+    return len(analyzed), degraded
 
 
 # --------------------------------------------------------------------------- the pipeline
@@ -761,15 +817,22 @@ async def _package(session: _Session, entries: Sequence[PlanEntry], plan_estimat
     if any(entry.status is PlanEntryStatus.SUCCESS for entry in entries):
         await set_latest(session.config.output.dir, session.run_id, log=session.log)  # FR-254
 
+    # FR-202/FR-252 both read the FR-73 tags, not the plan alone: a partial carousel ships SUCCESS
+    # with no `skip_reason` (the deck DID ship — `carousel.package()` marks `incomplete` instead),
+    # and `analysis_missing` lives only on the record. Mapped once, used by the line and the code.
+    degradations: DegradationMap = {asset_id: record.degradations
+                                    for asset_id, record in report.records.items()}
     summary = session.budget.summary(entries, plan_estimate)
     session.say(_spend_table(summary, session.counters))
     if credits_line:
         session.say(credits_line)
+    if degraded_line := _analysis_degraded_line(entries, degradations):  # FR-252's named count
+        session.say(degraded_line)
     for note in plan_notes:  # FR-252: what was dropped is repeated in the end-of-run summary
         session.say(f"dropped before generation: {note}")
     code = decide_exit_code(entries, interrupted=session.control.stop.is_set(),
                             trend_supply_failed=trend_supply_failed,
-                            plan_reduced=bool(plan_notes))
+                            plan_reduced=bool(plan_notes), degradations=degradations)
     session.say(_final_line(session, entries, summary, code))
     # FR-232: one optional 1–3 rating per run, asked after the summary. `menu` suppresses it under
     # `--yes` and with no console attached, so nothing unattended ever waits on it.
@@ -837,6 +900,34 @@ def _credits_exhausted_line(session: _Session, entries: Sequence[PlanEntry],
     return (f"OpenRouter returned 402 — {CREDITS_EXHAUSTED_REASON}. Every later LLM call was "
             f"skipped rather than retried (FR-248); {len(hit)} creative(s) were lost or shipped "
             "degraded under it. This is NOT a Kie.ai render 402 (FR-167) — top up OpenRouter.")
+
+
+def _analysis_degraded_line(entries: Sequence[PlanEntry], degradations: DegradationMap) -> str:
+    """FR-252: when EVERY analysis call failed, the summary says so and names the count. `""` else.
+
+    30 §5's row reads: *"The run ships direct-mode creatives per FR-12 — all creatives degrade to
+    analyzed→direct fallback and are marked `analysis_missing`. The summary line names the count of
+    degraded creatives … Exit code 1 (partial success)."* The count is the point: `analysis_missing`
+    is a per-asset badge in the gallery and a tag in `meta.yaml`, so without this line an operator
+    reading the console sees six delivered creatives and no hint that not one of them was steered
+    by a style brief — the analyzed half of the run silently became the direct half.
+
+    Same trigger as `decide_exit_code`'s clause, from the same helper, so the sentence and the exit
+    code can never disagree. Nothing is printed on the far more common partial degrade: that run is
+    already a `1` for whatever else it lost, and a line about "3 of 6" would compete with the spend
+    table for the operator's attention while naming a condition FR-252 does not legislate.
+
+    FR-286: every line ≤78 columns, ASCII plus the `—` that `util.fit` proves safe on conhost.
+    """
+    delivered = [entry for entry in entries if entry.status is PlanEntryStatus.SUCCESS]
+    analyzed, degraded = _analysis_degrade_counts(delivered, degradations)
+    if not analyzed or degraded != analyzed:
+        return ""
+    return "\n".join([
+        f"all {degraded} analyzed creative(s) shipped in direct mode — every",
+        "  analysis call failed, so each one carries analysis_missing (FR-12);",
+        "  fully-degraded analysis is a run failure, so this run exits 1 (FR-252)",
+    ])
 
 
 def _metered(session: _Session) -> Any:
@@ -1302,5 +1393,5 @@ async def _cleanup(session: _Session) -> None:
 
 __all__ = [
     "Control", "EXIT_INTERRUPTED", "EXIT_NOTHING_USABLE", "EXIT_OK", "EXIT_PARTIAL",
-    "EXIT_PREFLIGHT", "LOGS_DIR", "decide_exit_code", "list_monitors", "run",
+    "EXIT_PREFLIGHT", "LOGS_DIR", "DegradationMap", "decide_exit_code", "list_monitors", "run",
 ]
