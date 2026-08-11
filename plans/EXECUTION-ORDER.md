@@ -56,11 +56,13 @@ If the paid plan is activated, the deadline disappears but the order stays corre
 This is the smallest set that delivers the largest measured improvement, and the only set that genuinely
 needs the live API.
 
-Paste after `/xecutor`:
+**Paste this entire block as one message** — the `/xecutor` command is line 1. Do not paste the
+surrounding triple backticks.
 
 ```
-Execute plans/xmasterplan-virlo-throughput-and-fidelity.md, Increment A ONLY, waves A0 through A2,
-plus the fixture capture below. Do NOT start A2', A2'' or A2''' this session.
+/xecutor Execute plans/xmasterplan-virlo-throughput-and-fidelity.md — Increment A ONLY, waves A0
+through A2, plus the fixture capture below. Do NOT start A2', A2'' or A2''' this session.
+Read plans/EXECUTION-ORDER.md first for the standing rules that apply to every session.
 
 Scope this session:
   Wave A0  - PRD amendments A-P3..A-P12 (technical-writer). A-P1/A-P2 are ALREADY APPLIED to
@@ -108,7 +110,7 @@ diagnose before continuing.
 Fully offline except the final check.
 
 ```
-Execute plans/xmasterplan-virlo-throughput-and-fidelity.md, Increment A, waves A2' through A3.
+/xecutor Execute plans/xmasterplan-virlo-throughput-and-fidelity.md — Increment A, waves A2' through A3.
 Session 1 is complete; do not redo it. Use tests/fixtures/virlo/ instead of live calls.
 
   Wave A2'  - A11 (brand.accent -> {{brand_accent}}), A12 (blank-subject bug on override-brief
@@ -148,7 +150,7 @@ Session 3 until A20 is green.
 **Goal: replace abstraction with transposition. This is where the robotic register actually gets fixed.**
 
 ```
-Execute plans/xmasterplan-copy-voice-transposition.md, waves V0 through V1d. Stop before V1e.
+/xecutor Execute plans/xmasterplan-copy-voice-transposition.md — waves V0 through V1d. STOP before V1e.
 Increment A is complete. Both operator decisions are locked in section 2: the `voice` influence mode
 is IN (D-1), and V1+V2 ship together (D-2).
 
@@ -193,7 +195,7 @@ the ANALYST as well? Without it the style brief loses input it has today. Ask be
 **Goal: verify the voice fix actually held, then prove it on real output.**
 
 ```
-Execute plans/xmasterplan-copy-voice-transposition.md, waves V2a through V1g.
+/xecutor Execute plans/xmasterplan-copy-voice-transposition.md — waves V2a through V1g.
 
   Wave V2a  - the audit tier in copywrite.py: CopyAudit, echo-before-drift order, EXACTLY ONE
               re-ask, CopyResult sets, _to_copyset.
