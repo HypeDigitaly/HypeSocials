@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -129,6 +130,7 @@ class _Session:
     llm: LLMClient | None = None
     render_ready: bool = False
     virlo_contacted: bool = False  # FR-286: Virlo meters separately, so the total must say so
+    counters: sources.Counters = field(default_factory=sources.Counters)  # FR-155's funnel
     video_refs: video_ref.Prefetch | None = None  # D23 chain, launched alongside Analyze
     campaign_briefs: dict[str, Brief] = field(default_factory=dict)  # D26, by brief name
     brand: sources.BrandContext = field(default_factory=sources.BrandContext)  # FR-34/36
@@ -319,9 +321,20 @@ async def _pipeline(session: _Session, overrides: Sequence[str]) -> int:
     live = [entry for entry in live if entry.status is PlanEntryStatus.PENDING]
 
     by_key = {trend.history_key: trend for trend in trends}
+    # FR-155, §10 rule 2 place 1: after Select, before Analyze — the last moment Ctrl+C is free.
+    # Unconditional, unlike `_restate`: "everything worked" is the answer the operator came for.
+    _record_render_forecast(session, live, by_key, dropped=len(assignment.dropped))
+    session.say(_funnel_block(session.counters))
+    # A24: the funnel says how much material there was; this says WHICH posts it is. Same place,
+    # same reason — the last moment Ctrl+C is free — and gated to the strongest three so
+    # Increment B's 9–22 trends cannot bury the rollup above it.
+    if inventory := _sources_block(_assigned_trends(live, by_key)):
+        session.say(inventory)
     _launch_video_refs(session, live, by_key)  # D23: overlaps Analyze, never the reel's critical path
     _store_references(session, by_key, live)
     briefs_by_trend = await _analyze(session, live, by_key)
+    if analysis := _brief_block(briefs_by_trend, by_key):  # A24: what our AI made of them
+        session.say(analysis)
     copy_result = await _write(session, live, by_key, briefs_by_trend)
     report, attached = await _create(session, resolved.entries, live, by_key, briefs_by_trend,
                                      copy_result)
@@ -430,7 +443,7 @@ def _role_settings(config: Config, role: str) -> RoleSettings:
 # --------------------------------------------------------------------------- stages
 
 
-async def _collect(session: _Session, *, fetch_trends: bool = True) -> list[TrendItem]:
+async def _collect(session: _Session, *, fetch_trends: bool = True) -> sources.TrendFeed:
     """Collect: every active adapter through the bounded Virlo MCP session pool (20 §3), plus the
     two optional channels riding this stage — the local Inspiration pool (D13) and Notion brand
     context (FR-34/36, fetched once). Each gates itself: no folders scans nothing, and
@@ -443,7 +456,7 @@ async def _collect(session: _Session, *, fetch_trends: bool = True) -> list[Tren
     if not fetch_trends:
         session.say("brief-only plan: every creative is an override brief, so no trend\n"
                     "is consumed and no Virlo session is opened")
-        return []
+        return sources.TrendFeed()
     # FR-7/FR-153: the adapter, not Select, chooses which reference set a trend arrives with, so
     # the used-post map has to be read BEFORE Collect. Post ids are globally unique, so one flat
     # union over the window is the whole input — no per-trend split.
@@ -460,6 +473,7 @@ async def _collect(session: _Session, *, fetch_trends: bool = True) -> list[Tren
                      f"the trend source could not be reached ({type(exc).__name__}: {exc}) — "
                      "nothing was asked for, so no window change can help. Check VIRLO_API_KEY "
                      "and that `python -m hypesocials.virlo_mcp` starts") from exc
+    session.counters = trends.counters  # FR-155: the funnel travels on the fetch, not on a global
     session.log.event("collect_complete", f"{len(trends)} trend(s) collected",
                       duration_ms=watch.elapsed_ms, trends=[t.history_key for t in trends])
     return trends
@@ -470,6 +484,11 @@ def _select(session: _Session, trends: list[TrendItem],
     """Select + assign, then the FR-8 ceiling check and 10 §10's four-cause abort message."""
     config = session.config
     selection = plan.select(trends, config, read_history(LOGS_DIR, session.log))
+    # FR-155: Select owns these three buckets, so Select is where the funnel learns them. The
+    # adapter can count material; only this stage can count verdicts.
+    session.counters.record_selection(eligible=len(selection.eligible),
+                                      excluded=len(selection.excluded),
+                                      unusable=len(selection.unusable))
     for verdict in selection.verdicts:
         session.log.event("trend_verdict", f"{verdict.trend.name}: {verdict.label}",
                           trend=verdict.trend.history_key, strength=verdict.trend.strength,
@@ -549,45 +568,79 @@ def _launch_video_refs(session: _Session, live: Sequence[PlanEntry],
 
 def _store_references(session: _Session, trends: dict[str, TrendItem],
                       live: Sequence[PlanEntry]) -> None:
-    """Copy each assigned trend's reference set into `refs/` so the gallery can compare (FR-71/150)."""
-    for key in dict.fromkeys(entry.trend_key for entry in live if entry.trend_key):
-        trend = trends.get(key or "")
-        urls = trend.reference_groups[0] if trend and trend.reference_groups else []
-        for index, path in enumerate(sources.reference_paths(urls), start=1):
-            try:
-                save_reference(session.run_dir, key or "", path.read_bytes(), index=index,
-                               suffix=path.suffix if path.suffix != ".img" else ".jpg")
-            except OSError as exc:
-                session.log.warn("reference_copy_failed", f"{key}: {exc}", trend=key)
+    """Copy every reference set this run ATTACHES into `refs/`, so the gallery can compare (FR-71/150).
+
+    Since FR-91's rotation (amended 2026-08-11) sibling creatives on one trend attach *different*
+    groups, so copying `reference_groups[0]` alone would show the operator one set while six
+    creatives rendered from six — the comparison FR-71/150 exists for would be wrong for five of
+    them. Every distinct (trend, group) pair the plan actually uses is copied.
+
+    The index runs CONTINUOUSLY across a trend's groups rather than restarting per group.
+    `packager.save_reference` names files `image_<index>` inside a per-trend folder, so a
+    per-group restart would have each group overwrite the previous one's `image_1` and leave only
+    the last set on disk — a silent data loss dressed as a working gallery.
+    """
+    used: dict[str, list[int]] = {}
+    for entry in live:
+        if entry.trend_key:
+            groups = used.setdefault(entry.trend_key, [])
+            index = sources.reference_group_index(trends.get(entry.trend_key), entry.trend_reuse_index)
+            if index not in groups:
+                groups.append(index)
+    for key, group_indexes in used.items():
+        trend = trends.get(key)
+        index = 0
+        for group_index in sorted(group_indexes):
+            for path in sources.reference_paths(sources.reference_group(trend, group_index)):
+                index += 1
+                try:
+                    save_reference(session.run_dir, key, path.read_bytes(), index=index,
+                                   suffix=path.suffix if path.suffix != ".img" else ".jpg")
+                except OSError as exc:
+                    session.log.warn("reference_copy_failed", f"{key}: {exc}", trend=key)
 
 
 async def _analyze(session: _Session, live: Sequence[PlanEntry],
                    trends: dict[str, TrendItem]) -> dict[str, StyleBrief]:
-    """ANALYZE: one Sonnet 5 vision call per distinct assigned trend, all concurrent (FR-9).
+    """ANALYZE: one Sonnet 5 vision call per distinct (trend, reference group) pair (FR-9/FR-12).
 
-    The analyst sees **every** downloaded group, bounded by `media_download_cap`: FR-91 makes that
-    cap "the primary per-trend cap [governing] … how many images enter the analysis call", while
-    `reference_images_per_job` (group 0 alone) governs only what a RENDER job attaches. Group 0
-    alone would show the analyst 3 images where FR-9 promises 6 — and the rest are already on disk.
+    **Each brief sees only the group its creatives attach** (amended 2026-08-11). The previous
+    rule pooled every downloaded group into one call, on the argument that group 0 alone would
+    show the analyst 3 images where `media_download_cap` allows 6. That argument was written when
+    there was ONE brief per trend; under FR-91's rotation it inverts — pooling six groups produces
+    a brief describing pictures the creative is not attaching, which is precisely the mismatch
+    FR-9's amended unit exists to remove. FR-93's "about six images maximum per call" is a
+    ceiling, not a floor.
+
+    The pairs are read off the live plan, so a group no creative will attach is never analysed and
+    never billed.
     """
-    wanted = {entry.trend_key for entry in live
+    wanted = {(entry.trend_key, entry.trend_reuse_index) for entry in live
               if entry.variant == "analyzed" and entry.trend_key in trends}
     if not wanted or _halt(session, "analysis"):
-        return {}
-    subjects = [trends[key] for key in wanted if key]
-    cap = max(1, session.config.sources.media_download_cap)
-    images = {t.history_key: sources.reference_paths(
-        list(dict.fromkeys(url for group in t.reference_groups for url in group))[:cap])
-        for t in subjects}
+        return analyze.BriefBook()
+    # FR-93 bounds ONE analysis call at ~6 images; `media_download_cap` bounds the whole trend's
+    # DOWNLOAD (18 since 2026-08-11, so rotation has a group per reuse). Those were the same
+    # number until the cap was raised, and conflating them now would send an 18-panel deck to a
+    # single vision call.
+    per_call = max(1, min(session.config.sources.media_download_cap, analyze.ANALYSIS_MAX_IMAGES))
+    subjects = [(trends[key], reuse) for key, reuse in sorted(wanted) if key]
+    images = {
+        sources.brief_key(trend.history_key, trend, reuse):
+            sources.reference_paths(sources.reference_group(trend, reuse))[:per_call]
+        for trend, reuse in subjects}
     watch = Stopwatch()
     briefs = await analyze.style_briefs(
         subjects, images, call=_metered(session), engine=session.engine,
         niche_descriptor=session.config.niche.as_text(),
-        max_images=cap, log=session.log)
+        max_images=per_call, log=session.log)
     for key, brief in briefs.items():  # NFR-5/FR-92: the FULL brief is logged, never injected
         session.log.event("style_brief", f"style brief for {key} (FR-92)", verbose_only=True,
-                          trend=key, hook_pattern=brief.hook_pattern, brief=asdict(brief))
-    session.log.event("analysis_complete", f"{len(briefs)} of {len(subjects)} style brief(s)",
+                          trend=brief.trend_key, reference_group=brief.reference_group_index,
+                          hook_pattern=brief.hook_pattern, brief=asdict(brief))
+    session.log.event("analysis_complete",
+                      f"{len(briefs)} of {len(subjects)} style brief(s) "
+                      f"across {len({t.history_key for t, _ in subjects})} trend(s)",
                       duration_ms=watch.elapsed_ms, briefs=sorted(briefs))
     return briefs
 
@@ -607,10 +660,17 @@ async def _write(session: _Session, live: Sequence[PlanEntry], trends: dict[str,
         conventions={name: config.platform(name).conventions for name in config.run.platforms},
         onimage_languages={entry.asset_id: config.onimage_language_for(entry.platform)
                            for entry in live},
+        # A16: the `.txt` files paired with the operator's own Inspiration images — proven,
+        # human-written posts. `session.pool` is loaded a full stage earlier (Collect), which is
+        # why the channel rides the pool rather than `apply_mix`'s render-side decision. Copy call
+        # only: no render role can resolve `{{inspiration_exemplars}}` (FR-261's allowlist).
+        copy_exemplars=session.pool.exemplar_texts,
         niche_descriptor=config.niche.as_text(), log=session.log)
     session.log.event("copy_complete", f"copy for {len(result.copy)} creative(s)",
                       duration_ms=watch.elapsed_ms, degraded=sorted(result.degraded),
-                      trimmed=sorted(result.trimmed))
+                      trimmed=sorted(result.trimmed),
+                      tags={asset_id: [tag.value for tag in tags]
+                            for asset_id, tags in sorted(result.tags.items())})
     return result
 
 
@@ -640,11 +700,20 @@ async def _create(session: _Session, entries: Sequence[PlanEntry], live: Sequenc
     env = generate.Env(
         config=session.config, run_dir=session.run_dir, engine=session.engine,
         budget=session.budget, log=session.log, ledger=session.ledger, trends=mix.trends,
-        style_briefs=briefs, copy=copy_result.copy, copy_degraded=copy_result.degraded,
-        copy_trimmed=copy_result.trimmed, niche_descriptor=session.config.niche.as_text(),
+        style_briefs=briefs, copy=copy_result.copy, copy_tags=copy_result.tags,
+        niche_descriptor=session.config.niche.as_text(),
+        # A15: `visual_world` ALONE, for the four gpt-image-2 roles. `niche_descriptor` above is
+        # copy-side (it names the audience); this is the render-side half, and without it the
+        # operator's standing art direction reached `direct`-mode images not at all.
+        niche_visual_world=session.config.niche.visual_world,
         local_refs=_local_refs(session, live, mix.local_refs),
-        campaign_briefs=session.campaign_briefs, brand_accent=session.brand.accent,
-        brand_product_nouns=session.brand.product_nouns,
+        campaign_briefs=session.campaign_briefs,
+        # FR-109/A11: Notion wins when it is energised; the config's own `niche.brand` is the
+        # fallback, and on this workstation it is the only source that ever fires — Notion is
+        # `off` in every shipped config, so `{{brand_accent}}` had been blank on every run made.
+        brand_accent=session.brand.accent or session.config.niche.brand.accent,
+        brand_product_nouns=(session.brand.product_nouns
+                             or session.config.niche.brand.product_nouns),
         llm_call=_metered(session) if checking else None, video_refs=session.video_refs,
         stop=session.control.stop, deadline=session.deadline)
     watch = Stopwatch()
@@ -693,7 +762,7 @@ async def _package(session: _Session, entries: Sequence[PlanEntry], plan_estimat
         await set_latest(session.config.output.dir, session.run_id, log=session.log)  # FR-254
 
     summary = session.budget.summary(entries, plan_estimate)
-    session.say(_spend_table(summary))
+    session.say(_spend_table(summary, session.counters))
     if credits_line:
         session.say(credits_line)
     for note in plan_notes:  # FR-252: what was dropped is repeated in the end-of-run summary
@@ -862,18 +931,307 @@ def _launch_summary(session: _Session, overrides: Sequence[str]) -> str:
     ])
 
 
+def _record_render_forecast(session: _Session, live: Sequence[PlanEntry],
+                            trends: Mapping[str, TrendItem], *, dropped: int) -> None:
+    """The render end of FR-155's funnel: how much Virlo material the planned jobs will attach.
+
+    Computed here rather than read back from Create, because the funnel prints BEFORE any spend —
+    its job is to let an operator abort a bad one. It mirrors `inspiration.apply_mix()`'s own rule
+    (FR-91): `exclusive` replaces the trend set outright, `minority` keeps one slot for the
+    inspiration image, `off` leaves the trend set whole. One count per creative, so the block can
+    say "3 trend ref(s)" when they agree and "2-3" when they do not, rather than an average
+    nobody could act on.
+
+    A creative is counted as one job. A deck's later slides and a reel's clip are extra
+    submissions this stage cannot know about yet, so the number is the floor, not the ceiling.
+    """
+    pool, config = session.pool, session.config
+    per_job = max(1, config.sources.reference_images_per_job)
+    exclusive = pool.active and pool.mix == "exclusive"
+    inspiration = (per_job if exclusive else 1) if pool.active else 0
+    keep = 0 if exclusive else max(0, per_job - (1 if pool.active else 0))
+    counts = [min(len(sources.reference_group(trends.get(entry.trend_key or ""),
+                                              entry.trend_reuse_index)), keep)
+              for entry in live]
+    session.counters.record_render(
+        jobs=len(live), dropped=dropped, trend_refs=counts, inspiration_each=inspiration,
+        trends_used=len({entry.trend_key for entry in live if entry.trend_key}))
+
+
+#: FR-286's console width, and the label column every funnel row is laid out on.
+_FUNNEL_WIDTH, _FUNNEL_LABEL = 78, 8
+
+
+def _funnel_row(label: str, *clauses: str, sep: str = "; ") -> list[str]:
+    """One funnel row, packed onto as many ≤78-char lines as its clauses need.
+
+    `sep` is the join between clauses that share a line: `; ` reads as "and also" for the funnel's
+    independent counts, `·` as "the same thing, described further" for A24's per-trend detail
+    rows. Both are on `util.fit`'s proven-safe glyph list; `→` is NOT, and must never be emitted.
+
+    Trend names never reach this block — they are the one unbounded token — so in practice every
+    row is a single line and the wrap never fires. It exists for the arithmetic edge: a monitor
+    that returns five-digit counts, or a motion clause carrying a third tier, would otherwise push
+    the plan's own 76-char example past FR-286's limit. A clause is never split, so a wrapped row
+    reads as its own continuation rather than as a cut sentence, and `fit()` is the last resort
+    for a single clause that cannot fit at all.
+    """
+    head = f"  {label:<{_FUNNEL_LABEL}}"
+    room = _FUNNEL_WIDTH - len(head)
+    packed: list[str] = []
+    for clause in (text for text in clauses if text):
+        if packed and len(packed[-1]) + len(sep) + len(clause) <= room:
+            packed[-1] = f"{packed[-1]}{sep}{clause}"
+        else:
+            packed.append(clause)
+    return [f"{head if index == 0 else ' ' * len(head)}{fit(line, room)}"
+            for index, line in enumerate(packed)]
+
+
+def _funnel_block(counters: sources.Counters) -> str:
+    """FR-155's Virlo funnel — one run-wide rollup, printed unconditionally in three places.
+
+    Input volume, qualification, choice, downloads, Select's verdicts and what the planned jobs
+    will attach, as six labelled rows under one header. A pure function of `Counters` so the paid
+    run and both preview modes print the identical block from the identical numbers (FR-139),
+    with no second implementation to drift.
+
+    Two rules are load-bearing rather than cosmetic:
+
+    - **Zero prints.** Every stage appears whether or not it lost anything, because the four
+      degradation events this replaces fired in none of the archived runs and an operator cannot
+      tell a healthy zero from a dead counter. The one exception is the shape below, where Virlo
+      returned nothing at all: printing "0 video(s) + 0 slideshow(s); 0 duplicate row(s) dropped"
+      would dress a failed fetch as a clean funnel, so that case says so in words.
+    - **The vocabularies do not mix.** Input words (video, slideshow, panel, frame, post, set) sit
+      on `input`/`sets`/`chosen`/`images`; output words (job) appear only on `render`. There is no
+      arrow from an input word to an output word anywhere in this block, because no Virlo
+      slideshow is ever rendered — it lends the trend carousel *affinity* (FR-90) and nothing more.
+
+    ASCII only apart from the header's em-dash: `util.fit` names `·`, `—`, `…` and `←` as the
+    glyphs proven safe on legacy conhost, and `→` is not one of them.
+    """
+    tally = counters
+    # ⚠️ KNOWN, DELIBERATELY UNFIXED (2026-08-11, found by the A3 test wave): on a brief-only plan
+    # `_collect(fetch_trends=False)` returns before `session.counters` is bound, so this prints the
+    # zero-material sentence "Virlo returned no video and no slideshow" for a run where Virlo was
+    # never contacted at all. Cosmetic — the header directly above already reads `0 monitor(s)
+    # asked` — but it does assert something that did not happen. The clean fix is at the CALL SITE
+    # (a brief-only run should skip the block or pass a flag), not a `monitors_asked == 0` guard
+    # here: an untouched `Counters` is indistinguishable from a populated one whose caller never
+    # set that field, and guarding on it silently blanks legitimate blocks.
+    lines = [f"Virlo funnel — {tally.monitors_asked} monitor(s) asked, "
+             f"{tally.rows_per_call} row(s) per call, {tally.monitors_failed} failed"]
+    if tally.posts_raw == 0:
+        lines += _funnel_row("input", "Virlo returned no video and no slideshow — "
+                                      "no trend material")
+    else:
+        motion = tally.motion
+        motion_clause = (f"motion {motion['fresh_same_creator']} same-creator, "
+                         f"{motion['fresh']} fresh"
+                         + (f", {motion['repeat']} repeated" if motion["repeat"] else "")
+                         + (f", {motion['none']} without" if motion["none"] else ""))
+        lines += _funnel_row(
+            "input", f"{tally.videos_raw} video(s) + {tally.slideshows_raw} slideshow(s)",
+            f"{tally.duplicates_dropped} duplicate row(s) dropped")
+        lines += _funnel_row(
+            "sets", f"{tally.sets_qualified} coherent set(s) qualified",
+            f"{tally.sets_thin} too thin (<{tally.min_panels} panels / <{tally.min_frames} frames)")
+        lines += _funnel_row(
+            "chosen", f"{tally.chosen_fresh} fresh, {tally.chosen_repeated} repeated, "
+                      f"{tally.chosen_last_resort} last-resort", motion_clause)
+        lines += _funnel_row(
+            "images", f"{tally.images_downloaded} of {tally.images_attempted} downloaded, "
+                      f"{tally.images_dead} dead URL",
+            (f"{tally.trends_text_only} trend{'' if tally.trends_text_only == 1 else 's'} "
+             "fell to text-only" if tally.trends_text_only
+             else f"cap {tally.download_cap} per trend"))
+    if tally.verdict_seen:
+        lines += _funnel_row(
+            "verdict", f"{tally.eligible} eligible, {tally.excluded_by_history} excluded by "
+                       f"history, {tally.unusable} unusable, {tally.trends_text_only} without images")
+    if tally.render_seen:
+        lines += _funnel_row("render", _funnel_attachment(tally),
+                             (f"{tally.jobs_dropped} dropped, no trend left"
+                              if tally.jobs_dropped else ""))
+    return "\n".join(lines)
+
+
+def _funnel_attachment(tally: sources.Counters) -> str:
+    """The `render` row's first clause: jobs, and what each of them will attach."""
+    refs = (str(tally.trend_refs_min) if tally.trend_refs_min == tally.trend_refs_max
+            else f"{tally.trend_refs_min}-{tally.trend_refs_max}")
+    return (f"{tally.jobs} job(s) will attach {refs} trend ref(s)"
+            + (f" + {tally.inspiration_each} inspiration" if tally.inspiration_each else "")
+            + (" each" if tally.jobs > 1 else ""))
+
+
+#: A24's volume guard. Increment B splits one agent into 9 themes, so a per-trend detail section
+#: would print 9–22 blocks and bury the rollup an operator reads first. A paid run gets full
+#: detail for the strongest three and a one-line count of the rest; the two preview modes pass
+#: `limit=None`, because printing every returned trend IS what they exist for (FR-139/140).
+_DETAIL_TRENDS = 3
+#: The column A24's rows and their bare-URL continuations align on — the same head `_funnel_row`
+#: builds, so a URL line sits under its row's text rather than under the label.
+_DETAIL_INDENT = " " * (2 + _FUNNEL_LABEL)
+
+
+def _detail_head(kind: str, name: str) -> str:
+    """`Sources — <trend>` / `Brief — <trend>`, bounded to FR-286's 78 columns."""
+    return f"{kind} — {fit(name, _FUNNEL_WIDTH - len(kind) - 3)}"
+
+
+def _assigned_trends(live: Sequence[PlanEntry],
+                     trends: Mapping[str, TrendItem]) -> list[TrendItem]:
+    """The trends this plan will actually spend on, deduplicated in plan order (A24).
+
+    Deliberately not every collected trend: the detail section answers "which posts are behind
+    the creatives I am about to pay for", and a trend Select judged eligible but assignment never
+    used is not behind any of them. `_sources_block` re-orders by strength.
+    """
+    keys = dict.fromkeys(entry.trend_key for entry in live if entry.trend_key)
+    return [trends[key] for key in keys if key in trends]
+
+
+def _sources_block(trends: Sequence[TrendItem], *,
+                   limit: int | None = _DETAIL_TRENDS) -> str:
+    """A24, half one: WHICH posts these are — one block per trend, strongest first.
+
+    The operator asked to see the inventory behind a run: what kind of post won, how big it was,
+    what the source's own analyser called it, and the permalink to go and look. None of it is
+    visible today without reading `events.jsonl`.
+
+    **Printing the competitor's hooks here is deliberate and is not what A20 forbids.** A20 stops
+    the ENGINE reproducing those strings into a creative; showing them to the operator is the
+    entire point of "which posts these are". They are quoted so it is unambiguous that they are
+    someone else's words being reported, not ours being proposed.
+
+    Rows are emitted only when their fields carry something, so a text-only trend or a monitor
+    whose rows arrived without Virlo's `intelligence` block simply prints fewer lines rather than
+    a row with nothing after the label.
+    """
+    ordered = sorted(trends, key=lambda item: (-item.strength, item.name))
+    shown = ordered if limit is None else ordered[:limit]
+    lines: list[str] = []
+    for trend in shown:
+        if lines:  # one blank line between blocks — at 3+ trends they run together otherwise
+            lines.append("")
+        lines.append(_detail_head("Sources", trend.name))
+        lines += _funnel_row("chosen", *_chosen_clauses(trend), sep=" · ")
+        if trend.virlo_url:  # FR-286 carve-out (a): a permalink has no word boundary to wrap on
+            lines.append(f"{_DETAIL_INDENT}{trend.virlo_url}")
+        lines += _funnel_row("about", fit(trend.why_it_works, 60),
+                             _join(trend.emotional_tones), _join(trend.tactics), sep=" · ")
+        lines += _funnel_row("winners", f"{trend.total_views:,} views total",
+                             f"median {trend.median_views:,}" if trend.median_views else "",
+                             f"{len(trend.chosen_post_ids)} post(s) chosen"
+                             if trend.chosen_post_ids else "", sep=" · ")
+        lines += _funnel_row("hooks", *(f'"{fit(hook, 56)}"' for hook in _detail_hooks(trend)),
+                             _join(trend.hook_types), _join(trend.visual_hook_types), sep=" · ")
+        if trend.winning_video_url:  # absence is already a run-wide clause on the funnel's
+            lines += _funnel_row(     # `chosen` row; repeating it per trend is noise on an
+                "motion", _motion_clause(trend), sep=" · ")  # image-only plan
+    if limit is not None and len(ordered) > limit:
+        lines.append("")
+        lines.append(f"  + {len(ordered) - limit} more trend(s), see events.jsonl")
+    return "\n".join(lines)
+
+
+def _chosen_clauses(trend: TrendItem) -> tuple[str, ...]:
+    """The `chosen` row: what kind of post, how much material came with it, how strong it scored."""
+    images = sum(len(group) for group in trend.reference_groups)
+    return (
+        "slideshow" if trend.is_slideshow else "video",
+        f"{len(trend.reference_groups)} set(s), {images} image(s)" if images
+        else "text_only — this trend arrived with no pictures",
+        f"strength {trend.strength:.3f}",
+    )
+
+
+def _detail_hooks(trend: TrendItem, want: int = 2) -> list[str]:
+    """The source's own words, in the precedence `prompts_engine._source_hooks` already uses."""
+    seen = [text for text in (*trend.hook_texts, *trend.text_overlay_contents,
+                              *trend.panel_texts) if text.strip()]
+    return list(dict.fromkeys(seen))[:want]
+
+
+def _motion_clause(trend: TrendItem) -> str:
+    """The `motion` row: the reel's video reference, named by host only — the URL carries a
+    token-length tail and would blow FR-286's width for no operator benefit."""
+    host = trend.winning_video_url.split("//", 1)[-1].split("/", 1)[0].removeprefix("www.") \
+        if trend.winning_video_url else ""
+    return f"{host} (reel only)"
+
+
+def _brief_block(briefs: Mapping[str, StyleBrief], trends: Mapping[str, TrendItem], *,
+                 limit: int | None = _DETAIL_TRENDS) -> str:
+    """A24, half two: HOW our AI analysed them — the style brief, in four rows.
+
+    `hook_pattern`, `content_angle`, the palette and the exclusion count are the four things an
+    operator judging a creative wants from the brief, and none of them is visible today outside
+    `events.jsonl` with `verbose_only` enabled (`_analyze` logs the full brief there). Printed
+    after Analyze rather than after Select, because until Analyze has run there is no brief.
+
+    Briefs are keyed by the (trend, reference group) PAIR since FR-91's rotation, so one trend can
+    produce several — the group is named when it does, and the strongest trends lead.
+    """
+    def rank(brief: StyleBrief) -> tuple[float, str, int]:
+        trend = trends.get(brief.trend_key)
+        return (-(trend.strength if trend else 0.0), brief.trend_key,
+                brief.reference_group_index)
+
+    ordered = sorted(briefs.values(), key=rank)
+    shown = ordered if limit is None else ordered[:limit]
+    per_trend = Counter(brief.trend_key for brief in ordered)
+    lines: list[str] = []
+    for brief in shown:
+        if lines:
+            lines.append("")
+        trend = trends.get(brief.trend_key)
+        name = trend.name if trend is not None else brief.trend_key
+        if per_trend[brief.trend_key] > 1:
+            name = f"{name} [reference group {brief.reference_group_index + 1}]"
+        lines.append(_detail_head("Brief", name))
+        lines += _funnel_row("pattern", fit(brief.hook_pattern, 66), sep=" · ")
+        lines += _funnel_row("angle", fit(brief.content_angle, 66), sep=" · ")
+        lines += _funnel_row("palette", *brief.palette[:4], sep=" · ")
+        lines += _funnel_row("forbids", f"{len(brief.exclusions)} observed string(s) blocked "
+                                        "from the frame" if brief.exclusions else "", sep=" · ")
+    if limit is not None and len(ordered) > limit:
+        lines.append("")
+        lines.append(f"  + {len(ordered) - limit} more brief(s), see events.jsonl")
+    return "\n".join(lines)
+
+
+def _join(values: Sequence[str], sep: str = ", ") -> str:
+    return sep.join(str(value) for value in values if str(value).strip())
+
+
 def _money(amount: float) -> str:
     """Cents normally, four decimals below one cent — an LLM line that really cost $0.0024 must
     not print as the `$0.00` an unpriced line prints (FR-85's *estimated* honesty, same idea)."""
     return f"${amount:.4f}" if 0 < amount < 0.01 else format_usd(amount)
 
 
-def _spend_table(summary: SpendSummary) -> str:
-    """FR-84's ONE spend table: per creative, per format, then the grand total and cap status."""
+def _spend_table(summary: SpendSummary, counters: sources.Counters | None = None) -> str:
+    """FR-84's ONE spend table: per creative, per format, then the grand total and cap status.
+
+    FR-155 adds one row directly under the headline — the whole Virlo funnel as a single chain,
+    so a run "shrunk by trend supply" is legible beside the headline that says it delivered less
+    than it was asked for. The chain is post-dedupe throughout (the posts the pipeline read, not
+    the rows Virlo shipped) and it is the FORECAST end at its right-hand side: the funnel block
+    printed before Analyze already showed those numbers, and re-deriving "refs actually attached"
+    from delivered assets here would answer a different question in the same shape.
+    """
     # FR-286: asset ids run to ~46 chars, so a fixed 40-wide column both overflowed 78 AND ran
     # into the format column with no space (`..._04image`). Fit the one variable column instead.
-    lines = [summary.headline,
-             f"  {'asset':<38} {'format':<9}{'est':>9}{'billed':>10} ok"]
+    lines = [summary.headline]
+    if counters is not None and counters.posts_kept:
+        lines += _funnel_row("virlo", f"{counters.posts_kept} post(s) -> "
+                                      f"{counters.sets_qualified} set(s) -> "
+                                      f"{counters.trends_used} trend(s) -> "
+                                      f"{counters.refs_total} ref(s) on {counters.jobs} job(s)")
+    lines.append(f"  {'asset':<38} {'format':<9}{'est':>9}{'billed':>10} ok")
     for row in summary.rows:
         mark = "yes" if row.delivered else "no"
         billed = format_usd(row.billed_usd) + (" est" if row.estimated_only else "")

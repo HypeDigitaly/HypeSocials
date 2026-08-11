@@ -15,6 +15,7 @@ from typing import Any
 
 import pytest
 
+from hypesocials.analyze import BriefBook
 from hypesocials.config import Config
 from hypesocials.generate import reel
 from hypesocials.generate.video_ref import VideoRef, VideoRefOutcome
@@ -36,6 +37,7 @@ from hypesocials.models import (
 )
 from hypesocials.outputs import AssetFolder, PackagingError, packager
 from hypesocials.prompts_engine import PromptEngine
+from hypesocials.sources import brief_key
 
 ASSET_ID = "Tt_reel_ai-tools_analyzed_01"
 SEED_URL = "https://tempfile.aiquickdraw.com/seed.jpg"
@@ -83,6 +85,17 @@ class StubEnv:
     halted: bool = False
     credits_exhausted: bool = False
     disk_full: bool = False
+
+    def brief_for(self, entry: PlanEntry) -> StyleBrief | None:
+        """Mirrors `generate.Env.brief_for` (FR-9/12, amended 2026-08-11).
+
+        Delegates to the real resolver rather than reimplementing the key, so this stub cannot
+        drift from the production lookup — the whole point of the pair key is that exactly one
+        place decides which group a creative belongs to.
+        """
+        key = entry.trend_key or ""
+        return self.style_briefs.get(
+            brief_key(key, self.trends.get(key), entry.trend_reuse_index))
 
 
 class Submitter:
@@ -188,10 +201,12 @@ def make_env(tmp_path: Path, trace: list[str] | None = None, **run_overrides: An
         hook_texts=["Nobody tells you this"], video_descriptions=["a creator lists seven tools"],
         reference_groups=[list(TREND_REFS)],
         winning_video_url="https://www.tiktok.com/@x/video/1")}
-    env.style_briefs = {"t1": StyleBrief(
+    # 2026-08-11 (A4): pair-keyed briefs — `"<trend_key>#<reference group index>"`. `reel.py` looks
+    # its brief up by trend key, which `BriefBook` still answers (see `analyze.BriefBook`).
+    env.style_briefs = BriefBook({"t1#0": StyleBrief(
         trend_key="t1", render_prompt="Cream ground, sage blob top-right, heavy black sans.",
         layout_zones=[LayoutZone("upper third", "headline", "all caps, extra bold")],
-        exclusions=["platform UI", "brand wordmark"], typography="extra-bold condensed sans")}
+        exclusions=["platform UI", "brand wordmark"], typography="extra-bold condensed sans")})
     env.copy = {ASSET_ID: CopySet(asset_id=ASSET_ID, language="en", caption="Seven tools.",
                                   hashtags=["ai"], overlay_text="Nobody tells you this",
                                   through_line="a fast reveal of the tool stack",

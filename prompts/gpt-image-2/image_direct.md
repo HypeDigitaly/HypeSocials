@@ -5,6 +5,7 @@ FORMAT: one single social-media post creative, rendered as a finished graphic.
 
 SUBJECT AND SCENE:
   {{content_sentence}}
+  {{render_prompt}}
 
   BRIEF OVERLAY: {{brief_directives}}
 
@@ -39,6 +40,10 @@ STYLE:
   reference composition.
 
   BRAND INFLUENCE: {{brand_accent}}
+  NICHE VISUAL WORLD (ignore if empty): {{niche_visual_world}}
+  When present, that line is standing art direction ranked BELOW the attached
+  references: it biases palette, type character and motif vocabulary where the
+  references leave a choice open — never layout, composition or wording.
 
 REFERENCES:
   {{reference_roles}}

@@ -27,8 +27,9 @@ import asyncio
 import json
 import logging
 import secrets
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -150,9 +151,15 @@ class KieClient:
         if on_submitted is not None:
             on_submitted(token, task_id)
         logger.info("Kie job submitted: task=%s model=%s timeout=%.0fs", task_id, model, timeout_s)
-        self._event("kie_job_submitted", f"Kie accepted {model} as task {task_id}",
+        # FR-155/NFR-5: what this job ATTACHED, on the line that says it was accepted. Until
+        # 2026-08-11 this event carried no reference count at all, so no creative's provenance was
+        # reconstructable from the logs — the plain reading of NFR-5, violated on every run.
+        references = _reference_urls(body)
+        self._event("kie_job_submitted",
+                    f"Kie accepted {model} as task {task_id} with {len(references)} reference(s)",
                     endpoint=f"{JOBS_BASE}/createTask", model=model, task_id=task_id,
-                    timeout_s=round(timeout_s))
+                    timeout_s=round(timeout_s), reference_count=len(references),
+                    reference_sources=[_reference_source(url) for url in references])
         record = await self._poll(task_id, timeout_s=timeout_s, watch=watch)
         timings: dict[str, int] = {}
         outcome = await self._classify(
@@ -375,6 +382,39 @@ def _fail_cause(message: str) -> tuple[RenderFailCause, str]:
     if any(sign in lowered for sign in _MODERATION_SIGNS):
         return RenderFailCause.MODERATION, message
     return RenderFailCause.PROVIDER_FAIL, message
+
+
+def _reference_urls(body: dict[str, Any]) -> list[str]:
+    """Every reference this request attaches, in the order the provider will read them.
+
+    Read off the built body rather than taken as a parameter, because the body IS the record of
+    what was sent: a profile that capped a list (`profiles.py` caps before spending) would
+    otherwise be reported as having attached what the caller offered. The three keys are the only
+    reference-bearing ones either shipped profile builds.
+    """
+    return [str(url) for key in ("input_urls", "reference_image_urls", "reference_video_urls")
+            for url in body.get(key) or [] if isinstance(url, str)]
+
+
+def _reference_source(url: str) -> str:
+    """One reference's provenance, as far as a URL can honestly carry it (FR-155).
+
+    Host-classified, deliberately: the seam sees URLs, not the `(trend, panel)` pair that produced
+    them — `generate/refs.py` owns that and logs it per creative as `reference_set`. What this
+    line adds is the other half nobody could otherwise reconstruct: that THIS job, at THIS task
+    id, sent THAT many references and where each was hosted. A CDN url is public and carries no
+    credential (D30), and only its file name travels here.
+    """
+    parts = urlsplit(url)
+    name = PurePosixPath(parts.path).name or parts.path or "?"
+    host = parts.netloc.lower()
+    if "virlo" in host:
+        origin = "Virlo CDN"  # a trend's own winning post, downloaded and referenced by url
+    elif "kie" in host or "redpanda" in host:
+        origin = "uploaded by this run"  # a brief image, an inspiration pick, a seed frame, a clip
+    else:
+        origin = host or "unknown host"
+    return f"{origin}: {name}"
 
 
 def _result_urls(record: dict[str, Any]) -> list[str]:

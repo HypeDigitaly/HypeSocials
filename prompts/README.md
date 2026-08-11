@@ -31,7 +31,7 @@ secret-free context object; an unfilled placeholder fails that creative
 
 | Placeholder | Filled with | Used in |
 |---|---|---|
-| `{{render_prompt}}` | style brief's compact ≤120-word instruction | image_single_post, carousel_slide, reel_seed_frame |
+| `{{render_prompt}}` | style brief's compact ≤120-word instruction; in `direct` mode, an override brief's **visual** directives instead | image_single_post, carousel_slide, reel_seed_frame, image_direct |
 | `{{layout_zones}}` | style brief's ordered frame regions — zone structure only, never a reference's literal wording | image_single_post, reel_seed_frame |
 | `{{style_dna}}` | the fixed palette/type/grid block, identical on every slide | carousel_slide |
 | `{{onimage_text}}` | the exact text to render, already inside its character budget | all render templates |
@@ -50,11 +50,45 @@ secret-free context object; an unfilled placeholder fails that creative
 | `{{engagement_numbers}}` | what actually won, and by how much | style_brief_system |
 | `{{output_format}}` | the required style-brief JSON field list | style_brief_system |
 | `{{niche_descriptor}}` | audience / vibe / visual world; empty when unset | style_brief_system, copywriter_system |
+| `{{niche_visual_world}}` | the niche's `visual_world` line **alone** — standing art direction, no audience and no copy context; empty when unset | image_single_post, carousel_slide, image_direct, reel_seed_frame |
 | `{{source_hooks}}` | 3–5 verbatim source hooks (few-shot exemplars) | copywriter_system |
 | `{{style_brief_summary}}` | short form of the brief for the copywriter | copywriter_system |
 | `{{platform_conventions}}` | tone/length/hashtag guidance per platform | copywriter_system |
 | `{{brand_context}}` | Notion brand context; empty when influence is off | copywriter_system |
 | `{{sibling_list}}` | every creative sharing this copy call | copywriter_system |
+| `{{inspiration_exemplars}}` | pooled text of the `.txt` files sitting beside the configured Inspiration images (proven, human-written viral posts) — form material for the copy call; empty when no folder ships `.txt` | copywriter_system **only** |
+
+**Why the niche reaches a render through a narrow slot.** `{{niche_descriptor}}`
+also carries `audience`, which is copy context, and no render role may resolve
+it — that boundary is the whole point of the allowlist. `{{niche_visual_world}}`
+carries the `visual_world` line only: palette, type character, motif vocabulary,
+treatment. It sits **under** the attached references in authority — the
+references decide layout and composition, the niche biases what they leave
+open — and it never licenses inventing text.
+
+**Why the exemplars are a copy-only slot.** `{{inspiration_exemplars}}` carries
+the `.txt` files paired with the Inspiration images (e.g.
+`Inspiration/Linkedin/Viral posts/01.jpg` + `01.txt`). It is allowlisted for
+`copywriter_system` and for no render role: an Inspiration image already
+reaches a render under an explicit "no words" role line, and feeding proven
+copy to an image model invites that copy baked into pixels. The template treats
+the block as **form** material only — hook shape, rhythm, how the opening earns
+the second line — and forbids reproducing any phrase from it, in step with the
+removal of the verbatim-hook copy fallback. It also never overrides the output
+language in force, which matters because the shipped exemplars are English
+while `configs/hypedigitaly-cs.yaml` writes Czech. The slot is normally empty:
+most folders ship no `.txt`, and the template's section is written to vanish
+cleanly when it resolves blank.
+
+**Truncation.** When an assembled prompt exceeds the model's length limit the
+engine trims placeholder *values* (never the template's own prose) in the fixed
+order of `_TRUNCATION_ORDER` in `prompts_engine.py`; everything absent from that
+tuple — on-image text, exclusions, budgets, reference roles — is untouchable.
+`{{niche_visual_world}}` participates in that order and is cut alongside
+`{{niche_descriptor}}`, so standing art direction yields long before the locked
+text block would. `{{inspiration_exemplars}}` participates too — it is the
+bulkiest copy-call value and it is style material, so it yields before the
+trend's own text does.
 
 ## Editing rules
 
@@ -113,6 +147,14 @@ here to change, and none of them is a hidden fourth prompt layer.
 `{{content_sentence}}` stays reserved for FR-96's deterministic direct-mode /
 reference-free sentence and is the fallback fill for the reel through-line
 when no copy exists.
+
+`image_direct.md` holds **both** subject lines, one under the other. That is
+additive, not a replacement: `{{content_sentence}}` keeps its FR-96 job (the
+trend-derived subject), and `{{render_prompt}}` covers the case FR-96 cannot —
+an override brief has no trend, so the deterministic sentence is empty and the
+brief's visual directives are the only subject there is. Whichever of the two
+comes back blank is dropped by the template's closing *"ignore any labelled
+line above that is empty"* line.
 
 ### The full list of engine-built lines (FR-180 clause (c))
 

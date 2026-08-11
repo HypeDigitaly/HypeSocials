@@ -1,0 +1,1607 @@
+{
+  "data": {
+    "reference_id": "9c96fddf-dc35-4be0-bbd9-12f4d22aea12",
+    "insight_type": "custom_niche",
+    "viral_insight_id": "02e27521-b024-47ca-94b0-b4f8f10eb74c",
+    "batch_start": "2026-08-09T05:30:36.33+00:00",
+    "batch_end": "2026-08-09T05:55:28.874+00:00",
+    "total": 9,
+    "trends": [
+      {
+        "id": "1a651b50-335c-4227-9bc0-a8ecab299994",
+        "viral_insight_id": "02e27521-b024-47ca-94b0-b4f8f10eb74c",
+        "insight_type": "custom_niche",
+        "reference_id": "9c96fddf-dc35-4be0-bbd9-12f4d22aea12",
+        "batch_start": "2026-08-09T05:30:36.33+00:00",
+        "batch_end": "2026-08-09T05:55:28.874+00:00",
+        "rank": 1,
+        "stable_key": "claude-code-for-development-and-automation",
+        "name": "Claude AI for Coding & Development",
+        "why_it_works": "Appeals to developers and tech enthusiasts by demonstrating Claude's coding prowess and integration with dev tools, optimizing development workflows.",
+        "tactics": [
+          "show Claude AI in VSCode",
+          "demonstrate Claude Code for projects",
+          "explain Claude project structure",
+          "highlight Claude's coding capabilities",
+          "demonstrating CLI building with Claude Code",
+          "comparing Claude Opus, Sonnet, Haiku for coding",
+          "reviewing Claude Code plugins",
+          "showing token optimization for Claude Code",
+          "integrating Claude Code with GitHub",
+          "demonstrate AI coding capabilities",
+          "provide API keys for Claude Opus",
+          "show Claude's ability to coordinate agents",
+          "explain Claude's prompt engineering for code",
+          "showcase Claude for web design and app development"
+        ],
+        "confidence": 0.95,
+        "evidence_video_ids": [
+          "cb4910e6-028e-4d9b-b6dc-8df1e52fc24d",
+          "fdcf5c39-64a4-4a33-914a-9b18d833fb60",
+          "23350059-8764-4800-83ba-4512ac6cd8ed",
+          "bc5f70f0-e700-4ec8-8dd9-3ba8ce08fdc9",
+          "add6df88-162a-4513-8dda-dd7d58fc0f2d",
+          "23775e77-d0f2-49e0-aa1e-3e5d7fbaa216",
+          "91958e4a-5f53-46d0-80aa-7857d4721c0b",
+          "a2de755b-4be1-4174-9ad7-921eafadebc5",
+          "ee9b586d-5ed1-45b5-afd0-b2a9b637cf65",
+          "006fe5e1-67a4-42ae-a92a-6bd18693b6d1",
+          "b3cc1a2c-ca59-49af-871b-0f75eaee5ba5",
+          "f24bf107-043e-4146-919c-3de5b4b5d141",
+          "23efac7f-95f2-4423-94f0-c95c3ad0c32f",
+          "7506c413-ae91-4e0c-961a-2f41210036af",
+          "c3040463-f25e-4c73-9183-193770b4db5c",
+          "702e1cdb-1561-4ab6-a6b9-ff409d103c4d",
+          "865e9277-379e-4a06-be40-e63e87a01d86",
+          "13cc73a3-57fa-430e-8c00-1456ef2ee2fe",
+          "3f378253-f002-4b66-8451-8ab58431feef",
+          "953c223f-6dd5-49db-a98e-e2db68a25d8a",
+          "a03e1efe-9149-4751-b952-00fe869471c6",
+          "ba5a4634-952d-46ad-8db0-11c5dea1cb7b",
+          "3c5b4d45-161f-4824-b3dc-a78b9129412b",
+          "17458a50-da5e-4472-b718-a0f029fcbc00",
+          "f62ab07a-7271-4f08-9747-9514cc7487a4",
+          "8251fe65-f5ce-494b-87fa-b0b2882afeb1",
+          "6edb611e-5029-4b75-a2de-83c6e7817a77",
+          "7b7d809d-85d7-4fe6-a9e3-add8eaf325b2",
+          "b7bac6a6-97a6-450e-9a6f-609323f0eaae",
+          "0cb4b7b2-b804-48df-93ec-8fa22b42a4e0"
+        ],
+        "evidence_videos": [
+          {
+            "id": "cb4910e6-028e-4d9b-b6dc-8df1e52fc24d",
+            "url": "https://www.youtube.com/shorts/mUU7wlg6HdM",
+            "platform": "youtube"
+          },
+          {
+            "id": "fdcf5c39-64a4-4a33-914a-9b18d833fb60",
+            "url": "https://www.tiktok.com/@hironichu/video/7663973046192983329",
+            "platform": "tiktok"
+          },
+          {
+            "id": "23350059-8764-4800-83ba-4512ac6cd8ed",
+            "url": "https://www.tiktok.com/@wlsg.gh/video/7670447746658127134",
+            "platform": "tiktok"
+          },
+          {
+            "id": "bc5f70f0-e700-4ec8-8dd9-3ba8ce08fdc9",
+            "url": "https://www.tiktok.com/@nathanhodgson.ai/video/7665398406927469846",
+            "platform": "tiktok"
+          },
+          {
+            "id": "add6df88-162a-4513-8dda-dd7d58fc0f2d",
+            "url": "https://www.youtube.com/shorts/o9XJIjflkH4",
+            "platform": "youtube"
+          },
+          {
+            "id": "23775e77-d0f2-49e0-aa1e-3e5d7fbaa216",
+            "url": "https://www.tiktok.com/@strangeadvancedmarketing/video/7665765207796436255",
+            "platform": "tiktok"
+          },
+          {
+            "id": "91958e4a-5f53-46d0-80aa-7857d4721c0b",
+            "url": "https://www.tiktok.com/@strangeadvancedmarketing/video/7667703975390481694",
+            "platform": "tiktok"
+          },
+          {
+            "id": "a2de755b-4be1-4174-9ad7-921eafadebc5",
+            "url": "https://www.tiktok.com/@ai.honeycove/video/7663206331255360782",
+            "platform": "tiktok"
+          },
+          {
+            "id": "ee9b586d-5ed1-45b5-afd0-b2a9b637cf65",
+            "url": "https://www.tiktok.com/@codenameposhan/video/7662234808138861837",
+            "platform": "tiktok"
+          },
+          {
+            "id": "006fe5e1-67a4-42ae-a92a-6bd18693b6d1",
+            "url": "https://www.tiktok.com/@andrilance/video/7663262007679896845",
+            "platform": "tiktok"
+          },
+          {
+            "id": "b3cc1a2c-ca59-49af-871b-0f75eaee5ba5",
+            "url": "https://www.tiktok.com/@jordankodes/video/7662150345858092302",
+            "platform": "tiktok"
+          },
+          {
+            "id": "f24bf107-043e-4146-919c-3de5b4b5d141",
+            "url": "https://www.tiktok.com/@hackproduct9/video/7664270233674222861",
+            "platform": "tiktok"
+          },
+          {
+            "id": "23efac7f-95f2-4423-94f0-c95c3ad0c32f",
+            "url": "https://www.tiktok.com/@zazencodes/video/7666869379367177490",
+            "platform": "tiktok"
+          },
+          {
+            "id": "7506c413-ae91-4e0c-961a-2f41210036af",
+            "url": "https://www.tiktok.com/@cyyylas/video/7670951839399005472",
+            "platform": "tiktok"
+          },
+          {
+            "id": "c3040463-f25e-4c73-9183-193770b4db5c",
+            "url": "https://www.youtube.com/shorts/Jet-MoYaGo4",
+            "platform": "youtube"
+          },
+          {
+            "id": "702e1cdb-1561-4ab6-a6b9-ff409d103c4d",
+            "url": "https://www.youtube.com/shorts/WMtvRMwfSpw",
+            "platform": "youtube"
+          },
+          {
+            "id": "865e9277-379e-4a06-be40-e63e87a01d86",
+            "url": "https://www.tiktok.com/@garryaudie/video/7660986570371091733",
+            "platform": "tiktok"
+          },
+          {
+            "id": "13cc73a3-57fa-430e-8c00-1456ef2ee2fe",
+            "url": "https://www.tiktok.com/@ccstrategic.io/video/7669150615003548941",
+            "platform": "tiktok"
+          },
+          {
+            "id": "3f378253-f002-4b66-8451-8ab58431feef",
+            "url": "https://www.tiktok.com/@milesreevesai/video/7671053862857477408",
+            "platform": "tiktok"
+          },
+          {
+            "id": "953c223f-6dd5-49db-a98e-e2db68a25d8a",
+            "url": "https://www.youtube.com/shorts/RD9ggtvlPX0",
+            "platform": "youtube"
+          },
+          {
+            "id": "a03e1efe-9149-4751-b952-00fe869471c6",
+            "url": "https://www.tiktok.com/@strangeadvancedmarketing/video/7668022529973390622",
+            "platform": "tiktok"
+          },
+          {
+            "id": "ba5a4634-952d-46ad-8db0-11c5dea1cb7b",
+            "url": "https://www.tiktok.com/@codenameposhan/video/7670009216291065118",
+            "platform": "tiktok"
+          },
+          {
+            "id": "3c5b4d45-161f-4824-b3dc-a78b9129412b",
+            "url": "https://www.youtube.com/shorts/gULb2MuuQnU",
+            "platform": "youtube"
+          },
+          {
+            "id": "17458a50-da5e-4472-b718-a0f029fcbc00",
+            "url": "https://www.tiktok.com/@sky.wav/video/7666107629105597718",
+            "platform": "tiktok"
+          },
+          {
+            "id": "f62ab07a-7271-4f08-9747-9514cc7487a4",
+            "url": "https://www.youtube.com/shorts/Bihhw92gBvg",
+            "platform": "youtube"
+          },
+          {
+            "id": "8251fe65-f5ce-494b-87fa-b0b2882afeb1",
+            "url": "https://www.tiktok.com/@ai.samaritan/video/7667277568420203796",
+            "platform": "tiktok"
+          },
+          {
+            "id": "6edb611e-5029-4b75-a2de-83c6e7817a77",
+            "url": "https://www.tiktok.com/@therobertta_/video/7671709309415230753",
+            "platform": "tiktok"
+          },
+          {
+            "id": "7b7d809d-85d7-4fe6-a9e3-add8eaf325b2",
+            "url": "https://www.tiktok.com/@github.signals/video/7660898631347719444",
+            "platform": "tiktok"
+          },
+          {
+            "id": "b7bac6a6-97a6-450e-9a6f-609323f0eaae",
+            "url": "https://www.tiktok.com/@innomation01/video/7666773144337698070",
+            "platform": "tiktok"
+          },
+          {
+            "id": "0cb4b7b2-b804-48df-93ec-8fa22b42a4e0",
+            "url": "https://www.tiktok.com/@webforge6/video/7666501731085339937",
+            "platform": "tiktok"
+          }
+        ],
+        "video_count": 36,
+        "total_views": 3440647,
+        "total_likes": 158815,
+        "total_comments": 3675,
+        "total_shares": 27924,
+        "avg_virality_score": 0.6246831826766884,
+        "platform_breakdown": {
+          "tiktok": 23,
+          "youtube": 7
+        },
+        "top_creators": [
+          {
+            "username": "@Codemyhobby",
+            "followers": 4780,
+            "total_views": 599687,
+            "video_count": 1
+          },
+          {
+            "username": "hironichu",
+            "followers": 108,
+            "total_views": 464313,
+            "video_count": 1
+          },
+          {
+            "username": "jordankodes",
+            "followers": 7265,
+            "total_views": 378503,
+            "video_count": 1
+          },
+          {
+            "username": "nathanhodgson.ai",
+            "followers": 137586,
+            "total_views": 372136,
+            "video_count": 1
+          },
+          {
+            "username": "andrilance",
+            "followers": 113193,
+            "total_views": 232373,
+            "video_count": 1
+          }
+        ],
+        "peak_hour_utc": 16,
+        "status": "fading",
+        "first_seen_at": "2026-08-07T23:33:02.058+00:00",
+        "prev_video_count": 39,
+        "prev_total_views": 13499765,
+        "created_at": "2026-08-09T05:56:27.429374+00:00"
+      },
+      {
+        "id": "23a404e9-ad65-4ae5-b5b7-c9753c6049c3",
+        "viral_insight_id": "02e27521-b024-47ca-94b0-b4f8f10eb74c",
+        "insight_type": "custom_niche",
+        "reference_id": "9c96fddf-dc35-4be0-bbd9-12f4d22aea12",
+        "batch_start": "2026-08-09T05:30:36.33+00:00",
+        "batch_end": "2026-08-09T05:55:28.874+00:00",
+        "rank": 2,
+        "stable_key": "ai-agents-for-business-automation-and-operations",
+        "name": "AI Agents for Business Automation and Operations",
+        "why_it_works": "Highlights the power of AI agents in automating complex tasks and entire business processes, attracting productivity-focused users.",
+        "tactics": [
+          "demonstrate AI agent workflows",
+          "highlight AI automation for business",
+          "showcase self-improving AI agents",
+          "demonstrate AI automation for beginners",
+          "show how to build AI agents for automation",
+          "explain AI automation for content creation",
+          "demonstrating AI agents for automation",
+          "tutorials on building AI employees/agents",
+          "showcasing AI for lead generation and appointments",
+          "reviewing new AI agent tools like Atomic Agent",
+          "integrating AI agents with platforms like WhatsApp and n8n",
+          "demonstrate building AI agents",
+          "explain the difference between automation and AI agents",
+          "show AI agents managing business operations",
+          "illustrate AI automation workflows with tools like n8n and Zapier"
+        ],
+        "confidence": 0.93,
+        "evidence_video_ids": [
+          "5ab478be-d9fe-41fb-9be1-24a8e0713a22",
+          "e62d69e4-a8b8-4a73-b90f-d4e324fde059",
+          "2d0a3d4a-203a-4ee7-80e2-e89d0dc1647d",
+          "29b386e9-db5a-43e5-82ac-fbf638a5670c",
+          "d8959c7f-5d57-4fe2-b225-78a18e6613a6",
+          "6a88d959-3bf6-4322-9da9-628657341011",
+          "8d291d36-3df5-4330-a057-471720df8d1e",
+          "483b7800-c2d7-44eb-8b10-7c8b1bf6ad08",
+          "9de93c42-21b3-40c3-9c1a-7e43f0cc6b7b",
+          "e5add10e-d9ff-405d-9531-c6f5b09e0e08",
+          "fa97ca8f-9ca0-41cd-a725-03e42fbfdbb8",
+          "db3efee9-9946-4004-bfe8-a5f279ca154b",
+          "fe701f19-454e-4bad-a376-002d19a0ba8c",
+          "51fb48f0-7963-426b-b0d5-b2eb8b83c0a7",
+          "6cc909de-f0e7-4b67-b311-3123440e54db",
+          "1fd06abe-2ba0-49ae-9423-7bab1ee2dbdf",
+          "03216e44-a045-403c-8d2a-57280986aa69",
+          "8fbc7448-23e4-4148-b56b-2b688f557c57",
+          "1d2741fb-c3b2-4b7f-9e1b-26491f0ba12d",
+          "75eeedc1-3976-4c25-865e-d3f954373f8c",
+          "dc357803-0121-40f7-8e46-5273144c6481",
+          "a7bf2800-b601-4224-9a63-3edc71fc118c",
+          "1c014130-d6a9-436e-b6ae-470d4547c02c",
+          "df9a9b23-6beb-47b5-9e47-94dcfc32cfb9",
+          "37ed0ef0-ec97-4d12-ba09-2bd506637d96",
+          "b19d0f59-e891-43cd-beba-ca69e741e7f8",
+          "ceb9f8e3-e333-49ce-b6ee-d24efd9ee6b4",
+          "d3a0f0af-08b8-48f6-88f4-ccf0d84efc94",
+          "b76800b5-b9ac-4849-82c2-64f366870db1"
+        ],
+        "evidence_videos": [
+          {
+            "id": "5ab478be-d9fe-41fb-9be1-24a8e0713a22",
+            "url": "https://www.youtube.com/shorts/wqhJedUdY8Y",
+            "platform": "youtube"
+          },
+          {
+            "id": "e62d69e4-a8b8-4a73-b90f-d4e324fde059",
+            "url": "https://www.youtube.com/shorts/5YqltqJTWkI",
+            "platform": "youtube"
+          },
+          {
+            "id": "2d0a3d4a-203a-4ee7-80e2-e89d0dc1647d",
+            "url": "https://www.youtube.com/shorts/0syAaneGZ6A",
+            "platform": "youtube"
+          },
+          {
+            "id": "29b386e9-db5a-43e5-82ac-fbf638a5670c",
+            "url": "https://www.tiktok.com/@whitewhoadie/video/7669098548784270605",
+            "platform": "tiktok"
+          },
+          {
+            "id": "d8959c7f-5d57-4fe2-b225-78a18e6613a6",
+            "url": "https://www.tiktok.com/@benjaminnocode/video/7669198460054375687",
+            "platform": "tiktok"
+          },
+          {
+            "id": "6a88d959-3bf6-4322-9da9-628657341011",
+            "url": "https://www.tiktok.com/@hostedbyyouchannel/video/7669836956234173718",
+            "platform": "tiktok"
+          },
+          {
+            "id": "8d291d36-3df5-4330-a057-471720df8d1e",
+            "url": "https://www.tiktok.com/@aiwithhammad2026/video/7666374265675074837",
+            "platform": "tiktok"
+          },
+          {
+            "id": "483b7800-c2d7-44eb-8b10-7c8b1bf6ad08",
+            "url": "https://www.youtube.com/shorts/kKm_0eLmbzQ",
+            "platform": "youtube"
+          },
+          {
+            "id": "9de93c42-21b3-40c3-9c1a-7e43f0cc6b7b",
+            "url": "https://www.youtube.com/shorts/gGy-JDcOwlI",
+            "platform": "youtube"
+          },
+          {
+            "id": "e5add10e-d9ff-405d-9531-c6f5b09e0e08",
+            "url": "https://www.tiktok.com/@isecreams/video/7670286157430787350",
+            "platform": "tiktok"
+          },
+          {
+            "id": "fa97ca8f-9ca0-41cd-a725-03e42fbfdbb8",
+            "url": "https://www.tiktok.com/@paul2024x/video/7667996816008285461",
+            "platform": "tiktok"
+          },
+          {
+            "id": "db3efee9-9946-4004-bfe8-a5f279ca154b",
+            "url": "https://www.youtube.com/shorts/_EH7KJnStMI",
+            "platform": "youtube"
+          },
+          {
+            "id": "fe701f19-454e-4bad-a376-002d19a0ba8c",
+            "url": "https://www.youtube.com/shorts/vcvRVlc_VFg",
+            "platform": "youtube"
+          },
+          {
+            "id": "51fb48f0-7963-426b-b0d5-b2eb8b83c0a7",
+            "url": "https://www.youtube.com/shorts/CklJLElBtNM",
+            "platform": "youtube"
+          },
+          {
+            "id": "6cc909de-f0e7-4b67-b311-3123440e54db",
+            "url": "https://www.tiktok.com/@jakebeau_/video/7662151434594503966",
+            "platform": "tiktok"
+          },
+          {
+            "id": "1fd06abe-2ba0-49ae-9423-7bab1ee2dbdf",
+            "url": "https://www.tiktok.com/@jayoxton.tech/video/7670257537215761697",
+            "platform": "tiktok"
+          },
+          {
+            "id": "03216e44-a045-403c-8d2a-57280986aa69",
+            "url": "https://www.tiktok.com/@thefadeadeniyi/video/7669016609461243158",
+            "platform": "tiktok"
+          },
+          {
+            "id": "8fbc7448-23e4-4148-b56b-2b688f557c57",
+            "url": "https://www.tiktok.com/@kyle.s.painter/video/7664798887449791758",
+            "platform": "tiktok"
+          },
+          {
+            "id": "1d2741fb-c3b2-4b7f-9e1b-26491f0ba12d",
+            "url": "https://www.youtube.com/shorts/yLcMtCueKz8",
+            "platform": "youtube"
+          },
+          {
+            "id": "75eeedc1-3976-4c25-865e-d3f954373f8c",
+            "url": "https://www.youtube.com/watch?v=6clE-SbRWp8",
+            "platform": "youtube"
+          },
+          {
+            "id": "dc357803-0121-40f7-8e46-5273144c6481",
+            "url": "https://www.tiktok.com/@aracne.ai/video/7671347803985136928",
+            "platform": "tiktok"
+          },
+          {
+            "id": "a7bf2800-b601-4224-9a63-3edc71fc118c",
+            "url": "https://www.youtube.com/shorts/mhRI5DZ7DpU",
+            "platform": "youtube"
+          },
+          {
+            "id": "1c014130-d6a9-436e-b6ae-470d4547c02c",
+            "url": "https://www.youtube.com/shorts/g1t_hmndPdo",
+            "platform": "youtube"
+          },
+          {
+            "id": "df9a9b23-6beb-47b5-9e47-94dcfc32cfb9",
+            "url": "https://www.youtube.com/shorts/PxgIMRNlOvc",
+            "platform": "youtube"
+          },
+          {
+            "id": "37ed0ef0-ec97-4d12-ba09-2bd506637d96",
+            "url": "https://www.tiktok.com/@staroftheheavens/video/7663010480855862549",
+            "platform": "tiktok"
+          },
+          {
+            "id": "b19d0f59-e891-43cd-beba-ca69e741e7f8",
+            "url": "https://www.tiktok.com/@10sorlabs/video/7666180212752780577",
+            "platform": "tiktok"
+          },
+          {
+            "id": "ceb9f8e3-e333-49ce-b6ee-d24efd9ee6b4",
+            "url": "https://www.youtube.com/shorts/sUpSiF34gGE",
+            "platform": "youtube"
+          },
+          {
+            "id": "d3a0f0af-08b8-48f6-88f4-ccf0d84efc94",
+            "url": "https://www.youtube.com/shorts/Fth6FqpZln0",
+            "platform": "youtube"
+          },
+          {
+            "id": "b76800b5-b9ac-4849-82c2-64f366870db1",
+            "url": "https://www.tiktok.com/@giftysoftdev/video/7662961776908127509",
+            "platform": "tiktok"
+          }
+        ],
+        "video_count": 29,
+        "total_views": 21399440,
+        "total_likes": 180233,
+        "total_comments": 2994,
+        "total_shares": 4310,
+        "avg_virality_score": 0.6628865799879889,
+        "platform_breakdown": {
+          "tiktok": 14,
+          "youtube": 15
+        },
+        "top_creators": [
+          {
+            "username": "@AscendMindz",
+            "followers": 119000,
+            "total_views": 14268157,
+            "video_count": 1
+          },
+          {
+            "username": "@systemHUB",
+            "followers": 42300,
+            "total_views": 2329098,
+            "video_count": 1
+          },
+          {
+            "username": "@EdHillAI",
+            "followers": 82800,
+            "total_views": 2251372,
+            "video_count": 3
+          },
+          {
+            "username": "@NobleHacksAcademy",
+            "followers": 29500,
+            "total_views": 734157,
+            "video_count": 1
+          },
+          {
+            "username": "@withaminedaly",
+            "followers": 12400,
+            "total_views": 379605,
+            "video_count": 1
+          }
+        ],
+        "peak_hour_utc": 19,
+        "status": "steady",
+        "first_seen_at": "2026-08-07T23:33:02.058+00:00",
+        "prev_video_count": 26,
+        "prev_total_views": 23674418,
+        "created_at": "2026-08-09T05:56:27.429374+00:00"
+      },
+      {
+        "id": "110ac54c-0565-4a8d-830b-49502c9758f6",
+        "viral_insight_id": "02e27521-b024-47ca-94b0-b4f8f10eb74c",
+        "insight_type": "custom_niche",
+        "reference_id": "9c96fddf-dc35-4be0-bbd9-12f4d22aea12",
+        "batch_start": "2026-08-09T05:30:36.33+00:00",
+        "batch_end": "2026-08-09T05:55:28.874+00:00",
+        "rank": 3,
+        "stable_key": "claude-ai-productivity-and-business-hacks",
+        "name": "Claude AI for Productivity and Business Hacks",
+        "why_it_works": "Offers practical tips and insights into Claude AI's diverse applications and performance, helping users maximize utility.",
+        "tactics": [
+          "share Claude AI projects and results",
+          "discuss Claude AI's features and limitations",
+          "provide tips for using Claude AI effectively",
+          "tutorials on getting more out of Claude AI",
+          "demonstrating Claude's content generation capabilities",
+          "explaining Claude AI basics",
+          "comparing Claude with other AI models",
+          "tips for effective Claude prompting",
+          "provide prompting frameworks for Claude",
+          "explain how to give Claude memory",
+          "compare Claude AI with ChatGPT",
+          "offer tips for productive use of Claude",
+          "tutorial on using Claude AI for job applications",
+          "demonstrating automated CV optimization",
+          "showing cover letter drafting by AI"
+        ],
+        "confidence": 0.92,
+        "evidence_video_ids": [
+          "62b7c25f-8862-4cdb-af50-2eef8e3a28bd",
+          "0d2758b0-65db-4d1d-aeed-b9de76009f2d",
+          "bc867e17-69b3-4e0e-90bd-7eec271ec2c6",
+          "390104a6-c14a-40c8-835c-242db8aa144c",
+          "23f31e60-2287-4812-929a-a1ed67ccd022",
+          "11c31329-817c-439b-b499-e2242c5bd7f1",
+          "304a0e87-2061-449e-b5ca-48bcc5f61ae9",
+          "c7340780-a8c5-45e4-a63d-8ae69e019637",
+          "2222f71f-07b4-4c69-9937-dc92f0782ca0",
+          "c0629de6-6281-4b13-b9d8-89234e7175b2",
+          "87d1e009-8841-4969-b8ba-f1e6a59491a6",
+          "d5cff6a1-3ad6-4a24-b844-8637da19ebd0",
+          "5c5aba80-afd5-4e23-93ef-d25918b35fac",
+          "47c52b25-df2e-461a-8e4f-dc4602099e01",
+          "fec3b765-50a7-43c4-b990-6b28184f695b",
+          "ce94d3ff-c771-426c-87fd-fba6326532f8",
+          "35cf79f4-c339-49e0-a6b8-b6ce8155eef7",
+          "d4d9e2bd-5e18-4ef2-9a62-a3841b692d7b",
+          "51d4f1c7-8a2f-4c33-abb1-ec1f226ad0ce",
+          "dfca3df1-cb99-4fec-9cfa-80d65530ae3e",
+          "8a8d916a-acc6-4140-902b-58a78f4222bc",
+          "5fe257d1-f180-4eac-82e1-a55e0965bc25",
+          "fc4da8e5-265f-4203-bcbf-10740cbb598e",
+          "171c4f31-0616-4998-9105-88e3753d2471",
+          "4cf0ca52-b635-4f4c-879f-ab50384edcc6",
+          "0c5999a5-28a4-4973-8f7c-b9cc83f2d633",
+          "ee9f4af2-48e5-41dc-a323-9971666b97f8",
+          "edfd9c66-42fd-4019-8d26-275fa70c104b",
+          "d236f0bd-f29d-4999-8fff-9367ba192b1c",
+          "051625e5-c837-4d88-86c4-fa7b3347d600",
+          "656d625a-1cb6-44fe-846d-868925c66696",
+          "0b365395-905b-412a-87fe-fdb947031fbc"
+        ],
+        "evidence_videos": [
+          {
+            "id": "62b7c25f-8862-4cdb-af50-2eef8e3a28bd",
+            "url": "https://www.tiktok.com/@matt_thecoder/video/7664451629252480287",
+            "platform": "tiktok"
+          },
+          {
+            "id": "0d2758b0-65db-4d1d-aeed-b9de76009f2d",
+            "url": "https://www.tiktok.com/@irene_cibuci/video/7661671902557097229",
+            "platform": "tiktok"
+          },
+          {
+            "id": "bc867e17-69b3-4e0e-90bd-7eec271ec2c6",
+            "url": "https://www.tiktok.com/@findfulfillingwork/video/7665074265015799054",
+            "platform": "tiktok"
+          },
+          {
+            "id": "390104a6-c14a-40c8-835c-242db8aa144c",
+            "url": "https://www.youtube.com/shorts/PWodz8H5RQc",
+            "platform": "youtube"
+          },
+          {
+            "id": "23f31e60-2287-4812-929a-a1ed67ccd022",
+            "url": "https://www.tiktok.com/@olivia.parker995/video/7663358139713981710",
+            "platform": "tiktok"
+          },
+          {
+            "id": "11c31329-817c-439b-b499-e2242c5bd7f1",
+            "url": "https://www.tiktok.com/@artemnovitckii/video/7669034908215479559",
+            "platform": "tiktok"
+          },
+          {
+            "id": "304a0e87-2061-449e-b5ca-48bcc5f61ae9",
+            "url": "https://www.tiktok.com/@systemface/video/7666310004693011743",
+            "platform": "tiktok"
+          },
+          {
+            "id": "c7340780-a8c5-45e4-a63d-8ae69e019637",
+            "url": "https://www.tiktok.com/@aiwithken/video/7670383057119071519",
+            "platform": "tiktok"
+          },
+          {
+            "id": "2222f71f-07b4-4c69-9937-dc92f0782ca0",
+            "url": "https://www.tiktok.com/@moh_witty/video/7671003507532565767",
+            "platform": "tiktok"
+          },
+          {
+            "id": "c0629de6-6281-4b13-b9d8-89234e7175b2",
+            "url": "https://www.tiktok.com/@the.ai.solopreneur/video/7665043865602198806",
+            "platform": "tiktok"
+          },
+          {
+            "id": "87d1e009-8841-4969-b8ba-f1e6a59491a6",
+            "url": "https://www.tiktok.com/@softadoration/video/7663644212168051982",
+            "platform": "tiktok"
+          },
+          {
+            "id": "d5cff6a1-3ad6-4a24-b844-8637da19ebd0",
+            "url": "https://www.tiktok.com/@zacktub/video/7661350016983960846",
+            "platform": "tiktok"
+          },
+          {
+            "id": "5c5aba80-afd5-4e23-93ef-d25918b35fac",
+            "url": "https://www.tiktok.com/@usviralbuzz/video/7667412723478711555",
+            "platform": "tiktok"
+          },
+          {
+            "id": "47c52b25-df2e-461a-8e4f-dc4602099e01",
+            "url": "https://www.tiktok.com/@htdtips/video/7664985309351791903",
+            "platform": "tiktok"
+          },
+          {
+            "id": "fec3b765-50a7-43c4-b990-6b28184f695b",
+            "url": "https://www.tiktok.com/@.sergiogil/video/7670657906106289430",
+            "platform": "tiktok"
+          },
+          {
+            "id": "ce94d3ff-c771-426c-87fd-fba6326532f8",
+            "url": "https://www.tiktok.com/@zuiyx.ai/video/7669192322772520200",
+            "platform": "tiktok"
+          },
+          {
+            "id": "35cf79f4-c339-49e0-a6b8-b6ce8155eef7",
+            "url": "https://www.tiktok.com/@itsjustmind/video/7667529200244460821",
+            "platform": "tiktok"
+          },
+          {
+            "id": "d4d9e2bd-5e18-4ef2-9a62-a3841b692d7b",
+            "url": "https://www.youtube.com/shorts/tL_R09rzTDk",
+            "platform": "youtube"
+          },
+          {
+            "id": "51d4f1c7-8a2f-4c33-abb1-ec1f226ad0ce",
+            "url": "https://www.youtube.com/shorts/p1Ih-Impcug",
+            "platform": "youtube"
+          },
+          {
+            "id": "dfca3df1-cb99-4fec-9cfa-80d65530ae3e",
+            "url": "https://www.youtube.com/shorts/ShatBbDDf2c",
+            "platform": "youtube"
+          },
+          {
+            "id": "8a8d916a-acc6-4140-902b-58a78f4222bc",
+            "url": "https://www.tiktok.com/@buildwithjak/video/7670616823351676161",
+            "platform": "tiktok"
+          },
+          {
+            "id": "5fe257d1-f180-4eac-82e1-a55e0965bc25",
+            "url": "https://www.tiktok.com/@ceotalks23/video/7671671916259773718",
+            "platform": "tiktok"
+          },
+          {
+            "id": "fc4da8e5-265f-4203-bcbf-10740cbb598e",
+            "url": "https://www.tiktok.com/@adamdelduca/video/7660831427063319824",
+            "platform": "tiktok"
+          },
+          {
+            "id": "171c4f31-0616-4998-9105-88e3753d2471",
+            "url": "https://www.tiktok.com/@kellystratton.ai/video/7665109161578958093",
+            "platform": "tiktok"
+          },
+          {
+            "id": "4cf0ca52-b635-4f4c-879f-ab50384edcc6",
+            "url": "https://www.tiktok.com/@aq2social/video/7670633048894983454",
+            "platform": "tiktok"
+          },
+          {
+            "id": "0c5999a5-28a4-4973-8f7c-b9cc83f2d633",
+            "url": "https://www.youtube.com/shorts/U_TBjGv0Abc",
+            "platform": "youtube"
+          },
+          {
+            "id": "ee9f4af2-48e5-41dc-a323-9971666b97f8",
+            "url": "https://www.youtube.com/shorts/YQw3rEZKDA4",
+            "platform": "youtube"
+          },
+          {
+            "id": "edfd9c66-42fd-4019-8d26-275fa70c104b",
+            "url": "https://www.tiktok.com/@k.buildsapps/video/7662133539185462541",
+            "platform": "tiktok"
+          },
+          {
+            "id": "d236f0bd-f29d-4999-8fff-9367ba192b1c",
+            "url": "https://www.tiktok.com/@aiwithken/video/7671127908223700255",
+            "platform": "tiktok"
+          },
+          {
+            "id": "051625e5-c837-4d88-86c4-fa7b3347d600",
+            "url": "https://www.tiktok.com/@robinmuthomimutiga/video/7663916856083762453",
+            "platform": "tiktok"
+          },
+          {
+            "id": "656d625a-1cb6-44fe-846d-868925c66696",
+            "url": "https://www.tiktok.com/@trin.talks/video/7663192458142010637",
+            "platform": "tiktok"
+          },
+          {
+            "id": "0b365395-905b-412a-87fe-fdb947031fbc",
+            "url": "https://www.tiktok.com/@ottobongchris/video/7666927718767938824",
+            "platform": "tiktok"
+          }
+        ],
+        "video_count": 32,
+        "total_views": 3517403,
+        "total_likes": 203927,
+        "total_comments": 2736,
+        "total_shares": 20375,
+        "avg_virality_score": 0.5940689782392717,
+        "platform_breakdown": {
+          "tiktok": 26,
+          "youtube": 6
+        },
+        "top_creators": [
+          {
+            "username": "@digitalsamaritan",
+            "followers": 35000,
+            "total_views": 902005,
+            "video_count": 1
+          },
+          {
+            "username": "matt_thecoder",
+            "followers": 5430,
+            "total_views": 729238,
+            "video_count": 1
+          },
+          {
+            "username": "findfulfillingwork",
+            "followers": 154264,
+            "total_views": 711400,
+            "video_count": 1
+          },
+          {
+            "username": "htdtips",
+            "followers": 25796,
+            "total_views": 238839,
+            "video_count": 1
+          },
+          {
+            "username": "olivia.parker995",
+            "followers": 13148,
+            "total_views": 161496,
+            "video_count": 1
+          }
+        ],
+        "peak_hour_utc": 3,
+        "status": "rising",
+        "first_seen_at": "2026-08-07T23:33:02.058+00:00",
+        "prev_video_count": 24,
+        "prev_total_views": 2594479,
+        "created_at": "2026-08-09T05:56:27.429374+00:00"
+      },
+      {
+        "id": "b0f8ae1e-f268-4cde-9b50-9874e4f336a8",
+        "viral_insight_id": "02e27521-b024-47ca-94b0-b4f8f10eb74c",
+        "insight_type": "custom_niche",
+        "reference_id": "9c96fddf-dc35-4be0-bbd9-12f4d22aea12",
+        "batch_start": "2026-08-09T05:30:36.33+00:00",
+        "batch_end": "2026-08-09T05:55:28.874+00:00",
+        "rank": 4,
+        "stable_key": "vibecoding-ai-development",
+        "name": "Vibecoding AI Demos and Practices",
+        "why_it_works": "Showcases a unique and engaging approach to AI-assisted coding, making development seem more intuitive and fun.",
+        "tactics": [
+          "demonstrate vibecoding in action",
+          "explain the concept of vibecoding",
+          "show AI-assisted web design",
+          "demonstrating vibecoding in practice",
+          "setting up AI development environments for vibecoding",
+          "showcasing vibecoding for fintech apps",
+          "demonstrate quick code generation",
+          "explain security practices for vibecoded apps",
+          "showcase vibecoding for frontend development"
+        ],
+        "confidence": 0.9,
+        "evidence_video_ids": [
+          "fdcf5c39-64a4-4a33-914a-9b18d833fb60",
+          "07cfabe3-5d90-443d-b759-0d89a5f5312b",
+          "a88dcd63-561f-46a8-bc6b-034e4407cf86",
+          "d28e59e4-e6f5-4d70-8fa4-64683477bb10",
+          "f9cb442c-fea4-4357-99d6-3aefc6841fe6",
+          "af21f57f-46ae-47c4-9191-8a81c52b290a",
+          "3c5b4d45-161f-4824-b3dc-a78b9129412b",
+          "0659dd15-04d0-475b-961f-6a7ec25de10a",
+          "3fdf9af5-e9bb-4eaf-9f70-792808d6e79d",
+          "dffe5e95-ccc4-4fb5-b07d-1bad261e2360",
+          "adfe5f33-2257-4772-b4a6-a2906d2a7a92",
+          "3e1cdb79-15ca-491d-9f6d-15d2b6a7a36a",
+          "2707a263-6d7f-4b19-8dc5-2c3ca7ca536f"
+        ],
+        "evidence_videos": [
+          {
+            "id": "fdcf5c39-64a4-4a33-914a-9b18d833fb60",
+            "url": "https://www.tiktok.com/@hironichu/video/7663973046192983329",
+            "platform": "tiktok"
+          },
+          {
+            "id": "07cfabe3-5d90-443d-b759-0d89a5f5312b",
+            "url": "https://www.youtube.com/shorts/gNsjk3lF3aw",
+            "platform": "youtube"
+          },
+          {
+            "id": "a88dcd63-561f-46a8-bc6b-034e4407cf86",
+            "url": "https://www.tiktok.com/@selintechz/video/7661850583967583501",
+            "platform": "tiktok"
+          },
+          {
+            "id": "d28e59e4-e6f5-4d70-8fa4-64683477bb10",
+            "url": "https://www.youtube.com/shorts/-z_a6qhdRqE",
+            "platform": "youtube"
+          },
+          {
+            "id": "f9cb442c-fea4-4357-99d6-3aefc6841fe6",
+            "url": "https://www.youtube.com/shorts/CtmReluFSao",
+            "platform": "youtube"
+          },
+          {
+            "id": "af21f57f-46ae-47c4-9191-8a81c52b290a",
+            "url": "https://www.tiktok.com/@bittbirr/video/7670674492330364180",
+            "platform": "tiktok"
+          },
+          {
+            "id": "3c5b4d45-161f-4824-b3dc-a78b9129412b",
+            "url": "https://www.youtube.com/shorts/gULb2MuuQnU",
+            "platform": "youtube"
+          },
+          {
+            "id": "0659dd15-04d0-475b-961f-6a7ec25de10a",
+            "url": "https://www.youtube.com/shorts/v3DoZg9H9vc",
+            "platform": "youtube"
+          },
+          {
+            "id": "3fdf9af5-e9bb-4eaf-9f70-792808d6e79d",
+            "url": "https://www.tiktok.com/@haydenschmitty/video/7670720236517100814",
+            "platform": "tiktok"
+          },
+          {
+            "id": "dffe5e95-ccc4-4fb5-b07d-1bad261e2360",
+            "url": "https://www.youtube.com/shorts/HBbCHEZDIWk",
+            "platform": "youtube"
+          },
+          {
+            "id": "adfe5f33-2257-4772-b4a6-a2906d2a7a92",
+            "url": "https://www.youtube.com/shorts/sFKyE4yqGwQ",
+            "platform": "youtube"
+          },
+          {
+            "id": "3e1cdb79-15ca-491d-9f6d-15d2b6a7a36a",
+            "url": "https://www.youtube.com/shorts/qW0U1BbA9yA",
+            "platform": "youtube"
+          },
+          {
+            "id": "2707a263-6d7f-4b19-8dc5-2c3ca7ca536f",
+            "url": "https://www.tiktok.com/@tobi_salami/video/7662070429703589140",
+            "platform": "tiktok"
+          }
+        ],
+        "video_count": 13,
+        "total_views": 1890907,
+        "total_likes": 58698,
+        "total_comments": 843,
+        "total_shares": 11312,
+        "avg_virality_score": 0.6757291908556837,
+        "platform_breakdown": {
+          "tiktok": 5,
+          "youtube": 8
+        },
+        "top_creators": [
+          {
+            "username": "@datascienceinyourpocket",
+            "followers": 29200,
+            "total_views": 890321,
+            "video_count": 1
+          },
+          {
+            "username": "hironichu",
+            "followers": 108,
+            "total_views": 464313,
+            "video_count": 1
+          },
+          {
+            "username": "selintechz",
+            "followers": 2980,
+            "total_views": 297239,
+            "video_count": 1
+          },
+          {
+            "username": "haydenschmitty",
+            "followers": 1514,
+            "total_views": 64903,
+            "video_count": 1
+          },
+          {
+            "username": "@DenDev",
+            "followers": 19800,
+            "total_views": 56153,
+            "video_count": 1
+          }
+        ],
+        "peak_hour_utc": 11,
+        "status": "fading",
+        "first_seen_at": "2026-08-07T23:33:02.058+00:00",
+        "prev_video_count": 17,
+        "prev_total_views": 5117560,
+        "created_at": "2026-08-09T05:56:27.429374+00:00"
+      },
+      {
+        "id": "cef9ffda-8dda-426c-b7b6-76cc55f73849",
+        "viral_insight_id": "02e27521-b024-47ca-94b0-b4f8f10eb74c",
+        "insight_type": "custom_niche",
+        "reference_id": "9c96fddf-dc35-4be0-bbd9-12f4d22aea12",
+        "batch_start": "2026-08-09T05:30:36.33+00:00",
+        "batch_end": "2026-08-09T05:55:28.874+00:00",
+        "rank": 5,
+        "stable_key": "ai-tool-reviews-and-recommendations",
+        "name": "AI Tool Reviews and Recommendations",
+        "why_it_works": "Provides valuable resources and recommendations for users seeking to leverage AI for productivity and specific tasks.",
+        "tactics": [
+          "list top AI tools",
+          "review specific AI tools",
+          "provide free AI tool resources",
+          "showcasing various AI tools",
+          "providing tips for using AI tools for content creation",
+          "recommending AI tools for business and productivity",
+          "review specific AI tools (e.g., TopView.ai, Soulog Sense)",
+          "list best AI apps and tools",
+          "showcase Google's free AI tools",
+          "highlight useful GitHub repositories for AI"
+        ],
+        "confidence": 0.87,
+        "evidence_video_ids": [
+          "ab5e3933-13f5-4501-a234-1b4910dbd811",
+          "a92ee4b1-e5f0-4fbd-a39e-5635298abcfe",
+          "4f94b08f-dfd5-48e7-8a3f-07faacd81dcb",
+          "3286581d-8233-4709-b849-6ed9f1ab73cd",
+          "f5458a39-c7b0-41fd-ab1d-28eee6e548ab",
+          "da641a64-fdb4-4833-a93e-038061c68540",
+          "64bb3ef1-0cf4-44cd-85fa-3691316bf125",
+          "71df5b20-cc14-465c-98fd-939e52f84444",
+          "7eeab131-f229-47d3-8b11-a8690b7f2a06",
+          "ba2050d3-7685-4156-a0c7-246bbe176aea",
+          "bdb7fe95-22e7-40b7-b351-07bce7583b8e",
+          "5697d141-2899-45f6-8ae2-94387159a340",
+          "f001337a-3a36-40f3-9096-196c44e1175a",
+          "76fc75ab-85bb-47e1-91d3-5e77580769af",
+          "6d65ddad-c441-4eb2-a27c-a119ae3c698f",
+          "b79fb6e3-afe0-4cd7-bda7-8d6e6da802dd",
+          "ad301ef4-3c30-425e-85c8-0e1430b1f125",
+          "2928992b-9fff-494f-9d58-3a46797a2c73",
+          "370d8ef8-bd2e-4bf4-95c3-68b5a65fd6b1"
+        ],
+        "evidence_videos": [
+          {
+            "id": "ab5e3933-13f5-4501-a234-1b4910dbd811",
+            "url": "https://www.youtube.com/shorts/7QgUMEm_7Dk",
+            "platform": "youtube"
+          },
+          {
+            "id": "a92ee4b1-e5f0-4fbd-a39e-5635298abcfe",
+            "url": "https://www.youtube.com/shorts/0MQEf_7qk4s",
+            "platform": "youtube"
+          },
+          {
+            "id": "4f94b08f-dfd5-48e7-8a3f-07faacd81dcb",
+            "url": "https://www.tiktok.com/@carter.braydon/video/7664803392665046302",
+            "platform": "tiktok"
+          },
+          {
+            "id": "3286581d-8233-4709-b849-6ed9f1ab73cd",
+            "url": "https://www.tiktok.com/@ai_tools_26/video/7668742479969012993",
+            "platform": "tiktok"
+          },
+          {
+            "id": "f5458a39-c7b0-41fd-ab1d-28eee6e548ab",
+            "url": "https://www.tiktok.com/@theaitoolshub_/video/7669197365877755150",
+            "platform": "tiktok"
+          },
+          {
+            "id": "da641a64-fdb4-4833-a93e-038061c68540",
+            "url": "https://www.youtube.com/shorts/mPq3PJQ0SDY",
+            "platform": "youtube"
+          },
+          {
+            "id": "64bb3ef1-0cf4-44cd-85fa-3691316bf125",
+            "url": "https://www.tiktok.com/@ai_tools_26/video/7668742816088083733",
+            "platform": "tiktok"
+          },
+          {
+            "id": "71df5b20-cc14-465c-98fd-939e52f84444",
+            "url": "https://www.youtube.com/shorts/yKGWgfDH_z0",
+            "platform": "youtube"
+          },
+          {
+            "id": "7eeab131-f229-47d3-8b11-a8690b7f2a06",
+            "url": "https://www.tiktok.com/@itskiwithai/video/7670339283424759070",
+            "platform": "tiktok"
+          },
+          {
+            "id": "ba2050d3-7685-4156-a0c7-246bbe176aea",
+            "url": "https://www.tiktok.com/@ai_tools_26/video/7666213354880584981",
+            "platform": "tiktok"
+          },
+          {
+            "id": "bdb7fe95-22e7-40b7-b351-07bce7583b8e",
+            "url": "https://www.tiktok.com/@polsia.markus92/video/7671769253875322134",
+            "platform": "tiktok"
+          },
+          {
+            "id": "5697d141-2899-45f6-8ae2-94387159a340",
+            "url": "https://www.youtube.com/shorts/hgO5z_waKk0",
+            "platform": "youtube"
+          },
+          {
+            "id": "f001337a-3a36-40f3-9096-196c44e1175a",
+            "url": "https://www.tiktok.com/@soulog.ai/video/7671208398817348895",
+            "platform": "tiktok"
+          },
+          {
+            "id": "76fc75ab-85bb-47e1-91d3-5e77580769af",
+            "url": "https://www.tiktok.com/@jamieshuell.ai/video/7666143404950048022",
+            "platform": "tiktok"
+          },
+          {
+            "id": "6d65ddad-c441-4eb2-a27c-a119ae3c698f",
+            "url": "https://www.tiktok.com/@brockmesarich/video/7667187941562797326",
+            "platform": "tiktok"
+          },
+          {
+            "id": "b79fb6e3-afe0-4cd7-bda7-8d6e6da802dd",
+            "url": "https://www.tiktok.com/@ai_tools_26/video/7666842246133730568",
+            "platform": "tiktok"
+          },
+          {
+            "id": "ad301ef4-3c30-425e-85c8-0e1430b1f125",
+            "url": "https://www.tiktok.com/@ai_tools_26/video/7670614959121779976",
+            "platform": "tiktok"
+          },
+          {
+            "id": "2928992b-9fff-494f-9d58-3a46797a2c73",
+            "url": "https://www.tiktok.com/@tof.visuals/video/7668444170968780040",
+            "platform": "tiktok"
+          },
+          {
+            "id": "370d8ef8-bd2e-4bf4-95c3-68b5a65fd6b1",
+            "url": "https://www.tiktok.com/@brennan_wells/video/7665170203008896269",
+            "platform": "tiktok"
+          }
+        ],
+        "video_count": 19,
+        "total_views": 2442637,
+        "total_likes": 68115,
+        "total_comments": 5321,
+        "total_shares": 12683,
+        "avg_virality_score": 0.6170947897173898,
+        "platform_breakdown": {
+          "tiktok": 14,
+          "youtube": 5
+        },
+        "top_creators": [
+          {
+            "username": "@setupsaitony",
+            "followers": 544000,
+            "total_views": 976404,
+            "video_count": 1
+          },
+          {
+            "username": "ai_tools_26",
+            "followers": 5239,
+            "total_views": 757707,
+            "video_count": 5
+          },
+          {
+            "username": "brennan_wells",
+            "followers": 39056,
+            "total_views": 270447,
+            "video_count": 1
+          },
+          {
+            "username": "carter.braydon",
+            "followers": 71532,
+            "total_views": 227223,
+            "video_count": 1
+          },
+          {
+            "username": "soulog.ai",
+            "followers": 1590,
+            "total_views": 54957,
+            "video_count": 1
+          }
+        ],
+        "peak_hour_utc": 21,
+        "status": "steady",
+        "first_seen_at": "2026-08-07T23:33:02.058+00:00",
+        "prev_video_count": 15,
+        "prev_total_views": 2443989,
+        "created_at": "2026-08-09T05:56:27.429374+00:00"
+      },
+      {
+        "id": "ca6c8447-53b5-45cc-8992-ebf275de337c",
+        "viral_insight_id": "02e27521-b024-47ca-94b0-b4f8f10eb74c",
+        "insight_type": "custom_niche",
+        "reference_id": "9c96fddf-dc35-4be0-bbd9-12f4d22aea12",
+        "batch_start": "2026-08-09T05:30:36.33+00:00",
+        "batch_end": "2026-08-09T05:55:28.874+00:00",
+        "rank": 6,
+        "stable_key": "ai-tools-for-lead-generation-general",
+        "name": "AI Tools for Lead Generation (General)",
+        "why_it_works": "Offers practical business solutions by showing how AI can enhance lead generation and sales processes.",
+        "tactics": [
+          "explain AI for lead generation",
+          "show AI sales call applications",
+          "demonstrate AI prospecting tools",
+          "real estate lead generation with AI",
+          "insurance lead generation with AI",
+          "AI-powered ad strategies for lead generation",
+          "show AI for real estate lead generation",
+          "demonstrate free lead generation with ChatGPT",
+          "explain AI voice cloning for sales calls",
+          "show Claude AI pulling leads from LinkedIn"
+        ],
+        "confidence": 0.87,
+        "evidence_video_ids": [
+          "10263de4-694b-4c80-acf8-efa3d938294b",
+          "fe0503b0-6384-427c-805f-1f372fe0aeec",
+          "d40aaabd-7ee2-469a-91f3-6608b1b72dd2",
+          "d4eb1585-6666-4acb-a45d-4310335c828f",
+          "b3c0672a-06a0-40e4-9680-51647c98d87e",
+          "84d27c6a-63bd-41e9-ab5f-75a2dffb9640",
+          "9ae04dab-0572-4c90-8b47-97c5fecf3038",
+          "fe6f632d-dac1-4e09-9a4c-c979d9b578b9",
+          "4a1b94ad-d996-4fd0-8156-8ad0b98976b8",
+          "2a69186a-7686-485c-a148-3e3d4287a8a6",
+          "78f64b73-1954-4873-af1a-581a99950552"
+        ],
+        "evidence_videos": [
+          {
+            "id": "10263de4-694b-4c80-acf8-efa3d938294b",
+            "url": "https://www.youtube.com/shorts/_6pQjp_lJpc",
+            "platform": "youtube"
+          },
+          {
+            "id": "fe0503b0-6384-427c-805f-1f372fe0aeec",
+            "url": "https://www.tiktok.com/@b2bwithdanielle/video/7664347486533733662",
+            "platform": "tiktok"
+          },
+          {
+            "id": "d40aaabd-7ee2-469a-91f3-6608b1b72dd2",
+            "url": "https://www.youtube.com/shorts/WjWCPOmYbp4",
+            "platform": "youtube"
+          },
+          {
+            "id": "d4eb1585-6666-4acb-a45d-4310335c828f",
+            "url": "https://www.tiktok.com/@closewithcontentt/video/7664390959236451615",
+            "platform": "tiktok"
+          },
+          {
+            "id": "b3c0672a-06a0-40e4-9680-51647c98d87e",
+            "url": "https://www.tiktok.com/@wolfecreates/video/7662139040560401677",
+            "platform": "tiktok"
+          },
+          {
+            "id": "84d27c6a-63bd-41e9-ab5f-75a2dffb9640",
+            "url": "https://www.tiktok.com/@naomiomosun/video/7664590805566229768",
+            "platform": "tiktok"
+          },
+          {
+            "id": "9ae04dab-0572-4c90-8b47-97c5fecf3038",
+            "url": "https://www.tiktok.com/@jocsellsarizona/video/7663222118775082253",
+            "platform": "tiktok"
+          },
+          {
+            "id": "fe6f632d-dac1-4e09-9a4c-c979d9b578b9",
+            "url": "https://www.tiktok.com/@smartclose.ai/video/7666494346258025746",
+            "platform": "tiktok"
+          },
+          {
+            "id": "4a1b94ad-d996-4fd0-8156-8ad0b98976b8",
+            "url": "https://www.tiktok.com/@glendenoon/video/7667014513161506078",
+            "platform": "tiktok"
+          },
+          {
+            "id": "2a69186a-7686-485c-a148-3e3d4287a8a6",
+            "url": "https://www.youtube.com/shorts/HbmyBac3vjk",
+            "platform": "youtube"
+          },
+          {
+            "id": "78f64b73-1954-4873-af1a-581a99950552",
+            "url": "https://www.tiktok.com/@b2bwithdanielle/video/7662122883833023775",
+            "platform": "tiktok"
+          }
+        ],
+        "video_count": 11,
+        "total_views": 362870,
+        "total_likes": 12423,
+        "total_comments": 474,
+        "total_shares": 950,
+        "avg_virality_score": 0.6218072598617582,
+        "platform_breakdown": {
+          "tiktok": 8,
+          "youtube": 3
+        },
+        "top_creators": [
+          {
+            "username": "@SetterAI",
+            "followers": 892,
+            "total_views": 144291,
+            "video_count": 1
+          },
+          {
+            "username": "@JessAutomates",
+            "followers": 5090,
+            "total_views": 121492,
+            "video_count": 1
+          },
+          {
+            "username": "b2bwithdanielle",
+            "followers": 570,
+            "total_views": 35021,
+            "video_count": 2
+          },
+          {
+            "username": "jocsellsarizona",
+            "followers": 4530,
+            "total_views": 23383,
+            "video_count": 1
+          },
+          {
+            "username": "wolfecreates",
+            "followers": 2079,
+            "total_views": 21652,
+            "video_count": 1
+          }
+        ],
+        "peak_hour_utc": 0,
+        "status": "steady",
+        "first_seen_at": "2026-08-07T23:33:02.058+00:00",
+        "prev_video_count": 8,
+        "prev_total_views": 429424,
+        "created_at": "2026-08-09T05:56:27.429374+00:00"
+      },
+      {
+        "id": "7e4e98ad-d844-4550-9747-5cf31a1eb37c",
+        "viral_insight_id": "02e27521-b024-47ca-94b0-b4f8f10eb74c",
+        "insight_type": "custom_niche",
+        "reference_id": "9c96fddf-dc35-4be0-bbd9-12f4d22aea12",
+        "batch_start": "2026-08-09T05:30:36.33+00:00",
+        "batch_end": "2026-08-09T05:55:28.874+00:00",
+        "rank": 7,
+        "stable_key": "ai-video-generation-trends",
+        "name": "AI Video Generation Trends",
+        "why_it_works": "Taps into the visual appeal of AI-generated content, offering tutorials for viral video creation and automation.",
+        "tactics": [
+          "show AI baby video magic",
+          "demonstrate AI video generator trends",
+          "provide tutorials for viral AI video trends",
+          "tutorials on creating AI videos with dialogue and music",
+          "strategies for long-form AI videos",
+          "using AI for 3D cartoon animation",
+          "demonstrating AI tools for video editing"
+        ],
+        "confidence": 0.85,
+        "evidence_video_ids": [
+          "a4586731-1385-4594-bb3e-3529e667a5b0",
+          "417d5605-2b5b-47b8-a1a5-b3077545ec6a",
+          "0a988628-f38f-4762-82e2-20d28f5176f0",
+          "c7160e50-d1a7-4c6c-baa4-ce3055513abe",
+          "9ccd4a72-6365-4569-b3eb-ab093599eb67",
+          "a7ed87e4-6c20-4bd4-b22d-4d7be5e0d689",
+          "0c9db6f1-5951-44ee-bdf9-e092e9ebc014",
+          "76d6dc0e-310c-4ce5-9542-1564b628ba90",
+          "f929ed2b-23b5-4155-a645-3e80f0cb07d2",
+          "b2144d38-c841-470e-b3f8-75cbbe4b80be",
+          "116cd54f-345c-4032-9eb0-89db14ec3f78",
+          "50deb237-337d-4723-90fd-9381dee13687"
+        ],
+        "evidence_videos": [
+          {
+            "id": "a4586731-1385-4594-bb3e-3529e667a5b0",
+            "url": "https://www.youtube.com/shorts/MuEjjftyhjk",
+            "platform": "youtube"
+          },
+          {
+            "id": "417d5605-2b5b-47b8-a1a5-b3077545ec6a",
+            "url": "https://www.youtube.com/shorts/zSJfeGiOBDw",
+            "platform": "youtube"
+          },
+          {
+            "id": "0a988628-f38f-4762-82e2-20d28f5176f0",
+            "url": "https://www.tiktok.com/@miiabricker/video/7668784737779027220",
+            "platform": "tiktok"
+          },
+          {
+            "id": "c7160e50-d1a7-4c6c-baa4-ce3055513abe",
+            "url": "https://www.youtube.com/shorts/ClMN_M7LGM0",
+            "platform": "youtube"
+          },
+          {
+            "id": "9ccd4a72-6365-4569-b3eb-ab093599eb67",
+            "url": "https://www.youtube.com/shorts/cU3CQstJsFo",
+            "platform": "youtube"
+          },
+          {
+            "id": "a7ed87e4-6c20-4bd4-b22d-4d7be5e0d689",
+            "url": "https://www.youtube.com/shorts/QDagTsnFv_E",
+            "platform": "youtube"
+          },
+          {
+            "id": "0c9db6f1-5951-44ee-bdf9-e092e9ebc014",
+            "url": "https://www.tiktok.com/@bch.ho.ai1/video/7663087900195769620",
+            "platform": "tiktok"
+          },
+          {
+            "id": "76d6dc0e-310c-4ce5-9542-1564b628ba90",
+            "url": "https://www.tiktok.com/@kraxgrow/video/7662743142487280899",
+            "platform": "tiktok"
+          },
+          {
+            "id": "f929ed2b-23b5-4155-a645-3e80f0cb07d2",
+            "url": "https://www.tiktok.com/@youdontknowai2026/video/7666699761877093652",
+            "platform": "tiktok"
+          },
+          {
+            "id": "b2144d38-c841-470e-b3f8-75cbbe4b80be",
+            "url": "https://www.tiktok.com/@createwithtessa/video/7669924009928035597",
+            "platform": "tiktok"
+          },
+          {
+            "id": "116cd54f-345c-4032-9eb0-89db14ec3f78",
+            "url": "https://www.tiktok.com/@ceotalks23/video/7666500569078451478",
+            "platform": "tiktok"
+          },
+          {
+            "id": "50deb237-337d-4723-90fd-9381dee13687",
+            "url": "https://www.tiktok.com/@kraxgrow/video/7660925368928390422",
+            "platform": "tiktok"
+          }
+        ],
+        "video_count": 12,
+        "total_views": 3693281,
+        "total_likes": 23511,
+        "total_comments": 557,
+        "total_shares": 2133,
+        "avg_virality_score": 0.7558060144808092,
+        "platform_breakdown": {
+          "tiktok": 7,
+          "youtube": 5
+        },
+        "top_creators": [
+          {
+            "username": "@Mr.Vector-j9c",
+            "followers": 2920,
+            "total_views": 1908157,
+            "video_count": 1
+          },
+          {
+            "username": "miiabricker",
+            "followers": 22159,
+            "total_views": 1294803,
+            "video_count": 1
+          },
+          {
+            "username": "@totalaivideo9",
+            "followers": 374,
+            "total_views": 186434,
+            "video_count": 1
+          },
+          {
+            "username": "kraxgrow",
+            "followers": 5070,
+            "total_views": 153563,
+            "video_count": 2
+          },
+          {
+            "username": "ceotalks23",
+            "followers": 947,
+            "total_views": 90381,
+            "video_count": 1
+          }
+        ],
+        "peak_hour_utc": 12,
+        "status": "new",
+        "first_seen_at": "2026-08-09T05:55:28.874+00:00",
+        "prev_video_count": null,
+        "prev_total_views": null,
+        "created_at": "2026-08-09T05:56:27.429374+00:00"
+      },
+      {
+        "id": "ecc2bfd2-3f72-45a2-aca8-ad46f3d44ac5",
+        "viral_insight_id": "02e27521-b024-47ca-94b0-b4f8f10eb74c",
+        "insight_type": "custom_niche",
+        "reference_id": "9c96fddf-dc35-4be0-bbd9-12f4d22aea12",
+        "batch_start": "2026-08-09T05:30:36.33+00:00",
+        "batch_end": "2026-08-09T05:55:28.874+00:00",
+        "rank": 8,
+        "stable_key": "claude-opus-sonnet-insights",
+        "name": "Claude Opus & Sonnet Insights and Performance",
+        "why_it_works": "Keeps users informed about the latest developments and comparative performance of Claude's advanced models, including issues.",
+        "tactics": [
+          "compare Claude Sonnet and Opus",
+          "offer free access to Claude Opus",
+          "provide tips for Claude usage limits",
+          "discussing Claude Opus sluggishness and argumentative behavior",
+          "comparing Claude Opus performance to previous versions"
+        ],
+        "confidence": 0.85,
+        "evidence_video_ids": [
+          "d20ec55a-077b-42c3-8aca-7aa383a99bac",
+          "7bf36553-4374-44d0-a32f-d626c51dd70e",
+          "26ef6fd8-37b6-4b89-8b54-c3d6b27a9ae2",
+          "ae6bcefb-e41b-4687-b59f-ed348c2e4a70",
+          "02a8c3d4-6b78-4367-a244-0fe2a0c41e85",
+          "31765d81-3071-4a31-99bb-8dc1c5325301"
+        ],
+        "evidence_videos": [
+          {
+            "id": "d20ec55a-077b-42c3-8aca-7aa383a99bac",
+            "url": "https://www.youtube.com/shorts/Xo52SshrSzs",
+            "platform": "youtube"
+          },
+          {
+            "id": "7bf36553-4374-44d0-a32f-d626c51dd70e",
+            "url": "https://www.youtube.com/shorts/YUJf6EWu8n4",
+            "platform": "youtube"
+          },
+          {
+            "id": "26ef6fd8-37b6-4b89-8b54-c3d6b27a9ae2",
+            "url": "https://www.tiktok.com/@chieutadkieeeee/video/7670282173269773589",
+            "platform": "tiktok"
+          },
+          {
+            "id": "ae6bcefb-e41b-4687-b59f-ed348c2e4a70",
+            "url": "https://www.youtube.com/shorts/HAaAdINP37o",
+            "platform": "youtube"
+          },
+          {
+            "id": "02a8c3d4-6b78-4367-a244-0fe2a0c41e85",
+            "url": "https://www.tiktok.com/@gojutechtalk/video/7670031059370691854",
+            "platform": "tiktok"
+          },
+          {
+            "id": "31765d81-3071-4a31-99bb-8dc1c5325301",
+            "url": "https://www.tiktok.com/@malikontech/video/7669890050603240734",
+            "platform": "tiktok"
+          }
+        ],
+        "video_count": 6,
+        "total_views": 330753,
+        "total_likes": 3642,
+        "total_comments": 340,
+        "total_shares": 202,
+        "avg_virality_score": 0.5716341674106449,
+        "platform_breakdown": {
+          "tiktok": 3,
+          "youtube": 3
+        },
+        "top_creators": [
+          {
+            "username": "@theinformation",
+            "followers": 126000,
+            "total_views": 242827,
+            "video_count": 1
+          },
+          {
+            "username": "gojutechtalk",
+            "followers": 4407,
+            "total_views": 49360,
+            "video_count": 1
+          },
+          {
+            "username": "chieutadkieeeee",
+            "followers": 672,
+            "total_views": 25148,
+            "video_count": 1
+          },
+          {
+            "username": "malikontech",
+            "followers": 2082,
+            "total_views": 6471,
+            "video_count": 1
+          },
+          {
+            "username": "@techbydivy",
+            "followers": 48,
+            "total_views": 4970,
+            "video_count": 1
+          }
+        ],
+        "peak_hour_utc": 19,
+        "status": "new",
+        "first_seen_at": "2026-08-09T05:55:28.874+00:00",
+        "prev_video_count": null,
+        "prev_total_views": null,
+        "created_at": "2026-08-09T05:56:27.429374+00:00"
+      },
+      {
+        "id": "62e84384-9fb4-4876-8ca7-cea99cdd4dfc",
+        "viral_insight_id": "02e27521-b024-47ca-94b0-b4f8f10eb74c",
+        "insight_type": "custom_niche",
+        "reference_id": "9c96fddf-dc35-4be0-bbd9-12f4d22aea12",
+        "batch_start": "2026-08-09T05:30:36.33+00:00",
+        "batch_end": "2026-08-09T05:55:28.874+00:00",
+        "rank": 9,
+        "stable_key": "ai-coding-benchmarks-and-comparisons",
+        "name": "AI Coding Benchmarks and Comparisons",
+        "why_it_works": "Developers are interested in which AI models perform best for coding tasks and how they are trained.",
+        "tactics": [
+          "comparing CatCoder with OpenAI and Claude for coding",
+          "showcasing AI models coding independently for extended periods"
+        ],
+        "confidence": 0.9,
+        "evidence_video_ids": [
+          "346c3cdd-f203-4142-82eb-2e928209d94f",
+          "a4939bce-6596-4214-a4af-3dda58f5dd52"
+        ],
+        "evidence_videos": [
+          {
+            "id": "346c3cdd-f203-4142-82eb-2e928209d94f",
+            "url": "https://www.tiktok.com/@bobby.crypto.basics/video/7670570800503655712",
+            "platform": "tiktok"
+          },
+          {
+            "id": "a4939bce-6596-4214-a4af-3dda58f5dd52",
+            "url": "https://www.tiktok.com/@sxechina/video/7669791695529168150",
+            "platform": "tiktok"
+          }
+        ],
+        "video_count": 2,
+        "total_views": 106279,
+        "total_likes": 6130,
+        "total_comments": 94,
+        "total_shares": 1373,
+        "avg_virality_score": 0.5008444791741657,
+        "platform_breakdown": {
+          "tiktok": 2
+        },
+        "top_creators": [
+          {
+            "username": "sxechina",
+            "followers": 22907,
+            "total_views": 97832,
+            "video_count": 1
+          },
+          {
+            "username": "bobby.crypto.basics",
+            "followers": 3810,
+            "total_views": 8447,
+            "video_count": 1
+          }
+        ],
+        "peak_hour_utc": 15,
+        "status": "new",
+        "first_seen_at": "2026-08-09T05:55:28.874+00:00",
+        "prev_video_count": null,
+        "prev_total_views": null,
+        "created_at": "2026-08-09T05:56:27.429374+00:00"
+      }
+    ]
+  }
+}

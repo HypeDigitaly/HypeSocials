@@ -84,7 +84,12 @@ class RunConfig:
     vision_check: bool = False
     spend_cap_usd: float = 10.00
     trend_history_days: int = 7  # 0 disables the repeat-prevention window
-    max_trend_reuses_per_run: int = 2
+    # 6 since 2026-08-11 (was 2). D36 moved recency to the POST, so reuse stopped being a
+    # throughput ceiling, and FR-91's per-reuse rotation gives each of the 6 a different one of
+    # the trend's downloaded reference groups plus its own style brief (FR-9/FR-12). A config
+    # that does not set the key falls back to HERE, so this is the value the shipped niche
+    # configs actually run at — `configs/default.yaml` alone would not have changed them.
+    max_trend_reuses_per_run: int = 6
     carousel_anchor: bool = True
     reel_overlay_text: Literal["seed_frame", "in_model", "none"] = "seed_frame"
     reel_audio: bool = True
@@ -109,7 +114,13 @@ class SourcesConfig:
     active: list[str] = field(default_factory=lambda: ["virlo"])
     virlo_monitor_ids: list[str] = field(default_factory=list)
     virlo_session_pool: int = 3  # bounded wrapper sessions; never one subprocess per monitor
-    media_download_cap: int = 6  # reference IMAGES per trend; the video ref is bounded separately
+    # Reference IMAGES per trend; the video ref is bounded separately. 18 = the reuse ceiling (6)
+    # x a job's set size (3), because FR-91's per-reuse rotation needs one DOWNLOADED group per
+    # reuse. At the old 6 a run could only ever download 2 groups, so six siblings rotated over
+    # two sets and three pairs rendered from identical pictures (measured 2026-08-11: 77 candidate
+    # sets qualified, 2 survived the budget). This is NOT the per-analysis-call image count —
+    # that stays at FR-93's ~6, enforced in `runner._analyze`.
+    media_download_cap: int = 18
     reference_images_per_job: int = 3
     inspiration_folders: list[str] = field(default_factory=list)  # flat global pool (D13)
     inspiration_mix: Literal["off", "minority", "exclusive"] = "minority"
@@ -165,11 +176,17 @@ class ModelsConfig:
     # and sending it under `provider.require_parameters` returns HTTP 404. The key survives for a
     # model that does support it; FR-129 as written needs a D15 amendment.
     temperature: dict[str, float] = field(default_factory=dict)
-    max_tokens: dict[str, int] = field(default_factory=lambda: {"analysis": 2000, "copy": 3000})
-    # NFR-111 floors, set at a third of each default: below this a cap buys truncation retries as
-    # the normal path rather than saving money, so a smaller value is clamped up and warned about.
+    # `analysis` is 12000 (amended 2026-08-11, 30 §2): EVERY style-brief call this tool had ever
+    # made hit `llm_truncated` against the old 2000. Successful briefs serialize to 12,938–23,388
+    # characters ≈ 3,600–6,500 output tokens, and `reasoning_effort` is None for this role yet
+    # OpenRouter still bills 0–3,057 Sonnet-5 reasoning tokens INSIDE `completion_tokens`.
+    max_tokens: dict[str, int] = field(default_factory=lambda: {"analysis": 12000, "copy": 3000})
+    # NFR-111 floors: below this a cap buys truncation retries as the normal path rather than
+    # saving money, so a smaller value is clamped up and warned about. `copy` sits at a third of
+    # its default; `analysis` sits at half, because the floor has to clear a REALISTIC brief
+    # (6,500 output tokens plus unbidden reasoning), not merely clear zero.
     max_tokens_floor: dict[str, int] = field(
-        default_factory=lambda: {"analysis": 600, "copy": 1000})
+        default_factory=lambda: {"analysis": 6000, "copy": 1000})
     price_per_unit: PriceTable = field(default_factory=PriceTable)
     image_job_timeout_s: int = 180
     # 1800 (operator decision 2026-08-10, was 600): W6's run 20260809_221816_0316 failed a Seedance
@@ -212,15 +229,43 @@ class OutputConfig:
 
 
 @dataclass(slots=True)
+class BrandConfig:
+    """`niche.brand:` — the render-side brand overlay, stated by the config instead of Notion (A11).
+
+    FR-109's `{{brand_accent}}` slot has always existed, always been allowlisted for the four
+    gpt-image-2 roles and always been BLANK, because its only source was Notion — which is `off`
+    in every shipped config and needs a `NOTION_TOKEN` this workstation does not carry. These two
+    keys give the operator the same slot without the integration. Notion still wins when it is
+    energised (`runner` reads the fetched value first and falls back to here), so turning Notion on
+    later changes nothing written down here.
+
+    Deliberately just these two: an accent colour to substitute inside the trend's own palette, and
+    product nouns the on-image text may use. No font, no layout, no template — a brand-templated
+    render has stopped being a mimicry render, and mimicry is the product.
+    """
+
+    accent: str = ""
+    product_nouns: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class NicheConfig:
     """The optional `niche:` descriptor (D27), injected into Analyze and Write (FR-147)."""
 
     audience: str = ""
     vibe: str = ""
     visual_world: str = ""
+    brand: BrandConfig = field(default_factory=BrandConfig)
 
     def as_text(self) -> str:
-        """One compact line for the `{{niche_descriptor}}` placeholder; empty when unset."""
+        """One compact line for the `{{niche_descriptor}}` placeholder; empty when unset.
+
+        `brand` is deliberately absent. This text feeds `{{niche_descriptor}}`, which is a COPY-side
+        placeholder (the analyst and the copywriter allowlist it, no render role does); the brand
+        accent is render-side and travels in `{{brand_accent}}`. Folding one into the other would
+        put brand text into copy prompts and drag the audience line into render prompts — exactly
+        the leak the per-role allowlists exist to prevent (FR-261/109).
+        """
         labels = (("Audience", self.audience), ("Vibe", self.vibe),
                   ("Visual world", self.visual_world))
         return " · ".join(f"{label}: {value}" for label, value in labels if value)
@@ -738,7 +783,8 @@ def _clamp_token_limits(models: ModelsConfig, ctx: _Ctx) -> None:
 
 
 __all__ = [
-    "CONFIGS_DIR", "DEFAULT_CONFIG_NAME", "LOGS_DIR", "Config", "ConfigError", "ConfigSummary",
+    "CONFIGS_DIR", "DEFAULT_CONFIG_NAME", "LOGS_DIR", "BrandConfig", "Config", "ConfigError",
+    "ConfigSummary",
     "GalleryConfig", "McpConfig", "ModelsConfig", "NicheConfig", "OutputConfig", "PLATFORMS",
     "PlatformConfig", "PriceTable", "RunConfig", "SourcesConfig", "TextBudgets", "list_configs",
     "load_config",

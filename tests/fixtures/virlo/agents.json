@@ -1,0 +1,143 @@
+{
+  "data": {
+    "limit": 50,
+    "page": 1,
+    "count": 3,
+    "agents": [
+      {
+        "id": "623203a9-c09c-4763-85e0-1c177b5af760",
+        "name": "AI Trends Tracker v2 (intelligence)",
+        "is_recurring": true,
+        "active": true,
+        "team_id": "5b21bafd-b42e-4a38-a646-f5f38d91f489",
+        "source": "api",
+        "keywords": [
+          "claude ai lead generation",
+          "ai tools lead generation",
+          "ai agent lead generation",
+          "automated lead generation ai",
+          "claude ai for business",
+          "b2b lead generation ai",
+          "ai sales lead generation"
+        ],
+        "platforms": [
+          "youtube",
+          "tiktok",
+          "instagram"
+        ],
+        "exclude_keywords": [],
+        "exclude_keywords_strict": false,
+        "meta_ads_enabled": false,
+        "data_intelligence_enabled": true,
+        "english_only": true,
+        "intent": "I want to find trending videos on AI, claude, lead generation, AI agents, AI tools.",
+        "intent_keywords": [
+          "claude ai lead generation",
+          "ai tools lead generation",
+          "ai agent lead generation",
+          "automated lead generation ai",
+          "claude ai for business",
+          "b2b lead generation ai",
+          "ai sales lead generation"
+        ],
+        "autonomy_level": "suggest",
+        "autopilot_unlocked": false,
+        "cognition_enabled": true,
+        "cadence": "0 0 * * 0",
+        "next_run_at": "2026-08-16T03:35:05.000Z",
+        "last_run_at": "2026-08-09T04:43:40.085Z",
+        "is_processing": false,
+        "created_at": "2026-08-07T10:23:26.005Z",
+        "updated_at": "2026-08-10T21:26:08.917Z"
+      },
+      {
+        "id": "65bf412a-2a8a-4e95-bf35-9f21dca208a6",
+        "name": "CZ coverage probe — AI/business Czech market",
+        "is_recurring": false,
+        "active": true,
+        "team_id": "5b21bafd-b42e-4a38-a646-f5f38d91f489",
+        "source": "api",
+        "keywords": [
+          "AI nástroje pro firmy",
+          "umělá inteligence pro podnikání",
+          "AI agenti automatizace",
+          "AI marketing česky",
+          "automatizace firmy AI"
+        ],
+        "platforms": [
+          "youtube",
+          "tiktok",
+          "instagram"
+        ],
+        "exclude_keywords": [],
+        "exclude_keywords_strict": false,
+        "meta_ads_enabled": false,
+        "data_intelligence_enabled": false,
+        "english_only": false,
+        "intent": "Find trending Czech-language short-form videos about AI tools, AI agents and business automation aimed at Czech companies and entrepreneurs, to test whether Czech-market coverage exists at all.",
+        "intent_keywords": [
+          "AI nástroje pro firmy česky",
+          "umělá inteligence pro podnikání české firmy",
+          "AI agenti pro automatizaci",
+          "AI marketing pro české firmy",
+          "automatizace firmy s AI"
+        ],
+        "autonomy_level": "suggest",
+        "autopilot_unlocked": false,
+        "cognition_enabled": true,
+        "cadence": null,
+        "next_run_at": null,
+        "last_run_at": "2026-08-06T20:34:21.529Z",
+        "is_processing": false,
+        "created_at": "2026-08-06T20:29:18.088Z",
+        "updated_at": "2026-08-06T20:34:21.584Z"
+      },
+      {
+        "id": "9c96fddf-dc35-4be0-bbd9-12f4d22aea12",
+        "name": "AI Trends Tracker",
+        "is_recurring": true,
+        "active": true,
+        "team_id": null,
+        "source": "web_app",
+        "keywords": [
+          "AI",
+          "AI agent",
+          "AI development",
+          "AI tool",
+          "Claude",
+          "Claude Opus",
+          "Claude Sonnet",
+          "Claude code",
+          "AI automation",
+          "AI lead generation",
+          "lead generation",
+          "AI agent trends",
+          "AI development trends",
+          "AI automation tools",
+          "conversational AI interfaces"
+        ],
+        "platforms": [
+          "youtube",
+          "tiktok",
+          "instagram"
+        ],
+        "exclude_keywords": [],
+        "exclude_keywords_strict": false,
+        "meta_ads_enabled": false,
+        "data_intelligence_enabled": false,
+        "english_only": true,
+        "intent": "I want to find trending posts on AI, AI tools and mainly AI agents, AI development.",
+        "intent_keywords": null,
+        "autonomy_level": "suggest",
+        "autopilot_unlocked": true,
+        "cognition_enabled": true,
+        "cadence": "0 0 * * 0",
+        "next_run_at": "2026-08-16T05:24:47.000Z",
+        "last_run_at": "2026-08-09T06:43:19.746Z",
+        "is_processing": false,
+        "created_at": "2026-08-06T20:02:56.734Z",
+        "updated_at": "2026-08-11T12:33:59.030Z"
+      }
+    ]
+  }
+}

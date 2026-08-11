@@ -17,7 +17,14 @@ these images are never blindly unioned into the Virlo pool:
 
 Coherence (FR-91) is per folder — one folder is one visual family, as one slideshow's panels are
 in `virlo.py`. Assets rotate deterministically through the pool, so a batch of eight creatives
-does not render the same picture eight times, and the same plan picks the same images.
+does not render the same picture eight times, and the same plan picks the same images. Under
+`exclusive` the rotation runs on two axes — which folder, and which window inside it (A17).
+
+A pooled image may also carry a sibling `.txt` (`01.jpg` / `01.txt`): the post's real, proven,
+human-written caption. Those land on `InspirationPool.exemplar_texts` for the COPY call and
+nothing else (A16) — never a render prompt, for the reason the "no words" role line in
+`generate/refs.py` exists. They ride the pool rather than the `Mix` because the copy call happens
+a stage BEFORE `apply_mix` decides reference sets; the pool is the object both stages can see.
 
 Invariants: pure local I/O — the scan runs off the event loop and nothing is uploaded here
 (`generate/` owns FR-200/FR-244's upload of these paths); a missing or empty folder is absence,
@@ -46,6 +53,17 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 logger = logging.getLogger(__name__)
 
 _SUFFIXES = frozenset({".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"})
+#: A16: a `.txt` sitting beside a pooled image, same stem, same folder — `01.jpg` / `01.txt`, the
+#: shape `Inspiration/Linkedin/Viral posts/` ships. It is the post's real, human-written, proven
+#: caption, and until now it was counted in `skipped` and thrown away. It does NOT make a file
+#: pickable: no image, no exemplar. Only an image already in the pool can carry one.
+_TEXT_SUFFIX = ".txt"
+#: Per-file byte cap. A viral caption is a few hundred characters; 4 KB is generous enough that no
+#: real one is cut and small enough that a stray pasted article cannot swallow the copy prompt.
+_MAX_TEXT_BYTES = 4096
+#: Run-wide exemplar cap. `_MAX_PER_FOLDER` x several folders could otherwise pool hundreds of
+#: captions; the copy call wants a handful of proven examples, not a corpus.
+_MAX_EXEMPLARS = 24
 #: Magic-byte prefixes, so "validate" means the bytes are an image and not just the name (a
 #: renamed .txt would fail the Kie upload and cost the job a reference for no reason).
 _MAGIC: tuple[bytes, ...] = (b"\xff\xd8\xff", b"\x89PNG\r\n\x1a\n", b"GIF87a", b"GIF89a",
@@ -60,7 +78,18 @@ class InspirationPool:
 
     groups: list[list[Path]] = field(default_factory=list)
     mix: str = "off"  # what config asked for; `active` says whether it can be honoured
-    skipped: int = 0  # files that were not usable images — logged once, never per file
+    skipped: int = 0  # files that were neither a usable image nor an exemplar — logged once
+    #: A16 — the sibling `.txt` beside a pooled image: proven, human-written viral COPY, in folder
+    #: order then file order, so a re-run pools it identically.
+    #:
+    #: ⚠️ THE COPY CALL AND NOTHING ELSE. This text must never reach a render prompt. Inspiration
+    #: images are attached to renders under an explicit "no words" role line (`generate/refs.py`),
+    #: and handing proven copy to an image model is how that copy ends up baked into pixels
+    #: verbatim. Structurally it cannot: there is no `{{placeholder}}` for it in
+    #: `models.PLACEHOLDERS` and therefore no render-role allowlist that could resolve one, and
+    #: `prompts_engine.build_context` has no parameter that accepts it. Any future wire-in belongs
+    #: to `copywrite.write_copy`, alongside `{{source_hooks}}`.
+    exemplar_texts: list[str] = field(default_factory=list)
 
     @property
     def images(self) -> list[Path]:
@@ -91,20 +120,24 @@ async def load_pool(cfg: Config, *, log: LogWriter | None = None) -> Inspiration
         log: the run's LogWriter; a missing or empty folder is logged once at info level.
 
     Returns:
-        An `InspirationPool`. `off`, no folders, missing folders and folders holding no usable
-        image all return an inactive pool — absence is a normal state, never an error.
+        An `InspirationPool`, carrying both channels this folder set can feed: the images every
+        mix but `off` attaches, and `exemplar_texts` — the sibling `.txt` captions, for the COPY
+        call only (A16). `off`, no folders, missing folders and folders holding no usable image
+        all return an inactive pool — absence is a normal state, never an error.
     """
     mix = cfg.sources.inspiration_mix
     folders = [Path(str(entry)) for entry in cfg.sources.inspiration_folders if str(entry).strip()]
     if mix == "off" or not folders:
         return InspirationPool(mix=mix)
-    groups, skipped, absent = await asyncio.to_thread(_scan, folders)
-    pool = InspirationPool(groups=groups, mix=mix, skipped=skipped)
+    groups, texts, skipped, absent = await asyncio.to_thread(_scan, folders)
+    pool = InspirationPool(groups=groups, mix=mix, skipped=skipped, exemplar_texts=texts)
     _note(log, "inspiration_pool", "info",
           f"inspiration pool: {len(pool.images)} image(s) in {len(groups)} folder(s), mix {mix}"
+          + (f"; {len(texts)} sibling caption(s) for the copy call" if texts else "")
           + (f"; {len(absent)} folder(s) missing or empty" if absent else "")
           + (f"; {skipped} non-image file(s) skipped" if skipped else ""),
-          folders=[str(folder) for folder in folders], absent=[str(folder) for folder in absent])
+          folders=[str(folder) for folder in folders], absent=[str(folder) for folder in absent],
+          exemplars=len(texts))
     return pool
 
 
@@ -147,9 +180,15 @@ def apply_mix(
 # --------------------------------------------------------------------------- internals
 
 
-def _scan(folders: Sequence[Path]) -> tuple[list[list[Path]], int, list[Path]]:
-    """Blocking folder walk, run in a worker thread. One group per folder that yielded images."""
+def _scan(folders: Sequence[Path]) -> tuple[list[list[Path]], list[str], int, list[Path]]:
+    """Blocking folder walk, run in a worker thread. One group per folder that yielded images.
+
+    Returns `(groups, exemplar_texts, skipped, absent)`. Both channels come off the same single
+    pass because they read the same directory listing: a second walk to find the `.txt` files
+    would be a second chance for the two views to disagree about what is in the folder.
+    """
     groups: list[list[Path]] = []
+    texts: list[str] = []
     skipped, absent = 0, []
     for folder in folders:
         try:
@@ -158,12 +197,59 @@ def _scan(folders: Sequence[Path]) -> tuple[list[list[Path]], int, list[Path]]:
             absent.append(folder)
             continue
         images = [path for path in entries if _usable(path)]
-        skipped += len(entries) - len(images)
+        kept = images[:_MAX_PER_FOLDER]
+        exemplars = _exemplars(kept, _MAX_EXEMPLARS - len(texts))
+        texts.extend(exemplars)
+        # A consumed `.txt` was neither an image nor waste, so it is not "skipped"; one that was
+        # empty, unreadable or past the run-wide cap still is, and the log line stays honest.
+        skipped += len(entries) - len(images) - len(exemplars)
         if images:
-            groups.append(images[:_MAX_PER_FOLDER])
+            groups.append(kept)
         else:  # an empty folder is absence, not an error (10 §10)
             absent.append(folder)
-    return groups, skipped, absent
+    return groups, texts, skipped, absent
+
+
+def _exemplars(images: Sequence[Path], room: int) -> list[str]:
+    """A16 — the sibling `.txt` beside each pooled image, read UTF-8 and size-capped.
+
+    Args:
+        images: the folder's pooled images, in the order they will be attached.
+        room: how many more exemplars the run-wide `_MAX_EXEMPLARS` cap still allows; `<= 0`
+            reads nothing, so a huge first folder cannot make the scan walk every later one.
+
+    Returns:
+        The captions found, in image order. A missing, empty or unreadable sidecar contributes
+        nothing and is never an error — this whole channel is enrichment of an asset that was
+        already pickable without it (`_usable` is untouched, so a lone `.txt` remains skipped).
+
+    Decoded `utf-8-sig` with `errors="replace"`: these files are hand-authored on a Windows box,
+    so a BOM is likely and a stray byte is possible, and neither is worth failing a free run over.
+    Over the cap the text is cut at the last whitespace before it, never mid-word — the same rule
+    the prompt engine applies, for the same reason (a mangled tail reads as a typo the copywriter
+    might then imitate).
+    """
+    out: list[str] = []
+    for image in images:
+        if len(out) >= max(0, room):
+            break
+        sidecar = image.with_suffix(_TEXT_SUFFIX)
+        try:
+            with sidecar.open("rb") as handle:
+                raw = handle.read(_MAX_TEXT_BYTES + 1)
+        except OSError:  # absent (the common case), unreadable, or a directory named `01.txt`
+            continue
+        # CRLF -> LF: these are Notepad-authored files, and a stray `\r` inside a prompt line is
+        # noise the model has to interpret. Line breaks are KEPT — a caption's shape (short lines,
+        # deliberate stanza breaks) is part of what makes it worth showing the copywriter.
+        text = (raw[:_MAX_TEXT_BYTES].decode("utf-8-sig", errors="replace")
+                .replace("\r\n", "\n").replace("\r", "\n").strip())
+        if len(raw) > _MAX_TEXT_BYTES:
+            cut = max(text.rfind(" "), text.rfind("\n"))
+            text = text[:cut].rstrip() if cut > 0 else text
+        if text:
+            out.append(text)
+    return out
 
 
 def _usable(path: Path) -> bool:
@@ -181,10 +267,24 @@ def _usable(path: Path) -> bool:
 
 
 def _pick(pool: InspirationPool, index: int, count: int) -> list[Path]:
-    """This asset's images: one coherent folder under `exclusive`, one rotating image otherwise."""
+    """This asset's images: one coherent folder under `exclusive`, one rotating image otherwise.
+
+    `index` is the asset's position in this run's sorted `asset_id` list, so the whole rotation is
+    a pure function of the plan — a re-run of the same plan picks the same pictures.
+
+    Under `exclusive` the folder rotates AND the window inside it rotates (A17). Rotating only the
+    folder was the trap: the shipped `exclusive` branch sliced `group[:count]`, so with the one
+    configured folder every creative in the run rendered from the same first three files — eight
+    creatives, one set of pictures. The window advances once per full pass over the folders, so
+    consecutive assets drawing on one folder get consecutive, non-overlapping windows until the
+    folder wraps, and a folder smaller than `count` simply yields all of itself once.
+    """
     if count > 1:
         group = pool.groups[index % len(pool.groups)]
-        return group[:count]
+        size = min(count, len(group))
+        turn = index // len(pool.groups)  # how many times this folder has been drawn from already
+        start = (turn * size) % len(group)
+        return [group[(start + offset) % len(group)] for offset in range(size)]
     images = pool.images
     return [images[index % len(images)]]
 

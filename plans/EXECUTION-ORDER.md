@@ -104,10 +104,29 @@ diagnose before continuing.
 
 ---
 
-# SESSION 2 — the rest of Increment A
+# SESSION 2 — the rest of Increment A · ✅ COMPLETE (2026-08-11)
 
 **Goal: steering, visibility, and the plagiarism guardrails the copy plan depends on.**
 Fully offline except the final check.
+
+> ✅ **Done. Waves A2′, A2″, A2‴ and A3 all landed and all barriers were met.** Closeout, with everything
+> Session 3 needs: **`plans/SESSION-2-CLOSEOUT.md` — read it before starting Session 3.**
+>
+> - 🔒 **A20 is GREEN, so Session 3 is unblocked.** Verified at the *assembled render prompt* across all
+>   four image roles and all three formats: zero competitor strings, `onimage_text` slot empty.
+> - Baselines for attribution: **522 tests passed** (from 425), `hypesocials/` **16,265** lines (from
+>   14,930), `tests/` **10,724** (from 8,905).
+> - ⚠️ **Three Session-2 contracts now live in files Session 3 edits** — `prompts/copywriter_system.md` is
+>   **read by tests** (the A21 bar: 30 chars / 4 content words / five rejected phrases must match the code
+>   constants both ways); `{{inspiration_exemplars}}` is allowlisted for that template alone and sits at
+>   position 3 of `_TRUNCATION_ORDER`; and `_BUILT_INS` parity is now enforced by
+>   `tests/test_template_parity.py`. See closeout §3.
+> - ⚠️ **Forecasts ran 6–8× under** on the two biggest waves. Increment B's estimates were written by the
+>   same method — recalibrate before trusting them. See closeout §2.
+> - Four findings recorded and deliberately unfixed (closeout §5), incl. one the conductor **attempted and
+>   reverted** with the reason written down.
+> - **Live verification (plan §3.4 / wave A4) is still outstanding** and needs the trial (expires
+>   ~2026-08-13).
 
 ```
 /xecutor Execute plans/xmasterplan-virlo-throughput-and-fidelity.md — Increment A, waves A2' through A3.
@@ -148,6 +167,13 @@ Session 3 until A20 is green.
 # SESSION 3 — copy voice V1
 
 **Goal: replace abstraction with transposition. This is where the robotic register actually gets fixed.**
+
+> 📋 **Read `plans/SESSION-2-CLOSEOUT.md` §3 first.** Session 2 landed three enforced contracts inside the
+> files V1c and V1d edit — the A21 bar stated in `copywriter_system.md` and asserted against code constants
+> in both directions, the `{{inspiration_exemplars}}` slot and its truncation position, and `_BUILT_INS`
+> placeholder parity. A V1d template rebuild that drops the `hook_pattern_used` bar **fails the suite**.
+> Also: `copywrite.py` is at 596 lines and its designed `degrade.py` split is blocked on this plan's own
+> path set — decide deliberately whether V1 takes it.
 
 ```
 /xecutor Execute plans/xmasterplan-copy-voice-transposition.md — waves V0 through V1d. STOP before V1e.

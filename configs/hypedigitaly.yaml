@@ -48,8 +48,15 @@ sources:
     - "9c96fddf-dc35-4be0-bbd9-12f4d22aea12"   # AI Trends Tracker - weekly, analysis_data populated
   # Curated local reference material (D13). This is the repo's existing top-level folder; when
   # T5.3 seeds niches/hypedigitaly/Inspiration/, point this there instead.
-  # "Inspiration/Linkedin/Viral posts" is the other candidate pool (proven copy + images).
-  inspiration_folders: ["Inspiration/Tiktok and IG"]
+  # "Inspiration/Linkedin/Viral posts" carries 16 paired `NN.jpg` / `NN.txt` files - proven,
+  # human-written viral copy beside its image. A16 (2026-08-11) made that `.txt` readable: a
+  # picked image's sibling text now reaches the COPY call as exemplar material. It never reaches
+  # a render prompt - inspiration images carry an explicit "no words" role line, and feeding
+  # proven copy to an image model invites verbatim text baked into pixels. Adding the folder also
+  # widens the IMAGE pool the mix draws from, which is a fidelity change, not only a copy one.
+  inspiration_folders:
+    - "Inspiration/Tiktok and IG"
+    - "Inspiration/Linkedin/Viral posts"
   inspiration_mix: minority        # at most 1 inspiration image alongside 2 trend references
 
 # Niche asset paths (D27). A missing folder is not an error - the contribution is simply absent

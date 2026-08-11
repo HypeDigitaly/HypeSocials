@@ -19,15 +19,18 @@ Invariants enforced here, once, for every caller:
 - **No config import.** Per-role settings arrive as `RoleSettings` from the runner, keeping the
   config seam one-directional.
 - **Never raises for a provider outcome.** Transport failure, HTTP error, unparseable body and
-  credit exhaustion all come back as a `ParsedResult` with `degraded=True`, `parsed=None` and
-  the reason in `raw_text`; callers write `if result.degraded: <fall back>` and attach
-  `analysis_missing` / `copy_degraded` themselves. Only a programmer error (unknown role) raises.
+  credit exhaustion all come back as a `ParsedResult` with `degraded=True`, `parsed=None` and a
+  short operator-facing cause in `reason` (`raw_text` keeps the body, for events.jsonl); callers
+  write `if result.degraded: <fall back>` and attach `analysis_missing` / `copy_degraded`
+  themselves. Only a programmer error (unknown role) raises.
 - **402 is a run condition (FR-248).** The first 402 latches `credits_exhausted`; that call and
   every later one short-circuit to a degraded result reading exactly `CREDITS_EXHAUSTED_REASON`
   — no retry, no further HTTP. Reported distinctly from Kie's 402 (FR-167): different fix.
 - **Two independent content retries, each capped at 1** (NFR-14): FR-126's tolerant parse runs
-  BEFORE either is spent; FR-127's truncation retry raises `max_tokens` so the retry is never
-  identical; FR-41's retry is the last resort.
+  BEFORE either is spent; FR-127's truncation retry raises `max_tokens` — bounded by the role's
+  output ceiling — so the retry is never identical; FR-41's retry is the last resort and is NOT
+  spent on a truncated response, because a body cut off mid-JSON is not a formatting failure and
+  re-asking it only buys the same truncation at the same price.
 - **NFR-111 floors** are applied at construction: a `max_tokens` below its floor is clamped UP
   and warned once, so a misconfigured tiny limit cannot silently truncate every call.
 - **Vision is base64 only (FR-40).** Callers hand over already-downloaded bytes; a CDN URL is
@@ -80,6 +83,8 @@ _TRUNCATED_REASONS = frozenset({"length", "max_tokens", "max_output_tokens"})
 _BACKOFF_BASE_S = 1.0
 _BACKOFF_CEILING_S = 20.0
 _TRUNCATION_BUMP_MAX = 8192  # FR-127: the retry differs by a bounded token bump, never doubles forever
+#: Used when a role does not declare `max_output_ceiling` — see `_output_ceiling` for the why.
+_DEFAULT_MAX_OUTPUT_CEILING = 16384
 _SCHEMA_NAME_SAFE = re.compile(r"[^A-Za-z0-9_-]+")
 #: FR-41's one retry appends this as a USER turn — the per-role SYSTEM prompt is never touched.
 _RETRY_NUDGE = "Return ONLY the JSON object required by the schema. No prose, no markdown fences."
@@ -102,6 +107,7 @@ class RoleSettings:
     model: str
     max_tokens: int = 4096
     max_tokens_floor: int = 0  # NFR-111 — clamped UP to this at construction, with a warning
+    max_output_ceiling: int = 0  # 0 = unknown; FR-127's widened retry is clamped here (see `_output_ceiling`)
     reasoning_effort: str | None = None  # "low" | "medium" | "high"; None omits `reasoning`
     temperature: float | None = None
     temperature_supported: bool = False  # FR-129 conflict gate — see module docstring
@@ -156,18 +162,20 @@ class LLMClient:
 
         Returns:
             ParsedResult — `parsed` is the validated object on success; on any failure
-            `degraded=True`, `parsed=None` and `raw_text` carries the reason. Token/cost usage
-            is accumulated across every attempt, because retries are billed too (FR-106c).
+            `degraded=True`, `parsed=None`, `reason` carries the operator-facing cause and
+            `raw_text` carries whatever body came back. Token/cost usage is accumulated across
+            every attempt, because retries are billed too (FR-106c).
         """
         settings = self._roles.get(role)
         if settings is None:
             raise ValueError(f"unknown LLM role {role!r}; configured roles: {sorted(self._roles)}")
         if self._credits_exhausted:
-            return ParsedResult(parsed=None, raw_text=CREDITS_EXHAUSTED_REASON, degraded=True)
+            return ParsedResult(parsed=None, raw_text=CREDITS_EXHAUSTED_REASON, degraded=True,
+                                reason=CREDITS_EXHAUSTED_REASON)
         schema = _inner_schema(json_schema)
         body = _build_body(settings, messages, images, json_schema)
         async with self._gate:  # `max_inflight_llm_calls` — every call, retries included
-            return await self._run_attempts(role, body, schema)
+            return await self._run_attempts(role, body, schema, _output_ceiling(settings))
 
     async def aclose(self) -> None:
         """Closes the HTTP client this module opened; an injected client is the caller's to close."""
@@ -182,14 +190,24 @@ class LLMClient:
 
     # ----------------------------------------------------------------- internals
 
-    async def _run_attempts(self, role: str, body: dict[str, Any], schema: dict[str, Any]) -> ParsedResult:
-        """Parse → (FR-127 truncation retry) → (FR-41 content retry). Each is spendable exactly once."""
+    async def _run_attempts(
+        self, role: str, body: dict[str, Any], schema: dict[str, Any], ceiling: int
+    ) -> ParsedResult:
+        """Parse → (FR-127 truncation retry) → (FR-41 content retry). Each is spendable exactly once.
+
+        `attempt` counts CONTENT attempts — one `_post` call each, transport retries folded in —
+        not HTTP requests, because that is the number an operator reading `events.jsonl` needs to
+        answer "how many times was this prompt billed".
+        """
         out = ParsedResult(parsed=None, raw_text="")
         truncation_retry, content_retry = True, True
+        attempt = 0
         while True:
+            attempt += 1
             text, finish, failure = await self._post(role, body, out)
             if failure is not None:
                 out.raw_text = out.raw_text or failure
+                out.reason = failure
                 out.degraded = True
                 return out
             out.raw_text = text
@@ -198,23 +216,38 @@ class LLMClient:
                 out.parsed = parsed
                 out.tolerant_parsed = tolerant  # FR-126 rescued it without spending a retry
                 return out
-            if finish in _TRUNCATED_REASONS and truncation_retry:
-                truncation_retry = False
+            cut_off = finish in _TRUNCATED_REASONS
+            if cut_off and truncation_retry:
                 out.truncated = True
-                body["max_tokens"] = body["max_tokens"] + min(body["max_tokens"], _TRUNCATION_BUMP_MAX)
-                self._warn("llm_truncated", f"{role}: response hit the token limit; retrying wider",
-                           role=role, new_max_tokens=body["max_tokens"])
-                continue
-            if content_retry:
+                wider = _widen(int(body["max_tokens"]), ceiling)
+                if wider:
+                    truncation_retry = False
+                    body["max_tokens"] = wider
+                    self._warn("llm_truncated", f"{role}: response hit the token limit; retrying wider",
+                               role=role, new_max_tokens=wider, finish_reason=finish, attempt=attempt,
+                               truncated=True, retried=out.retried)
+                    continue
+                # No wider body is legal, and an identical one is forbidden (FR-127) — fall through
+                # to the terminal degrade rather than paying for the same truncation twice.
+            elif content_retry and not cut_off:
+                # FR-41's nudge is about FORMATTING. A body cut off mid-JSON is not badly
+                # formatted, it is unfinished, so spending the nudge on it re-bills the whole
+                # prompt for an identically capped answer (plan §1.6: 37,280 prompt tokens on one
+                # call). Truncation is handled above, or it is terminal.
                 content_retry = False
                 out.retried = True  # FR-41's single content retry, spent only after FR-126 failed
                 body["messages"] = [*body["messages"], {"role": "user", "content": _RETRY_NUDGE}]
                 self._warn("llm_parse_retry", f"{role}: response was not schema-valid JSON; retrying once",
-                           role=role, chars=len(text))
+                           role=role, chars=len(text), finish_reason=finish, attempt=attempt,
+                           truncated=out.truncated, retried=True)
                 continue
             out.degraded = True
-            self._warn("llm_parse_failed", f"{role}: no schema-valid JSON after the FR-41 retry",
-                       role=role, chars=len(text))
+            out.reason = _degrade_reason(role, cut_off=cut_off, retry_left=truncation_retry,
+                                         max_tokens=int(body["max_tokens"]), ceiling=ceiling,
+                                         retried=out.retried, chars=len(text))
+            self._warn("llm_parse_failed", f"{role}: {out.reason}",
+                       role=role, chars=len(text), finish_reason=finish, attempt=attempt,
+                       truncated=out.truncated, retried=out.retried)
             return out
 
     async def _post(
@@ -288,6 +321,35 @@ class LLMClient:
 # Request building — the exact shape RESULTS.md §E proved (FR-41/125/128/129, 20 §7).
 # --------------------------------------------------------------------------------------------
 
+def _output_ceiling(settings: RoleSettings) -> int:
+    """The widest `max_tokens` FR-127's truncation retry may ask for on this role.
+
+    Why a ceiling exists at all: the retry widens by up to `_TRUNCATION_BUMP_MAX`, so the
+    12,000-token analysis cap would ask for 20,192. Past a model's advertised max output that is
+    a hard HTTP 400 — the truncation path would stop degrading gracefully and start failing the
+    call outright, which is strictly worse than the truncation it is trying to fix.
+
+    Why the default: no role the runner builds today declares `max_output_ceiling`, and 16,384 is
+    an output window every currently shipped chat model advertises, so it is the widest ask that
+    is safe WITHOUT per-model knowledge. A role that knows its model's real limit sets the field.
+
+    Why `max()` and not the bare ceiling: an operator who configures a large `max_tokens` has
+    already proven that value routable on their model. Clamping the retry below it would forbid
+    the retry entirely (`_widen` returns 0), turning a working config into a fail-fast one.
+    """
+    return max(settings.max_output_ceiling or _DEFAULT_MAX_OUTPUT_CEILING, settings.max_tokens)
+
+
+def _widen(current: int, ceiling: int) -> int:
+    """FR-127's wider `max_tokens`, bounded by `ceiling`. Returns 0 when no wider ask is legal.
+
+    FR-127 forbids resubmitting an IDENTICAL request, so a bump the ceiling clamps back to the
+    current value is not a retry we are allowed to spend — the caller fails fast on 0 instead.
+    """
+    widened = min(current + min(current, _TRUNCATION_BUMP_MAX), ceiling)
+    return widened if widened > current else 0
+
+
 def _build_body(
     settings: RoleSettings,
     messages: list[dict[str, Any]],
@@ -351,6 +413,35 @@ def _data_uri(blob: bytes) -> str:
 # --------------------------------------------------------------------------------------------
 # Response handling — tolerant parse (FR-126) and usage accounting (FR-106c / NFR-18).
 # --------------------------------------------------------------------------------------------
+
+def _degrade_reason(
+    role: str,
+    *,
+    cut_off: bool,
+    retry_left: bool,
+    max_tokens: int,
+    ceiling: int,
+    retried: bool,
+    chars: int,
+) -> str:
+    """The operator-facing cause of a terminal degrade — it names the path ACTUALLY taken.
+
+    The message this replaced said "no schema-valid JSON after the FR-41 retry" on every terminal
+    path. Once a truncated response can skip that retry, naming a retry that never ran is worse
+    than saying nothing: it sends the operator to look at prompt formatting when the real cause
+    is the token cap, which is the exact confusion that let every analysis call truncate unnoticed.
+    """
+    if cut_off and retry_left:
+        return (f"response cut off at max_tokens {max_tokens}, already the widest output this role "
+                f"may ask for ({ceiling}); a wider retry is impossible and an identical one is "
+                f"forbidden (FR-127) — raise models.max_tokens.{role} only if the model allows more")
+    if cut_off:
+        return (f"response cut off twice; the widened retry at max_tokens {max_tokens} was still "
+                f"truncated — raise models.max_tokens.{role} (ceiling {ceiling})")
+    if retried:
+        return f"no schema-valid JSON after the FR-41 formatting retry ({chars} chars returned)"
+    return f"no schema-valid JSON and no retry was available ({chars} chars returned)"
+
 
 def _parse_json(text: str) -> tuple[Any, bool]:
     """Strict parse first; then FR-126's tolerant rescue. Returns `(obj_or_None, was_tolerant)`."""

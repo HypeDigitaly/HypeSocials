@@ -14,6 +14,11 @@ STYLE_DNA (identical on every slide of this deck — reproduce it exactly):
   differs between slides.
 
   BRAND INFLUENCE: {{brand_accent}}
+  NICHE VISUAL WORLD (ignore if empty): {{niche_visual_world}}
+  When present, that line is standing art direction ranked BELOW STYLE_DNA and
+  the attached references: it biases palette, type character and motif
+  vocabulary only where they leave a choice open, never layout or wording, and
+  it never varies from slide to slide.
 
 SLIDE CONTENT:
   {{render_prompt}}

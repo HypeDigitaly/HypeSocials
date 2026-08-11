@@ -30,6 +30,18 @@ class DegradationTag(str, Enum):
 
     ANALYSIS_MISSING = "analysis_missing"  # FR-12
     COPY_DEGRADED = "copy_degraded"  # FR-99 (Notion absence is a warning, never a tag)
+    # A20 (2026-08-11, operator's "no plagiarism" mandate). COPY_DEGRADED says the copy call
+    # produced nothing usable; this says what the engine did about it — shipped the creative with
+    # NO on-image words at all. The two travel together on today's only fallback path and are
+    # still two facts: the first is an LLM outcome the run summary counts (FR-248's `llm_starved`
+    # set), the second is what the operator will actually see in the frame. Before A20 the answer
+    # to the second was "the competitor's headline, rendered verbatim", which is why it needed
+    # saying out loud rather than being folded into `copy_degraded`.
+    NO_ONIMAGE_TEXT = "no_onimage_text"
+    # A21 — `hook_pattern_used` came back generic twice (the value the copywriter template itself
+    # calls a failed answer). Never fails the creative; it marks the audit trail as weak so a
+    # reviewer knows the pattern line on this card was not earned.
+    HOOK_PATTERN_GENERIC = "hook_pattern_generic"
     REFERENCE_FREE = "reference_free"  # FR-18
     REFS_DROPPED_MODERATION = "refs_dropped_moderation"  # FR-97
     TEXT_TRIMMED = "text_trimmed"  # FR-101
@@ -127,6 +139,20 @@ class TrendItem:
     narrative_arc: str = ""
     text_density: str = ""
     video_descriptions: list[str] = field(default_factory=list)  # feeds FR-96 content sentence
+    # Virlo's own `intelligence` labels for the winning posts, deduped and view-ranked like the
+    # exemplar lists above. FR-100 currently asks the copywriter to DERIVE a hook pattern in prose
+    # that Virlo has already classified (`story_tease`, `question`, measured live), so these
+    # replace guesswork with the source's own vocabulary. Absent until a row's
+    # `intelligence_status == "ready"`, and the sorted fetch is what makes them common: coverage
+    # roughly doubles when the winners lead (17/50 -> 34/50 on videos), because Virlo enriches
+    # its best rows first.
+    hook_types: list[str] = field(default_factory=list)
+    visual_hook_types: list[str] = field(default_factory=list)
+    emotional_tones: list[str] = field(default_factory=list)
+    # The winning posts' REAL hashtags. The wrapper has always extracted these and nothing read
+    # them, while `copywrite._hashtags()` invented tags from the trend-name slug on the FR-99
+    # fallback path. Reference material for the copy call only — the model still chooses.
+    hashtags: list[str] = field(default_factory=list)
     # Each group is ONE coherent source (all panels of a single slideshow, or one creator's
     # thumbnails). FR-91 forbids mixing groups inside a job's reference set; panels lead.
     reference_groups: list[list[str]] = field(default_factory=list)  # CDN URLs
@@ -165,6 +191,14 @@ class PlanEntry:
     brief_name: str | None = None  # campaign brief (FR-143)
     brief_influence: InfluenceMode | None = None  # per-entry mode override (D26)
     trend_key: str | None = None  # assigned trend's history_key; None for override briefs (FR-144)
+    # FR-91's rotation index: this creative's 0-based position among the creatives sharing its
+    # trend, set by `plan.assign` from the `use_index` it already counts. It selects the reference
+    # group (`reference_groups[i % len]`) AND the style brief, because FR-9/FR-12 analyse one
+    # (trend, reference group) pair — a creative steered by a brief describing pictures it is not
+    # attaching is the defect this index exists to prevent. Every member of an atomic group shares
+    # one value: a both-mode A/B pair must compare like with like, and a carousel's slides must
+    # come from one coherent set. 0 for override briefs, which attach no trend group at all.
+    trend_reuse_index: int = 0
     status: PlanEntryStatus = PlanEntryStatus.PENDING
     skip_reason: str | None = None  # one line, machine-readable cause (FR-74)
     estimated_cost_usd: float = 0.0  # logged with every trim decision (FR-106)
@@ -187,6 +221,11 @@ class StyleBrief:
     """
 
     trend_key: str
+    # Which of the trend's reference groups this brief actually looked at (FR-9/FR-12, amended
+    # 2026-08-11). The brief is keyed by the (trend, group) PAIR, not by the trend alone; this
+    # field keeps the group visible on the object itself so a logged brief can be matched to the
+    # pictures it describes without reconstructing the dictionary key.
+    reference_group_index: int = 0
     layout_zones: list[LayoutZone] = field(default_factory=list)
     exclusions: list[str] = field(default_factory=list)  # UI chrome, watermarks, counters
     render_prompt: str = ""  # compact <=120 words, alone fit to send to the image model
@@ -238,6 +277,12 @@ class AssetRecord:
     generation_mode: Variant = "direct"  # --- provenance & degradations ---
     hook_pattern_used: str = ""
     source_hook: str = ""  # the trend's original hook line, verbatim — gallery card (FR-76, v1.6.4)
+    # A24 — what the style brief ASKED FOR, in one line: pattern · angle · palette. The full
+    # `StyleBrief` is logged to events.jsonl under `verbose_only` and nowhere else, so an operator
+    # judging a finished creative could not see the instruction it was judged against without
+    # opening a JSONL file with verbose logging already switched on. Empty in direct mode and
+    # after FR-12's degrade, which is itself the answer: there was no brief.
+    style_brief_summary: str = ""
     ref_source: str = ""  # "virlo" | "brief" | "inspiration"
     degradations: list[DegradationTag] = field(default_factory=list)
     brief_name: str | None = None  # --- brief overrides (D26) ---
@@ -282,6 +327,11 @@ class ParsedResult:
     tolerant_parsed: bool = False  # strict parse failed; FR-126 local parse rescued it
     truncated: bool = False  # finish/stop reason said token limit (FR-127)
     degraded: bool = False  # caller must fall back (analysis_missing / copy_degraded)
+    # WHY this exists next to `raw_text`: on a truncated call `raw_text` is a slab of unfinished
+    # JSON, so an operator warning built from it cannot tell "the model was cut off" apart from
+    # "the model returned garbage". `reason` is the short, operator-facing cause and is set on
+    # EVERY degrade path in llm.py; `raw_text` keeps carrying the body for events.jsonl.
+    reason: str = ""
 
 
 class StructuredCall(Protocol):
@@ -475,5 +525,19 @@ PLACEHOLDERS: frozenset[str] = frozenset(
         "brand_accent",  # FR-109's ONLY brand slot in render templates: one engine-built line of
         #   accent colour + product nouns under Notion `full` influence — never fonts/layouts;
         #   empty when influence is off. Dedicated so render-side allowlists stay narrow.
+        # A15 steering fix (2026-08-11):
+        # A16 wire-in (2026-08-11):
+        "inspiration_exemplars",  # the `.txt` files paired with the configured Inspiration images
+        #   (`01.jpg` + `01.txt`) — whole posts a human wrote and an audience rewarded, pooled on
+        #   `InspirationPool.exemplar_texts`. FORM material for the COPY call and for nothing else:
+        #   allowlisted for `copywriter_system.md` alone, because an Inspiration image already
+        #   reaches a render under an explicit "no words" role line and handing an image model
+        #   proven copy is how that copy ends up baked into pixels. The same two-step discipline
+        #   A20 exists to protect — a pattern to abstract, never a string to reuse.
+        "niche_visual_world",  # `niche.visual_world` ALONE — the operator's standing art direction
+        #   in the only shape a render prompt may carry it. Deliberately NOT `niche_descriptor`,
+        #   which also carries `audience`: copy-side context must not leak into a render prompt,
+        #   and the per-role allowlist exists to enforce exactly that (FR-261/109). Allowlisted for
+        #   the four gpt-image-2 roles, so `direct` mode finally sees the art direction too.
     }
 )

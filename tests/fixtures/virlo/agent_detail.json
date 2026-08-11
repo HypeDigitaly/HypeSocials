@@ -1,0 +1,608 @@
+{
+  "data": {
+    "id": "9c96fddf-dc35-4be0-bbd9-12f4d22aea12",
+    "name": "AI Trends Tracker",
+    "is_recurring": true,
+    "active": true,
+    "team_id": null,
+    "source": "web_app",
+    "keywords": [
+      "AI",
+      "AI agent",
+      "AI development",
+      "AI tool",
+      "Claude",
+      "Claude Opus",
+      "Claude Sonnet",
+      "Claude code",
+      "AI automation",
+      "AI lead generation",
+      "lead generation",
+      "AI agent trends",
+      "AI development trends",
+      "AI automation tools",
+      "conversational AI interfaces"
+    ],
+    "platforms": [
+      "youtube",
+      "tiktok",
+      "instagram"
+    ],
+    "exclude_keywords": [],
+    "exclude_keywords_strict": false,
+    "meta_ads_enabled": false,
+    "data_intelligence_enabled": false,
+    "english_only": true,
+    "intent": "I want to find trending posts on AI, AI tools and mainly AI agents, AI development.",
+    "intent_keywords": null,
+    "autonomy_level": "suggest",
+    "autopilot_unlocked": true,
+    "cognition_enabled": true,
+    "cadence": "0 0 * * 0",
+    "next_run_at": "2026-08-16T05:24:47.000Z",
+    "last_run_at": "2026-08-09T06:43:19.746Z",
+    "is_processing": false,
+    "created_at": "2026-08-06T20:02:56.734Z",
+    "updated_at": "2026-08-11T12:33:59.030Z",
+    "analysis": "The AI landscape is rapidly evolving, with a strong emphasis on practical applications of Claude AI for coding and business automation, alongside a growing interest in AI agents and innovative video generation techniques.",
+    "analysis_data": {
+      "themes": [
+        {
+          "name": "Claude AI for Coding & Development",
+          "tactics": [
+            "show Claude AI in VSCode",
+            "demonstrate Claude Code for projects",
+            "explain Claude project structure",
+            "highlight Claude's coding capabilities",
+            "demonstrating CLI building with Claude Code",
+            "comparing Claude Opus, Sonnet, Haiku for coding",
+            "reviewing Claude Code plugins",
+            "showing token optimization for Claude Code",
+            "integrating Claude Code with GitHub",
+            "demonstrate AI coding capabilities",
+            "provide API keys for Claude Opus",
+            "show Claude's ability to coordinate agents",
+            "explain Claude's prompt engineering for code",
+            "showcase Claude for web design and app development"
+          ],
+          "confidence": 0.95,
+          "stable_key": "claude-code-for-development-and-automation",
+          "video_count": 36,
+          "why_it_works": "Appeals to developers and tech enthusiasts by demonstrating Claude's coding prowess and integration with dev tools, optimizing development workflows.",
+          "evidence_video_ids": [
+            "cb4910e6-028e-4d9b-b6dc-8df1e52fc24d",
+            "fdcf5c39-64a4-4a33-914a-9b18d833fb60",
+            "23350059-8764-4800-83ba-4512ac6cd8ed",
+            "bc5f70f0-e700-4ec8-8dd9-3ba8ce08fdc9",
+            "add6df88-162a-4513-8dda-dd7d58fc0f2d",
+            "23775e77-d0f2-49e0-aa1e-3e5d7fbaa216",
+            "91958e4a-5f53-46d0-80aa-7857d4721c0b",
+            "a2de755b-4be1-4174-9ad7-921eafadebc5",
+            "ee9b586d-5ed1-45b5-afd0-b2a9b637cf65",
+            "006fe5e1-67a4-42ae-a92a-6bd18693b6d1",
+            "b3cc1a2c-ca59-49af-871b-0f75eaee5ba5",
+            "f24bf107-043e-4146-919c-3de5b4b5d141",
+            "23efac7f-95f2-4423-94f0-c95c3ad0c32f",
+            "7506c413-ae91-4e0c-961a-2f41210036af",
+            "c3040463-f25e-4c73-9183-193770b4db5c",
+            "702e1cdb-1561-4ab6-a6b9-ff409d103c4d",
+            "865e9277-379e-4a06-be40-e63e87a01d86",
+            "13cc73a3-57fa-430e-8c00-1456ef2ee2fe",
+            "3f378253-f002-4b66-8451-8ab58431feef",
+            "953c223f-6dd5-49db-a98e-e2db68a25d8a",
+            "a03e1efe-9149-4751-b952-00fe869471c6",
+            "ba5a4634-952d-46ad-8db0-11c5dea1cb7b",
+            "3c5b4d45-161f-4824-b3dc-a78b9129412b",
+            "17458a50-da5e-4472-b718-a0f029fcbc00",
+            "f62ab07a-7271-4f08-9747-9514cc7487a4",
+            "8251fe65-f5ce-494b-87fa-b0b2882afeb1",
+            "6edb611e-5029-4b75-a2de-83c6e7817a77",
+            "7b7d809d-85d7-4fe6-a9e3-add8eaf325b2",
+            "b7bac6a6-97a6-450e-9a6f-609323f0eaae",
+            "0cb4b7b2-b804-48df-93ec-8fa22b42a4e0"
+          ]
+        },
+        {
+          "name": "AI Agents for Business Automation and Operations",
+          "tactics": [
+            "demonstrate AI agent workflows",
+            "highlight AI automation for business",
+            "showcase self-improving AI agents",
+            "demonstrate AI automation for beginners",
+            "show how to build AI agents for automation",
+            "explain AI automation for content creation",
+            "demonstrating AI agents for automation",
+            "tutorials on building AI employees/agents",
+            "showcasing AI for lead generation and appointments",
+            "reviewing new AI agent tools like Atomic Agent",
+            "integrating AI agents with platforms like WhatsApp and n8n",
+            "demonstrate building AI agents",
+            "explain the difference between automation and AI agents",
+            "show AI agents managing business operations",
+            "illustrate AI automation workflows with tools like n8n and Zapier"
+          ],
+          "confidence": 0.93,
+          "stable_key": "ai-agents-for-business-automation-and-operations",
+          "video_count": 29,
+          "why_it_works": "Highlights the power of AI agents in automating complex tasks and entire business processes, attracting productivity-focused users.",
+          "evidence_video_ids": [
+            "5ab478be-d9fe-41fb-9be1-24a8e0713a22",
+            "e62d69e4-a8b8-4a73-b90f-d4e324fde059",
+            "2d0a3d4a-203a-4ee7-80e2-e89d0dc1647d",
+            "29b386e9-db5a-43e5-82ac-fbf638a5670c",
+            "d8959c7f-5d57-4fe2-b225-78a18e6613a6",
+            "6a88d959-3bf6-4322-9da9-628657341011",
+            "8d291d36-3df5-4330-a057-471720df8d1e",
+            "483b7800-c2d7-44eb-8b10-7c8b1bf6ad08",
+            "9de93c42-21b3-40c3-9c1a-7e43f0cc6b7b",
+            "e5add10e-d9ff-405d-9531-c6f5b09e0e08",
+            "fa97ca8f-9ca0-41cd-a725-03e42fbfdbb8",
+            "db3efee9-9946-4004-bfe8-a5f279ca154b",
+            "fe701f19-454e-4bad-a376-002d19a0ba8c",
+            "51fb48f0-7963-426b-b0d5-b2eb8b83c0a7",
+            "6cc909de-f0e7-4b67-b311-3123440e54db",
+            "1fd06abe-2ba0-49ae-9423-7bab1ee2dbdf",
+            "03216e44-a045-403c-8d2a-57280986aa69",
+            "8fbc7448-23e4-4148-b56b-2b688f557c57",
+            "1d2741fb-c3b2-4b7f-9e1b-26491f0ba12d",
+            "75eeedc1-3976-4c25-865e-d3f954373f8c",
+            "dc357803-0121-40f7-8e46-5273144c6481",
+            "a7bf2800-b601-4224-9a63-3edc71fc118c",
+            "1c014130-d6a9-436e-b6ae-470d4547c02c",
+            "df9a9b23-6beb-47b5-9e47-94dcfc32cfb9",
+            "37ed0ef0-ec97-4d12-ba09-2bd506637d96",
+            "b19d0f59-e891-43cd-beba-ca69e741e7f8",
+            "ceb9f8e3-e333-49ce-b6ee-d24efd9ee6b4",
+            "d3a0f0af-08b8-48f6-88f4-ccf0d84efc94",
+            "b76800b5-b9ac-4849-82c2-64f366870db1"
+          ]
+        },
+        {
+          "name": "Claude AI for Productivity and Business Hacks",
+          "tactics": [
+            "share Claude AI projects and results",
+            "discuss Claude AI's features and limitations",
+            "provide tips for using Claude AI effectively",
+            "tutorials on getting more out of Claude AI",
+            "demonstrating Claude's content generation capabilities",
+            "explaining Claude AI basics",
+            "comparing Claude with other AI models",
+            "tips for effective Claude prompting",
+            "provide prompting frameworks for Claude",
+            "explain how to give Claude memory",
+            "compare Claude AI with ChatGPT",
+            "offer tips for productive use of Claude",
+            "tutorial on using Claude AI for job applications",
+            "demonstrating automated CV optimization",
+            "showing cover letter drafting by AI"
+          ],
+          "confidence": 0.92,
+          "stable_key": "claude-ai-productivity-and-business-hacks",
+          "video_count": 32,
+          "why_it_works": "Offers practical tips and insights into Claude AI's diverse applications and performance, helping users maximize utility.",
+          "evidence_video_ids": [
+            "62b7c25f-8862-4cdb-af50-2eef8e3a28bd",
+            "0d2758b0-65db-4d1d-aeed-b9de76009f2d",
+            "bc867e17-69b3-4e0e-90bd-7eec271ec2c6",
+            "390104a6-c14a-40c8-835c-242db8aa144c",
+            "23f31e60-2287-4812-929a-a1ed67ccd022",
+            "11c31329-817c-439b-b499-e2242c5bd7f1",
+            "304a0e87-2061-449e-b5ca-48bcc5f61ae9",
+            "c7340780-a8c5-45e4-a63d-8ae69e019637",
+            "2222f71f-07b4-4c69-9937-dc92f0782ca0",
+            "c0629de6-6281-4b13-b9d8-89234e7175b2",
+            "87d1e009-8841-4969-b8ba-f1e6a59491a6",
+            "d5cff6a1-3ad6-4a24-b844-8637da19ebd0",
+            "5c5aba80-afd5-4e23-93ef-d25918b35fac",
+            "47c52b25-df2e-461a-8e4f-dc4602099e01",
+            "fec3b765-50a7-43c4-b990-6b28184f695b",
+            "ce94d3ff-c771-426c-87fd-fba6326532f8",
+            "35cf79f4-c339-49e0-a6b8-b6ce8155eef7",
+            "d4d9e2bd-5e18-4ef2-9a62-a3841b692d7b",
+            "51d4f1c7-8a2f-4c33-abb1-ec1f226ad0ce",
+            "dfca3df1-cb99-4fec-9cfa-80d65530ae3e",
+            "8a8d916a-acc6-4140-902b-58a78f4222bc",
+            "5fe257d1-f180-4eac-82e1-a55e0965bc25",
+            "fc4da8e5-265f-4203-bcbf-10740cbb598e",
+            "171c4f31-0616-4998-9105-88e3753d2471",
+            "4cf0ca52-b635-4f4c-879f-ab50384edcc6",
+            "0c5999a5-28a4-4973-8f7c-b9cc83f2d633",
+            "ee9f4af2-48e5-41dc-a323-9971666b97f8",
+            "edfd9c66-42fd-4019-8d26-275fa70c104b",
+            "d236f0bd-f29d-4999-8fff-9367ba192b1c",
+            "051625e5-c837-4d88-86c4-fa7b3347d600",
+            "656d625a-1cb6-44fe-846d-868925c66696",
+            "0b365395-905b-412a-87fe-fdb947031fbc"
+          ]
+        },
+        {
+          "name": "Vibecoding AI Demos and Practices",
+          "tactics": [
+            "demonstrate vibecoding in action",
+            "explain the concept of vibecoding",
+            "show AI-assisted web design",
+            "demonstrating vibecoding in practice",
+            "setting up AI development environments for vibecoding",
+            "showcasing vibecoding for fintech apps",
+            "demonstrate quick code generation",
+            "explain security practices for vibecoded apps",
+            "showcase vibecoding for frontend development"
+          ],
+          "confidence": 0.9,
+          "stable_key": "vibecoding-ai-development",
+          "video_count": 13,
+          "why_it_works": "Showcases a unique and engaging approach to AI-assisted coding, making development seem more intuitive and fun.",
+          "evidence_video_ids": [
+            "fdcf5c39-64a4-4a33-914a-9b18d833fb60",
+            "07cfabe3-5d90-443d-b759-0d89a5f5312b",
+            "a88dcd63-561f-46a8-bc6b-034e4407cf86",
+            "d28e59e4-e6f5-4d70-8fa4-64683477bb10",
+            "f9cb442c-fea4-4357-99d6-3aefc6841fe6",
+            "af21f57f-46ae-47c4-9191-8a81c52b290a",
+            "3c5b4d45-161f-4824-b3dc-a78b9129412b",
+            "0659dd15-04d0-475b-961f-6a7ec25de10a",
+            "3fdf9af5-e9bb-4eaf-9f70-792808d6e79d",
+            "dffe5e95-ccc4-4fb5-b07d-1bad261e2360",
+            "adfe5f33-2257-4772-b4a6-a2906d2a7a92",
+            "3e1cdb79-15ca-491d-9f6d-15d2b6a7a36a",
+            "2707a263-6d7f-4b19-8dc5-2c3ca7ca536f"
+          ]
+        },
+        {
+          "name": "AI Tool Reviews and Recommendations",
+          "tactics": [
+            "list top AI tools",
+            "review specific AI tools",
+            "provide free AI tool resources",
+            "showcasing various AI tools",
+            "providing tips for using AI tools for content creation",
+            "recommending AI tools for business and productivity",
+            "review specific AI tools (e.g., TopView.ai, Soulog Sense)",
+            "list best AI apps and tools",
+            "showcase Google's free AI tools",
+            "highlight useful GitHub repositories for AI"
+          ],
+          "confidence": 0.87,
+          "stable_key": "ai-tool-reviews-and-recommendations",
+          "video_count": 19,
+          "why_it_works": "Provides valuable resources and recommendations for users seeking to leverage AI for productivity and specific tasks.",
+          "evidence_video_ids": [
+            "ab5e3933-13f5-4501-a234-1b4910dbd811",
+            "a92ee4b1-e5f0-4fbd-a39e-5635298abcfe",
+            "4f94b08f-dfd5-48e7-8a3f-07faacd81dcb",
+            "3286581d-8233-4709-b849-6ed9f1ab73cd",
+            "f5458a39-c7b0-41fd-ab1d-28eee6e548ab",
+            "da641a64-fdb4-4833-a93e-038061c68540",
+            "64bb3ef1-0cf4-44cd-85fa-3691316bf125",
+            "71df5b20-cc14-465c-98fd-939e52f84444",
+            "7eeab131-f229-47d3-8b11-a8690b7f2a06",
+            "ba2050d3-7685-4156-a0c7-246bbe176aea",
+            "bdb7fe95-22e7-40b7-b351-07bce7583b8e",
+            "5697d141-2899-45f6-8ae2-94387159a340",
+            "f001337a-3a36-40f3-9096-196c44e1175a",
+            "76fc75ab-85bb-47e1-91d3-5e77580769af",
+            "6d65ddad-c441-4eb2-a27c-a119ae3c698f",
+            "b79fb6e3-afe0-4cd7-bda7-8d6e6da802dd",
+            "ad301ef4-3c30-425e-85c8-0e1430b1f125",
+            "2928992b-9fff-494f-9d58-3a46797a2c73",
+            "370d8ef8-bd2e-4bf4-95c3-68b5a65fd6b1"
+          ]
+        },
+        {
+          "name": "AI Tools for Lead Generation (General)",
+          "tactics": [
+            "explain AI for lead generation",
+            "show AI sales call applications",
+            "demonstrate AI prospecting tools",
+            "real estate lead generation with AI",
+            "insurance lead generation with AI",
+            "AI-powered ad strategies for lead generation",
+            "show AI for real estate lead generation",
+            "demonstrate free lead generation with ChatGPT",
+            "explain AI voice cloning for sales calls",
+            "show Claude AI pulling leads from LinkedIn"
+          ],
+          "confidence": 0.87,
+          "stable_key": "ai-tools-for-lead-generation-general",
+          "video_count": 11,
+          "why_it_works": "Offers practical business solutions by showing how AI can enhance lead generation and sales processes.",
+          "evidence_video_ids": [
+            "10263de4-694b-4c80-acf8-efa3d938294b",
+            "fe0503b0-6384-427c-805f-1f372fe0aeec",
+            "d40aaabd-7ee2-469a-91f3-6608b1b72dd2",
+            "d4eb1585-6666-4acb-a45d-4310335c828f",
+            "b3c0672a-06a0-40e4-9680-51647c98d87e",
+            "84d27c6a-63bd-41e9-ab5f-75a2dffb9640",
+            "9ae04dab-0572-4c90-8b47-97c5fecf3038",
+            "fe6f632d-dac1-4e09-9a4c-c979d9b578b9",
+            "4a1b94ad-d996-4fd0-8156-8ad0b98976b8",
+            "2a69186a-7686-485c-a148-3e3d4287a8a6",
+            "78f64b73-1954-4873-af1a-581a99950552"
+          ]
+        },
+        {
+          "name": "AI Video Generation Trends",
+          "tactics": [
+            "show AI baby video magic",
+            "demonstrate AI video generator trends",
+            "provide tutorials for viral AI video trends",
+            "tutorials on creating AI videos with dialogue and music",
+            "strategies for long-form AI videos",
+            "using AI for 3D cartoon animation",
+            "demonstrating AI tools for video editing"
+          ],
+          "confidence": 0.85,
+          "stable_key": "ai-video-generation-trends",
+          "video_count": 12,
+          "why_it_works": "Taps into the visual appeal of AI-generated content, offering tutorials for viral video creation and automation.",
+          "evidence_video_ids": [
+            "a4586731-1385-4594-bb3e-3529e667a5b0",
+            "417d5605-2b5b-47b8-a1a5-b3077545ec6a",
+            "0a988628-f38f-4762-82e2-20d28f5176f0",
+            "c7160e50-d1a7-4c6c-baa4-ce3055513abe",
+            "9ccd4a72-6365-4569-b3eb-ab093599eb67",
+            "a7ed87e4-6c20-4bd4-b22d-4d7be5e0d689",
+            "0c9db6f1-5951-44ee-bdf9-e092e9ebc014",
+            "76d6dc0e-310c-4ce5-9542-1564b628ba90",
+            "f929ed2b-23b5-4155-a645-3e80f0cb07d2",
+            "b2144d38-c841-470e-b3f8-75cbbe4b80be",
+            "116cd54f-345c-4032-9eb0-89db14ec3f78",
+            "50deb237-337d-4723-90fd-9381dee13687"
+          ]
+        },
+        {
+          "name": "Claude Opus & Sonnet Insights and Performance",
+          "tactics": [
+            "compare Claude Sonnet and Opus",
+            "offer free access to Claude Opus",
+            "provide tips for Claude usage limits",
+            "discussing Claude Opus sluggishness and argumentative behavior",
+            "comparing Claude Opus performance to previous versions"
+          ],
+          "confidence": 0.85,
+          "stable_key": "claude-opus-sonnet-insights",
+          "video_count": 6,
+          "why_it_works": "Keeps users informed about the latest developments and comparative performance of Claude's advanced models, including issues.",
+          "evidence_video_ids": [
+            "d20ec55a-077b-42c3-8aca-7aa383a99bac",
+            "7bf36553-4374-44d0-a32f-d626c51dd70e",
+            "26ef6fd8-37b6-4b89-8b54-c3d6b27a9ae2",
+            "ae6bcefb-e41b-4687-b59f-ed348c2e4a70",
+            "02a8c3d4-6b78-4367-a244-0fe2a0c41e85",
+            "31765d81-3071-4a31-99bb-8dc1c5325301"
+          ]
+        },
+        {
+          "name": "AI Coding Benchmarks and Comparisons",
+          "tactics": [
+            "comparing CatCoder with OpenAI and Claude for coding",
+            "showcasing AI models coding independently for extended periods"
+          ],
+          "confidence": 0.9,
+          "stable_key": "ai-coding-benchmarks-and-comparisons",
+          "video_count": 2,
+          "why_it_works": "Developers are interested in which AI models perform best for coding tasks and how they are trained.",
+          "evidence_video_ids": [
+            "346c3cdd-f203-4142-82eb-2e928209d94f",
+            "a4939bce-6596-4214-a4af-3dda58f5dd52"
+          ]
+        }
+      ],
+      "overview": {
+        "avg_virality": 0,
+        "total_videos": 240
+      },
+      "key_highlight": "The AI landscape is rapidly evolving, with a strong emphasis on practical applications of Claude AI for coding and business automation, alongside a growing interest in AI agents and innovative video generation techniques.",
+      "viral_tactics": [
+        "Demonstrate advanced AI agent capabilities and automation potential.",
+        "Showcase Claude AI's coding prowess and integration with development tools.",
+        "Provide practical tips and insights for maximizing Claude AI's diverse applications.",
+        "Offer valuable resources and recommendations for new and effective AI tools."
+      ],
+      "excluded_videos": [],
+      "timing_analysis": {
+        "pattern": "Content performs well during late afternoon/early evening (17:00-18:00), mid-day (13:00), and surprisingly, early morning (3:00-5:00), suggesting a global audience or creators targeting specific niches.",
+        "peak_hours": [
+          17,
+          13,
+          5,
+          18,
+          3
+        ]
+      },
+      "top_10_breakdown": {
+        "videos": [
+          {
+            "video_id": "5ab478be-d9fe-41fb-9be1-24a8e0713a22",
+            "description": "Showcases advanced AI agents, demonstrating their sophisticated capabilities and automation potential."
+          },
+          {
+            "video_id": "e697e9e6-a0b4-48f6-85d3-4fd6e15f6334",
+            "description": "Provides a roadmap for aspiring AI engineers, tapping into career development and future trends."
+          },
+          {
+            "video_id": "a4586731-1385-4594-bb3e-3529e667a5b0",
+            "description": "Features cute, realistic AI-generated baby videos, leveraging emotional appeal and viral content trends."
+          },
+          {
+            "video_id": "c8801bfe-4e0a-4251-9b48-a7f476759e0e",
+            "description": "Highlights the surprising and sometimes humorous aspects of AI in job interviews, resonating with job seekers."
+          },
+          {
+            "video_id": "62b7c25f-8862-4cdb-af50-2eef8e3a28bd",
+            "description": "Emphasizes Claude AI's power and its role in the future, particularly for YouTube automation."
+          },
+          {
+            "video_id": "cb4910e6-028e-4d9b-b6dc-8df1e52fc24d",
+            "description": "Offers a practical tutorial on using Claude AI within VSCode, appealing to developers."
+          },
+          {
+            "video_id": "fdcf5c39-64a4-4a33-914a-9b18d833fb60",
+            "description": "Demonstrates 'vibecoding' with Claude AI, showcasing an intuitive and engaging coding style."
+          },
+          {
+            "video_id": "417d5605-2b5b-47b8-a1a5-b3077545ec6a",
+            "description": "Similar to #3, focuses on viral AI-generated baby videos, leveraging emotional and visual appeal."
+          },
+          {
+            "video_id": "e62d69e4-a8b8-4a73-b90f-d4e324fde059",
+            "description": "Presents a compelling narrative of two AI agents interacting, highlighting advanced AI capabilities."
+          },
+          {
+            "video_id": "d40aaabd-7ee2-469a-91f3-6608b1b72dd2",
+            "description": "Shows ChatGPT making a sales call, demonstrating AI's practical application in business automation."
+          },
+          {
+            "video_id": "a88dcd63-561f-46a8-bc6b-034e4407cf86",
+            "description": "Showcases 'vibecoding' for app building and side hustles, appealing to entrepreneurs and developers."
+          },
+          {
+            "video_id": "116cd54f-345c-4032-9eb0-89db14ec3f78",
+            "description": "Tutorial on creating viral AI fruit videos for free, tapping into content creation trends."
+          },
+          {
+            "video_id": "db3efee9-9946-4004-bfe8-a5f279ca154b",
+            "description": "Demonstrates an AI cold calling voice agent, highlighting automation for sales and business."
+          },
+          {
+            "video_id": "5ed1ce2c-0c69-4c37-8b26-cbd0162cb223",
+            "description": "Introduces Claude Code as a video editor plugin, showcasing new AI tooling for creative tasks."
+          },
+          {
+            "video_id": "0a988628-f38f-4762-82e2-20d28f5176f0",
+            "description": "Highlights the addictive nature of AI video generators, encouraging user engagement and creation."
+          }
+        ],
+        "intro_header": "Unpacking the Hottest AI Trends: Top 15 Viral Videos",
+        "intro_subheader": "This cycle's most-watched videos highlight the cutting edge of AI, from agent demonstrations to coding hacks, reflecting current user interests and engagement."
+      },
+      "connecting_thread": "The overarching theme is the rapid integration of AI into daily workflows, from complex coding and business automation to creative content generation, with a strong focus on practical application and performance insights."
+    },
+    "analysis_batch_start": "2026-08-09T05:30:36.33+00:00",
+    "analysis_batch_end": "2026-08-09T05:55:28.874+00:00",
+    "pending_jobs": [],
+    "finalized": true,
+    "latest_run": {
+      "id": "6d710b8f-8cdb-4097-a6a9-4afb60fa0e75",
+      "agent_id": "9c96fddf-dc35-4be0-bbd9-12f4d22aea12",
+      "status": "completed",
+      "total_videos_inserted": 111,
+      "total_videos_updated": 469,
+      "total_videos_failed": 0,
+      "videos_linked": 399,
+      "meta_ads_linked": 0,
+      "slideshows_linked": 53,
+      "youtube_count": 278,
+      "tiktok_count": 384,
+      "instagram_count": 19,
+      "exclude_keywords_filtered": 0,
+      "intent_filtered": 40,
+      "language_filtered_count": 43,
+      "duplicates_dropped": 0,
+      "outliers_identified": 4,
+      "trends_detected": null,
+      "execution_time_ms": 4346137,
+      "created_at": "2026-08-09T05:30:36.279Z",
+      "started_at": "2026-08-09T05:30:36.433Z",
+      "completed_at": "2026-08-09T06:43:02.467Z",
+      "keyword_breakdown": [
+        {
+          "keyword": "AI agent demos",
+          "tiktok_count": 31,
+          "youtube_count": 35,
+          "videos_updated": 61,
+          "instagram_count": 0,
+          "videos_inserted": 3
+        },
+        {
+          "keyword": "AI automation workflows",
+          "tiktok_count": 32,
+          "youtube_count": 14,
+          "videos_updated": 46,
+          "instagram_count": 4,
+          "videos_inserted": 2
+        },
+        {
+          "keyword": "AI development practices",
+          "tiktok_count": 28,
+          "youtube_count": 49,
+          "videos_updated": 54,
+          "instagram_count": 1,
+          "videos_inserted": 19
+        },
+        {
+          "keyword": "AI lead gen strategies",
+          "tiktok_count": 12,
+          "youtube_count": 1,
+          "videos_updated": 10,
+          "instagram_count": 0,
+          "videos_inserted": 0
+        },
+        {
+          "keyword": "AI tool reviews",
+          "tiktok_count": 42,
+          "youtube_count": 27,
+          "videos_updated": 60,
+          "instagram_count": 3,
+          "videos_inserted": 8
+        },
+        {
+          "keyword": "AI trends tooling",
+          "tiktok_count": 42,
+          "youtube_count": 29,
+          "videos_updated": 45,
+          "instagram_count": 3,
+          "videos_inserted": 13
+        },
+        {
+          "keyword": "Claude AI insights",
+          "tiktok_count": 28,
+          "youtube_count": 20,
+          "videos_updated": 36,
+          "instagram_count": 1,
+          "videos_inserted": 12
+        },
+        {
+          "keyword": "Claude code projects",
+          "tiktok_count": 43,
+          "youtube_count": 17,
+          "videos_updated": 0,
+          "instagram_count": 1,
+          "videos_inserted": 0
+        },
+        {
+          "keyword": "Claude Opus tutorials",
+          "tiktok_count": 43,
+          "youtube_count": 20,
+          "videos_updated": 39,
+          "instagram_count": 1,
+          "videos_inserted": 23
+        },
+        {
+          "keyword": "Claude Sonnet guides",
+          "tiktok_count": 35,
+          "youtube_count": 21,
+          "videos_updated": 40,
+          "instagram_count": 1,
+          "videos_inserted": 15
+        },
+        {
+          "keyword": "lead generation tactics",
+          "tiktok_count": 13,
+          "youtube_count": 2,
+          "videos_updated": 16,
+          "instagram_count": 4,
+          "videos_inserted": 2
+        },
+        {
+          "keyword": "Vibecoding AI demos",
+          "tiktok_count": 35,
+          "youtube_count": 43,
+          "videos_updated": 62,
+          "instagram_count": 0,
+          "videos_inserted": 14
+        }
+      ]
+    }
+  }
+}

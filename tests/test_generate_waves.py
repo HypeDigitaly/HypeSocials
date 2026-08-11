@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 
 from hypesocials import generate, render
+from hypesocials.analyze import BriefBook
 from hypesocials.budget import Budget
 from hypesocials.config import Config
 from hypesocials.models import (
@@ -154,7 +155,10 @@ def make_env(tmp_path: Path, entries: list[PlanEntry], *, cap_usd: float = 5.0,
                        hook_pattern="negative-outcome claim")
     env = generate.Env(
         config=Config(), run_dir=tmp_path, engine=PromptEngine(), budget=Budget(cap_usd),
-        log=Log(), ledger=Ledger(tmp_path), trends={"t1": trend}, style_briefs={"t1": style},
+        log=Log(), ledger=Ledger(tmp_path), trends={"t1": trend},
+        # 2026-08-11 (A4): style briefs are keyed by the (trend, reference group) PAIR — the shape
+        # `analyze.style_briefs()` now returns. `Env.brief_for()` resolves an entry to its own pair.
+        style_briefs=BriefBook({"t1#0": style}),
         copy={entry.asset_id: CopySet(asset_id=entry.asset_id, language="en", trend_key="t1",
                                       caption="Most people wire this backwards.", hashtags=["#ai"],
                                       headline="Wired backwards", subline="Here is the fix",

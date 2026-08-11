@@ -136,7 +136,11 @@ class _Deck:
         count = max(1, min(ceiling, len(written) or ceiling))
         fallback = copyset.headline if copyset else ""
         self.texts = [written[i] if i < len(written) else fallback for i in range(count)]
-        self.brief = (self.env.style_briefs.get(self.entry.trend_key or "")
+        # Pair-keyed (FR-9/12, amended 2026-08-11): the deck's style DNA must come from the brief
+        # for the group this deck ATTACHES, not from group 0. Under FR-91's rotation those differ
+        # for every sibling after the first, and `style_dna` is computed once and applied to every
+        # slide — so a trend-keyed lookup would propagate the wrong forensic description deck-wide.
+        self.brief = (self.env.brief_for(self.entry)
                       if self.entry.variant == "analyzed" else None)
         self.dna = style_dna(self.brief)  # FR-189: ONCE per deck
 
@@ -328,6 +332,7 @@ class _Deck:
                     self.entry.brief_name or ""),
                 brand_accent=getattr(env, "brand_accent", ""),
                 brand_product_nouns=getattr(env, "brand_product_nouns", ()),
+                niche_visual_world=getattr(env, "niche_visual_world", ""),  # A15, same seam
                 text_budgets=env.config.run.text_budgets,
                 budget_scale=plan.budget_scale if plan is not None else 1.0,
                 reference_roles=roles, reference_image_count=len(urls),

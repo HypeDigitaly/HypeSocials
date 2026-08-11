@@ -43,6 +43,10 @@ LAYOUT AND STYLE:
   never stretch, never bar-pad, never crop the reference composition.
 
   BRAND INFLUENCE: {{brand_accent}}
+  NICHE VISUAL WORLD (ignore if empty): {{niche_visual_world}}
+  When present, that line is standing art direction ranked BELOW the zones
+  above and the attached references: it biases palette, type character and
+  motif vocabulary where they leave a choice open, never layout or wording.
 
 REFERENCES:
   {{reference_roles}}

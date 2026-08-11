@@ -24,9 +24,13 @@ Invariants:
   ~30 s grace window before it is abandoned honestly, with its taskId in the ledger (FR-108/201).
 - **References are the FR-91 coherent set already built by `sources/virlo.py`** — one group, one
   source, panels preferred, capped by `reference_images_per_job`. This module attaches them, it
-  does not re-select them. Local files (Inspiration, brief images) go through
-  `render.upload_file()` first (FR-200) and a failed upload drops that one reference, never the
-  job.
+  does not re-select them; `sources.reference_group()` decides WHICH group by the entry's
+  `trend_reuse_index`, so siblings on one trend attach different winning posts. Local files
+  (Inspiration, brief images) go through `render.upload_file()` first (FR-200) and a failed
+  upload drops that one reference, never the job.
+- **A creative's style brief is looked up by its (trend, reference group) PAIR** — `env.brief_for`,
+  never `style_briefs[trend_key]` — so the forensic description always describes the pictures this
+  creative attaches (FR-9/12, amended 2026-08-11).
 - **An unresolved placeholder fails the creative BEFORE submission** (FR-260) — nothing malformed
   is ever paid for.
 - **Kie's 402 is a whole-run condition** (FR-167): it is latched once and every remaining
@@ -75,7 +79,9 @@ from hypesocials.prompts_engine import (
     PromptEngine,
     UnresolvedPlaceholderError,
     build_context,
+    style_brief_line,
 )
+from hypesocials.sources import brief_key
 from hypesocials.util import Deadline
 
 # Both format modules back-import this package under TYPE_CHECKING only, so importing them here
@@ -123,21 +129,38 @@ class Env:
     trends: Mapping[str, TrendItem] = field(default_factory=dict)
     style_briefs: Mapping[str, StyleBrief] = field(default_factory=dict)
     copy: Mapping[str, CopySet] = field(default_factory=dict)
-    copy_degraded: frozenset[str] = frozenset()
-    copy_trimmed: frozenset[str] = frozenset()
+    #: `CopyResult.tags` — `asset_id -> the DegradationTags the copy stage earned this creative`
+    #: (FR-99's `copy_degraded`, FR-101's `text_trimmed`, A20's `no_onimage_text`, A21's
+    #: `hook_pattern_generic`). ONE field rather than one frozenset per tag: the copy stage is
+    #: free to grow a new degradation without a new field here and a new branch in `_record`.
+    copy_tags: Mapping[str, Sequence[DegradationTag]] = field(default_factory=dict)
     #: FR-200/191: `asset_id -> ((path, kind), …)`, kind in {"brief", "inspiration"} — the
     #: provenance that picks each attachment's role line (`refs.py`).
     local_refs: Mapping[str, Sequence[tuple[Path, str]]] = field(default_factory=dict)
     campaign_briefs: Mapping[str, Brief] = field(default_factory=dict)  # FR-144/145, by name
     brand_accent: str = ""  # FR-109 `full` only: one accent colour inside the trend's own palette
     brand_product_nouns: Sequence[str] = ()  # FR-109 `full` only: nouns for the on-image text
-    niche_descriptor: str = ""
+    niche_descriptor: str = ""  # copy-side (audience included): the analyst and copywriter only
+    niche_visual_world: str = ""  # A15: `niche.visual_world` alone — the four gpt-image-2 roles
     llm_call: Any = None  # metered `StructuredCall` for the FR-27 vision check; None = off
     video_refs: Any = None  # `video_ref.Prefetch` for the D23 motion reference, or None
     stop: asyncio.Event | None = None  # Ctrl+C: stop ORDERING new work (FR-201)
     deadline: Deadline | None = None  # the run's soft monotonic ceiling (FR-108/243)
     credits_exhausted: bool = False  # FR-167, latched once
     disk_full: bool = False  # 10 §10, latched once: further downloads stop run-wide
+
+    def brief_for(self, entry: PlanEntry) -> StyleBrief | None:
+        """This creative's style brief, or None when its own pair has none (FR-9/12, amended today).
+
+        Briefs are keyed by the `(trend, reference group)` PAIR, because the brief must describe
+        the pictures the creative actually attaches — and `refs.attach()` rotates the group per
+        `trend_reuse_index`. Looking a brief up by trend key alone would hand the k-th sibling a
+        forensic description of group 0's images while it renders group k's: the analysed variant
+        would be steered *away* from its own references. None is FR-12's degrade signal, not an
+        error — the creative runs the direct scaffold and carries `analysis_missing`.
+        """
+        key = entry.trend_key or ""
+        return self.style_briefs.get(brief_key(key, self.trends.get(key), entry.trend_reuse_index))
 
     @property
     def halted(self) -> bool:
@@ -475,7 +498,7 @@ def _assemble(entry: PlanEntry, env: Env, attached: Sequence[Reference], *,
               copyset: CopySet | None = None, budget_scale: float = 1.0,
               extra: str = "") -> str | None:
     """The finished render prompt, or `None` when it cannot be filled (FR-17/94/96, FR-260)."""
-    brief = env.style_briefs.get(entry.trend_key or "") if entry.variant == "analyzed" else None
+    brief = env.brief_for(entry) if entry.variant == "analyzed" else None
     role = ROLE_ANALYZED if brief is not None else ROLE_DIRECT
     profile = render.get_profile(env.config.models.image_profile)
     context = build_context(
@@ -488,6 +511,7 @@ def _assemble(entry: PlanEntry, env: Env, attached: Sequence[Reference], *,
         campaign_brief=env.campaign_briefs.get(entry.brief_name or ""),
         creative_format="image",
         niche_descriptor=env.niche_descriptor,
+        niche_visual_world=env.niche_visual_world,  # A15: render-side art direction, `direct` too
         brand_accent=env.brand_accent,  # FR-109's only render-side brand influence, `full` only
         brand_product_nouns=env.brand_product_nouns,
         text_budgets=env.config.run.text_budgets,
@@ -518,13 +542,14 @@ def _record(entry: PlanEntry, env: Env) -> AssetRecord:
     """The `pending` meta.yaml this creative starts life with — FR-73 field for field."""
     trend = env.trends.get(entry.trend_key or "")
     copyset = env.copy.get(entry.asset_id)
+    brief = env.brief_for(entry)
     degradations: list[DegradationTag] = []
-    if entry.variant == "analyzed" and entry.trend_key not in env.style_briefs:
-        degradations.append(DegradationTag.ANALYSIS_MISSING)  # FR-12: renders direct-mode instead
-    if entry.asset_id in env.copy_degraded:
-        degradations.append(DegradationTag.COPY_DEGRADED)
-    if entry.asset_id in env.copy_trimmed:
-        degradations.append(DegradationTag.TEXT_TRIMMED)
+    if entry.variant == "analyzed" and brief is None:
+        # FR-12: renders direct-mode instead. Decided on the SAME (trend, group) pair `_assemble`
+        # renders with — a trend-level check would leave a creative whose own pair's call failed
+        # silently unmarked whenever any sibling group's call succeeded.
+        degradations.append(DegradationTag.ANALYSIS_MISSING)
+    degradations.extend(env.copy_tags.get(entry.asset_id, ()))
     return AssetRecord(
         asset_id=entry.asset_id,
         source=entry.trend_key or (f"brief/{entry.brief_name}" if entry.brief_name else "none"),
@@ -536,6 +561,7 @@ def _record(entry: PlanEntry, env: Env) -> AssetRecord:
         generation_mode=entry.variant,
         hook_pattern_used=copyset.hook_pattern_used if copyset else "",
         source_hook=next((hook for hook in (trend.hook_texts if trend else ()) if hook), ""),
+        style_brief_summary=style_brief_line(brief),  # A24: what the brief asked for, in one line
         ref_source=_ref_source(entry, env, trend),
         degradations=degradations,
         brief_name=entry.brief_name,

@@ -3,36 +3,48 @@
 Module contract
 ---------------
 Purpose: turn plan entries into `CopySet`s. One grouped call writes every sibling's copy at
-once; a failed group splits into per-creative calls; a failed creative still ships on the
-trend's own hook. On-image text comes back inside its character budget, trimmed at a word
-boundary if the model overshot.
+once; a failed group splits into per-creative calls; a creative whose own call also failed ships
+with a caption in OUR words and NO on-image text at all. On-image text comes back inside its
+character budget, trimmed at a word boundary if the model overshot.
 
 Public API:
     await write_copy(entries, trends=..., call=..., engine=...) -> CopyResult
-    CopyResult(copy, degraded, trimmed)
+    CopyResult(copy, tags) — `.degraded` / `.trimmed` are views over `tags`
     COPY_ROLE
 
 Invariants:
+- **The source's own words never become our on-image text (A20, 2026-08-11).** No path from
+  `TrendItem.hook_texts`, `.text_overlay_contents` or `.panel_texts` reaches `headline`,
+  `subline`, `overlay_text`, `slide_texts` or `caption`. Those three fields are exemplar
+  material: they enter the PROMPT (`{{source_hooks}}`, `{{trend_texts}}`) as a pattern to
+  abstract, and the model is what turns a pattern into a sentence. When the model produced
+  nothing, the answer is a creative with no words — never the competitor's headline.
 - **One sibling line per `pair_id`, never per asset (FR-16/22/8).** A `both`-mode pair is ONE
   logical creative rendered two ways: it gets one line in the copy call and the resulting
   `CopySet` is cloned to the sibling's `asset_id`. Listing both variants would ask the model for
   two distinct angles for one creative, which breaks the A/B comparison (identical copy is the
   whole point) and inflates the sibling list.
 - **Grouping never widens the blast radius (FR-99, 10 §10).** Group call fails → one call per
-  creative, one attempt each, concurrent. Per-creative call fails → deterministic fallback copy
-  (trend hook + assembled caption, no model call) and the asset id lands in `degraded` for the
-  caller's `copy_degraded` tag.
+  creative, one attempt each, concurrent. Per-creative call fails → the deterministic no-text
+  tier (assembled caption, empty on-image fields, no model call), tagged `copy_degraded` AND
+  `no_onimage_text` so the two facts stay separable in the log, meta.yaml and the gallery.
+- **A weak audit trail never fails a creative (A21).** `hook_pattern_used` is validated against
+  the bar `prompts/copywriter_system.md` states to the model; a generic answer costs that
+  creative ONE re-ask, and a second generic answer is logged and tagged
+  `hook_pattern_generic` while the copy itself ships unchanged.
 - **FR-101 is two-layered.** The budget is stated in the prompt (layer one, via
   `{{text_budgets}}`); anything still over budget is trimmed here at the last word boundary —
   never mid-word, never with an ellipsis — and the asset id lands in `trimmed` for the caller's
   `text_trimmed` tag.
 - **Override briefs group by (brief × language)** because they consume no trend (FR-144/146).
 - Structural mimicry (FR-100) and the brief-driven relaxation (FR-146) live in the template and
-  the `{{brief_directives}}` slot; `hook_pattern_used` is carried through verbatim so it stays
-  auditable in the log and in meta.yaml.
+  the `{{brief_directives}}` slot; `hook_pattern_used` is carried through verbatim once it has
+  cleared A21's bar, so what is logged and written to meta.yaml is the model's own sentence.
 
 Do not: call the LLM directly, write per-creative copy calls as the happy path, cut text
-mid-word, or invent prompt text outside the template.
+mid-word, invent prompt text outside the template, or copy ANY string that came from a source
+post into a `CopySet` field — the Inspiration exemplars A16 threads to this call
+(`{{inspiration_exemplars}}`) are under the same rule as the trend's own hooks.
 """
 
 from __future__ import annotations
@@ -40,12 +52,21 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import logging
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
 from hypesocials.config import TextBudgets
-from hypesocials.models import Brief, CopySet, PlanEntry, StructuredCall, StyleBrief, TrendItem
+from hypesocials.models import (
+    Brief,
+    CopySet,
+    DegradationTag,
+    PlanEntry,
+    StructuredCall,
+    StyleBrief,
+    TrendItem,
+)
 from hypesocials.prompts_engine import (
     PromptEngine,
     build_context,
@@ -60,14 +81,68 @@ logger = logging.getLogger(__name__)
 COPY_ROLE = "copy"
 _CARRIER_TURN = "Write the copy JSON for the siblings listed above now."
 
+# ---------------------------------------------------------------------------------------------
+# A21 — the `hook_pattern_used` bar.
+#
+# ⚠️ THESE FOUR CONSTANTS AND `prompts/copywriter_system.md` ARE ONE CONTRACT, IN BOTH
+# DIRECTIONS. The template promises the model, in these words: "At least 30 characters, and at
+# least four distinct content words" and "These values are rejected outright: 'curiosity hook',
+# 'engaging hook', 'attention grabber', 'hook' on its own, 'pattern interrupt' on its own."
+# Tighten the code and the prompt advertises a bar the code refuses; loosen it and the prompt
+# lies about what is checked. Either way the model is being told something untrue about how its
+# answer is judged, which is the one thing a prompt must never do. Edit the two together.
+#
+# Calibrated against a real passing value measured on a live run — "Curiosity-and-reveal claim,
+# second person, direct address with a withheld subject" (81 characters, 8 distinct content
+# words) — so the bar is real but has better than 2x headroom on a good answer.
+# ---------------------------------------------------------------------------------------------
+
+_HOOK_PATTERN_MIN_CHARS = 30
+_HOOK_PATTERN_MIN_CONTENT_WORDS = 4
+_GENERIC_HOOK_PATTERNS: frozenset[str] = frozenset({
+    "curiosity hook", "engaging hook", "attention grabber", "hook", "pattern interrupt",
+})
+#: Every word appearing in a blocklisted phrase — derived from the blocklist rather than listed
+#: again, so the two can never disagree about what counts as "naming the genre".
+_GENERIC_VOCABULARY: frozenset[str] = frozenset(
+    word for phrase in _GENERIC_HOOK_PATTERNS for word in phrase.split())
+#: Words that describe nothing about a hook's shape, so they do not count toward the four.
+#: Deliberately short and English-only: a Czech or German pattern line contains none of them,
+#: which makes the bar EASIER to clear in those languages. The failure mode worth avoiding is a
+#: validator that rejects a good non-English answer, not one that accepts a wordy English one.
+_HOOK_PATTERN_STOPWORDS: frozenset[str] = frozenset({
+    "a", "an", "and", "as", "at", "be", "but", "by", "for", "from", "in", "into", "is", "it",
+    "its", "of", "on", "or", "that", "the", "then", "this", "to", "who", "with",
+})
+_WORDS = re.compile(r"[^\W\d_]+", re.UNICODE)  # letters only: "second-person" -> second, person
+
 
 @dataclass(slots=True)
 class CopyResult:
-    """Every creative's copy, plus the two degradations the caller must tag (FR-73)."""
+    """Every creative's copy, plus the degradations the caller must tag (FR-73).
+
+    `tags` is the ONE carrier — `asset_id -> the tags this creative earned in the copy stage` —
+    so a new copy-side degradation needs no new field here, no new field on `generate.Env` and no
+    new branch in the meta writer. `degraded` and `trimmed` are read-only VIEWS over it rather
+    than parallel state: FR-99 and FR-101 are the questions callers actually ask, and answering
+    them from the same dictionary is what stops the two spellings drifting apart.
+    """
 
     copy: dict[str, CopySet] = field(default_factory=dict)
-    degraded: frozenset[str] = frozenset()  # asset ids → DegradationTag.COPY_DEGRADED (FR-99)
-    trimmed: frozenset[str] = frozenset()  # asset ids → DegradationTag.TEXT_TRIMMED (FR-101)
+    tags: dict[str, tuple[DegradationTag, ...]] = field(default_factory=dict)
+
+    @property
+    def degraded(self) -> frozenset[str]:
+        """FR-99 — asset ids whose copy fell back to the no-text tier (`copy_degraded`)."""
+        return self._tagged(DegradationTag.COPY_DEGRADED)
+
+    @property
+    def trimmed(self) -> frozenset[str]:
+        """FR-101 — asset ids whose on-image text was cut to budget (`text_trimmed`)."""
+        return self._tagged(DegradationTag.TEXT_TRIMMED)
+
+    def _tagged(self, tag: DegradationTag) -> frozenset[str]:
+        return frozenset(asset_id for asset_id, tags in self.tags.items() if tag in tags)
 
 
 async def write_copy(
@@ -83,6 +158,7 @@ async def write_copy(
     onimage_languages: Mapping[str, str] | None = None,
     niche_descriptor: str = "",
     brand_context: str = "",
+    copy_exemplars: Sequence[str] = (),
     log: Any = None,
 ) -> CopyResult:
     """Copy for every entry, one grouped call per (trend × language), all groups concurrent.
@@ -98,24 +174,26 @@ async def write_copy(
         conventions: `platform -> {tone/length/hashtags}` from config (FR-15, guidance only).
         onimage_languages: `asset_id -> language` when on-image text differs from the caption.
         brand_context: Notion brand text; reaches the copywriter only (FR-109).
+        copy_exemplars: `InspirationPool.exemplar_texts` (A16) — proven, human-written posts from
+            the operator's own Inspiration folders, rendered into `{{inspiration_exemplars}}`.
+            FORM material for this call and this call alone; no render role can resolve the slot.
 
     Returns:
-        `CopyResult`. Every entry has a `CopySet` — a creative with borrowed words beats a
-        creative with none — so `degraded` and `trimmed` are how losses stay visible.
+        `CopyResult`. Every entry has a `CopySet`, but a creative whose call failed gets one with
+        NO on-image words rather than the source's own (A20) — a text-free image on a proven
+        layout is a usable creative, someone else's headline is not. `tags` (and its `degraded` /
+        `trimmed` views) is how every loss stays visible on the asset and in the gallery.
     """
     run = _Run(call=call, engine=engine, budgets=text_budgets or TextBudgets(),
                conventions=conventions or {}, onimage_languages=onimage_languages or {},
-               niche_descriptor=niche_descriptor, brand_context=brand_context, log=log)
+               niche_descriptor=niche_descriptor, brand_context=brand_context,
+               copy_exemplars=tuple(copy_exemplars), log=log)
     groups = _build_groups(entries, trends or {}, style_briefs or {}, campaign_briefs or {})
     outcomes = await asyncio.gather(*(_write_group(group, run) for group in groups))
     result = CopyResult()
-    degraded: set[str] = set()
-    trimmed: set[str] = set()
-    for copies, group_degraded, group_trimmed in outcomes:
+    for copies, tags in outcomes:
         result.copy.update(copies)
-        degraded |= group_degraded
-        trimmed |= group_trimmed
-    result.degraded, result.trimmed = frozenset(degraded), frozenset(trimmed)
+        result.tags.update(tags)
     return result
 
 
@@ -135,6 +213,7 @@ class _Run:
     onimage_languages: Mapping[str, str]
     niche_descriptor: str
     brand_context: str
+    copy_exemplars: tuple[str, ...]  # A16 — pooled Inspiration `.txt` captions, copy call only
     log: Any
 
 
@@ -187,8 +266,8 @@ def _build_groups(
 
 async def _write_group(
     group: _Group, run: _Run
-) -> tuple[dict[str, CopySet], set[str], set[str]]:
-    """One group: grouped call → per-creative split → deterministic fallback (FR-99, 10 §10)."""
+) -> tuple[dict[str, CopySet], dict[str, tuple[DegradationTag, ...]]]:
+    """One group: grouped call → per-creative split → A21 re-ask → no-text tier (FR-99, 10 §10)."""
     payloads = await _call_copy(group, group.reps, run)
     if missing := [entry for entry in group.reps if entry.asset_id not in payloads]:
         _warn(run.log, "copy_group_split",
@@ -198,25 +277,79 @@ async def _write_group(
         for split in await asyncio.gather(*(
                 _call_copy(group, [entry], run) for entry in missing)):
             payloads.update(split)
+    generic = await _reask_generic_patterns(group, payloads, run)
 
     copies: dict[str, CopySet] = {}
-    degraded: set[str] = set()
-    trimmed: set[str] = set()
+    tags: dict[str, list[DegradationTag]] = {}
+
+    def tag(entry: PlanEntry, *marks: DegradationTag) -> None:
+        for asset_id in group.siblings[entry.asset_id]:  # FR-16: a pair degrades as one creative
+            earned = tags.setdefault(asset_id, [])
+            earned.extend(mark for mark in marks if mark not in earned)
+
     for entry in group.reps:
         payload = payloads.get(entry.asset_id)
         if payload is None:
-            copyset = _fallback_copy(entry, group.trend)
-            degraded.update(group.siblings[entry.asset_id])
+            copyset = _fallback_copy(entry, group.trend, run.niche_descriptor)
+            tag(entry, DegradationTag.COPY_DEGRADED, DegradationTag.NO_ONIMAGE_TEXT)
             _warn(run.log, "copy_degraded",
-                  f"{entry.asset_id}: copy call failed; using the trend's own hook text",
-                  asset_id=entry.asset_id)
+                  f"{entry.asset_id}: copy call failed; shipping a caption in our own words and "
+                  "NO on-image text — the source's hook is never reused verbatim (A20)",
+                  asset_id=entry.asset_id, reason="no_onimage_text")
         else:
             copyset = _to_copyset(payload, entry)
+            if entry.asset_id in generic:
+                tag(entry, DegradationTag.HOOK_PATTERN_GENERIC)
         if _apply_budgets(copyset, entry, run.budgets, run.log):
-            trimmed.update(group.siblings[entry.asset_id])
+            tag(entry, DegradationTag.TEXT_TRIMMED)
         for asset_id in group.siblings[entry.asset_id]:  # FR-16: variants share the copy
             copies[asset_id] = dataclasses.replace(copyset, asset_id=asset_id)
-    return copies, degraded, trimmed
+    return copies, {asset_id: tuple(marks) for asset_id, marks in tags.items() if marks}
+
+
+async def _reask_generic_patterns(
+    group: _Group, payloads: dict[str, dict[str, Any]], run: _Run
+) -> set[str]:
+    """A21 — one re-ask per creative whose `hook_pattern_used` came back generic. Mutates
+    `payloads` in place with any answer that cleared the bar; returns the ids that never did.
+
+    `prompts/copywriter_system.md` tells the model this value "is checked before your answer is
+    accepted" and names the bar. Until A21 it was stored, logged, written to meta.yaml, shown in
+    the gallery — and never read by anything, so the audit trail FR-100 promises could be the
+    word "hook" and nobody would know.
+
+    Three deliberate limits:
+    - **One re-ask, never a loop.** A model that answered "curiosity hook" twice will answer it a
+      third time, and a copy call is metered.
+    - **A weak pattern never fails a creative.** The copy itself may be excellent; the audit note
+      about it is what is thin. Failing the creative would trade a shipped post for a bookkeeping
+      complaint, so a second failure is logged and tagged, and the copy ships unchanged.
+    - **The re-ask keeps the better answer.** A retry that comes back generic too (or does not
+      come back at all) leaves the original in place, so this can only improve an answer.
+    """
+    suspect = [entry for entry in group.reps
+               if _hook_pattern_generic(payloads.get(entry.asset_id))]
+    if not suspect:
+        return set()
+    _warn(run.log, "hook_pattern_reask",
+          f"{len(suspect)} of {len(group.reps)} creative(s) answered with a generic "
+          "hook_pattern_used; asking each once more (A21 — the copywriter template calls a "
+          "generic value a failed answer)",
+          asset_ids=[entry.asset_id for entry in suspect])
+    retries = await asyncio.gather(*(_call_copy(group, [entry], run) for entry in suspect))
+    for entry, retry in zip(suspect, retries):
+        answer = retry.get(entry.asset_id)
+        if answer is not None and not _hook_pattern_generic(answer):
+            payloads[entry.asset_id] = answer
+    still = {entry.asset_id for entry in suspect
+             if _hook_pattern_generic(payloads.get(entry.asset_id))}
+    for asset_id in sorted(still):
+        _warn(run.log, "hook_pattern_generic",
+              f"{asset_id}: hook_pattern_used is still generic after one re-ask "
+              f"({str(payloads[asset_id].get('hook_pattern_used') or '')!r}) — the copy ships "
+              "unchanged and the asset is tagged; a thin audit note never fails a creative (A21)",
+              asset_id=asset_id, hook_pattern_used=payloads[asset_id].get("hook_pattern_used"))
+    return still
 
 
 async def _call_copy(
@@ -230,6 +363,7 @@ async def _call_copy(
         creative_format=reps[0].creative_format if len(reps) == 1 else "",
         niche_descriptor=run.niche_descriptor,
         brand_context=run.brand_context,
+        copy_exemplars=run.copy_exemplars,  # A16: `{{inspiration_exemplars}}`, this role only
         platform_conventions=_relevant(run.conventions, reps),
         text_budgets=run.budgets,
         sibling_list=_sibling_list(reps, run.onimage_languages),
@@ -312,30 +446,101 @@ def _to_copyset(payload: Mapping[str, Any], entry: PlanEntry) -> CopySet:
     )
 
 
-def _fallback_copy(entry: PlanEntry, trend: TrendItem | None) -> CopySet:
-    """FR-99's last resort: the trend's own hook plus an assembled caption. No model call."""
+def _fallback_copy(entry: PlanEntry, trend: TrendItem | None,
+                   niche_descriptor: str = "") -> CopySet:
+    """FR-99's last resort, A20 shape: a caption in OUR words and NO on-image text. No model call.
+
+    **What this used to do, and why it stopped (operator mandate, 2026-08-11).** Until A20 this
+    function set `headline` to the competitor's exact `hook_text`, `slide_texts` to the source
+    deck's panel copy slide for slide, and `overlay_text` to the same hook for a reel. Those
+    strings flow into `prompts_engine._onimage_text`, which emits them as
+    `headline (render verbatim): "…"` plus a letter-by-letter spelling aid, inside the block every
+    render template calls *the ONLY source of renderable words*. A carousel reproduced the source
+    deck panel by panel; a reel burnt the source hook into the seed frame and then locked it as a
+    fixed graphic layer for the whole clip. The docstring here justified it as *"a creative with
+    borrowed words beats a creative with none"*. **That reasoning is overturned.** It is the one
+    place in this pipeline that reproduced a competitor's literal words into a shipped asset, and
+    no amount of prompt-level anti-plagiarism discipline elsewhere survives an engine that does
+    it deterministically on a failure path.
+
+    So every on-image field is empty here. The render side already copes: `_onimage_text` returns
+    `""` when there is no copy and every image role instructs the model to ignore an empty
+    labelled line, so what ships is a text-free creative on a proven layout — usable, and honest
+    about being wordless via `no_onimage_text`.
+
+    The caption is assembled from what is OURS: the trend's own name (the monitor's theme label,
+    not any post's copy) and the niche descriptor from config. `hook_line` and `through_line`
+    stay clear of the source too — `through_line` reaches `reel_director.md` as a description of
+    what the clip is about, so it carries the theme name and nothing scraped.
+    """
     name = trend.name if trend else (entry.brief_name or entry.asset_id)
-    hook = next((text for text in (*(trend.hook_texts if trend else ()),
-                                   *(trend.text_overlay_contents if trend else ()),
-                                   *(trend.panel_texts if trend else ())) if text.strip()), name)
-    slides = list(trend.panel_texts[:entry.slide_count or 0]) if trend else []
     return CopySet(
         asset_id=entry.asset_id,
         language=entry.language,
         trend_key=entry.trend_key,
-        caption=f"{name} — {hook}" if hook != name else name,
+        caption=_fallback_caption(name, niche_descriptor),
         hashtags=_hashtags(name),
-        hook_line=hook,
-        headline=hook,
-        slide_texts=slides or ([hook] if entry.creative_format == "carousel" else []),
-        overlay_text=hook if entry.creative_format == "reel" else "",
+        hook_line="",
+        headline="",
+        subline="",
+        slide_texts=[],
+        overlay_text="",
         through_line=name,
-        hook_pattern_used="copy_degraded — the trend's own hook text, reused verbatim",
+        hook_pattern_used="copy_degraded — no pattern was written; this creative ships with no "
+                          "on-image text rather than the source's own words (A20)",
     )
 
 
+def _fallback_caption(name: str, niche_descriptor: str) -> str:
+    """The no-text tier's caption: the trend's theme name plus our own standing niche line.
+
+    Both halves are ours — `NicheConfig.as_text()` is operator-authored config and the trend name
+    is the monitor's theme label — so nothing scraped can reach `caption.txt`, which FR-230 ships
+    verbatim to the publisher. The niche line runs to a few hundred characters in real configs,
+    so it is cut at a word boundary: a caption is a caption, not a config dump.
+    """
+    standing = trim_words(" ".join((niche_descriptor or "").split()), 180)[0]
+    return f"{name} — {standing}" if standing else name
+
+
+def _hook_pattern_generic(payload: Mapping[str, Any] | None) -> bool:
+    """A21 — True when `hook_pattern_used` is the kind of answer the template calls a failure.
+
+    Three cheap, explainable rules rather than a judgement call, in the order they were cheapest
+    to state to the model (see `_GENERIC_HOOK_PATTERNS` for the contract with the template):
+
+    1. under `_HOOK_PATTERN_MIN_CHARS` — nothing that short describes a shape;
+    2. the whole value, normalized, is one of the five phrases the template rejects by name;
+    3. every content word it does carry comes from that same generic vocabulary, which catches
+       "attention grabber pattern interrupt hook" — long enough for rule 1, still a genre label.
+
+    `None` means the copy call produced no answer at all for this creative; that is the FR-99
+    fallback's business, not this check's, so it is not "generic".
+    """
+    if payload is None:
+        return False
+    value = str(payload.get("hook_pattern_used") or "")
+    if len(" ".join(value.split())) < _HOOK_PATTERN_MIN_CHARS:
+        return True
+    words = [match.group(0).casefold() for match in _WORDS.finditer(value)]
+    if " ".join(words) in _GENERIC_HOOK_PATTERNS:
+        return True
+    content = {word for word in words if word not in _HOOK_PATTERN_STOPWORDS}
+    if content and content <= _GENERIC_VOCABULARY:
+        return True
+    return len(content) < _HOOK_PATTERN_MIN_CONTENT_WORDS
+
+
 def _hashtags(name: str, want: int = 3) -> list[str]:
-    """The platform's hashtag convention applied to the trend name — string assembly (FR-96)."""
+    """The platform's hashtag convention applied to the trend name — string assembly (FR-96).
+
+    Deliberately still invented from the trend-name slug, and deliberately still only reachable
+    from `_fallback_copy`. The winning posts' REAL hashtags now travel to the copy call as
+    reference material (`TrendItem.hashtags`, rendered inside `{{trend_texts}}`), where the model
+    chooses among them the way it chooses everything else. Emitting them verbatim from here would
+    turn reference material into a mandate and hand the model's one editorial job to a slice —
+    and this function runs only when there was no model answer at all.
+    """
     words = [word for word in slugify(name, 0).split("-") if len(word) > 2]
     return [f"#{word}" for word in words[:want]]
 

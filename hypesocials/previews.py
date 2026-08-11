@@ -50,12 +50,16 @@ from hypesocials.util import fit, wrapped
 from hypesocials.runner import (
     _Abort,
     _analyze,
+    _assigned_trends,
     _cleanup,
     _collect,
     _configure_llm,
+    _funnel_block,
     _launch_summary,
     _open,
+    _record_render_forecast,
     _select,
+    _sources_block,
     _write,
 )
 
@@ -105,6 +109,21 @@ async def _preview(opts: cli.Options, control: runner.Control | None, *, deep: b
             await _deep_stages(session, trends, resolved.entries)
         else:
             selection = plan.select(trends, config, read_history(runner.LOGS_DIR, session.log))
+            # FR-155 / FR-139: the funnel goes ABOVE the per-trend list, never below it —
+            # `_verdict_block` already emits ~8 lines per trend, so the rollup an operator reads
+            # first must not be sitting under 176 lines of detail once Increment B lands.
+            session.counters.record_selection(eligible=len(selection.eligible),
+                                              excluded=len(selection.excluded),
+                                              unusable=len(selection.unusable))
+            session.say(_funnel_block(session.counters))
+            # A24: the post inventory, EVERY trend rather than the paid run's strongest three —
+            # FR-139 exists to show the operator the whole supply before they commit to it. It
+            # sits above `_verdict_block` because inventory reads before judgement, and it adds
+            # what the verdict list has never carried: Virlo's own hook/tone labels, the tactics,
+            # the chosen-post count and whether a motion reference qualified.
+            if inventory := _sources_block([item.trend for item in selection.verdicts],
+                                           limit=None):
+                session.say(inventory)
             session.say(_verdict_block(selection))
             # FR-154: zero ELIGIBLE trends is a failed answer, not a clean one. Counting verdicts
             # instead would call the 3-returned-all-excluded shape a success — the exact config
@@ -130,12 +149,22 @@ async def _deep_stages(session: runner._Session, trends: Sequence[TrendItem],
     """FR-140's two extra stages: assign, analyze, write — the same calls the paid run makes.
 
     Verdicts are logged by `_select()` exactly as in a run; what is *printed* here is FR-140's
-    required display — the briefs and the copy — plus FR-8's supply restatement.
+    required display — the briefs and the copy — plus FR-8's supply restatement and FR-155's
+    funnel, which this mode reuses from the runner rather than forking (both preview modes owe
+    the identical block a paid run prints).
     """
     assignment = _select(session, list(trends), list(entries))
-    session.say(assignment.summary_line)
     live = [entry for entry in entries if entry.status is PlanEntryStatus.PENDING]
     by_key = {trend.history_key: trend for trend in trends}
+    _record_render_forecast(session, live, by_key, dropped=len(assignment.dropped))
+    session.say(_funnel_block(session.counters))
+    # A24: the post inventory for the trends this plan actually assigned, uncapped — FR-140's
+    # whole purpose is to show what a paid run would do before it does it. The brief half of A24
+    # is not repeated here: `_analysis_block` below already prints each style brief in more
+    # detail than the paid run's four-row summary does.
+    if inventory := _sources_block(_assigned_trends(live, by_key), limit=None):
+        session.say(inventory)
+    session.say(assignment.summary_line)
     # LLM seam only, built by the runner's own splinter of `_configure_providers()` (D19):
     # the full call would also build the Kie client and demand KIE_API_KEY, a key this action's
     # pre-flight does not require and this path may never use.
@@ -195,12 +224,22 @@ def _nothing_eligible(selection: plan.Selection, config: Config) -> str:
 
 def _analysis_block(trends: Mapping[str, TrendItem], style_briefs: Mapping[str, StyleBrief],
                     copy_result: CopyResult) -> str:
-    """FR-140's display: one block per style brief, then one per creative's copy."""
+    """FR-140's display: one block per style brief, then one per creative's copy.
+
+    Briefs are keyed by the `(trend, reference group)` pair (FR-9/12), so the trend is named from
+    the brief's own `trend_key` and the group is printed beside it — with rotation on, one trend
+    can produce several briefs and an operator comparing them needs to see which pictures each
+    one looked at.
+    """
     lines = [f"{len(style_briefs)} style brief(s) and copy for {len(copy_result.copy)} "
              "creative(s) — LLM spend only, no image or video job was submitted (FR-140)"]
-    for key, brief in style_briefs.items():
-        name = trends[key].name if key in trends else key
-        lines.append(f"  style brief — {name}")
+    for brief in style_briefs.values():
+        trend = trends.get(brief.trend_key)
+        name = trend.name if trend is not None else brief.trend_key
+        groups = len(trend.reference_groups) if trend is not None else 0
+        lines.append(f"  style brief — {name}"
+                     + (f"  [reference group {brief.reference_group_index + 1} of {groups}]"
+                        if groups > 1 else ""))
         zones = ", ".join(zone.position for zone in brief.layout_zones) or "none"
         lines.append(f"      prompt  {_short(brief.render_prompt, 300)}")
         lines.append(f"      zones   {_short(zones)}")
@@ -208,8 +247,9 @@ def _analysis_block(trends: Mapping[str, TrendItem], style_briefs: Mapping[str, 
                      f"type {_short(brief.typography, 80)}")
         lines.append(f"      hook    {_short(brief.hook_pattern, 120)}")
     for asset_id, copy in copy_result.copy.items():
-        marks = [tag for tag, ids in (("copy_degraded", copy_result.degraded),
-                                      ("text_trimmed", copy_result.trimmed)) if asset_id in ids]
+        # Every copy-stage tag, read off the one carrier — so A20's `no_onimage_text` and A21's
+        # `hook_pattern_generic` show up here the day they exist, with no second list to update.
+        marks = [tag.value for tag in copy_result.tags.get(asset_id, ())]
         lines.append(f"  copy — {asset_id} [{copy.language}]"
                      + (f"  ({', '.join(marks)})" if marks else ""))
         lines.append(f"      on-image {_short(copy.headline, 60)}"

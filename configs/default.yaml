@@ -19,7 +19,13 @@ run:
   vision_check: false              # cs platforms get a startup hint to turn this on
   spend_cap_usd: 10.00             # pre-flight control; --yes trims to fit, interactive refuses
   trend_history_days: 7            # 0 disables the repeat-prevention window
-  max_trend_reuses_per_run: 2      # how many creatives may share one trend
+  max_trend_reuses_per_run: 6      # how many creatives may share one trend. Was 2 until
+                                   # 2026-08-11, when D36's post-level recency made a higher
+                                   # number safe (exclusion is per POST now, so reuse is no
+                                   # longer a throughput ceiling) and FR-91's per-reuse rotation
+                                   # made it useful: each of the 6 attaches a DIFFERENT one of
+                                   # the ~36 reference sets the adapter already downloads, and
+                                   # gets its own style brief for that set (FR-9/FR-12).
   carousel_anchor: true            # slide 1 renders first and references slides 2-N
   reel_overlay_text: seed_frame    # seed_frame | in_model | none
   reel_audio: true                 # Seedance generate_audio; false ships a silent clip
@@ -48,7 +54,13 @@ sources:
   active: [virlo]                  # google_trends, hacker_news: named in the picker, not built yet
   virlo_monitor_ids: []            # run `run.bat --list-monitors` to print yours (FR-251)
   virlo_session_pool: 3            # bounded wrapper sessions; never one subprocess per monitor
-  media_download_cap: 6            # reference IMAGES per trend (the video ref is bounded separately)
+  media_download_cap: 18           # reference IMAGES per trend (the video ref is bounded
+                                   # separately). Was 6 until 2026-08-11. FR-91's per-reuse
+                                   # rotation needs one DOWNLOADED group per reuse, and at 6 a
+                                   # trend only ever kept 2 groups, so 6 siblings rotated over 2
+                                   # sets. 18 = max_trend_reuses_per_run (6) x
+                                   # reference_images_per_job (3). Downloads are free CDN GETs;
+                                   # the per-ANALYSIS-CALL image count is unchanged at FR-93's ~6.
   reference_images_per_job: 3      # references attached to one render job, as a coherent set
   inspiration_folders: []          # flat global list of local folders (D13); empty = off
   inspiration_mix: minority        # off | minority | exclusive
@@ -90,10 +102,21 @@ models:
                                    # `temperature`, and sending it with provider.require_parameters
                                    # returns HTTP 404 (spikes/RESULTS.md §E). Set it only for a
                                    # model whose OpenRouter catalog lists it. FR-129 needs D15.
-  max_tokens: { analysis: 2000, copy: 3000 }   # sized for the GROUPED calls, not single answers
-  max_tokens_floor: { analysis: 600, copy: 1000 }   # NFR-111: a smaller max_tokens is clamped UP
+  max_tokens: { analysis: 12000, copy: 3000 }  # sized for the GROUPED calls, not single answers.
+                                   # analysis was 2000 until 2026-08-11, and at that cap EVERY
+                                   # style-brief call this tool ever made hit `llm_truncated`:
+                                   # a successful brief serializes to 12,938-23,388 chars, which
+                                   # is ~3,600-6,500 output tokens. Sonnet-5 also thinks unbidden
+                                   # (0-3,057 reasoning tokens billed INSIDE completion_tokens
+                                   # despite reasoning_effort being None for this role), so the
+                                   # cap has to clear a real brief plus reasoning, not just a
+                                   # real brief. Raising it also CUTS spend: the old cap bought
+                                   # three attempts of ~12,430 prompt tokens per call.
+  max_tokens_floor: { analysis: 6000, copy: 1000 }  # NFR-111: a smaller max_tokens is clamped UP
                                    # to the floor with a warning - a tiny cap otherwise truncates
                                    # every call and makes the truncation retry the normal path.
+                                   # analysis floor was 600, i.e. below a realistic brief, so it
+                                   # protected nothing; 6000 is the smallest brief observed.
   price_per_unit:                  # ESTIMATOR INPUTS ONLY - never billing-authoritative.
                                    # These belong to the models named above; a swap leaves them
                                    # untouched and the pre-flight prints which model each price is

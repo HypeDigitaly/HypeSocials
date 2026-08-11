@@ -180,7 +180,10 @@ async def check(
                          completion_tokens=result.completion_tokens)
     if result.degraded or not isinstance(result.parsed, Mapping):
         report.checked = False
-        report.reason = (result.raw_text or "vision check returned nothing usable")[:_DETAIL_MAX]
+        # `reason` first — a truncated call's `raw_text` is unfinished JSON, which tells the
+        # operator nothing about WHY the check did not run. The body is the fallback.
+        report.reason = (
+            result.reason or result.raw_text or "vision check returned nothing usable")[:_DETAIL_MAX]
         _warn(log, "vision_check_unavailable",
               f"vision check did not run for {len(blobs)} image(s): {report.reason}",
               images=len(blobs))

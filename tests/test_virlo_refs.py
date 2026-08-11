@@ -269,8 +269,12 @@ def test_fr7_every_qualifying_candidate_is_built_not_the_download_cap_divided_by
     sets = virlo._reference_groups(*_payload(), cfg, MONITOR)
 
     assert len(sets) == QUALIFYING_SETS == 7
-    assert len(sets) != rationed  # the pre-fix arithmetic: 6 ÷ 3 = 2
-    assert rationed == 2, "fixture assumes the shipped 6/3 defaults"
+    # Updated 2026-08-11: `media_download_cap` moved 6 -> 18 so FR-91's per-reuse rotation has one
+    # DOWNLOADED group per reuse, which makes `rationed` 6 rather than 2. The guard used to pin
+    # the literal 2 and so failed on the new default; what it was actually protecting is that the
+    # candidate pool is decided by what QUALIFIES, never by the download budget — so assert that
+    # relationship instead of either number, and it survives the next default change too.
+    assert len(sets) > rationed, "the candidate pool must never be rationed by the download budget"
     # The item carries every one of them as a reference group, strongest/freshest first.
     assert len(_item().reference_groups) == QUALIFYING_SETS
 

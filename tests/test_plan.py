@@ -319,7 +319,9 @@ def test_fr90_slideshow_trends_go_to_carousels_and_video_trends_to_images() -> N
     assert assigned == {"image": "vid", "carousel": "deck"}
     assert [d.reason for d in result.decisions] == ["affinity", "affinity"]
     assert result.trends_needed == 2 and result.usable_trends == 2
-    assert result.batch_ceiling == 4  # 2 usable x max_trend_reuses_per_run 2
+    # Updated 2026-08-11: `max_trend_reuses_per_run` default moved 2 -> 6 (D36 post-level recency
+    # + FR-91 per-reuse rotation), so the ceiling this fixture computes is 2 usable x 6 = 12.
+    assert result.batch_ceiling == 12
 
 
 def test_fr90_no_affinity_match_falls_back_to_plain_rank_order() -> None:

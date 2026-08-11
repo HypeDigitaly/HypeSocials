@@ -462,14 +462,18 @@ def _context(entry: PlanEntry, env: Env, copyset: CopySet | None, **slots: Any) 
     return build_context(
         trend=env.trends.get(entry.trend_key or ""),
         # None in direct mode and after FR-12's degrade — the scaffold then runs on FR-96's sentence.
-        style_brief=(env.style_briefs.get(entry.trend_key or "")
-                     if entry.variant == "analyzed" else None),
+        # Pair-keyed (FR-9/12, amended 2026-08-11): the seed frame references the group this reel
+        # attaches, so its brief must describe that same group.
+        style_brief=(env.brief_for(entry) if entry.variant == "analyzed" else None),
         copy=copyset, creative_format="reel", niche_descriptor=env.niche_descriptor,
         # FR-144/145 + FR-109 `full` (only the seed-frame role allowlists `brand_accent`), read
         # through `getattr`: this module targets the duck-typed Env surface, not its dataclass.
         campaign_brief=getattr(env, "campaign_briefs", {}).get(entry.brief_name or ""),
         brand_accent=getattr(env, "brand_accent", ""),
         brand_product_nouns=getattr(env, "brand_product_nouns", ()),
+        # A15, same seam and same narrowness: only `reel_seed_frame.md` allowlists it, so the
+        # director role drops it as an out-of-role name exactly as it drops `brand_accent`.
+        niche_visual_world=getattr(env, "niche_visual_world", ""),
         text_budgets=env.config.run.text_budgets, **slots)
 
 

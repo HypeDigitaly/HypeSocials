@@ -57,7 +57,11 @@ _TIER_LONG_EDGE: dict[str, int] = {"1k": 1024, "2k": 2048, "4k": 4096}
 #: Reasoning allowance per configured effort, measured in RESULTS.md §E: exactly 0 tokens at
 #: `low`, ~32 % of completion at `medium`. `high` is extrapolated at 2x medium and labelled so.
 _REASONING_FRACTION: dict[str, float] = {"low": 0.0, "medium": 0.32, "high": 0.64}
-_RETRY_TOKEN_BUMP = 8192  # llm._TRUNCATION_BUMP_MAX: a retried call's cap grows by min(cap, this)
+#: Mirrors `llm._TRUNCATION_BUMP_MAX` and `llm._DEFAULT_MAX_OUTPUT_CEILING` — see `_widened_cap`.
+#: `llm.py` owns the behaviour; these two numbers exist here only so the estimator can PRICE it
+#: without importing another module's internals, and `test_reference_rotation` asserts they match.
+_RETRY_TOKEN_BUMP = 8192  # a retried call's cap grows by min(cap, this) ...
+_RETRY_TOKEN_CEILING = 16384  # ... and is then clamped here, which the estimate must not ignore
 #: Which `price_per_unit.llm.<key>` block prices each role. Keyed by ROLE, not by model id: a rate
 #: belongs to whatever model was configured when it was typed in, so a swap keeps it (FR-282).
 _ROLE_PRICE_KEY: dict[str, str] = {"analysis": "sonnet", "copy": "luna"}
@@ -357,6 +361,18 @@ def _entry_lines(config: Config, entry: PlanEntry, lines: list[EstimateLine]) ->
                            allowance=True))
 
 
+def _widened_cap(out: int) -> int:
+    """What `max_tokens` FR-127's truncation retry will actually ask for — `llm._widen`'s answer.
+
+    The retry adds `min(cap, 8192)` and `llm._output_ceiling` then clamps the result to 16,384
+    (or to the configured cap, whichever is larger, since an operator who configured a big cap
+    has already proven it routable). Pricing the unclamped bump over-stated every analysis
+    allowance line by ~3,800 output tokens once `max_tokens.analysis` rose to 12,000 — safe in
+    direction (D11), but a number the operator reads should be the number the code will spend.
+    """
+    return min(out + min(out, _RETRY_TOKEN_BUMP), max(_RETRY_TOKEN_CEILING, out))
+
+
 def job_projection(config: Config, entry: PlanEntry, job: str) -> float:
     """The expected cost of ONE submission — the engine's single per-job price (FR-107/FR-106).
 
@@ -374,21 +390,35 @@ def job_projection(config: Config, entry: PlanEntry, job: str) -> float:
 
 
 def _llm_lines(config: Config, entries: Sequence[PlanEntry], lines: list[EstimateLine]) -> None:
-    """Analysis calls (one per analyzed trend) and copy calls (one per FR-99 group) + allowances.
+    """Analysis calls (one per analyzed PAIR) and copy calls (one per FR-99 group) + allowances.
 
-    Both lines are counted **per distinct `trend_key` present on the entries**, which is exactly
-    what FR-9/FR-99 bill. Before Collect no trend is assigned yet, so `runner._stamp_provisional`
-    supplies the worst-case-honest keys — one distinct trend per atomic group, because that is the
-    most `plan.assign()` can produce (v1.6.5 estimator fidelity fix; understating is the one
-    unacceptable estimator error).
+    The copy line is counted per distinct `trend_key`, which is what FR-99 bills. The analysis
+    line is counted per distinct **(`trend_key`, `trend_reuse_index`) pair** (FR-107 as amended
+    2026-08-11, following FR-9): reference groups rotate per reuse, each rotated group gets its
+    own style brief, so six creatives sharing one trend now make six analysis calls, not one.
+
+    Before Collect no trend is assigned yet, so `runner._stamp_provisional` supplies the
+    worst-case-honest keys — one distinct trend per atomic group, because that is the most
+    `plan.assign()` can produce (v1.6.5 estimator fidelity fix; understating is the one
+    unacceptable estimator error). That stamping already priced one analysis call per atomic
+    group, which is exactly A4's worst case, so the **pre-Confirm estimate is unchanged** by the
+    pair keying: every provisional key is distinct, and a distinct key stays one call whatever
+    its reuse index is. What the pair keying fixes is the POST-assignment re-price, where real
+    keys repeat across siblings and the trend-keyed count under-stated the real spend.
+
+    The RAW reuse index is the key, not the group it rotates onto: `estimate()` is handed config
+    and plan entries, never `TrendItem`s, so it cannot know a trend's group count. A trend with
+    fewer groups than reuses therefore prices more calls than `analyze` will make (the rotation
+    wraps and those pairs collapse). That is deliberate — over-stating is the safe direction and
+    under-stating is the one unacceptable estimator error (D11).
     """
     planned = [e for e in entries
                if not (e.creative_format == "reel" and not config.reels_plannable)]
 
-    analyzed: dict[str, list[int]] = {}
+    analyzed: dict[tuple[str, int], list[int]] = {}
     for entry in planned:
         if entry.variant == "analyzed" and entry.trend_key:
-            analyzed.setdefault(entry.trend_key, []).append(entry.order)
+            analyzed.setdefault((entry.trend_key, entry.trend_reuse_index), []).append(entry.order)
     if analyzed:  # FR-93/128: analysis images are the DOWNSCALED ones; check images are not
         images = min(config.sources.media_download_cap, _ANALYSIS_IMAGE_CAP)
         prompt = _ANALYSIS_PROMPT_TOKENS + images * _image_tokens(_ANALYSIS_IMAGE_PX,
@@ -404,7 +434,7 @@ def _llm_lines(config: Config, entries: Sequence[PlanEntry], lines: list[Estimat
         # TWO extra calls per analysis call, each at the cap FR-127 widens to and FR-41's retry
         # then inherits. Allowance only: FR-106a's expected projection stays ungated by a
         # contingency that mostly never happens (v1.6.5 fidelity fix, padded 2026-08-10).
-        wide = _llm_call_price(config, "analysis", prompt, out + min(out, _RETRY_TOKEN_BUMP), 0)
+        wide = _llm_call_price(config, "analysis", prompt, _widened_cap(out), 0)
         lines.append(_line("analysis_retry_allowance",
                            f"analysis truncation + parse retry allowance ({2 * len(analyzed)})",
                            SpendCategory.LLM, "retry", 2 * len(analyzed), wide, orders,
@@ -435,7 +465,7 @@ def _llm_lines(config: Config, entries: Sequence[PlanEntry], lines: list[Estimat
     # Both retries apply to EVERY role — and 30 §2 sizes `max_tokens.copy` for the grouped FR-99
     # call precisely so FR-127's retry is not the normal path — so copy carries the same two wide
     # calls, priced at the widest group: the worst case this config can actually produce.
-    wide_out = completion + min(completion, _RETRY_TOKEN_BUMP)
+    wide_out = _widened_cap(completion)
     wide_tokens = (_COPY_PROMPT_TOKENS + brand
                    + max(siblings_of(m) for m in groups.values()) * _COPY_TOKENS_PER_SIBLING)
     wide = _llm_call_price(config, "copy", wide_tokens, wide_out, round(wide_out * effort))

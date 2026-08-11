@@ -358,7 +358,12 @@ def test_worst_case_covers_a_call_that_truncation_retries_and_parse_retries(cfg:
     assert est.worst_case_usd >= 0.60  # ax10's actual, previously $0.56 of worst case
     assert est.expected_usd == pytest.approx(
         round(sum(l.amount_usd for l in est.lines if not l.allowance), 6))
-    assert est.expected_usd < 0.60  # the confirm prompt's expected line stays informative
+    # UPDATED 2026-08-11 (plan A5): was `< 0.60`. `max_tokens.analysis` rose 2000 -> 12000 because
+    # every style-brief call measured had truncated, so the EXPECTED analysis line legitimately
+    # prices 10,000 more output tokens per call. The assertion's point is unchanged — expected must
+    # stay well under worst case so the confirm prompt still says something — so it now tracks the
+    # worst case rather than a constant tied to the old cap.
+    assert est.expected_usd < est.worst_case_usd / 2
 
 
 def test_job_projection_is_the_one_per_submission_price(cfg: Config) -> None:

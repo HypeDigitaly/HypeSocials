@@ -167,7 +167,7 @@ class Session:
                 error class (the Virlo wrapper's four classes are FR-119), so callers branch on
                 the code rather than parsing text.
         """
-        watch, status = Stopwatch(), "ok"
+        watch, status, rows = Stopwatch(), "ok", None
         try:
             async with self._lock:  # FR-115: one call in flight per session
                 try:
@@ -182,23 +182,33 @@ class Session:
                 raise MCPError(INTERNAL_ERROR,
                                f"{self._cfg.name}.{tool} failed: {_text_of(result)}")
             if result.structured_content is not None:
+                rows = _row_count(result.structured_content)
                 return result.structured_content
             return _text_of(result)
         except BaseException as exc:  # the error CLASS is the log field, never the arguments
             status = type(exc).__name__
             raise
         finally:
-            self._log_call(tool, status, watch.elapsed_ms)
+            self._log_call(tool, status, watch.elapsed_ms, rows)
 
-    def _log_call(self, tool: str, status: str, duration_ms: int) -> None:
-        """FR-77's per-MCP-call line: server, tool, duration, outcome — the call ledger, never a
-        transcript, so arguments and payloads deliberately do not travel here (40 §4)."""
-        logger.info("MCP call %s.%s -> %s in %dms", self._cfg.name, tool, status, duration_ms)
+    def _log_call(self, tool: str, status: str, duration_ms: int, rows: int | None = None) -> None:
+        """FR-77's per-MCP-call line: server, tool, duration, outcome and the ROW COUNT — the call
+        ledger, never a transcript, so arguments and payloads deliberately do not travel here
+        (40 §4).
+
+        The count is required, not decorative (FR-77 bullet 2): `virlo MCP: get_top_videos -> ok`
+        read identically whether Virlo returned a hundred rows or none, which made the single most
+        consequential failure of a run — an empty answer from a healthy call — invisible in the
+        one log a human reads.
+        """
+        logger.info("MCP call %s.%s -> %s (%s rows) in %dms",
+                    self._cfg.name, tool, status, "-" if rows is None else rows, duration_ms)
         if self._log is not None:
             self._log.event(
-                "mcp_call", f"{self._cfg.name} MCP: {tool} -> {status}",
+                "mcp_call", f"{self._cfg.name} MCP: {tool} -> {status}"
+                            + (f", {rows} row(s)" if rows is not None else ""),
                 level="info" if status == "ok" else "warn", duration_ms=duration_ms,
-                server=self._cfg.name, tool=tool, status=status)
+                server=self._cfg.name, tool=tool, status=status, rows=rows)
 
     async def tool_names(self) -> list[str]:
         """The tool names this server advertises — the wrapper contract check at run start."""
@@ -464,6 +474,24 @@ async def _taskkill_tree(server: str, process: Any | None) -> None:
 def _text_of(result: Any) -> str:
     """Joins a tool result's text blocks — used for unstructured returns and error messages."""
     return "\n".join(block.text for block in result.content if getattr(block, "text", None))
+
+
+def _row_count(payload: Any) -> int | None:
+    """How many rows a structured tool answer carries, for FR-77's result summary.
+
+    Server-agnostic on purpose — this seam serves Virlo, Notion and later Postiz, and none of them
+    may be special-cased here. The rule is the longest list in the answer: every row-bearing tool
+    in this repo returns its rows as one list beside scalar metadata (`videos`, `slideshows`,
+    `monitors`, `groups`), so the longest list IS the row count. `None` means the answer carried
+    no list at all — a single record, which is a different thing from zero rows and is logged as
+    such rather than as a misleading "0 row(s)".
+    """
+    if isinstance(payload, Mapping) and set(payload) == {"result"}:
+        payload = payload["result"]
+    if isinstance(payload, Mapping):
+        lengths = [len(value) for value in payload.values() if isinstance(value, list)]
+        return max(lengths) if lengths else None
+    return len(payload) if isinstance(payload, list) else None
 
 
 __all__ = [

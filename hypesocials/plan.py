@@ -340,8 +340,11 @@ def assign(entries: Sequence[PlanEntry], selection: Selection, config: Config) -
     never touch the pool, the reuse budget or history. When the pool has no capacity left the
     surplus group is kept in the plan with a terminal `skipped` status and a reason (FR-4/8).
 
-    Mutates each assigned entry in place: `trend_key` is set and `asset_id` is rewritten with the
-    trend's slug (FR-71). Entries already terminal — budget-trimmed, say — are left alone.
+    Mutates each assigned entry in place: `trend_key` is set, `trend_reuse_index` records this
+    group's 0-based position among the creatives on that trend (FR-91's rotation index, and with
+    it FR-9's brief pair), and `asset_id` is rewritten with the trend's slug (FR-71). Entries
+    already terminal — budget-trimmed, say — are left alone, and an `override` brief entry keeps
+    the default index 0 because it attaches no trend group at all.
     Returns one decision per group (FR-90's audit trail), the dropped entries, and the counts the
     console restatement of FR-8 needs.
     """
@@ -376,6 +379,10 @@ def assign(entries: Sequence[PlanEntry], selection: Selection, config: Config) -
         uses[trend.history_key] = use_index = uses.get(trend.history_key, 0) + 1
         for entry in members:
             entry.trend_key = trend.history_key
+            # FR-91: 0-based, so the FIRST group of the first creative on a trend is index 0. The
+            # whole atomic group shares one value — a both-mode A/B pair must compare like with
+            # like, and a deck's slides must come from one coherent set (D31).
+            entry.trend_reuse_index = use_index - 1
             entry.asset_id = _asset_id(entry, trend.name)
         result.decisions.append(AssignmentDecision(
             group, [entry.asset_id for entry in members], fmt, trend.history_key, reason,

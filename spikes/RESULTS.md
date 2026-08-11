@@ -84,7 +84,7 @@ Free calls omit the balance headers entirely.
       autonomy_level, autopilot_unlocked, cognition_enabled, cadence,
       next_run_at, last_run_at, is_processing, created_at, updated_at } ] } }
 ```
-- **Surprise vs PRD:** the array is nested at `data.agents`, not at the top level, and paginates by **`page`** — while `/videos` and `/slideshows` paginate by **`offset`**. Two different pagination idioms in one API.
+- **Surprise vs PRD:** the array is nested at `data.agents`, not at the top level. **Corrected 2026-08-11 (live probe):** `/agents`, `/videos` and `/slideshows` all paginate by **`page`** (1-indexed), not by two different idioms. There is ONE idiom. Requests that include `offset` as a parameter return HTTP 400 `{"message":["property offset should not exist"]}`.
 - `list_monitors` must normalize away 20 fields to reach the documented `id + name`.
 
 **`GET /v1/agents/{id}` (`get_monitor_analysis`)**
@@ -142,7 +142,7 @@ Free calls omit the balance headers entirely.
 - **No `duration` field anywhere** → the yt-dlp metadata probe (FR-160) is genuinely load-bearing, not belt-and-braces.
 - **Duplicates occur** in the returned array (`@marcinteodoru/video/7671470941230140702` appeared twice in the top 8 by views). The join rule needs a dedupe on video `id`/`url`.
 - Platform mix in sample: tiktok 27, youtube 22, instagram 1.
-- Pagination: `total: 2039`, `limit: 50`, `offset: 0` — the PRD table mentions no pagination.
+- **Corrected 2026-08-11 (live probe):** Pagination response fields are `total: 2039`, `limit: 50`, `offset: 0` — these are **output echo fields only**, not accepted request parameters. Requests are paginated by **`page`** (1-indexed); the response echoes the derived `offset` for informational purposes.
 
 **`GET /v1/agents/{id}/slideshows` (`get_top_slideshows`)**
 ```
@@ -584,7 +584,7 @@ Artifact: `spikes/artifacts/oq20_retention_probe.json`.
 - Reasoning allowance is effort-dependent: 0 tokens at `low`, ~32 % of completion at `medium`. §E
 
 **T1.5 (`mcp_client.py` + `virlo_mcp/`)**
-- Normalization deltas in §A: `data.agents` nesting, `page` vs `offset`, `images[{image_url, position}]` not `image_urls[]`, `intelligence.*` optionality gated on `intelligence_status == "ready"`, no `panel_count` (use `intelligence.image_count`), duplicates in `videos[]`, no `duration` field anywhere.
+- Normalization deltas in §A: `data.agents` nesting, **`page`-based pagination (not `offset` — corrected 2026-08-11)**, `images[{image_url, position}]` not `image_urls[]`, `intelligence.*` optionality gated on `intelligence_status == "ready"`, no `panel_count` (use `intelligence.image_count`), duplicates in `videos[]`, no `duration` field anywhere.
 - The digest/monitor-analysis field ownership is swapped relative to the PRD's tool table. §A
 - Surface `x-cost` / `x-credits-remaining` into the event log. §A
 

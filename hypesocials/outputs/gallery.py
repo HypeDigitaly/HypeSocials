@@ -158,6 +158,14 @@ def _card_html(run: Path, folder: Path, meta: _Meta) -> str:
     source_hook = str(meta.get("source_hook") or "").strip()
     if source_hook:
         parts.append(f'<p class="hook">Source hook: “{html.escape(source_hook)}”</p>')
+    # A24: what our own analysis ASKED FOR — pattern · angle · palette
+    # (`models.AssetRecord.style_brief_summary`). Next to the source hook above, the card now
+    # carries all three sides of the judgement: what won, what we told the model to do about it,
+    # and what came back. Absent in direct mode and after FR-12's degrade, where the
+    # `analysis_missing` badge is already saying there was no brief.
+    brief = str(meta.get("style_brief_summary") or "").strip()
+    if brief:
+        parts.append(f'<p class="hook">Brief asked for: {html.escape(brief)}</p>')
     skip = _text(folder / SKIP_REASON_FILE)
     if skip:
         parts.append(f'<p class="skip">Skipped: {html.escape(skip)}</p>')

@@ -43,6 +43,11 @@ LAYOUT AND STYLE:
   wording.
 
   BRAND INFLUENCE: {{brand_accent}}
+  NICHE VISUAL WORLD (ignore if empty): {{niche_visual_world}}
+  When present, that line is standing art direction ranked BELOW the zones
+  above, the attached references and the animation rules underneath: it biases
+  palette, type character and motif vocabulary where they leave a choice open,
+  never layout or wording.
 
 BUILT TO BE ANIMATED — composition rules that outrank stylistic flourish:
   - One clear focal subject, centred or slightly low, with headroom above it

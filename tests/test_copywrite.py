@@ -146,14 +146,28 @@ async def test_failed_group_call_splits_into_one_call_per_creative() -> None:
     assert not result.degraded
 
 
-async def test_a_creative_whose_split_call_also_fails_ships_the_trends_own_hook() -> None:
+async def test_a_creative_whose_split_call_also_fails_ships_no_onimage_text_at_all() -> None:
+    """A20: the last-resort tier renders WORDLESS, never with the source's own hook.
+
+    This test asserted the opposite until 2026-08-11 — it was named
+    `..._ships_the_trends_own_hook` and required `headline` to equal the competitor's exact
+    `hook_text`. That was the shipped behaviour, and the operator mandated its removal: the
+    string flowed into `{{onimage_text}}`, which every render template calls "the ONLY source
+    of renderable words", so a failed copy call baked a competitor's headline into the picture
+    (and, on a carousel, their deck panel for panel). A text-free image on a proven layout is a
+    usable creative; someone else's headline is not. The pair-cloning and both-variants-degraded
+    guarantees below are unchanged — only the words are gone.
+    """
     entries = [entry("a1", 0, pair_id="p1"), entry("a1_direct", 1, pair_id="p1")]
     call = StubCall({}, fail_when=lambda ids: True)
 
     result = await copywrite.write_copy(entries, call=call, **context())
 
     copyset = result.copy["a1"]
-    assert copyset.headline == "Nobody tells you this about AI tools"
+    assert copyset.headline == "", "the source's hook must never become our headline"
+    assert copyset.subline == "" and copyset.overlay_text == ""
+    assert copyset.slide_texts == []
+    assert copyset.caption, "the caption survives — it is ours, built from the trend name"
     assert copyset.hashtags and copyset.hashtags[0].startswith("#")
     assert "copy_degraded" in copyset.hook_pattern_used
     assert result.degraded == frozenset({"a1", "a1_direct"}), "both variants are degraded"

@@ -16,6 +16,7 @@ from typing import Any
 
 import pytest
 
+from hypesocials.analyze import BriefBook
 from hypesocials.config import Config
 from hypesocials.generate.carousel import render_carousel
 from hypesocials.models import (
@@ -38,6 +39,7 @@ from hypesocials.outputs import AssetFolder, PackagingError
 from hypesocials.outputs import packager
 from hypesocials.prompts_engine import PromptEngine, style_dna
 from hypesocials.render import KieOutOfCredits
+from hypesocials.sources import brief_key
 
 TREND_REFS = ["https://cdn.virlo/p1.webp", "https://cdn.virlo/p2.webp", "https://cdn.virlo/p3.webp"]
 _SLIDE_NO = re.compile(r"slide (\d+)")
@@ -155,6 +157,17 @@ class Env:
     credits_exhausted: bool = False
     disk_full: bool = False  # 10 §10 — T4.3 carries the same field on the real Env
 
+    def brief_for(self, entry: PlanEntry) -> StyleBrief | None:
+        """Mirrors `generate.Env.brief_for` (FR-9/12, amended 2026-08-11).
+
+        Delegates to the real resolver rather than reimplementing the key, so this stub cannot
+        drift from the production lookup — the whole point of the pair key is that exactly one
+        place decides which group a creative belongs to.
+        """
+        key = entry.trend_key or ""
+        return self.style_briefs.get(
+            brief_key(key, self.trends.get(key), entry.trend_reuse_index))
+
 
 # ------------------------------------------------------------------------------------ fixtures
 
@@ -203,8 +216,12 @@ def make_env(tmp_path: Path, entry: PlanEntry, *, texts: list[str] | None = None
                       headline="Wired backwards", narrative_arc="hook, escalation, payoff, close",
                       slide_texts=texts if texts is not None
                       else ["Wired backwards", "Two", "Three", "Four"])
+    # 2026-08-11 (A4): briefs are keyed by the (trend, reference group) PAIR, not by the trend —
+    # `analyze.style_briefs()` returns a `BriefBook` keyed `"<trend_key>#<group index>"`. The book
+    # still answers a bare trend key, which is what `carousel.py` looks up, so this fixture is the
+    # production shape rather than a compatibility shim.
     env = Env(config=config, run_dir=tmp_path, engine=PromptEngine(), log=Log(),
-              trends={"t1": trend}, style_briefs={"t1": style} if brief else {},
+              trends={"t1": trend}, style_briefs=BriefBook({"t1#0": style}) if brief else BriefBook(),
               copy={entry.asset_id: copyset})
     for key, value in overrides.items():
         setattr(env, key, value)
@@ -329,7 +346,7 @@ async def test_style_dna_byte_identical_across_slides(tmp_path: Path) -> None:
     blocks = [dna_block(call.prompt) for call in submit.calls]
     assert len(blocks) == 4
     assert len(set(blocks)) == 1, "byte-identical on every slide"
-    expected = style_dna(env.style_briefs["t1"])
+    expected = style_dna(env.style_briefs["t1#0"])  # 2026-08-11: pair-keyed (A4)
     assert expected and expected in blocks[0]
     indexes = [re.search(r"slide (\d+ of \d+)", call.prompt).group(1) for call in submit.calls]
     assert indexes == ["1 of 4", "2 of 4", "3 of 4", "4 of 4"], "only the index moves"
