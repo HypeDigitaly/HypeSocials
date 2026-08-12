@@ -4,16 +4,17 @@
 
 This file answers one question: who actually writes the text that gets sent to the image model and the video model, and what does that text look like?
 
-The short answer: nobody writes it fresh every time. An AI (Sonnet 5) studies the winning posts for each trend and writes down what makes them work — colours, layout, lettering, the shape of the hook. That analysis then drops into **templates**: ready-made, battle-tested prompt skeletons, one shape for a single image, one for a carousel slide, one for a reel. The templates live in an editable `prompts/` folder as plain text files, so a human can tune the wording without touching code. The engine's job is just to fill in the blanks — trend analysis here, the caption text there, the exclusion rules always — and send the result off. Nothing is invented on the fly.
+The short answer: nobody writes it fresh every time. A **local, versioned meta-style registry** (8 textual definitions) describes how each creative should look — colors, layout, typography, mood. The registry is your visual authority and is editable in `prompts/styles.yaml`. That style drops into **templates**: ready-made, battle-tested prompt skeletons, one shape for a single image, one for a carousel slide, one for a reel. The templates live in an editable `prompts/` folder as plain text files, so a human can tune the wording without touching code. The **copy** comes verbatim from the source posts (no rewriting). The engine's job is just to fill in the blanks — style here, copy text there, the wordmark and exclusion rules always — and send the result off. Nothing is invented on the fly.
 
-- Sonnet 5 supplies the **substance** (what this trend looks like and why it works) — already specified in `10-pipeline.md`.
-- The `prompts/` folder supplies the **shape** (how GPT Image 2 likes to be asked, how Seedance likes to be asked) — this is new, and it is editable.
-- The engine supplies the **glue**: it fills the shape with the substance, deterministically, every time, and never adds words of its own.
+- The **meta-style registry** (`prompts/styles.yaml`) supplies the visual substance — colors, typography, layout, motion profile — already written once and reused (D41). Eight styles, deterministically rotated per creative. Each style carries 1–2 local reference images.
+- The `prompts/` folder supplies the **shape** (how GPT Image 2 likes to be asked, how Seedance likes to be asked) — editable templates per model profile.
+- The **copy text** is **verbatim from source posts** — selected by the engine's reference mechanism, not rewritten by any LLM (D42).
+- The engine supplies the **glue**: it fills the shape with style + copy, deterministically, every time, and never invents words.
 - Each image model and video model gets its prompt written the way *that* model actually responds best to — that's the whole idea of this file.
 
 ---
 
-This file is the single authoritative spec for the shape of every generation prompt the engine sends — how it is assembled, where its scaffolding lives, and the model-specific playbooks that scaffolding encodes. It extends `10-pipeline.md` (which owns the style brief itself, FR-92; the assembly rule, FR-17/FR-94; carousels, FR-95; reels, FR-24) rather than restating or contradicting it — this file cross-references those requirements throughout instead of duplicating them.
+This file is the single authoritative spec for the shape of every generation prompt the engine sends — how it is assembled, where its scaffolding lives, and the model-specific playbooks that scaffolding encodes. It extends `10-pipeline.md` (which owns the pipeline rules, FR-17/FR-94; carousels, FR-95; reels, FR-24) and `30-configuration.md` (which owns the meta-style registry, FR-290) rather than restating or contradicting them — this file cross-references those requirements throughout instead of duplicating them.
 
 Requirement range owned by this file: **FR-180 … FR-199, FR-260–269**; **NFR-180 … NFR-185 are reserved for this file and currently unused** (none defined yet — stated so the range claim doesn't imply lost content).
 
@@ -21,13 +22,13 @@ Requirement range owned by this file: **FR-180 … FR-199, FR-260–269**; **NFR
 
 ## 1. Who designs the prompt
 
-Three cooperating layers each own what they are best at. None of them is redundant with another, and none of them requires an extra model call beyond what `10-pipeline.md` already specifies.
+Two cooperating layers each own what they are best at. None of them is redundant with another, and none of them requires an extra model call beyond what `10-pipeline.md` already specifies.
 
-**(a) The Sonnet 5 style brief — creative substance, per trend.** Specified in full in `10-pipeline.md` FR-9–FR-12, FR-92. It supplies `layout_zones`, palette, typography, `render_prompt`, `exclusions` and the rest of the brief's fields. This is the analysis: *what does this specific winning creative actually look like, in reproducible terms.*
+**(a) The meta-style registry — visual substance, per creative.** Specified in full in `prds/30-configuration.md` and 20-integrations.md §3 (FR-290/291). A `prompts/styles.yaml` registry holds eight textual style definitions, each supplying palette (named color hex values), typography (font names and character descriptions), layout zones (positions and text treatment), motion profile (for reels), and 1–2 local reference images. The registry is the visual authority — it is deterministically rotated (not randomly selected) across creatives per the brand-filtered style pool. This is the substance: *what does this specific style look like, in reproducible terms.*
 
-**(b) Editable prompt templates — model-specific scaffolding.** New in this file (D24). A `prompts/` folder holds one small text file per prompt role — the style-brief system prompt, the copywriter system prompt, the image single-post scaffold, the carousel slide scaffold, the carousel anchor-slide instruction, the reel director scaffold, the vision-check question. Each file is the *shape* a given model responds best to, with named placeholders where run-specific content drops in. These templates encode the model playbooks in sections 3–4 below — they are the expertise, written down once and reused every run.
+**(b) Editable prompt templates — model-specific scaffolding and copy contract.** A `prompts/` folder holds one small text file per prompt role — the copywriter system prompt, the image render scaffold, the carousel slide scaffold, the carousel anchor-slide instruction, the reel director scaffold, the vision-check question, the topic-filter system prompt. Each file is the *shape* a given model responds best to, with named placeholders where run-specific content drops in (style + copy text + mandatory clauses). These templates encode the model playbooks in sections 3–5 below — they are the expertise, written down once and reused every run (D24). The copywriter returns **reference selections** (which exact source strings to render), and the engine **resolves the references to bytes** — the verbatim-copy contract lives here (D42, §1.7).
 
-**(c) Deterministic assembly — the engine's glue.** Plain code fills each template's placeholders from the style brief's fields, the copy text, and the mandatory clauses of FR-94, then sends the result. Assembly never invents content, never asks a model to improvise the scaffold, and never adds an LLM call: the templates already encode what an LLM call would have re-derived every time. This is the same principle FR-17 already states for image prompts — this file generalizes it to every model.
+**(c) Deterministic assembly — the engine's glue.** Plain code fills each template's placeholders from the assigned style, the copy references and resolved text, the branding block, and the mandatory clauses, then sends the result. Assembly never invents content, never asks a model to improvise the scaffold, and never adds an LLM call: the templates already encode what expertise an LLM call would have re-derived every time. This is the principle FR-17 already states for image prompts — this file generalizes it to every model.
 
 **FR-180 — No hidden fourth layer.** Every render prompt sent by the engine is fully accounted for by (a) a style brief field, (b) a template file, or (c) a mandatory clause defined in this file or in `10-pipeline.md`. There is no prompt text that exists only in engine code and nowhere else — if it isn't in a template or a brief, it doesn't belong in a prompt. The mandatory clause-(c) lines generated by engine code — including audio cues, @Image reference descriptions, reference role instructions, vision-check retry guidance, and brand/brief context lines — are enumerated in `prompts/README.md`'s table.
 
@@ -35,18 +36,18 @@ Three cooperating layers each own what they are best at. None of them is redunda
 
 ## 2. The `prompts/` folder (D24)
 
-**FR-181 — Templates are files, hot-loaded per run, in a two-level layout.** The nine prompt roles split by what owns them:
+**FR-181** *(amended v2.0.0)*: Templates are files, hot-loaded per run, in a two-level layout. The eight prompt roles (v2.0.0: down from nine; generation mode is gone; style-brief role survives as vision-check) split by what owns them:
 
-- **Three global role templates, flat in `prompts/`** — `style_brief_system.md`, `copywriter_system.md`, `vision_check_question.md`. These belong to the OpenRouter LLM roles, not to any render-model profile, and exist exactly once.
-- **Per-profile render template sets, under `prompts/<profile>/`** — for `gpt-image-2`: `image_single_post.md`, `carousel_slide.md`, `carousel_anchor_instruction.md`, `image_direct.md`, `reel_seed_frame.md`; for `seedance-2-5`: `reel_director.md`. A second render profile added later gets its own subfolder with its own complete set; flat filenames could never hold two profiles' sets simultaneously.
+- **Four global role templates, flat in `prompts/`** — `copywriter_system.md` (verbatim copy reference selection), `vision_check_question.md` (visual quality review), `topic_filter_system.md` (competitor filter screen — new v2.0.0), and the **meta-style registry `styles.yaml`** (new v2.0.0, 8 textual style definitions + their reference images). These belong to the OpenRouter LLM roles or the visual authority, not to any render-model profile, and exist exactly once.
+- **Per-profile render template sets, under `prompts/<profile>/`** — for `gpt-image-2`: `image_post.md` (merged v2.0.0; was `image_single_post.md` + `image_direct.md`), `carousel_slide.md`, `carousel_anchor_instruction.md`, `reel_seed_frame.md`; for `seedance-2-5`: `reel_director.md`. A second render profile added later gets its own subfolder with its own complete set; flat filenames could never hold two profiles' sets simultaneously.
 
-Files are read fresh at the start of each run (not compiled or cached across runs), so an edit takes effect on the very next run with no build step, no restart of anything beyond the run itself. `image_direct.md` is the direct-mode render scaffold (FR-96's deterministic content sentence expressed as a placeholder-filled template line, so operators can tune direct mode in Notepad); `reel_seed_frame.md` is the seed-frame image render scaffold.
+Files are read fresh at the start of each run (not compiled or cached across runs), so an edit takes effect on the very next run with no build step, no restart of anything beyond the run itself. `reel_seed_frame.md` is the seed-frame image render scaffold.
 
-**FR-182 — Named placeholders, filled by assembly only.** Each template contains named placeholders (for example `{{render_prompt}}`, `{{layout_zones}}`, `{{onimage_text}}`, `{{exclusions}}`, `{{style_dna}}`, `{{slide_index}}`, `{{seed_frame_ref}}`, `{{audio_cue}}`) that the assembly step in section 1(c) fills from the style brief, the copy output, and config. Placeholders are plain string substitution — no expression language, no conditionals, no loops inside a template. If a template needs a field the assembly step doesn't provide, that is a template bug, caught at fill time (FR-260).
+**FR-182** *(amended v2.0.0)*: Named placeholders, filled by assembly only. Each template contains named placeholders (for example `{{style_dna}}`, `{{onimage_text}}`, `{{exclusions}}`, `{{branding_block}}`, `{{wordmark}}`, `{{topic_items}}`, `{{competitor_list}}`, `{{motion_profile}}`, `{{motion_beat}}`, `{{slide_index}}`, `{{seed_frame_ref}}`, `{{audio_cue}}`) that the assembly step in section 1(c) fills from the assigned style, the copy references and resolved text, the branding config, and the mandatory clauses. Placeholders are plain string substitution — no expression language, no conditionals, no loops inside a template. If a template needs a field the assembly step doesn't provide, that is a template bug, caught at fill time (FR-260).
 
-**FR-183 — Missing or corrupt template falls back to the built-in default.** Every template file has a built-in default compiled into the engine that implements the playbook rules in sections 3–4; the worked examples in section 6 are illustrative only, not the canonical built-in text. If a file is missing, unreadable, or fails to parse its placeholders, the engine uses the built-in default for that role and writes a warning to the run log naming the file and the reason. The run never stops for a bad template — a prompt template is content, not infrastructure, and content degrades rather than blocks (matching the pipeline-wide philosophy).
+**FR-183** *(amended v2.0.0)*: Missing or corrupt template falls back to the built-in default (except styles.yaml). Every template file has a built-in default compiled into the engine that implements the playbook rules in sections 3–5; the worked examples in section 6 are illustrative only, not the canonical built-in text. If a file is missing, unreadable, or fails to parse its placeholders, the engine uses the built-in default for that role and writes a warning to the run log naming the file and the reason. **The registry `prompts/styles.yaml` is EXEMPT — it has no built-in tier, so a missing or broken registry is a pre-flight refusal (FR-295), not a degradation.** Template (not registry) roles degrade rather than block (matching the pipeline-wide philosophy).
 
-**FR-184 — Templates are logged for attribution.** Every run log records, once per template role actually used, the template's file name and a content hash. This makes every generated asset's prompt attributable to a specific template version — if a user tunes `carousel_slide.md` between two runs, the log shows which run used which wording, without needing full-file diffs in the log.
+**FR-184** *(amended v2.0.0)*: Templates and registry are logged for attribution. Every run log records: once per template role actually used, the file name and a content hash (enabling future attribution of generated assets to specific versions); once per run, the registry version, file name, and content hash (enabling future tracking of visual style drift). This makes every generated asset's prompt and style attributable to specific versions — if a user tunes `carousel_slide.md` or edits `styles.yaml` between runs, the log shows which run used which wording/styling.
 
 **FR-262 — Template sets are per model profile.** Every render-model profile (20-integrations FR-272; shipped profiles: `gpt-image-2` and `seedance-2-5`) owns a complete template set under `prompts/<profile>/` (FR-181's layout; a config's `prompts_dir`, when set, is checked first per FR-174 — v1.6.1 wording, formerly "niche pack prompts/"). The playbooks encoded in sections 3–4 of this file are explicitly the playbooks OF those two profiles, not universal truths applicable to all models. Swapping a model ID within the same profile (e.g., `gpt-image-2` to `gpt-image-2-pro`, if both route through the same profile) requires no template changes — templates belong to the profile, not the specific model. Adopting a new render-model family (Kling, Veo, etc.) requires registering a new profile and authoring a complete template set per that model's vendor guidance (this is the promptcraft half of 20-integrations' one-page model-onboarding recipe, FR-273; D34).
 
@@ -73,7 +74,7 @@ Sourced from GPT Image 2 vendor docs and community practice (graded OFFICIAL/COM
 
 **FR-188 — Short headlines are a rendering rule, not just a copy rule.** `10-pipeline.md` FR-101 is the behavior owner and hard-enforcer of character budgets on on-image text at the copy stage; this file states the render-side reason they exist — long or dense text degrades reliably on this model, and a paragraph is an overlay problem, not a generation problem. The concrete budget values (image_headline 42 chars, image_subline 60 chars, reel_seed_headline 32 chars, retry_reduction_pct 40) live in `30-configuration.md`'s `text_budgets` key; this file's requirement is only that the render prompt embeds the applicable budget as a hard constraint.
 
-**FR-189 — Style-DNA scaffold, repeated verbatim across slides.** For carousels, a fixed block — palette hexes, typography rules, layout grid, mood, brand motif, all sourced from the style brief's `layout_zones` and descriptive fields — is repeated **verbatim** in every slide's prompt; only the content fields (headline, body text, slide index) change between slides. This is what makes a deck read as one deck: drift prevention through templating, not through any per-slide consistency check (`10-pipeline.md` FR-20 explicitly has none).
+**FR-189** *(amended v2.0.0)*: Style-DNA scaffold, repeated verbatim across slides. For carousels, a fixed block — palette hexes, typography rules, layout grid, mood, image treatment, visual pacing (the five DNA fields from the `MetaStyle` registry record) — is repeated **verbatim** in every slide's prompt; only the content fields (headline, body text, slide index) change between slides. This is what makes a deck read as one deck: drift prevention through templating, not through any per-slide consistency check (`10-pipeline.md` FR-20 explicitly has none).
 
 **FR-190 — Stateless calls, explicit anchor reference.** Every slide job is an independent, stateless API call — never a conversational thread across slides. Chaining slides through one chat session lets earlier images leak spatial structure into later ones ("same-chat ghosting"), which defeats the purpose of the style-DNA scaffold. Consistency across slides comes from the repeated scaffold (FR-189) plus, when `carousel_anchor` is on, the finished slide 1 attached as an explicit reference image with a role label (`10-pipeline.md` FR-95) — never from shared conversational state.
 
@@ -93,22 +94,22 @@ Sourced from GPT Image 2 vendor docs and community practice (graded OFFICIAL/COM
 
 Sourced from BytePlus/Dreamina official guidance plus converged community practice, this section states the rules the `reel_director.md` template must encode, wrapping the model's official formula — six elements counting Subject and Action separately (Subject, Action, Scene, Style, Camera, Audio) — in a fuller director structure.
 
-**FR-194 — Director-format structure.** Every reel prompt follows nine labeled sections in order: **GOAL** (what a successful clip looks like), **REFERENCES** (every `@`-tag explained), **CONTINUITY** (what must stay fixed across the clip), **SCENE** (location/setting), **STAGES** (the shot list), **LOOK** (format, grain, lighting, mood), **CAMERA & PERFORMANCE** (the actual camera move, named), **AUDIO** (bracketed cues), **RULES** (the closing exclusion block). This is the community wrapper around the model's official formula, and it is what the `reel_director.md` template's section headings look like. `00-overview` D25 and `10-pipeline` FR-23 defer to this requirement by reference.
+**FR-194** *(amended v2.0.0)*: Director-format structure. Every reel prompt follows eight labeled sections in order (v2.0.0: removed @Video1 reference section): **GOAL** (what a successful clip looks like), **REFERENCES** (@Image1 only in v2.0.0), **CONTINUITY** (what must stay fixed), **SCENE** (location/setting), **STAGES** (the shot list with timed beats), **LOOK** (format, grain, lighting, mood — selects photographic vs graphic per style), **CAMERA & PERFORMANCE** (the camera move), **AUDIO** (bracketed cues), **RULES** (the closing exclusion block). This is the wrapped structure for the model's official elements, and it is what the `reel_director.md` template's section headings look like. `00-overview` D25 and `10-pipeline` FR-23 defer to this requirement by reference.
 
-**FR-195 — One sentence per `@`-tag: contribution and exclusion.** Every referenced asset (`@Image1`, `@Video1`) gets exactly one sentence stating what it contributes to the render and one clause stating what it must *not* contribute. The model is never left to infer a reference's role — the same discipline as FR-191 for images, applied to Seedance's tagging syntax.
+**FR-195** *(amended v2.0.0)*: One sentence per `@`-tag: contribution and exclusion. Every referenced asset (`@Image1` — v2.0.0: @Video1 motion reference removed) gets exactly one sentence stating what it contributes to the render and one clause stating what it must *not* contribute. The model is never left to infer a reference's role — the same discipline as FR-191 for images.
 
-**FR-196 — `@Image1` is the seed frame and locks the aspect ratio.** Per `10-pipeline.md` FR-24, the seed frame (rendered by GPT Image 2 with the hook text baked in) is `@Image1` and is described in the prompt as the first-frame anchor. The seed frame is **requested from GPT Image 2 at a model-native size of exactly 9:16** — 9:16 is on Kie's verified `aspect_ratio` menu (20-integrations §8c), so "exactly" is achievable on the shipped profile; FR-98's nearest-size fallback exists only for a future profile whose menu lacks the ratio. No local crop; crop/pad applies only to terminal delivery assets, because the Kie-hosted public URL returned by the image job is what Seedance receives and must lock the reel to 9:16 — reels stay 9:16 on every platform.
+**FR-196** *(amended v2.0.0)*: `@Image1` is the seed frame and locks the aspect ratio. Per `10-pipeline.md` FR-24, the seed frame (rendered by GPT Image 2 with the hook text baked in) is `@Image1` and is described in the prompt as the first-frame anchor. The seed frame is **requested from GPT Image 2 at a model-native size of exactly 9:16** — 9:16 is on Kie's verified `aspect_ratio` menu, so "exactly" is achievable on the shipped profile. No local crop; the Kie-hosted URL returned by the image job is what Seedance receives and must lock the reel to 9:16 — reels stay 9:16 on every platform.
 
-**FR-197 — Hook text is protected via CONTINUITY and RULES, never via the generative subtitle bracket.** Seedance's bracket taxonomy routes different content differently: `( )` for music/ambience, `< >` for sound effects, `{ }` for spoken dialogue, and `【 】` for model-*generated* on-screen subtitles. The seed frame's baked-in hook text is pixels the model inherited from its first frame, not a protected layer — protecting it means stating explicitly, in CONTINUITY and again in RULES, that the on-frame text stays fixed in position, size, font and content, and must not animate, fade, warp, shift or reword. **The hook text is never routed through `【 】`** — doing so would ask the model to *generate* a subtitle, duplicating or drifting from the baked text instead of preserving it.
+**FR-197** *(amended v2.0.0)*: Hook text is protected via CONTINUITY and RULES, never via the generative subtitle bracket. Seedance's bracket taxonomy routes different content differently: `( )` for music/ambience, `< >` for sound effects, `{ }` for spoken dialogue, and `【 】` for model-*generated* on-screen subtitles. The seed frame's baked-in hook text is pixels the model inherited from its first frame — protecting it means stating explicitly, in CONTINUITY and RULES, that the on-frame text stays fixed in position, size, font and content, and must not animate, fade, warp, shift or reword. **The hook text is never routed through `【 】`** — doing so would ask the model to *generate* a subtitle instead of preserving the baked-in text.
 
 **FR-198 — Bracket taxonomy for audio (MVP scope).** The AUDIO section uses only `( )` for music/ambience and `< >` for sound effects in the MVP — `{ }` dialogue brackets are not used, because HypeSocials generates no spoken dialogue by default. If a future config ever enables dialogue, the language must be declared in the prompt before the first dialogue bracket, per the model's own requirement — noted here for completeness, not built.
 
-**FR-199 — `@Video1` is the winning viral video, scoped to motion and pacing only.** Per `10-pipeline.md` FR-142, when a qualifying viral-video reference is available it is `@Video1`, and its REFERENCES sentence states explicitly that it contributes **only** cut pacing, handheld rhythm and beat timing — with an exclusion clause naming everything it must *not* contribute: its people, wardrobe, location, captions, logos, music and voice. This is the render-side statement of FR-142's "motion, not content" framing.
+**FR-199** *(v2.0.0: WITHDRAWN — `@Video1` motion reference removed in the topic-first pivot).* The reel generation path no longer downloads viral-video references via yt-dlp. Reels use only the seed frame (baked-in hook text) and the assigned style's motion profile; the motion-reference billing tier is not used (10-pipeline D23/D44, 20-integrations §8b).
 
 **Additional playbook rules, encoded but not separately numbered (each maps to an existing FR or is pure template wording, not new engine behaviour):**
 
 - **STAGES** get 2–4 timed beats for any clip over 5 seconds, each beat naming one primary change and its rough timing (e.g. "0–1.5s — hook hold — static frame, text legible"). Motion is always described explicitly and qualitatively ("small natural handheld shake"), never as a numeric parameter — Seedance has none.
-- **UGC realism vocabulary** — "handheld, phone-camera look, available light, slight grain, no 3D, no cartoon, no VFX" — is applied in LOOK whenever the assigned trend is UGC-class, sourced from the style brief's content-angle field.
+- **UGC realism vocabulary** — "handheld, phone-camera look, available light, slight grain, no 3D, no cartoon, no VFX" — is applied in LOOK when the assigned style's `image_treatment` field or the topic texts signal a UGC aesthetic (v2.0.0: no content-angle field; read from the style registry directly).
 - **AUDIO stays lean**: one ambience/music cue matched to the trend's vibe, plus at most one sound effect. This maps directly onto `10-pipeline.md` FR-141 (`reel_audio`, provider-native) — no new audio mechanism, just the prompt wording that shapes what the model generates.
 - **RULES closes every prompt** with the standard exclusion block: no new on-screen text or subtitles beyond the protected hook, no logos or watermarks, no duplicate subject, no hard location cuts, no movement or rewording of the protected text.
 - **Duration stays in the 5–10 second sweet spot** by default, consistent with `10-pipeline.md` FR-103's clamp to the 4–30 s range — this is a template default, not a new validation rule.
@@ -117,15 +118,25 @@ Sourced from BytePlus/Dreamina official guidance plus converged community practi
 
 ---
 
-## 5. Copy-model prompts (Luna) and style-brief prompts (Sonnet 5)
+## 5. Copy-model, filter, and branding playbooks
 
-The system prompts for Luna (copywriting) and Sonnet 5 (visual analysis) also live in `prompts/` as `copywriter_system.md` and `style_brief_system.md`, following the same load/fallback/logging rules as sections 2–4. This file owns only *where those templates live and their placeholder contract* — the substantive obligations they must encode are already specified in `10-pipeline.md` and are not restated here, only cross-referenced:
+The system prompts for Luna (copywriting), Sonnet 5 (vision check), and competitor filtering also live in `prompts/` as `copywriter_system.md`, `vision_check_question.md`, and `topic_filter_system.md`, following the same load/fallback/logging rules as sections 2–4. This file owns only *where those templates live and their placeholder contract* — the substantive obligations they must encode are already specified in `10-pipeline.md` and are not restated here, only cross-referenced:
 
-- The forensic-analyst framing and ban on vague adjectives for the style brief — `10-pipeline.md` FR-10.
-- The structural-mimicry obligation for hooks (restate the abstract pattern, then instantiate it) and the 3–5 verbatim source hooks supplied as few-shot exemplars — `10-pipeline.md` FR-100.
+**Copywriter playbook (Luna, reference-selection contract — D42):**
+- The verbatim copy mandate: the engine numbers every source string it is willing to render (pre-filtered per format, style budget, emoji/URL/handle rules), and Luna returns **reference selections** (`headline_ref: P2.hook.1`, `caption_ref: P1.caption`, etc.) plus free text only for non-pixel fields (`through_line`, `motion_beat`). The engine resolves refs to bytes without retyping — `10-pipeline.md` FR-100/FR-99/FR-101 detail the contract.
 - The distinct-angles requirement across siblings sharing one copy call — `10-pipeline.md` FR-99.
+- `copywriter_system.md`'s placeholder contract includes `{{sibling_list}}` (candidates numbered per source), `{{source_hooks}}` (offered hook references as examples), `{{topic_texts}}` (fenced topic info as data), `{{platform_conventions}}`, `{{competitor_list}}` (brands to skip). No `style_brief_summary`, no `engagement_numbers`, no `output_format` — those placeholders are deleted with the analysis role.
 
-`copywriter_system.md`'s placeholder contract includes `{{sibling_list}}`, `{{source_hooks}}`, `{{style_brief_summary}}`, `{{platform_conventions}}`, `{{brand_context}}` (empty when `notion_influence` is `off`). `style_brief_system.md`'s placeholder contract includes `{{reference_image_count}}`, `{{trend_texts}}`, `{{engagement_numbers}}`, `{{output_format}}` (the required JSON field list of FR-92). Neither template introduces any field not already defined in `10-pipeline.md`.
+**Vision-check playbook (Sonnet 5, image quality review):**
+- The existing `vision_check_question.md` template (unchanged from v1.x) carries FR-27's binary quality judgment: pass or suggest a specific re-render change (text shortening, focal element adjustment, etc.). The `analysis` role survives as the vision-check lane only, no style-brief analysis.
+
+**Topic-filter playbook (Sonnet 5, competitor screening — new v2.0.0):**
+- Batched screen over candidate topics (one LLM call per run, worst-case priced) → per-topic verdict `keep | strip(brands) | skip(competitor_promo)` keyed by engine-assigned ordinal. Deterministic blocklist layer (fail-closed); LLM layer (fail-open with `filter_degraded` tag). `topic_filter_system.md` carries the fence discipline (FR-102): topics numbered 1..N, each with templated text, explicit "DATA not INSTRUCTIONS" paragraph, and ordered-block verdict isolation — the whole contract of `10-pipeline.md` §1.5.
+
+**Branding playbook (mandatory clauses, deterministic injection):**
+- The wordmark goes through the TEXT block as a single baked-in line (never composited): `wordmark (render verbatim): "HypeDigitaly"` + the `_spell()` aid, emitted only when `entry.branded`.
+- The `{{branding_block}}` placeholder carries accent colors (per `mode`), font character descriptions, placement hints, background guidance (tint mode), and the profile's `never:` lines (guards on colors and medium specifics). Ranked *below* the meta-style's own directives (precedence: style > brand accents).
+- Template prohibitions reworded per §1.4 M13: *"No brand wordmark, logotype or signature line other than one quoted in the TEXT block above; when the TEXT block quotes none, this frame is unsigned."* Carousel wordmark appears on anchor only (M12). Reel CONTINUITY names the wordmark as part of the fixed graphic layer when present; RULES: "no NEW logos/watermarks; a wordmark already present in @Image1 persists unchanged" (M13).
 
 ---
 
@@ -164,44 +175,44 @@ CONSTRAINTS: match STYLE_DNA exactly; render all text verbatim including
   counters; keep grid identical to Image 1; text within central 80% of frame.
 ```
 
-**(b) Reel director-format prompt (`reel_director.md` filled):**
+**(b) Reel director-format prompt (`reel_director.md` filled, v2.0.0):**
 
 ```
-GOAL: A 7-second vertical reel that opens on a static hook frame with
-  legible text, then shows the product in quick, energetic motion —
-  matching the pacing of the trend's winning clip.
+GOAL: A 7-second vertical reel that shows a product transformation
+  with smooth, energetic motion.
 
 REFERENCES:
   @Image1 — the seed frame (9:16). Defines subject, framing, background,
     and the static hook text "Toto nikdo neříká" in the top third. This
     is the first frame. Do not change composition; do not move, resize,
     reword or remove the text.
-  @Video1 — winning viral clip. Provides ONLY cut pacing, handheld
-    rhythm and beat timing. Exclude its people, wardrobe, location,
-    captions, logos, music and voice.
 
 CONTINUITY: Hook text stays fixed in position, size, font and content —
-  a static graphic layer, not a subtitle. Subject and background from
-  @Image1 persist unchanged in colour and identity throughout.
+  a static graphic layer. Subject and background from @Image1 persist
+  unchanged in colour and identity throughout.
 
 SCENE: Same setting as @Image1 — a plain interior, no added elements.
 
 STAGES:
-  Stage 1 (0–1.5s) — hook hold — frame static, hook text fully legible.
-  Stage 2 (1.5–5s) — reveal — subject animates naturally, camera drifts in.
-  Stage 3 (5–7s) — payoff — slight push-in, motion settles to a stop.
+  0.0–1.0s — hold — static frame, hook text fully legible
+  1.0–4.0s — action — subject animates with purpose, camera drifts in
+  4.0–7.0s — settle — motion eases to a stop, composition locks
 
-LOOK: handheld phone-camera look, available light, slight grain,
-  no 3D, no cartoon, no VFX.
+LOOK: {{motion_profile}} — [photographic: handheld phone-camera look,
+  available light, slight grain, no 3D, no cartoon, no VFX | graphic:
+  clean minimal look, perfectly lit, no shake, parallax on card layers,
+  single slow scale]
 
-CAMERA & PERFORMANCE: slow handheld push-in, no cuts, natural micro-shake.
+CAMERA & PERFORMANCE: {{motion_beat}} (from the copy prompt,
+  e.g. "slow handheld push-in, no cuts, natural micro-shake")
 
-AUDIO: (upbeat trending-style instrumental matched to @Video1 tempo)
+AUDIO: (upbeat trending-style instrumental matching the topic's vibe)
   <soft camera-shutter click at 0s> — no copyrighted lyrics.
 
-RULES: keep hook text exactly as specified in CONTINUITY; no new
-  on-screen text or subtitles; no logos or watermarks; no duplicate
-  subject; no hard location cuts; 9:16 throughout.
+RULES: keep hook text exactly as specified in CONTINUITY; no NEW
+  logos/watermarks/wordmarks (a wordmark already present in @Image1
+  persists unchanged); no new on-screen text; no duplicate subject;
+  no hard location cuts; 9:16 throughout.
 ```
 
 ---

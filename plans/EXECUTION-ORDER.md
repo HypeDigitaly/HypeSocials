@@ -164,103 +164,122 @@ Session 3 until A20 is green.
 
 ---
 
-# SESSION 3 — copy voice V1
+# ~~SESSION 3 — copy voice V1~~ CANCELLED (2026-08-12)
 
-**Goal: replace abstraction with transposition. This is where the robotic register actually gets fixed.**
+**This plan (xmasterplan-copy-voice-transposition.md) is superseded by the Topic-First Pivot (xmasterplan-topic-first-pivot.md). Sessions 3 and 4 are cancelled. The pivot removes A/B mode, vision analysis, and the copy-transposition work entirely. Copy is now verbatim-selection only (D42). See plans/xmasterplan-topic-first-pivot.md for the new session structure.**
 
-> 📋 **Read `plans/SESSION-2-CLOSEOUT.md` §3 first.** Session 2 landed three enforced contracts inside the
-> files V1c and V1d edit — the A21 bar stated in `copywriter_system.md` and asserted against code constants
-> in both directions, the `{{inspiration_exemplars}}` slot and its truncation position, and `_BUILT_INS`
-> placeholder parity. A V1d template rebuild that drops the `hook_pattern_used` bar **fails the suite**.
-> Also: `copywrite.py` is at 596 lines and its designed `degrade.py` split is blocked on this plan's own
-> path set — decide deliberately whether V1 takes it.
+---
+
+# ~~SESSION 4~~ CANCELLED (2026-08-12)
+
+**See SESSION 3 note above.**
+
+---
+
+# SESSION A — Wave 0 (PRD amendments, no code)
+
+**Goal: Amend all seven PRDs for the topic-first pivot and rebuild the overview + HTML snapshot.** COMPLETE (2026-08-12)
 
 ```
-/xecutor Execute plans/xmasterplan-copy-voice-transposition.md — waves V0 through V1d. STOP before V1e.
-Increment A is complete. Both operator decisions are locked in section 2: the `voice` influence mode
-is IN (D-1), and V1+V2 ship together (D-2).
+/xecutor Execute plans/xmasterplan-topic-first-pivot.md — Wave 0 (PRD amendments only).
 
-  Wave V0   - D15 amendments (technical-writer, prds/**): FR-100 exemplar count 3-5 -> configurable;
-              a new FR for the transposition contract and the audit fields; the voice-precedence rule
-              in 50-promptcraft; max_tokens.copy 6000 in 30-configuration; the new `voice` influence
-              mode.
-  Wave V1a  - models.py (transposition_map/surface_carried/claim_swap, Exemplar, PLACEHOLDERS,
-              2 DegradationTags), config.py (max_tokens.copy 6000, Transposition), configs/*.yaml,
-              AND surface.py - the new pure stdlib-only measurement module, authored and unit-tested
-              here because it is the V2 barrier.
-              || Wave V1a' - the `voice` influence mode: briefs.py enum + validation, plan.py
-              handling, ai-audit-cta/brief.yaml -> influence: voice.
-              Two python-pro agents, one message. Path sets are disjoint.
-  Wave V1b  - wrapper (9 slideshow + 8 video keys incl. panel_text_full) and adapter (_by_views real
-              merge, _exemplars, _set fields, source_script). One python-pro.
-  Wave V1c  - builders: _source_script with the "| " line protocol, _source_exemplars, the
-              _trend_texts cut (literal rows leave), allowlist + truncation-order entries.
-              One python-pro, prompts_engine.py only.
-  Wave V1d  - the prompt template rebuild + prompts/README.md mapping table + the built-in fallback
-              kept in sync. One prompt-engineer, prompts/** only.
+  T0.1 - Amend prds\10-pipeline.md + prds\20-integrations.md per §2 (technical-writer, prds/ only)
+  T0.2 - Amend prds\30-configuration.md + prds\40-outputs.md + prds\50-promptcraft.md per §2
+         (technical-writer, prds/ only)
+  T0.3 - Amend prds\00-overview.md with D41–D45, rebuild pipeline diagram per spec,
+         rebuild prds\PRD.html from amended sources, update plans\EXECUTION-ORDER.md
+         (technical-writer, after T0.1 & T0.2 complete)
 
 Barriers:
-  - V0: conductor re-reads every amended anchor against the file.
-  - V1a: pytest -q; pytest -q tests/test_surface.py; assert json_schema_for(CopySet) still generates.
-  - V1a': a `voice` brief consumes exactly ONE trend and its {{source_script}} renders non-empty;
-    an `override` brief still consumes none.
-  - V1b: total_views / median_views / engagement BYTE-IDENTICAL to pre-change (the merge must not
-    move any FR-5 strength value); view-ranked order correct across a video-heavy + slideshow fixture.
-  - V1c: panel-boundary truncation NEVER cuts mid-panel; every new slot resolves.
-  - V1d: all slots resolve; transposition_map capped at 4 entries IN THE TEMPLATE; the
-    source-owns-surface / brand-owns-lexicon rule stated explicitly.
-
-One decision to surface, not settle by default (plan section 8.5): is `source_script` allowlisted for
-the ANALYST as well? Without it the style brief loses input it has today. Ask before deciding.
+  - After T0.1 & T0.2: conductor re-reads every amended anchor; grep for dead FRs (FR-3/9/10/11/12/16/22/33/
+    92/93/128/134/142/160–163/199/247, plus pair_id/text_only/both/style_brief/yt-dlp/video_ref).
+  - After T0.3: Mermaid diagram in 00-overview.md parses; grep for dead terms → only amendment-log hits remain.
 ```
 
 ---
 
-# SESSION 4 — copy voice V2, wire-in, and the acceptance test
+# SESSION B — Wave 1 (additive contracts; nothing deleted)
 
-**Goal: verify the voice fix actually held, then prove it on real output.**
+**Goal: new models/config symbols + styles.py + topic_filter.py + their test suites; full suite stays green.**
 
 ```
-/xecutor Execute plans/xmasterplan-copy-voice-transposition.md — waves V2a through V1g.
+/xecutor Execute plans/xmasterplan-topic-first-pivot.md — Wave 1 only.
 
-  Wave V2a  - the audit tier in copywrite.py: CopyAudit, echo-before-drift order, EXACTLY ONE
-              re-ask, CopyResult sets, _to_copyset.
-              || Wave V2b - prompts_engine.py: per-role fence families (so >>> survives unmangled),
-              target_chars wiring into _budget_line, the trim_words function-word fix, and the
-              _BUILT_INS extraction into prompt_builtins.py.
-              Two python-pro agents, one message.
-  Wave V2c  - wire-in and operator surfaces. CONDUCTOR ONLY, never delegated: generate/__init__.py,
-              outputs/gallery.py, previews.py, runner.py, budget.py.
-  Wave V1f  - tests. test-automator, tests/** only.
-  Wave V1g  - the acceptance test, below.
+  FIRST (conductor, before any dispatch): write plans/topic-first-pivot-contracts.md per §1.8
+  (items 1–16, from the actual code). Every W1/W2 dispatch prompt quotes its relevant section.
 
-Barriers:
-  - V2a: a stubbed-call test proves ONE re-ask and never two; echo outranks drift; the audit runs
-    BEFORE _apply_budgets.
-  - V2b: a panel containing >>> renders unmangled under [[[ fences AND is still mangled where a
-    template uses chevrons; trim_words('Book the free AI audit at', 26) leaves no dangling
-    function word.
-  - V2c: tmp_path-only test that a drifted asset's meta.yaml carries style_drift and the gallery
-    renders the badge. No real logs/ or output/, no API key in env.
-  - V1f: full pytest -q green; find-based wc -l with per-task attribution.
+  T1.1 - models.py + config.py ADDITIVE ONLY per §3 (python-pro; sole writer of those files this wave;
+         NO PLACEHOLDERS/PROFILE_TEMPLATES additions — those are W2 conductor work)
+  T1.2 - new hypesocials\styles.py + hypesocials\topic_filter.py per §1.3/§1.5 + pinned API
+         (python-pro, parallel; screen() prompt path ships stubbed per the W1 scope note)
+  T1.3 - tests\test_styles.py + tests\test_topic_filter.py against the contracts doc
+         (test-automator, parallel) + DELETE tests\test_reference_rotation.py (blocker fix)
 
-THE ACCEPTANCE TEST (plan section 7) - this is the whole point, do not skip or soften it:
-  1. Pull the top slideshow and top video (sorted, free) with panel_text_full.
-  2. Render the REAL copywriter_system.md through PromptEngine with the real context.
-  3. One real copy call per sample (~$0.005 total).
-  4. Assert by hand: line count matches the source block; casing profile matches; contractions land
-     in the source's slots; emoji present iff the source has them; NO shared opening word; every
-     noun ours; the CTA ours; transposition_map and surface_carried specific and checkable.
-  5. Count the measured tells against the 34-caption baseline:
-       "Most ..." openers    18/34 today -> must be 0 unless the source did it
-       negation frames       22/34       -> 0 unless the source did it
-       em-dash appositives   21/34       -> 0 unless the source did it
-       4-item parallel lists  8/34       -> 0 unless the source did it
-       emoji                  0/34       -> present iff the source has them
+Barrier (conductor):
+  .venv\Scripts\python.exe -m pytest -q                      # FULL suite green
+  find hypesocials -name "*.py" | xargs wc -l | tail -1      # growth w/ per-task attribution
+```
 
-If step 5 still shows the tells, SAY SO PLAINLY. V1 did not work and V2 cannot save it - the problem
-would be deeper than the prompt and the next lever is a different copy model, not more instruction.
-Do not declare success on a partial result.
+---
+
+# SESSION C — Wave 2 (consumer rewrites; legacy symbols still importable)
+
+**Goal: virlo topic split, verbatim copywrite, refs/carousel/reel, budget/preflight, prompts + styles.yaml, prompts_engine, test rewrites.**
+
+```
+/xecutor Execute plans/xmasterplan-topic-first-pivot.md — Wave 2 only.
+
+  T2.1 virlo.py topic split (+ topic_posts/virlo_fields/topic_ranked events)     T2.5 prompts\** + styles.yaml
+  T2.2 copywrite.py reference-selection verbatim (+ copy_source_refs)            T2.6 prompts_engine.py
+  T2.3 generate\refs.py + carousel.py + reel.py                                  T2.7 test rewrites (T2.7 list)
+  T2.4 budget.py (incl. siblings_of fix) + preflight.py + sources\notion.py      T2.8 render-path test suites
+
+  Conductor wire-in AFTER children (per §3 W2 list): models.py micro-pass (placeholders/templates),
+  config.py comment re-base, generate\__init__.py Env diff, barrels.
+
+Barrier: full pytest green + line attribution.
+```
+
+---
+
+# SESSION D — Wave 3 + Wave 3.5 (orchestration, surfaces, then the excision)
+
+**Goal: plan/previews/gallery/state/cli/menu + conductor runner rewiring + §1.10 console surfaces; then the conductor-only excision of all legacy code.**
+
+```
+/xecutor Execute plans/xmasterplan-topic-first-pivot.md — Wave 3, then Wave 3.5.
+
+  T3.1 plan.py + previews.py       T3.4 configs\*.yaml + niches\**      (§3 wave-3 table)
+  T3.2 gallery/packager/state      T3.5 the 8 test files (quote the pipeline stage order VERBATIM)
+  T3.3 cli.py + menu.py (FR-300)   T3.6 console-inventory + menu tests (§1.10 assertions)
+
+  Conductor wire-in LAST: runner.py pipeline + §1.10 surfaces (stage headers, topics table,
+  provenance block, note() seam, heartbeats in generate\__init__.py, funnel-once, collect liveness,
+  root-logger fix, gallery path lines).
+
+  Wave 3.5 (conductor only, no subagents): the complete excision list in §3 W3.5 incl. the
+  stale-prose sweep; then the word-boundary barrier grep (v2.2 terms) → 0 hits; full pytest green.
+```
+
+---
+
+# SESSION E — Wave 4 + Wave 5 (hardening, docs, live verification)
+
+**Goal: branding tests + docs; then the operator-present paid verification run.**
+
+```
+/xecutor Execute plans/xmasterplan-topic-first-pivot.md — Wave 4, then Wave 5 with the operator.
+
+  T4.1 tests\test_branding.py (floor-predicate assertions per §1.4 v2.2)
+  T4.2 README.md + ACCEPTANCE.md; conductor merges NAVIGATION.md + CLAUDE.md
+       (stack: yt-dlp AND Pillow out; registry no-fallback note; glossary)
+
+  Wave 5 (operator present, cheapest first, per §5): --list-monitors → --preview-sources ($0) →
+  --preview-analysis (LLM only) → ONE paid run (8 creatives incl. 1 carousel + 1 reel,
+  brand hypelead, ratio 0.5, low cap) against the §5 checklist INCLUDING the v2.3 observability
+  items; wc -l with attribution vs 16,356; deep-module re-review recorded in the closeout.
+
+Each session writes plans/SESSION-<X>-CLOSEOUT.md; the next session reads it first.
 ```
 
 ---

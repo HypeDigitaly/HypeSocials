@@ -1,0 +1,90 @@
+# HypeDigitaly branding facts v2 — planning artifact for the topic-first pivot (2026-08-12).
+# v2: superseded the website-only fallback after the operator dropped the full brand asset kit
+# into "hypedigitaly branding\" (291 files). Colors below are EXACT (SVG fills + HTML CSS tokens),
+# verified visually against rendered assets. Notion remains the intended future override
+# (NOTION_TOKEN + notion_pages still absent).
+# Final config schema (placement, mode, brand_ratio, per-key knobs) is designed by the pivot plan.
+
+# ============================================================
+# BRAND 1 — HypeDigitaly (parent / corporate)
+# ============================================================
+hypedigitaly:
+  wordmark: "HypeDigitaly"              # CamelCase, no space; bold "Hype" + light "Digitaly"
+  logo_anatomy: >
+    HD monogram: solid deep-indigo "H" fused to a "D" whose bowl carries a left-to-right
+    indigo-to-teal gradient; an upward arrow is cut into the D's counter, sharing the H's
+    crossbar. Prompts should describe the gradient as "deep indigo transitioning rightward
+    into teal" (rendered logo anchors indigo left, teal right).
+  colors:                               # EXACT, from HypeDigitaly/SVG/*.svg fills
+    gradient: ["#34288B", "#2B3F8E", "#0C8897", "#00A59A"]   # indigo -> blue -> teal (left to right)
+    indigo: "#34288B"
+    teal: "#00A59A"
+    web_primary: "#00A39A"              # site --color-primary (2px off the logo teal; both valid)
+    web_secondary: "#F97316"            # orange-500 — WEB ONLY; appears in no brand asset
+    web_background: "#050505"
+    web_text: "#E5E5E5"
+  fonts:
+    brand: "Montserrat"                 # full family bundled in HypeDigitaly/font/Montserrat/
+    web: "Geist"
+  backgrounds: >
+    Cover pages: flat royal-indigo field, oversized rounded-corner arrow glyphs
+    (gradient indigo->teal) sweeping diagonally in the right half, each with an offset
+    translucent lighter-purple duplicate behind it; vast negative space left;
+    white wordmark bottom-left.
+  logo_assets:                          # crisp PNG variants, hypedigitaly branding/HypeDigitaly/
+    color_on_light: "SVG/svgtopng/HD_Color_logo.png"
+    color_on_dark: "SVG/svgtopng/HD_Color_white.png"
+    black: "SVG/svgtopng/HD_black.png"
+    white: "SVG/svgtopng/HD_white.png"
+    vertical_variants: "SVG/svgtopng/*vertikal*.png, *vertical*.png"
+    background_field: "CoverPage/pozadi_01.jpg"   # 3418x1926 indigo arrow field
+  voice: "Czech-first, no-fluff practitioner proof: first AI agency in CZ, specific numbers and shipped deployments over theory"
+  product_nouns: ["AI Audit", "HypeLead", "AI Chatbot", "AI Voicebot", "AI Agent", "AI Automatizace"]
+
+# ============================================================
+# BRAND 2 — HypeLead (product; house SOCIAL-POST style kit)
+# ============================================================
+hypelead:
+  wordmark: "HypeLead"                  # + ".ai" in gray; dark circle badge with pill-bar "H" in mint->teal gradient
+  colors:                               # EXACT, from linkedin-banner HTML CSS
+    teal_bright: "#0FCFC4"
+    teal_deep: "#0A7F78"
+    teal_light: "#8BF2E9"
+    teal_mid: "#57E6DC"
+    dark: "#14130F"                     # renders as very dark desaturated GREEN under teal glow — describe as charcoal-green
+    dark_alt: "#1B1A15"
+    offwhite: "#FAFAF7"
+    offwhite_alt: "#F5F4F0"
+  fonts: { primary: "Geist", mono: "Geist Mono" }
+  style_summary: >
+    Minimal SaaS-editorial. Off-white ground with faint dot-grid + soft teal radial bloom,
+    or charcoal-green dark mode with vignette + teal glow. Mono uppercase kicker with teal
+    dot; huge tight Geist bold headline; payoff phrase inside a rounded teal-gradient
+    highlight pill with dark-teal text and soft glow. White rounded cards with checklists /
+    numbered teal chips / orbit diagrams of channel icons. Pill CTA bar, mono captions.
+  never:
+    - "no indigo/violet (parent HypeDigitaly only)"
+    - "no orange #F97316 (web-only accent, absent from the post kit)"
+    - "no photography/stock/3D; no serif or handwritten type; headline never all-caps"
+    - "teal is accent only, never full-bleed canvas"
+  reference_shortlist:                  # best style-reference images, hypedigitaly branding/HypeLead/
+    - "post-square-a-1080x1080.png"     # canonical light layout — best single reference
+    - "lm-oldnew-1080x1350.png"         # light portrait, old/new two-card comparison grammar
+    - "post-square-b-1080x1080.png"     # canonical dark mode, orbit diagram
+    - "feat-agent-1080x1350.png"        # light portrait with styled product-UI card
+    - "lm-agents-1080x1350.png"         # dark portrait, stacked numbered white cards
+  copy_voice_samples:                   # ready-made copy, tone reference
+    - "linkedin-banner-variants/linkedin-company-about.md"
+    - "linkedin-banner-variants/linkedin-viral-post.md"
+    # tone: direct, outcome-driven, "More clients, less work.", short punch lines, arrow bullets
+
+# ============================================================
+# NOTES FOR THE PLAN
+# ============================================================
+# - The two brands DIVERGE deliberately; never mix indigo into HypeLead renders or teal-pill
+#   grammar into HypeDigitaly corporate posts. Branding config must carry a brand selector.
+# - Third-party colors seen in assets (ignore as brand): #E4405F IG, #25D366 WhatsApp,
+#   #0A66C2 LinkedIn, #0084FF Messenger.
+# - Social handles: HypeDigitalyAI / hypedigitaly_ai.
+# - Logo PNGs above make programmatic compositing possible later, but the operator chose
+#   prompt-integrated wordmark, no compositing (grill decision Q5).

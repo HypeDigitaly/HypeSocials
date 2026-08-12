@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HypeLead - LinkedIn Banners - export canvases</title>
+<style>
+  @font-face { font-family:'Geist'; src:url('../assets/fonts/Geist-Regular.woff2') format('woff2'); font-weight:400; font-display:swap; }
+  @font-face { font-family:'Geist'; src:url('../assets/fonts/Geist-Medium.woff2') format('woff2'); font-weight:500; font-display:swap; }
+  @font-face { font-family:'Geist'; src:url('../assets/fonts/Geist-SemiBold.woff2') format('woff2'); font-weight:600; font-display:swap; }
+  @font-face { font-family:'Geist Mono'; src:url('../assets/fonts/GeistMono-Regular.woff2') format('woff2'); font-weight:400; font-display:swap; }
+  @font-face { font-family:'Geist Mono'; src:url('../assets/fonts/GeistMono-Medium.woff2') format('woff2'); font-weight:500; font-display:swap; }
+
+  :root{
+    --canvas:#FAFAF7; --surface:#FFFFFF; --surface-2:#F5F4F0;
+    --border:#E8E7E1; --border-strong:#D8D7CF;
+    --text:#1B1A15; --text-2:#44433C; --muted:#6B6A60;
+    --aqua-300:#57E6DC; --aqua-500:#0FCFC4; --aqua-700:#0A7F78;
+    --aqua-tint:#E9FDFB; --aqua-deep:#0A7F78;
+    --ink:#14130F;
+  }
+  *{ margin:0; padding:0; box-sizing:border-box; }
+  body{ font-family:'Geist', system-ui, sans-serif; background:#3a3a3a; color:var(--text); -webkit-font-smoothing:antialiased; padding:40px; }
+
+  /* ---- export scaffold (outside every .canvas) ---- */
+  .cap{ font-family:'Geist Mono', monospace; font-size:12px; font-weight:500; letter-spacing:.08em; color:#BDBCB4; margin:0 0 10px 2px; }
+  .cap + .cap{ margin-top:0; }
+  .canvas + .cap{ margin-top:40px; }
+  .canvas{ position:relative; overflow:hidden; }
+
+  /* ===== paper field + brand (verbatim from linkedin-banner-final V2) ===== */
+  .v-light{ background:var(--canvas); }
+  .v-light::before{ content:""; position:absolute; inset:0; background-image:radial-gradient(rgba(27,26,21,.055) 1.4px, transparent 1.4px); background-size:26px 26px; }
+  .v-light::after{ content:""; position:absolute; top:-260px; right:-180px; width:900px; height:700px; background:radial-gradient(closest-side, rgba(15,207,196,.16), transparent 72%); }
+
+  .brand{ position:absolute; top:40px; left:72px; display:flex; align-items:center; gap:16px; z-index:10; }
+  .brand svg{ width:52px; height:52px; }
+  .brand .word{ font-size:30px; font-weight:600; letter-spacing:-0.02em; }
+  .mark-ghost{ position:absolute; left:330px; bottom:-70px; width:300px; height:300px; opacity:.09; z-index:1; }
+
+  /* ===== left lead block ===== */
+  .lead{ position:absolute; left:470px; top:40px; width:612px; z-index:5; }
+  .kicker{ display:flex; align-items:center; gap:10px; font-family:'Geist Mono', monospace; font-size:13px; font-weight:500; letter-spacing:.14em; text-transform:uppercase; color:var(--aqua-deep); margin-bottom:14px; }
+  .kicker .d{ width:6px; height:6px; border-radius:50%; background:var(--aqua-500); box-shadow:0 0 8px var(--aqua-500); }
+
+  h3{ font-size:46px; font-weight:600; letter-spacing:-0.03em; line-height:1.04; color:var(--ink); white-space:nowrap; }
+  h3 .hl{ display:inline-block; margin-top:12px; padding:3px 20px 7px; border-radius:13px; color:#053B37; background:linear-gradient(100deg, #57E6DC, #0FCFC4); box-shadow:0 10px 26px -10px rgba(15,207,196,.55); }
+
+  /* subcard + meetchip indent right + lift: keeps them clear of the bottom-left
+     profile-photo overlap on the LinkedIn mobile cover crop. */
+  .subcard{ margin-top:14px; margin-left:90px; max-width:492px; display:flex; align-items:flex-start; gap:0; background:#FFFFFF; border:1px solid var(--border); border-radius:16px; box-shadow:0 16px 40px -20px rgba(27,26,21,.2); overflow:hidden; }
+  .subcard .bar{ width:5px; align-self:stretch; flex:none; background:linear-gradient(180deg, #57E6DC, #0FCFC4); }
+  .subcard .in{ padding:16px 20px; }
+  .subcard p{ font-size:16px; line-height:1.45; color:var(--text-2); }
+  .subcard p strong{ color:var(--ink); font-weight:600; }
+  .subcard p .verb{ color:var(--aqua-deep); font-weight:600; }
+
+  .meetchip{ margin-top:11px; margin-left:90px; display:inline-flex; align-items:center; gap:13px; padding:12px 18px; border-radius:14px; background:linear-gradient(100deg, #0B2E2B, #14130F); color:#FFFFFF; box-shadow:0 20px 46px -18px rgba(11,46,43,.5); }
+  .meetchip .ic{ width:34px; height:34px; border-radius:10px; flex:none; display:flex; align-items:center; justify-content:center; background:rgba(139,242,233,.16); }
+  .meetchip .ic svg{ width:21px; height:21px; }
+  .meetchip .t{ font-size:16px; font-weight:600; letter-spacing:-0.01em; }
+  .meetchip .t span{ color:#8FBDB8; font-weight:500; }
+
+  /* ===== Neural Hub - FULL 6-icon star (verbatim .info-hub) ===== */
+  .info-hub{ position:absolute; right:48px; top:50%; transform:translateY(-50%); width:428px; height:330px; z-index:6; }
+  .info-hub .wires{ position:absolute; inset:0; width:428px; height:330px; z-index:1; }
+  .info-hub .bub{ position:absolute; width:74px; height:74px; border-radius:50%; background:#FFFFFF; border:1px solid var(--border); display:flex; align-items:center; justify-content:center; box-shadow:0 16px 34px -12px rgba(27,26,21,.32); z-index:3; }
+  .info-hub .bub svg{ width:35px; height:35px; }
+  .info-hub .bub svg.hv{ width:31px; height:31px; }
+  .info-hub .halo{ position:absolute; left:129px; top:80px; width:170px; height:170px; border-radius:50%; border:1.5px dashed rgba(15,207,196,.42); z-index:2; animation:spin 22s linear infinite; }
+  .info-hub .halo::after{ content:""; position:absolute; inset:-14px; border-radius:50%; background:radial-gradient(closest-side, rgba(15,207,196,.18), transparent 70%); }
+  .info-hub .core{ position:absolute; left:147px; top:98px; width:134px; height:134px; border-radius:50%; z-index:4; display:flex; align-items:center; justify-content:center; background:linear-gradient(140deg, #0B2E2B, #14130F); border:3px solid #FFFFFF; box-shadow:0 24px 54px -16px rgba(11,46,43,.62); }
+  .info-hub .core svg{ width:70px; height:70px; }
+  .info-hub .flow{ animation:dash 1.1s linear infinite; }
+  @keyframes dash{ to{ stroke-dashoffset:-14; } }
+  @keyframes spin{ to{ transform:rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce){ .info-hub .flow, .info-hub .halo{ animation:none; } }
+
+  /* ===== Canvas 1 - LinkedIn personal cover 1584x396 (REAL size) ===== */
+  #li-personal{ width:1584px; height:396px; }
+
+  /* ===== Canvas 2 - LinkedIn company cover 1128x191 (recomposed) ===== */
+  #li-company{ width:1128px; height:191px; }
+  #li-company.v-light::after{ top:-160px; right:-120px; width:560px; height:440px; }
+  /* stacked left column, kept inside the centered ~940px safe band (94px -> 1034px) */
+  #li-company .co-lead{ position:absolute; left:94px; top:50%; transform:translateY(-50%); z-index:5; }
+  #li-company .co-brand{ display:flex; align-items:center; gap:13px; margin-bottom:15px; }
+  #li-company .co-brand svg{ width:38px; height:38px; }
+  #li-company .co-brand .word{ font-size:23px; font-weight:600; letter-spacing:-0.02em; }
+  #li-company .co-kicker{ display:flex; align-items:center; gap:9px; font-family:'Geist Mono', monospace; font-size:11.5px; font-weight:500; letter-spacing:.14em; text-transform:uppercase; color:var(--aqua-deep); margin:0 0 12px 1px; }
+  #li-company .co-kicker .d{ width:6px; height:6px; border-radius:50%; background:var(--aqua-500); box-shadow:0 0 8px var(--aqua-500); }
+  #li-company .co-h{ font-size:29px; font-weight:600; letter-spacing:-0.03em; line-height:1.04; color:var(--ink); white-space:nowrap; }
+  #li-company .co-h .hl{ display:inline-block; margin-top:0; padding:2px 14px 5px; border-radius:10px; color:#053B37; background:linear-gradient(100deg, #57E6DC, #0FCFC4); box-shadow:0 10px 26px -10px rgba(15,207,196,.55); }
+  #li-company .info-hub{ right:94px; top:50%; transform:translateY(-50%) scale(.5); transform-origin:right center; }
+</style>
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <linearGradient id="gLogo" gradientUnits="userSpaceOnUse" x1="8" y1="58" x2="56" y2="8"><stop offset="0" stop-color="#0A7F78"/><stop offset="0.55" stop-color="#0FCFC4"/><stop offset="1" stop-color="#57E6DC"/></linearGradient>
+  <linearGradient id="gAqua" gradientUnits="userSpaceOnUse" x1="8" y1="58" x2="56" y2="8"><stop offset="0" stop-color="#0FCFC4"/><stop offset="1" stop-color="#8BF2E9"/></linearGradient>
+</defs></svg>
+
+<!-- ============ Canvas 1 - LinkedIn personal cover 1584x396 (V2, real size) ============ -->
+<p class="cap">linkedin-personal-1584x396 - profile cover - screenshot .canvas at 100%</p>
+<div class="canvas v-light" id="li-personal" data-export="linkedin-personal-1584x396">
+  <div class="brand" data-brand></div>
+  <svg class="mark-ghost" viewBox="0 0 64 64"><path d="M10,56 V20 A12,12 0 0 1 22,8 H24 V56 Z" fill="#0FCFC4"/><path d="M40,8 H54 V44 A12,12 0 0 1 42,56 H40 Z" fill="#0FCFC4"/><rect x="28" y="25" width="8" height="14" rx="3" fill="#0FCFC4"/></svg>
+  <div class="lead">
+    <div class="kicker"><span class="d"></span>More clients, less work</div>
+    <h3>Fill your sales pipeline<br><span class="hl">on autopilot.</span></h3>
+    <div class="subcard">
+      <span class="bar"></span>
+      <div class="in"><p>Our <strong>omnichannel AI sales agent</strong> <span class="verb">prospects</span>, <span class="verb">qualifies</span> and <span class="verb">books meetings</span> for you, automated end-to-end, on every channel.</p></div>
+    </div>
+    <div class="meetchip">
+      <span class="ic"><svg viewBox="0 0 24 24" fill="none"><rect x="3" y="5" width="18" height="16" rx="3" stroke="#8BF2E9" stroke-width="2"/><path d="M3 9h18M8 3v4M16 3v4" stroke="#8BF2E9" stroke-width="2" stroke-linecap="round"/><path d="M9 15.2l2.3 2.3L15.6 13" stroke="#8BF2E9" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+      <span class="t">Meetings booked with your ideal clients <span>- on autopilot</span></span>
+    </div>
+  </div>
+  <div class="info-hub" data-hub></div>
+</div>
+
+<!-- ============ Canvas 2 - LinkedIn company cover 1128x191 (recomposed, center-safe) ============ -->
+<p class="cap">linkedin-company-1128x191 - company page cover - keep content in centered ~940px band</p>
+<div class="canvas v-light" id="li-company" data-export="linkedin-company-1128x191">
+  <div class="co-lead">
+    <div class="co-brand" data-brand></div>
+    <div class="co-kicker"><span class="d"></span>More clients, less work</div>
+    <h3 class="co-h">Fill your sales pipeline <span class="hl">on autopilot.</span></h3>
+  </div>
+  <div class="info-hub" data-hub></div>
+</div>
+
+<template id="brandtpl">
+  <svg viewBox="0 0 64 64"><path d="M10,56 V20 A12,12 0 0 1 22,8 H24 V56 Z" fill="url(#gLogo)"/><path d="M40,8 H54 V44 A12,12 0 0 1 42,56 H40 Z" fill="url(#gLogo)"/><rect x="28" y="25" width="8" height="14" rx="3" fill="url(#gLogo)"/></svg>
+  <span class="word">HypeLead<em style="font-style:normal;color:var(--muted)">.ai</em></span>
+</template>
+
+<template id="hubtpl">
+  <svg class="wires" viewBox="0 0 428 330" fill="none">
+    <g stroke="#0A7F78" stroke-width="2" stroke-opacity=".28">
+      <line x1="214" y1="165" x2="214" y2="37"/><line x1="214" y1="165" x2="325" y2="101"/><line x1="214" y1="165" x2="325" y2="229"/>
+      <line x1="214" y1="165" x2="214" y2="293"/><line x1="214" y1="165" x2="103" y2="229"/><line x1="214" y1="165" x2="103" y2="101"/>
+    </g>
+    <g class="flow" stroke="#0FCFC4" stroke-width="2.4" stroke-linecap="round" stroke-dasharray="2 12">
+      <line x1="214" y1="165" x2="214" y2="37"/><line x1="214" y1="165" x2="325" y2="101"/><line x1="214" y1="165" x2="325" y2="229"/>
+      <line x1="214" y1="165" x2="214" y2="293"/><line x1="214" y1="165" x2="103" y2="229"/><line x1="214" y1="165" x2="103" y2="101"/>
+    </g>
+  </svg>
+  <span class="bub" style="left:177px; top:0px"><svg viewBox="0 0 24 24" fill="none"><rect x="3" y="5" width="18" height="14" rx="3" stroke="#0A7F78" stroke-width="2"/><path d="M4 7l8 6 8-6" stroke="#0A7F78" stroke-width="2" stroke-linecap="round"/></svg></span>
+  <span class="bub" style="left:288px; top:64px"><svg viewBox="0 0 24 24" fill="#0A66C2"><path d="M4.98 3.5C4.98 4.88 3.87 6 2.5 6S0 4.88 0 3.5 1.12 1 2.5 1s2.48 1.12 2.48 2.5zM.24 8.31h4.52V23H.24V8.31zM8.34 8.31h4.33v2h.06c.6-1.14 2.08-2.34 4.28-2.34 4.58 0 5.42 3.01 5.42 6.92V23h-4.52v-7.13c0-1.7-.03-3.89-2.37-3.89-2.37 0-2.73 1.85-2.73 3.76V23H8.34V8.31z"/></svg></span>
+  <span class="bub" style="left:288px; top:192px"><svg class="hv" viewBox="0 0 24 24" fill="#0084FF"><path d="M12 0C5.24 0 0 4.952 0 11.64c0 3.499 1.434 6.522 3.769 8.61a.96.96 0 01.323.683l.065 2.135a.96.96 0 001.347.85l2.381-1.05a.96.96 0 01.641-.048c1.095.3 2.26.462 3.474.462 6.76 0 12-4.952 12-11.64S18.76 0 12 0zm7.207 8.957l-3.525 5.593a1.8 1.8 0 01-2.604.48l-2.804-2.102a.72.72 0 00-.867.003l-3.786 2.874c-.505.383-1.165-.221-.827-.757l3.525-5.593a1.8 1.8 0 012.604-.48l2.804 2.102a.72.72 0 00.867-.003l3.786-2.874c.505-.383 1.165.221.827.757z"/></svg></span>
+  <span class="bub" style="left:177px; top:256px"><svg viewBox="0 0 24 24" fill="none"><path d="M21 12a8 8 0 0 1-8 8H4l2.2-2.6A8 8 0 1 1 21 12z" stroke="#0A7F78" stroke-width="2" stroke-linejoin="round"/><circle cx="8.5" cy="12" r="1.2" fill="#0A7F78"/><circle cx="12.5" cy="12" r="1.2" fill="#0A7F78"/><circle cx="16.5" cy="12" r="1.2" fill="#0A7F78"/></svg></span>
+  <span class="bub" style="left:66px; top:192px"><svg viewBox="0 0 24 24" fill="none"><rect x="2.5" y="2.5" width="19" height="19" rx="5.5" stroke="#E4405F" stroke-width="2"/><circle cx="12" cy="12" r="4.4" stroke="#E4405F" stroke-width="2"/><circle cx="17.4" cy="6.6" r="1.4" fill="#E4405F"/></svg></span>
+  <span class="bub" style="left:66px; top:64px"><svg class="hv" viewBox="0 0 24 24" fill="#25D366"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.297-.347.446-.52.149-.174.198-.298.297-.497.1-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413Z"/></svg></span>
+  <span class="halo"></span>
+  <div class="core">
+    <svg viewBox="0 0 64 64"><path d="M10,56 V20 A12,12 0 0 1 22,8 H24 V56 Z" fill="url(#gAqua)"/><path d="M40,8 H54 V44 A12,12 0 0 1 42,56 H40 Z" fill="url(#gAqua)"/><rect x="28" y="25" width="8" height="14" rx="3" fill="url(#gAqua)"/></svg>
+  </div>
+</template>
+
+<script>
+  const brandTpl = document.getElementById('brandtpl');
+  const hubTpl = document.getElementById('hubtpl');
+  document.querySelectorAll('[data-brand]').forEach(el => el.appendChild(brandTpl.content.cloneNode(true)));
+  document.querySelectorAll('[data-hub]').forEach(el => el.appendChild(hubTpl.content.cloneNode(true)));
+</script>
+</body>
+</html>

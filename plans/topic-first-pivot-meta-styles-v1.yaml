@@ -1,0 +1,202 @@
+# Meta-style registry v1 — planning artifact for the topic-first pivot (2026-08-12).
+# Derived once from Inspiration/Tiktok and IG/ (12 images -> 7 styles) + 1 house style
+# (hypelead-brand-card, derived from the HypeLead social kit in "hypedigitaly branding\HypeLead\";
+# its reference images and exact tokens live in topic-first-pivot-branding-v1.yaml).
+# Each style is a text definition GPT Image 2 can execute without seeing the source image.
+# Source mapping at the bottom. Final home + schema decided by the pivot plan.
+
+meta_styles:
+
+  - key: photoreal-ambient-caption
+    render_style: >
+      Candid smartphone-grade photograph of a lived-in interior scene, shot from a
+      human eye-level or over-the-shoulder vantage; the environment is the message.
+      Two lighting variants: low-key night ambience with a single practical light
+      source and crushed shadows, or bright diffuse window daylight on white walls
+      with long soft shadows. Palette derives from the scene itself — near-black
+      surrounds with one warm accent, or warm greys and pale wood. No graphic
+      elements, frames, or stickers. Typography is a single short caption in a
+      regular-to-semibold neutral grotesque sans, sentence case, white with a
+      faint drop shadow, occupying under ten percent of frame area. Carries very
+      little text well — one hook phrase only. Mood: quiet, aspirational,
+      diaristic, voyeuristic authenticity.
+    layout_zones:
+      headline: "single caption block; either dead-center on the darkest region, or upper-left third over an empty wall area — always over low-detail negative space"
+      body: "none — this style tolerates no body text"
+      cta: "none on-image; CTA lives in the post caption"
+    format_affinity: [reel_seed_frame, carousel_cover, single_image]
+    exclusions:
+      - "no recreation of identifiable people's faces from sources; figures stay anonymous (back turned, silhouetted, or out of frame)"
+      - "no platform UI, progress bars, or player chrome"
+      - "no watermarks or usernames"
+
+  - key: editorial-voxel-carousel
+    render_style: >
+      Magazine-cover slide on a flat off-white or warm cream field. Headline is a
+      high-contrast Didone serif at very large size, mixing near-black with one or
+      two saturated accent colors (burnt orange plus teal or cobalt), stacked in
+      2-3 lines; kicker above it in small tracked-out uppercase sans; a thin rule
+      or double underline beneath. Hero object is a physically rendered voxel/pixel
+      toy figure or glossy 3D prop with soft studio shadows, placed in the lower
+      half. Hand-drawn accents — sparkles, motion ticks, script annotations with an
+      arrow — in the accent color. Optional small icon-plus-label list column and a
+      dark terminal-window card as supporting graphics. Tolerates high text density.
+      Energy: playful-premium print editorial.
+    layout_zones:
+      headline: "upper 40 percent, horizontally centered or full-width, kicker directly above"
+      body: "left column as icon-and-label rows, or a single annotation line in handwritten script under the headline"
+      cta: "top corners: slide-counter chip in an outlined rounded rectangle on the left, swipe cue with arrow on the right"
+    format_affinity: [carousel_cover, carousel_slide, single_image]
+    exclusions:
+      - "no real product or company logos, names, or logomarks on icons and mascots"
+      - "no platform search bars, play buttons, or pagination dots from screenshots"
+      - "no transcription of source headlines"
+
+  - key: letterpress-print-carousel
+    render_style: >
+      Risograph/letterpress poster grammar: one paper tone plus two ink colors.
+      Variant A (cover): aged cream paper with visible grain, headline set in
+      towering condensed woodtype-style uppercase filling two-thirds of the frame,
+      black ink for the setup lines and vermilion for the payoff line, distressed
+      ink texture inside letterforms. Variant B (body slide): saturated terracotta
+      ground with film grain, lowercase ultra-heavy geometric sans headline in
+      cream with one phrase reversed inside a black highlight bar; body paragraph
+      in a lighter weight cream sans. Hand-drawn marker underlines, circled cues,
+      and a small pixel-art mascot in the accent ink. Screenshot insets sit on a
+      white card held by translucent tape strips. High text tolerance.
+    layout_zones:
+      headline: "top two-thirds (cover) or upper-left third with generous margin (body slide)"
+      body: "middle band, left-aligned, 2-4 lines maximum"
+      cta: "hand-circled swipe cue lower-right or top-right; slide-counter chip top-left"
+    format_affinity: [carousel_cover, carousel_slide]
+    exclusions:
+      - "no real brand or product names inside the display type"
+      - "no reproduction of specific website screenshots — insets must be generic invented UI"
+      - "no platform overlays (search field, play triangle, dot pagination)"
+
+  - key: meme-caricature-panels
+    render_style: >
+      Two stacked comic panels of equal height with thin black frames on a warm
+      paper ground, built on a before/after contrast: top panel chaotic and
+      overloaded, bottom panel calm and smug. Illustration technique is ink-outline
+      caricature with gouache/watercolor shading, exaggerated posture and clutter
+      as the joke carriers; warm tungsten lighting, sepia-leaning palette in the
+      top panel, one saturated character color (violet-blue or similar) as the
+      focal note in the bottom panel. Each panel is captioned by a single heavy
+      condensed sans headline in black, sentence case with terminal period, set on
+      the paper margin above the artwork. Text density: one short line per panel,
+      nothing more. Energy: dry, deadpan, shareable.
+    layout_zones:
+      headline: "one line centered above each panel, inside the paper margin"
+      body: "none — the drawing is the body"
+      cta: "tiny letterspaced footer line centered at bottom margin (brand slot)"
+    format_affinity: [single_image, carousel_slide]
+    exclusions:
+      - "never render the source's footer wordmark or any real brand name — footer slot is filled at assembly time or left empty"
+      - "no likeness of real persons"
+
+  - key: anime-noir-statement
+    render_style: >
+      Cinematic anime key-visual: a hooded figure seen from behind at a multi-monitor
+      desk, face never shown, dwarfed by a rain-streaked window onto a night-city
+      bokeh skyline. Painterly cel shading with heavy rim light from the screens,
+      glowing abstract light-ribbons on the displays, one warm practical lamp against
+      a cool blue-teal night palette; bottom quarter falls to near-black. Over that
+      dark band sits a two-line display serif headline at poster scale, white with
+      exactly one word in saturated teal, tight leading, terminal period. Below it a
+      thin rule and a small letterspaced uppercase footer slot. Carries one
+      statement sentence well; nothing longer. Mood: nocturnal, obsessive,
+      quietly triumphant.
+    layout_zones:
+      headline: "lower third, left-aligned or centered, over the darkened foreground"
+      body: "none"
+      cta: "hairline-flanked letterspaced caps footer at very bottom (brand slot)"
+    format_affinity: [single_image, reel_seed_frame, carousel_cover]
+    exclusions:
+      - "no source wordmark reproduction"
+      - "no readable UI content on the monitors — screens show abstract light only"
+
+  - key: ugc-tabletop-statement
+    render_style: >
+      First-person photorealistic tabletop scene shot at roughly 30 degrees above
+      the surface: worn wood table, everyday work props (closed laptop, ceramic mug,
+      paper notebook, pen) arranged casually with shallow depth of field, kitchen
+      or home background softly blurred. Golden-hour side light with long warm
+      shadows; palette of honey wood, oat, cream, and speckled ceramic neutrals.
+      Reads as an unstaged phone photo posted by a real person. Typography: a
+      heavy rounded-humanist sans in white, sentence case, two to three short
+      lines with tight leading, placed over the defocused upper region. Statement
+      tone — a testimonial or flex written in first-person plural or singular.
+      Tolerates two sentences maximum. Mood: relieved, settled, understated brag.
+    layout_zones:
+      headline: "upper third, left-aligned, over the blurred background band"
+      body: "none beyond the 2-3 line statement"
+      cta: "none on-image"
+    format_affinity: [single_image, carousel_slide, reel_seed_frame]
+    exclusions:
+      - "handwriting on props must be illegible scrawl — never readable text"
+      - "no visible device logos or brand marks on hardware"
+      - "no transcription of the source statement"
+
+  - key: platform-showcase-card
+    render_style: >
+      Flat ecru/cream canvas with generous whitespace and a strict vertical stack:
+      small tracked-out uppercase kicker in teal; oversized tight-tracking
+      geometric sans headline in near-black across two lines, with one phrase or
+      word switched to teal; then a large centered browser-window mockup — rounded
+      corners, traffic-light dots, pale chrome bar — containing the showcased
+      interface, rendered either as a real-looking site hero or as a wireframe with
+      greeked grey bars where copy would be; then a two-line explanatory caption in
+      a regular serif or sans; hairline-flanked wordmark slot at the foot. Soft
+      card shadow only; no gradients on the canvas itself. High text tolerance.
+      Mood: announcement, product-launch clarity.
+    layout_zones:
+      headline: "upper quarter, centered or left-aligned, kicker immediately above"
+      body: "two-line caption directly beneath the browser card"
+      cta: "footer wordmark slot centered at bottom"
+    format_affinity: [single_image, carousel_cover, carousel_slide]
+    exclusions:
+      - "never reproduce real third-party product logos, names, or actual client website screenshots — the in-browser content must be invented"
+      - "no source wordmark; footer is a slot filled at assembly"
+      - "no App-Store-style icons of identifiable apps"
+
+  - key: hypelead-brand-card
+    render_style: >
+      Minimal premium SaaS brand card in the HypeLead.ai house style. Warm
+      off-white ground (#FAFAF7) with a faint dot-grid texture and one soft
+      teal radial bloom in a corner; dark variant uses charcoal-green
+      (#14130F-#1B1A15) with subtle vignette and teal glow. Massive
+      tight-tracked bold grotesque headline (Geist) in near-black or
+      off-white, sentence case, 2-3 lines; the key phrase sits inside a
+      rounded-rectangle teal gradient highlight pill (#57E6DC to #0FCFC4)
+      with dark-teal text and a soft glow shadow. Monospace uppercase
+      letterspaced kicker with a small teal dot. White rounded cards with
+      gentle shadows hold checklists, numbered teal chips, or clean UI
+      mockups. Dashed teal connector lines, circular icon nodes, pill CTA
+      bar. Flat, crisp, airy; no photography.
+    layout_zones:
+      headline: "oversized headline block upper-left, payoff line in teal pill; mono kicker with teal dot above it, logo lockup top-left"
+      body: "content zone: white rounded card(s) with checklist / numbered steps, or orbit diagram of channel icons around central dark H badge"
+      cta: "bottom pill CTA bar (dark bar with white text, or teal gradient pill with monospace text) + mono caption line"
+    format_affinity: [single_image, carousel_cover, carousel_slide, reel_seed_frame]
+    exclusions:
+      - "no indigo/violet (that is parent HypeDigitaly, not HypeLead)"
+      - "no orange #F97316 (web-only accent, absent from the post kit)"
+      - "no photography, stock imagery, 3D renders, or busy gradients"
+      - "no serif or handwritten type; headline never all-caps"
+      - "teal is highlight/accent only, never full-bleed background of the whole canvas"
+
+# Source mapping (style -> Inspiration/Tiktok and IG/ files):
+#   photoreal-ambient-caption  <- Informative_Photorealistic_Carousel_01/_02/_03.webp
+#   editorial-voxel-carousel   <- Informative_Carousel_01.png, Informative_Carousel_03.png
+#   letterpress-print-carousel <- Informative_Carousel_05.png (cover), Informative_Carousel_04.png (body)
+#   meme-caricature-panels     <- SuperFunny_Polarizing_MemeStyle_Caricature_Promotional_01.png
+#   anime-noir-statement       <- AnimeStyle_Polarizing_Captivating_Promotional_02.png
+#   ugc-tabletop-statement     <- UGC_Style_Polarizing_Captivating_StrongStatement.png
+#   platform-showcase-card     <- Informative_Single_Platform_Showcase.png,
+#                                 Informative_Promotional_Real_HypeDigitaly_Notion_Projects_Showcasing_Client_Website_NotionBased.png
+#
+# Reviewer notes: two source files carry a real brand wordmark footer and one embeds a real
+# product logo + real client website screenshot — covered by exclusions. Instagram UI artifacts
+# (search field, play triangle, pagination dots) excluded; designed-in slide-counter chips and
+# swipe cues kept as legitimate carousel style elements.

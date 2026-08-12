@@ -1,4 +1,9 @@
-<title>HypeSocials PRD — Lean Viral Content Engine</title>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HypeSocials PRD — Lean Viral Content Engine (v2.0.0)</title>
 <style>
   :root{
     --paper:#FBFAF7; --surface:#FFFFFF; --ink:#1D1F26; --muted:#6B6E78;
@@ -85,7 +90,7 @@
     background:var(--surface); border:1px solid var(--line); border-radius:12px;
     padding:20px; overflow-x:auto; margin:16px 0;
   }
-  pre.mermaid{margin:0; min-width:640px; background:transparent; text-align:center}
+  svg{max-width:100%}
   table{
     border-collapse:collapse; width:100%; font-size:14.5px; margin:14px 0;
   }
@@ -122,17 +127,11 @@
     padding:14px 18px; margin:14px 0; font-size:14.5px; max-width:80ch;
   }
   .callout.red{border-left:4px solid var(--accent)}
-  .grid2{display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:14px}
   .ok{color:var(--good); font-weight:650}
   .no-x{color:var(--accent); font-weight:650}
   .foot{
     border-top:1px solid var(--line); margin-top:60px; padding:26px 0 40px;
     color:var(--muted); font-size:13.5px;
-  }
-  .filetree{
-    font:13px/1.7 "Cascadia Mono",Consolas,ui-monospace,monospace;
-    background:var(--mono-bg); border:1px solid var(--line); border-radius:10px;
-    padding:16px 20px; overflow-x:auto;
   }
   a{color:var(--accent-ink)}
   a:focus-visible{outline:2px solid var(--accent); outline-offset:2px; border-radius:3px}
@@ -140,18 +139,20 @@
     html{scroll-behavior:smooth}
   }
 </style>
+</head>
+<body>
 
 <header class="hero">
   <div class="shell">
     <p class="kicker">Product Requirements · HypeDigitaly</p>
     <h1>HypeSocials — Lean Viral Content Engine</h1>
-    <p class="sub">One command in, a folder of trend-mimicking social creatives out. The radical-lean rewrite of HypeAgentSocials: no gates, no compliance stack, everything concurrent, everything configurable.</p>
+    <p class="sub">One command in, a folder of trend-derived social creatives out. Topic-first architecture with local style registry and verbatim copy selection. No vision analysis, no A/B mode, no motion references.</p>
     <div class="metaline">
-      <span class="chip">PRD <b>v1.6.1</b></span>
-      <span class="chip">2026-08-09</span>
-      <span class="chip">Target <b>~6,000 lines</b> Python (ceiling 6,500 — v1.6.3)</span>
+      <span class="chip">PRD <b>v2.0.0</b></span>
+      <span class="chip">2026-08-12</span>
+      <span class="chip">Post-pivot (<b>topics</b>, <b>registry</b>, <b>selection</b>)</span>
+      <span class="chip"><b>16,356 lines</b> Python (pre-pivot baseline, measured)</span>
       <span class="chip">Batch <b>~3 min</b> (images/carousels) · <b>~8–10 min</b> (with reels)</span>
-      <span class="chip">Source of truth: <b>prds/*.md</b></span>
     </div>
   </div>
 </header>
@@ -159,15 +160,10 @@
 <nav class="toc" aria-label="Sections">
   <div class="shell">
     <a href="#tldr">TL;DR</a>
-    <a href="#flow">Flow Diagram</a>
+    <a href="#diagram">Flow Diagram</a>
     <a href="#why">Why</a>
-    <a href="#decisions">Decisions</a>
+    <a href="#decisions">Decisions (D41–D45)</a>
     <a href="#pipeline">Pipeline</a>
-    <a href="#integrations">Integrations</a>
-    <a href="#config">Config &amp; Run</a>
-    <a href="#promptcraft">Promptcraft</a>
-    <a href="#publishing">Publishing</a>
-    <a href="#outputs">Outputs</a>
     <a href="#metrics">Metrics</a>
     <a href="#open">Open Qs</a>
   </div>
@@ -178,296 +174,295 @@
   <section id="tldr">
     <div class="tldr">
       <h2>TL;DR — Plain English</h2>
-      <p>HypeSocials makes viral-style social posts from real trends. You double-click <code>run.bat</code>, pick a config, see the price, press Enter — and about 3 minutes later (up to ~8–10 if reels are in the mix) a folder holds finished images, carousels and short videos that <b>copy the look and feel of posts that are actually going viral right now</b>, plus captions and hashtags ready to paste.</p>
-      <ul>
-        <li><b>Where trends come from:</b> Virlo (via MCP) — including the real winning images, hooks and slide texts.</li>
-        <li><b>How mimicry works:</b> an AI studies the winning visuals and writes a forensic style brief; the real winning images are also attached to every render so the output looks like the trend, not like generic AI art.</li>
-        <li><b>What it makes:</b> images, multi-slide carousels (template-locked to slide 1), and 9:16 reels with built-in sound — hook text baked into a seed frame, then animated by a video model that can also study the actual winning video for movement and pacing.</li>
-        <li><b>What it costs:</b> shown before anything is bought; the run refuses to start over your cap. Preview modes let you look at trends ($0) or briefs + copy (cents) first.</li>
-        <li><b>What it never does:</b> no approval gates, no brand rules unless you switch Notion influence on, no publishing in MVP — you review the gallery and decide. Phase 2 pushes approved posts into Postiz as drafts.</li>
-        <li><b>Grows with you:</b> order specific post types via small brief files (e.g. an AI-audit CTA that overrides the trend), and switch whole niches — restaurant UGC, AI agency, esoteric — by picking a different niche config file.</li>
-        <li><b>Everything is logged, nothing leaks:</b> every call, prompt, dollar, and skip — while API keys never touch a prompt, a model, or a log line.</li>
-      </ul>
+      <p><strong>HypeSocials creates viral social media posts directly from trending topics.</strong> You pick how many images, slide-decks and short videos you want, set your budget, and press Enter. About three minutes later — eight to ten if you asked for videos — you have a folder of finished posts ready to publish.</p>
+      <p><strong>What happens in between:</strong> Virlo provides trending topics as text (captions, hooks, metadata). The engine screens for brand safety, picks the strongest topics, quotes exact words from the trending posts, applies one of eight defined visual styles (you control these via a YAML registry — colors, typography, references), optionally adds your wordmark, and generates images, slide-decks or videos. Style choices and which posts were quoted are all visible in the gallery so nothing is hidden.</p>
+      <p><strong>Key facts:</strong> Cost is estimated and confirmed before anything is billed. If the estimate is over budget and you're sitting there, it refuses and offers smaller numbers; if run unattended, it drops posts from the end until it fits. Every step is logged — if one post fails, the rest ship. You can stop at any time (Ctrl+C). You can preview trends and their verdicts for free. No quality gates — the engine makes it once and you decide what ships.</p>
     </div>
   </section>
 
-  <section id="flow">
-    <h2><span class="no">§1</span>The Whole System on One Screen</h2>
-    <p class="lede">What goes IN (viral videos, slideshows and their real images from Virlo, plus your own inspiration images, Notion brand text and the counts you asked for) → what the AI reads and writes → one creation path per format with references attached → what comes OUT on disk (.png images, numbered carousel decks, .mp4 reels with audio, captions ready to post). Money can only move after the confirm gate, and nothing downstream ever blocks the batch.</p>
-    <div class="panel">
-<pre class="mermaid">
-flowchart TD
-    subgraph Inputs["IN — what a run feeds on"]
-        V["Virlo trends via MCP:&lt;br/&gt;winning VIDEOS + SLIDESHOWS,&lt;br/&gt;their real images, texts, stats"]
-        INSP["Inspiration folder (optional):&lt;br/&gt;your own example IMAGES"]
-        NO["Notion (optional):&lt;br/&gt;brand voice + product TEXT"]
-        CFG["Config: N images ·&lt;br/&gt;N carousels · N reels,&lt;br/&gt;language, budget cap"]
-    end
+  <section id="diagram">
+    <h2>Pipeline Flow</h2>
+    <p class="lede">The complete run from Virlo topics to finished outputs, showing the two-wave render dependency and the key decision points.</p>
+    <div class="panel" style="overflow-x:auto">
+      <svg viewBox="0 0 900 800" xmlns="http://www.w3.org/2000/svg" style="min-width:600px">
+        <defs>
+          <marker id="arrowhead" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+            <polygon points="0 0, 10 3, 0 6" fill="#D93A4E"/>
+          </marker>
+          <marker id="arrowhead-gray" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+            <polygon points="0 0, 10 3, 0 6" fill="#9A9DA8"/>
+          </marker>
+        </defs>
+        <style>
+          .node{fill:#FFFFFF;stroke:#E7E4DE;stroke-width:2}
+          .subgraph{fill:none;stroke:#9A9DA8;stroke-width:1;stroke-dasharray:5,5}
+          .label{font-family:system-ui;font-size:13px;text-anchor:middle;fill:#1D1F26}
+          .label-small{font-family:system-ui;font-size:11px;fill:#6B6E78}
+          .edge{stroke:#D93A4E;stroke-width:2;fill:none;marker-end:url(#arrowhead)}
+          .edge-gray{stroke:#9A9DA8;stroke-width:1.5;fill:none;stroke-dasharray:3,3;marker-end:url(#arrowhead-gray)}
+        </style>
 
-    CFG --> EST["Cost estimate shown&lt;br/&gt;(nothing billed yet)"] --> GATE{"Confirm?"}
-    GATE -- "no" --> X0["Exit — $0 spent"]
-    GATE -- "yes" --> RANK
+        <!-- Inputs -->
+        <rect class="subgraph" x="20" y="20" width="860" height="100"/>
+        <text class="label-small" x="40" y="40">INPUTS</text>
+        <rect class="node" x="40" y="50" width="140" height="50" rx="4"/>
+        <text class="label" x="110" y="80">Virlo Topics</text>
+        <rect class="node" x="210" y="50" width="140" height="50" rx="4"/>
+        <text class="label" x="280" y="80">Style Registry</text>
+        <rect class="node" x="380" y="50" width="140" height="50" rx="4"/>
+        <text class="label" x="450" y="80">Branding Config</text>
+        <rect class="node" x="550" y="50" width="140" height="50" rx="4"/>
+        <text class="label" x="620" y="80">Config &amp; Budget</text>
 
-    V --> RANK["Rank + pick trends:&lt;br/&gt;views, growth, confidence;&lt;br/&gt;skip recently-used;&lt;br/&gt;slideshow trends go to carousels,&lt;br/&gt;video trends to images + reels"]
-    RANK -- "nothing usable" --> XA["Abort + log"]
+        <!-- Split -->
+        <line class="edge" x1="620" y1="120" x2="620" y2="150"/>
+        <rect class="node" x="530" y="150" width="180" height="50" rx="4" fill="#FFF"/>
+        <text class="label" x="620" y="180">SPLIT · FILTER · SELECT</text>
 
-    subgraph Understand["ANALYZE — what the AI actually reads"]
-        RANK --> BRIEF["Style brief — Sonnet vision&lt;br/&gt;LOOKS AT the winning images:&lt;br/&gt;layout, palette, fonts, hook pattern,&lt;br/&gt;and what NOT to copy&lt;br/&gt;(platform UI, watermarks, usernames)"]
-        BRIEF --> COPY["Copywriting — Luna:&lt;br/&gt;hooks, captions, hashtags,&lt;br/&gt;per-slide texts — copies the&lt;br/&gt;STRUCTURE of the viral hooks,&lt;br/&gt;never the literal words"]
-        RANK -- "direct mode: skip analysis" --> COPY
-        NO --> COPY
-    end
+        <!-- Assign -->
+        <line class="edge" x1="620" y1="200" x2="620" y2="230"/>
+        <rect class="node" x="530" y="230" width="180" height="50" rx="4"/>
+        <text class="label" x="620" y="260">ASSIGN Styles + Brand</text>
 
-    subgraph Create["CREATE — one path per format, references attached"]
-        COPY --> IMG["IMAGES → GPT Image 2:&lt;br/&gt;prompt + 2–3 real trend images&lt;br/&gt;attached as style references"]
-        COPY --> CAR["CAROUSELS → GPT Image 2:&lt;br/&gt;slide 1 rendered + checked FIRST,&lt;br/&gt;then slides 2–N copy its exact&lt;br/&gt;template — one consistent deck"]
-        COPY --> REEL["REELS → Seedance 2.5:&lt;br/&gt;seed frame image (text baked in)&lt;br/&gt;+ the winning post's own video&lt;br/&gt;as motion reference + native audio"]
-    end
-    INSP -.->|extra style refs| IMG
-    INSP -.->|extra style refs| CAR
+        <!-- Copy -->
+        <line class="edge" x1="620" y1="280" x2="620" y2="310"/>
+        <rect class="node" x="530" y="310" width="180" height="50" rx="4"/>
+        <text class="label" x="620" y="340">COPY: Select &amp; Resolve</text>
 
-    IMG --> VC{"Vision check (optional):&lt;br/&gt;is the text broken?&lt;br/&gt;fake platform UI junk?"}
-    CAR --> VC
-    REEL --> VC
-    VC -- "flagged" --> RETRY["1 retry with shorter text,&lt;br/&gt;then ship either way"] --> OUT
-    VC -- "pass / off" --> OUT
+        <!-- Wave 1 -->
+        <rect class="subgraph" x="20" y="390" width="300" height="240"/>
+        <text class="label-small" x="40" y="410">WAVE 1 (Submitted First)</text>
 
-    subgraph Outputs["OUT — one run folder on disk"]
-        OUT["Finished creatives:&lt;br/&gt;.png IMAGES · numbered&lt;br/&gt;CAROUSEL slide decks ·&lt;br/&gt;.mp4 REELS with audio"]
-        OUT --> GAL["gallery.html — your creatives&lt;br/&gt;side-by-side with the exact&lt;br/&gt;trends they copied"]
-        OUT --> META["Per-asset meta.yaml:&lt;br/&gt;caption + hashtags + status —&lt;br/&gt;ready to post"]
-        OUT --> SUM["Spend summary, full logs,&lt;br/&gt;trend history (no trend&lt;br/&gt;reused within 7 days)"]
-    end
-</pre>
+        <line class="edge" x1="620" y1="360" x2="140" y2="430"/>
+        <rect class="node" x="40" y="430" width="200" height="50" rx="4"/>
+        <text class="label" x="140" y="460">IMAGE Render</text>
+
+        <line class="edge" x1="620" y1="360" x2="140" y2="510"/>
+        <rect class="node" x="40" y="510" width="200" height="50" rx="4"/>
+        <text class="label" x="140" y="535">CAROUSEL Slide 1</text>
+        <text class="label-small" x="140" y="555">(anchor)</text>
+
+        <line class="edge" x1="620" y1="360" x2="140" y2="590"/>
+        <rect class="node" x="40" y="590" width="200" height="50" rx="4"/>
+        <text class="label" x="140" y="615">REEL Seed Frame</text>
+        <text class="label-small" x="140" y="635">(text baked)</text>
+
+        <!-- Wave 2 -->
+        <rect class="subgraph" x="340" y="390" width="300" height="240"/>
+        <text class="label-small" x="360" y="410">WAVE 2 (After Wave 1)</text>
+
+        <line class="edge" x1="240" y1="535" x2="340" y2="535"/>
+        <rect class="node" x="340" y="510" width="200" height="50" rx="4"/>
+        <text class="label" x="440" y="535">CAROUSEL Slides 2–N</text>
+        <text class="label-small" x="440" y="555">(chained to anchor)</text>
+
+        <line class="edge" x1="240" y1="615" x2="340" y2="615"/>
+        <rect class="node" x="340" y="590" width="200" height="50" rx="4"/>
+        <text class="label" x="440" y="620">REEL Animation</text>
+        <text class="label-small" x="440" y="640">(seed only, no motion ref)</text>
+
+        <!-- Vision Check -->
+        <rect class="subgraph" x="660" y="390" width="220" height="240"/>
+        <text class="label-small" x="680" y="410">VISION CHECK (Optional)</text>
+
+        <line class="edge" x1="240" y1="455" x2="660" y2="455"/>
+        <line class="edge" x1="240" y1="535" x2="660" y2="535"/>
+        <line class="edge" x1="240" y1="615" x2="660" y2="615"/>
+        <line class="edge" x1="440" y1="535" x2="660" y2="550"/>
+        <line class="edge" x1="440" y1="615" x2="660" y2="580"/>
+
+        <rect class="node" x="680" y="440" width="180" height="50" rx="4"/>
+        <text class="label" x="770" y="470">CHECK Images +</text>
+        <text class="label" x="770" y="485">Slide 1 + Seed</text>
+
+        <!-- Outputs -->
+        <line class="edge" x1="770" y1="490" x2="770" y2="680"/>
+        <rect class="node" x="660" y="680" width="220" height="80" rx="4"/>
+        <text class="label" x="770" y="705">GALLERY + LOGS</text>
+        <text class="label" x="770" y="730">Meta.yaml + Spend</text>
+        <text class="label" x="770" y="755">Trend History</text>
+      </svg>
     </div>
-    <ol class="steps">
-      <li><b>Launch.</b> Menu or CLI flags: config, source, formats × counts, budget, mode, Notion level. Cost estimate shown; nothing billable before the confirm.</li>
-      <li><b>Collect.</b> Virlo MCP returns trends with their winning videos and slideshows; reference images download concurrently. Optional local Inspiration folder and Notion context join in.</li>
-      <li><b>Understand.</b> Trends ranked by viral strength, recently-used ones skipped, then matched to creatives by <i>format affinity</i> (slideshow trends → carousels, video trends → images/reels). In analyzed mode, Sonnet 5 writes one forensic style brief per trend (JSON: layout zones, palette, exclusions, a compact render prompt).</li>
-      <li><b>Create.</b> One Luna copy call per trend covers all its creatives with distinct hooks that copy the <i>structure</i> of the viral originals. Render jobs submit concurrently in at most two dependency waves: carousels anchor to slide 1; reels animate a text-baked seed frame with the winning post's own video as a motion reference and native synchronized audio. Reference images ride along on every job via Kie's image-to-image route (<code>input_urls</code>, ≤16 — OQ-17 closed).</li>
-      <li><b>Deliver.</b> Optional single vision check (garbled text / fake platform UI, ≤1 retry). Everything packages into per-asset folders, an offline gallery with source references shown alongside, full logs, spend summary, trend history.</li>
-    </ol>
-    <div class="callout red"><b>Preview modes:</b> <code>--preview-sources</code> shows exactly what Virlo returned — $0. <code>--preview-analysis</code> adds the style briefs and drafted copy — LLM cost only, no renders. Both are true pipeline prefixes, not a separate code path.</div>
+    <p class="lede" style="margin-top:20px"><strong>Caveats:</strong> The diagram shows two logical waves. All jobs submit concurrently to Kie.ai via asynchronous polling. Vision checks run inside Create (a carousel's anchor is checked before slides 2–N are submitted; reel seed frames are checked before animation). Finished video clips are never vision-checked.</p>
   </section>
 
   <section id="why">
-    <h2><span class="no">§2</span>Why a Rewrite</h2>
-    <p class="lede">The predecessor died of its own safety machinery. The deterministic parts ran in under two seconds; everything else was gates.</p>
-    <div class="tablewrap"><table>
-      <tr><th></th><th>HypeAgentSocials (old)</th><th>HypeSocials (this PRD)</th></tr>
-      <tr><td>Code</td><td class="num">~37,700 lines + 29,400 test + 36,600 docs</td><td class="num">~6,000 lines (ceiling 6,500)</td></tr>
-      <tr><td>One run</td><td class="num">19 min → 3 images, ~$1.33</td><td class="num">~3 min → ~8 creatives (~8–10 min with reels)</td></tr>
-      <tr><td>Per image</td><td>5–11 sequential model calls, 4-rung QA ladder</td><td>1 render (+ optional 1 vision check)</td></tr>
-      <tr><td>Polling</td><td class="num">93 blocking status polls</td><td>Async gather across all jobs</td></tr>
-      <tr><td>Gates</td><td>Claim gate ×2, humanness critic, compositing fallback, 29 style systems</td><td><span class="no-x">None.</span> One optional vision check</td></tr>
-      <tr><td>MCP</td><td>Claimed, never real (raw urllib)</td><td><span class="ok">Real</span> — Virlo, Notion (Postiz Phase 2)</td></tr>
-      <tr><td>Notion</td><td>Hand-copied YAML snapshot</td><td>Live MCP fetch, tiered influence knob</td></tr>
-      <tr><td>Video</td><td>Never built</td><td>Seedance 2.5 reels with audio + motion refs in MVP</td></tr>
-    </table></div>
+    <h2>Why: The Pivot</h2>
+    <p class="lede">Three core inversions from the pre-pivot design:</p>
+    <ul>
+      <li><strong>Visual authority:</strong> Was vision-analyzed Virlo images → Now a local, versioned <code>styles.yaml</code> registry (8 textual style definitions with their own 1–2 reference images each, stored in the repo, edited like code). This makes fidelity auditable and removes 262 lines of vision-analysis code.</li>
+      <li><strong>Copy:</strong> Was LLM-generated "our words" → Now verbatim quotes from trending posts, selected by an AI but resolved to bytes by the engine. Every rendered word is from a real post in its source language. Eliminates hallucination and removes 210 lines of copywrite code.</li>
+      <li><strong>Topics:</strong> Was monitor-based grouping → Now topics extracted per monitor (up to 9 each) with per-topic strength computed from their own posts' views. Unlocks post-level recency: fresh posts from the same monitor within the history window, breaking the old 2-reuse bottleneck (measured 30–39 sets now available).</li>
+    </ul>
   </section>
 
   <section id="decisions">
-    <h2><span class="no">§3</span>Design Decisions D1–D35</h2>
-    <p class="lede">Every locked decision from the grilling and review cycles, with its one-line why. Full rationale lives in the Markdown files.</p>
+    <h2>Design Decisions — The Pivot (D41–D45)</h2>
+    <p class="lede"><strong>D1–D22, D25–D30</strong> are in the detailed PRD files. These five new decisions define the post-pivot architecture:</p>
+
     <div class="decisions">
-      <div class="dcard"><span class="id">D1</span><h4>MCP for content, REST for inference</h4><p>Virlo/Notion speak MCP; OpenRouter and Kie.ai stay plain REST. Postiz is the documented exception — its MCP can't upload media, so publishing runs over its web API.</p></div>
-      <div class="dcard"><span class="id">D2</span><h4>Dual mimicry modes, refs always attached</h4><p><code>analyzed | direct | both</code>. Real winning images ride on every render job — pixels beat prose; both channels together beat either.</p></div>
-      <div class="dcard"><span class="id">D3</span><h4>Zero gates, one optional vision check</h4><p>Render once, ship. One narrow toggle-able check: garbled text / fake platform UI, ≤1 retry that shortens the text.</p></div>
-      <div class="dcard"><span class="id">D4</span><h4>No compliance layer</h4><p>No disclosure lines, claim ledgers or lexicons. The operator reviews the gallery before anything is published.</p></div>
-      <div class="dcard"><span class="id">D5</span><h4>Python 3.13 async everywhere</h4><p>asyncio + httpx + MCP SDK; Kie batch submission; wall clock = max of latencies, not sum.</p></div>
-      <div class="dcard"><span class="id">D6</span><h4>LinkedIn + Instagram + TikTok, EN + CS</h4><p>Languages per platform; per-platform format allowlist — reels default to TikTok only.</p></div>
-      <div class="dcard"><span class="id">D7</span><h4>Notion influence knob</h4><p><code>off | copy | full</code>, default off. Live MCP fetch, cached per run. In <code>full</code>, the trend's visuals always win; brand supplies accent color + nouns.</p></div>
-      <div class="dcard"><span class="id">D8</span><h4>run.bat → interactive menu + flags</h4><p>Menu pre-filled from config, Enter accepts; every choice also a CLI flag so Task Scheduler runs headless with <code>--yes</code>.</p></div>
-      <div class="dcard"><span class="id">D9</span><h4>Folders + offline gallery; Postiz drafts in Phase 2</h4><p>Per-asset folders and one self-contained gallery.html; publishing is a later phase, drafts-only by default.</p></div>
-      <div class="dcard"><span class="id">D10</span><h4>Reels = one Seedance 2.5 clip</h4><p>9:16, 720p, 4–30 s (verified range), single clip. No ffmpeg, no stitching — a video-editing suite is a different product.</p></div>
-      <div class="dcard"><span class="id">D11</span><h4>Estimate up front, cap at submission</h4><p>Refuse to start over cap; enforce against the projected whole-batch total at submit time; tally on submission, failures included.</p></div>
-      <div class="dcard"><span class="id">D12</span><h4>Tiny state, total logging</h4><p>One trend-history JSON + a complete per-run narrative log and structured events file. No database, no ledgers.</p></div>
-      <div class="dcard"><span class="id">D13</span><h4>Inspiration folder as a source</h4><p>Local images join the reference pool as a weighted set; text files become copy exemplars. Off by default.</p></div>
-      <div class="dcard"><span class="id">D14</span><h4>Source adapters</h4><p>One small adapter shape (normalized trend items). Google Trends and Hacker News are named future adapters, not built.</p></div>
-      <div class="dcard"><span class="id">D15</span><h4>Living PRD</h4><p>Any amendment regenerates the Markdown, this HTML, the diagram — and republishes the artifact in the same cycle.</p></div>
-      <div class="dcard"><span class="id">D16</span><h4>TL;DR everywhere</h4><p>Every PRD file opens with a plain-English summary readable in under a minute.</p></div>
-      <div class="dcard"><span class="id">D17</span><h4>Carousel anchor chaining, default on</h4><p>Slide 1 renders first and becomes the primary reference for slides 2–N — the deck reads as one template.</p></div>
-      <div class="dcard"><span class="id">D18</span><h4>Reel text on a seed frame</h4><p>Image models render text ~10× better than video models: bake the hook into a still, then animate around it.</p></div>
-      <div class="dcard"><span class="id">D19</span><h4>Preview modes, not --dry-run</h4><p><code>--preview-sources</code> ($0) and <code>--preview-analysis</code> (LLM cents) answer the two questions a dry run conflated.</p></div>
-      <div class="dcard"><span class="id">D20</span><h4>Source selection is first-class</h4><p><code>sources.active</code> in config + a menu picker; future adapters visible and honestly marked unimplemented.</p></div>
-      <div class="dcard"><span class="id">D21</span><h4>Python Virlo MCP wrapper</h4><p>First-party MCP servers ship as Python in the same venv. An official Virlo MCP now exists (49 tools, headless Bearer) — the 5-tool wrapper stays by choice, official server is the swap path. Notion uses the token-based self-hosted server, with hosted-PAT mode as the sunset fallback.</p></div>
-      <div class="dcard"><span class="id">D22</span><h4>Reel audio in-model, default on</h4><p>Seedance 2.5 generates synchronized AI audio natively (<code>reel_audio: true</code>) — viral video needs sound, and it costs one API boolean.</p></div>
-      <div class="dcard"><span class="id">D23</span><h4>Viral-video motion references</h4><p>The winning post video (yt-dlp metadata probe before download, ≤28 s default — OQ-6 closed at the full ≤30 s tier — uploaded to Kie) becomes a Seedance reference for motion/pacing mimicry, fetched concurrently with Analyze. Any failure degrades to seed-frame-only, never blocks.</p></div>
-      <div class="dcard"><span class="id">D24</span><h4>Editable prompts/ folder</h4><p>Every prompt scaffold is a plain-text template file with placeholders — tune prompt quality in Notepad, no code changes; missing file falls back to a built-in default.</p></div>
-      <div class="dcard"><span class="id">D25</span><h4>Researched prompt playbooks</h4><p>GPT Image 2 and Seedance 2.5 prompting rules — from official docs, graded community research, and creator transcripts — are codified in 50-promptcraft.md and baked into the templates.</p></div>
-      <div class="dcard"><span class="id">D26</span><h4>Campaign briefs</h4><p>Named brief files (e.g. ai-audit-cta) with copy + visual directives and an influence mode — override (replaces trend inputs) or blend (trend look stays, brief steers the message). Requested via --brief name:count.</p></div>
-      <div class="dcard"><span class="id">D27</span><h4>Niches are configs (v1.6.1)</h4><p>A niche = an ordinary config file with a <code>niche:</code> descriptor (audience, vibe, visual world) plus three path keys pointing at its Inspiration, briefs, and prompt overrides. Switching niche = picking that config; no pack machinery, no --niche flag.</p></div>
-      <div class="dcard"><span class="id">D28</span><h4>Withdrawn (v1.6.1)</h4><p>Declared media-richness + text-grounded mode removed — machinery for adapters that don't exist. A future text-only source marks items <code>text_only</code> and inherits the existing path.</p></div>
-      <div class="dcard"><span class="id">D29</span><h4>Postiz = committed Phase 2</h4><p>Drafts + channel map + schedule slots, fully specified now (60-publishing-postiz.md) over Postiz's REST API; hosted cloud plan chosen (~$29/mo, skips Meta/TikTok app approvals); approval in the Postiz UI; auto-publish off by default.</p></div>
-      <div class="dcard"><span class="id">D30</span><h4>Absolute secrets hygiene</h4><p>Keys live only in .env, never enter any prompt or template, never reach a model, and are redacted from all logs — they flow only into auth headers and MCP env dicts.</p></div>
-      <div class="dcard"><span class="id">D31</span><h4>Budget: three checkpoints + atomic reservation</h4><p>Wave 1 (images, carousel anchors, reel seed frames) is checked as a whole-batch projection; wave 2 (slides 2–N, reel Seedance jobs) is pre-committed and always submits; every discretionary retry (vision, moderation, LLM) reserves its cost atomically before it fires. Trimming is deterministic — pair_id groups and carousels never split.</p></div>
-      <div class="dcard"><span class="id">D32</span><h4>Local references upload to Kie</h4><p>Inspiration, brief and niche-pool images get public URLs via Kie's file-upload API before they can ride as references. A per-file upload failure degrades that one reference, never blocks the run.</p></div>
-      <div class="dcard"><span class="id">D33</span><h4>Native ratios everywhere; no local crop/pad (v1.6.1)</h4><p>Every asset renders natively at its target aspect ratio (Kie's verified menu covers all defaults) and ships exactly as returned — the local crop/pad path is deleted. Chained references are always the Kie-hosted URL; reels stay 9:16 on every platform.</p></div>
-      <div class="dcard"><span class="id">D34</span><h4>Swappable models + provider seam</h4><p>Every model id is a config string. A four-operation render-provider interface (submit → poll → results → upload) with Kie as the only built implementation; two model profiles ship (GPT&nbsp;Image&nbsp;2, Seedance&nbsp;2.5). Same-profile swap = one config edit; a new family = profile + template set per a one-page recipe. Higgsfield evaluated 2026-08-09 and parked: no Seedance 2.5 (waitlist), account-auth MCP, subscription pricing (OQ-18).</p></div>
-      <div class="dcard"><span class="id">D35</span><h4>Product ads now, long video parked</h4><p>Product-photo-to-ad ships as a worked campaign-brief example — your product photos as brief references + high-retention ad directives, zero new machinery. Extension chaining (&gt;30s videos) and audio-reference music videos wait behind the provider seam until an API actually exposes them.</p></div>
+      <div class="dcard">
+        <div class="id">D41</div>
+        <h4>Meta-style Registry</h4>
+        <p>Visual authority: eight textual style definitions in <code>styles.yaml</code> (colors, typography, layout, motion profile, with 1–2 reference images each). No vision analysis, no built-in fallback tier. Missing registry → exit 2. Deterministic rotation per creative on <code>entry.order</code>.</p>
+      </div>
+
+      <div class="dcard">
+        <div class="id">D42</div>
+        <h4>Verbatim Copy via Selection</h4>
+        <p>Luna selects exact words from trending posts (captions, hooks, text overlays) that fit the style's budget and are free of @handles, URLs, emoji. Engine resolves to bytes verbatim, never re-typed. Source language kept, no translation. Degrade: caption-only or top-post fallback.</p>
+      </div>
+
+      <div class="dcard">
+        <div class="id">D43</div>
+        <h4>Branding: Selector + Two Profiles</h4>
+        <p>Config-driven: <code>branding.brand</code> picks HypeDigitaly or HypeLead (never mixed); <code>brand_ratio</code> deterministically applies wordmark to a fraction; wordmark rendered as text via the image model, never composite. Brand-slot styles (e.g., brand-card) collapse branding block.</p>
+      </div>
+
+      <div class="dcard">
+        <div class="id">D44</div>
+        <h4>Monitor → Topics Architecture</h4>
+        <p>Per-monitor data split into up to 9 topics. Each topic has a view-ranked <code>SourcePost</code> list. Per-topic strength computed from each topic's own posts. History key changes from <code>&lt;monitor_id&gt;</code> to <code>&lt;mid&gt;::&lt;topic_key&gt;</code>. Enables post-level recency (30–39 sets per monitor vs. old 2).</p>
+      </div>
+
+      <div class="dcard">
+        <div class="id">D45</div>
+        <h4>Console Observability Mandate (v2.3)</h4>
+        <p>Step-by-step visibility: stage narration with in→out counts (FR-296), topics table showing sort proof and per-post views (FR-297), per-creative provenance with copy source (FR-298), render heartbeats and verbosity tiers (FR-299), menu re-shape with runnability facts (FR-300).</p>
+      </div>
     </div>
   </section>
 
   <section id="pipeline">
-    <h2><span class="no">§4</span>Pipeline Highlights <span style="font-size:14px;color:var(--muted);font-weight:400">(full spec: 10-pipeline.md)</span></h2>
-    <div class="grid2">
-      <div class="callout"><b>Format affinity.</b> Slideshow-backed trends go to carousels (the source already <i>is</i> a carousel — panel counts, panel texts and narrative arc transfer 1:1); video-backed trends go to images and reels. Text-only trends are last resort.</div>
-      <div class="callout"><b>Structural copy mimicry.</b> Luna must restate the source hook's abstract pattern ("[number] + [thing you do] + [consequence]") and instantiate it — matching syntax, cadence, word count — with 3–5 verbatim viral hooks as few-shot examples and an auditable <code>hook_pattern_used</code> field. If the grouped per-trend call fails it splits into per-creative calls; total failure falls back to the trend's own hook text and a minimal caption, marked <code>copy_degraded</code>.</div>
-      <div class="callout"><b>Coherent references, cleaned prompts.</b> 2–3 references from one slideshow or one creator (never a top-engagement mix); every prompt carries a mandatory exclusion clause — never reproduce platform UI, watermarks, usernames or the reference's own text.</div>
-      <div class="callout"><b>Moderation fallback.</b> Policy refusals (face-heavy references) are their own failure class: one resubmission without references, marked <code>refs_dropped_moderation</code>. A creative degrades; it doesn't die.</div>
-      <div class="callout"><b>Budget that actually bites.</b> Enforced at three points, not one: wave 1 (images, carousel anchors, reel seed frames) is checked as a whole-batch projection; wave 2 (slides 2–N, reel Seedance jobs) is pre-committed and always submits; every discretionary retry reserves its cost atomically before it fires. Reels can't even be planned until their unit price is configured.</div>
-      <div class="callout"><b>Degrade and report, never block.</b> Failure is scoped to one creative or slide; partial carousels ship labeled; failed creatives keep their paid copy; a global run deadline (~25 min) guarantees the run always ends and packages. Ctrl+C triggers a graceful abandon-and-package (an outstanding-task ledger tracks every submitted job); exit codes 0–4 distinguish full / partial / pre-flight-refusal / fatal / interrupted.</div>
-    </div>
-  </section>
-
-  <section id="integrations">
-    <h2><span class="no">§5</span>Integrations <span style="font-size:14px;color:var(--muted);font-weight:400">(full spec: 20-integrations.md)</span></h2>
-    <div class="tablewrap"><table>
-      <tr><th>System</th><th>Transport</th><th>Role</th><th>If it fails</th></tr>
-      <tr><td>Virlo</td><td>MCP — first-party Python wrapper (<code>python -m hypesocials.virlo_mcp</code>, stdio)</td><td>Trends, winning videos &amp; slideshows, reference image URLs. Five tools (incl. <code>list_monitors</code>), no caching, bounded session pool — never per-monitor subprocesses.</td><td>No usable trends → abort before spend, log explains</td></tr>
-      <tr><td>Notion</td><td>MCP — self-hosted token server (stdio, <code>NOTION_TOKEN</code>); OAuth endpoint out of scope</td><td>Optional brand context (voice, offers, ICP, topics), fetched once, truncated not summarized</td><td>Influence forced <code>off</code>, warned, run continues</td></tr>
-      <tr><td>Postiz</td><td>REST (public API — its MCP can't upload media; MCP kept as optional ops seam)</td><td>Phase 2, fully specified: upload media → create per-platform DRAFTS → approve in Postiz UI → optional promote/schedule slots; auto-publish config flag, default off</td><td>Missing key → publish refuses; per-asset skips; 429 backoff; ~90–100 posts/hr limit</td></tr>
-      <tr><td>OpenRouter</td><td>REST (httpx)</td><td>Sonnet 5 (vision analysis + vision check) · GPT 5.6 Luna (copy); strict structured output, tolerant parse before the single retry</td><td>Bounded backoff; per-creative skip; 402 is a whole-run condition — stops cleanly, packages what exists</td></tr>
-      <tr><td>Kie.ai</td><td>REST (httpx), concurrent createTask waves + async poll (no batch endpoint; callbacks unusable locally; five poll states, poll failures never terminal)</td><td>GPT Image 2 — reference-bearing jobs on <code>gpt-image-2-image-to-image</code> (<code>input_urls</code> ≤16, OQ-17 closed), reference-free on the text-to-image sibling · Seedance 2.5 <code>bytedance/seedance-2-5</code> (reels: seed-frame URL chaining, native audio, video refs ≤30 s total, 4–30 s duration) · Kie file-upload API hosts reference videos and local reference images (~24 h expiry, same-run-only)</td><td>Fail, stuck, and success-with-unusable-result all count as failure, scoped to one job; timeouts 180 s img / 300 s video; 402 = "top up Kie credits", skips remaining renders</td></tr>
-    </table></div>
-    <p>Windows realities are requirements, not footnotes: <code>.cmd</code>-shim-safe spawning, explicit per-server env dicts (each server sees only its own key), subprocess-tree kill on every exit path, pinned server versions, a separate MCP startup timeout, and Node pre-flight checks only when a configured command actually needs Node.</p>
-  </section>
-
-  <section id="config">
-    <h2><span class="no">§6</span>Configuration &amp; Run Experience <span style="font-size:14px;color:var(--muted);font-weight:400">(full spec: 30-configuration-and-run.md)</span></h2>
-    <p class="lede">One YAML file, one .env, one bat file. Menu shows ~6 prompts, all pre-filled, all skippable; every choice has a CLI flag for unattended runs.</p>
-    <h3>First run</h3>
+    <h2>Pipeline & Walkthrough</h2>
+    <p class="lede">A step-by-step journey through a run:</p>
     <ol class="steps">
-      <li><b>Keys into .env:</b> <code>VIRLO_API_KEY</code>, <code>OPENROUTER_API_KEY</code>, <code>KIE_API_KEY</code> (required); <code>NOTION_TOKEN</code> (optional).</li>
-      <li><b>Find Virlo monitor IDs</b> in your Virlo dashboard, paste into <code>sources.virlo_monitor_ids</code>.</li>
-      <li><b>Share Notion pages</b> with the integration once (only for Notion influence).</li>
-      <li><b>Run <code>run.bat</code></b> — bootstraps the venv, checks Python version, opens the menu.</li>
-      <li><b>Preview before paying:</b> pick "Preview sources" to see what Virlo returns, free.</li>
+      <li><b>Launch:</b> Menu/CLI, pick config, format mix, budget, vision checking.</li>
+      <li><b>Collect:</b> Virlo MCP fetches trending topics (text, captions, metadata only; no image downloads).</li>
+      <li><b>Split, Filter, Select:</b> Topics extracted from monitors; competitor filter screens for brand safety; strongest topics ranked and selected for requested creatives.</li>
+      <li><b>Assign:</b> Deterministic style rotation assigns affine styles (format + brand compatible) per creative. Deterministic brand rotation applies wordmark to <code>brand_ratio</code> fraction.</li>
+      <li><b>Quote:</b> Luna selects exact words from the topic's top posts that fit the style's character budget and pass filters. Engine resolves to bytes verbatim.</li>
+      <li><b>Generate (Wave 1):</b> Images, carousel slide 1 (anchor), reel seed frames submitted concurrently. Style reference images uploaded once per run via Kie's file API.</li>
+      <li><b>Generate (Wave 2):</b> Carousel slides 2–N (chained to slide 1), reel animation (seed frame only, no motion reference) submitted after Wave 1 completes or pre-committed.</li>
+      <li><b>Vision Check (optional):</b> Sonnet 5 checks images, carousel anchor, reel seed frame for broken text or fake UI. ≤1 retry with shorter text, then ships.</li>
+      <li><b>Package:</b> Per-asset folders, gallery.html, run log, trend history updated.</li>
     </ol>
-    <h3>Config sketch (illustrative)</h3>
-    <pre class="sketch">run:
-  formats: { image: 4, carousel: 2, reel: 2 }
-  platforms: [linkedin, instagram, tiktok]
-  languages: { linkedin: en, instagram: en, tiktok: en }
-  generation_mode: analyzed        # analyzed | direct | both
-  notion_influence: off            # off | copy | full
-  vision_check: false              # CS runs get a hint to enable
-  spend_cap_usd: 10.00             # operator default
-  trend_history_days: 7
-  carousel_anchor: true
-  reel_overlay_text: seed_frame    # seed_frame | in_model | none
-  reel_audio: true                 # Seedance native synchronized audio
-  reel_video_reference: true       # winning video as motion ref
-  reel_reference_max_s: 28         # OQ-6 closed: full <=30s tier
-  reel_duration_s: 5               # 4-30, clamped at pre-flight
-  run_deadline_min: 25
-sources:
-  active: [virlo]                  # google_trends, hacker_news: future
-  virlo_monitor_ids: ["mon_123"]
-  media_download_cap: 6            # per trend
-  reference_images_per_job: 3
-platforms:
-  tiktok: { formats: [image, carousel, reel], carousel_slides: 5 }   # reels: TikTok only
-models:                            # every id is a plain string — swap anytime (D34)
-  analysis: anthropic/claude-sonnet-5
-  copy: openai/gpt-5.6-luna
-  image: gpt-image-2-image-to-image  # reference-bearing route (OQ-17 closed); text-to-image = reference-free fallback
-  video: bytedance/seedance-2-5    # id confirmed; price still required
-  image_profile: gpt-image-2       # profiles change only when switching model FAMILY
-  video_profile: seedance-2-5
-  reasoning_effort: { copy: low }  # Luna is a reasoning model
-price_per_unit:                    # illustrative; full schema keys token + render rates
-  llm: { anthropic/claude-sonnet-5: 0.003, openai/gpt-5.6-luna: 0.005 }  # $/1K tokens
-  image: { "1k": 0.03, "2k": 0.05, "4k": 0.08 }
-  reel_second: { "480p": null, "720p": null }  # unpublished — set before reels will plan (OQ-2)
-runtime:
-  image_job_timeout_s: 180
-  video_job_timeout_s: 600
-  poll_interval_s: 3
-  http_max_attempts: 3
-  virlo_session_pool: 3
-  text_budgets: { image_headline: 42, image_subline: 60, reel_seed_headline: 32, retry_reduction_pct: 40 }
-mcp_servers:
-  virlo:  { transport: stdio, command: "python -m hypesocials.virlo_mcp" }
-  notion: { transport: stdio, command: "npx -y @notionhq/notion-mcp-server" }
-  # env dicts (e.g. NOTION_TOKEN) are built by the engine from .env — never interpolated in YAML</pre>
-    <h3>CLI</h3>
-    <p><code>--config</code> (covers niche configs) · <code>--list-monitors</code> · <code>--images N</code> · <code>--carousels N</code> · <code>--reels N</code> · <code>--platforms</code> · <code>--budget X</code> · <code>--mode</code> · <code>--notion</code> · <code>--vision-check</code> · <code>--brief name:count</code> · <code>--yes</code> (headless) · <code>--preview-sources</code> · <code>--preview-analysis</code> · Phase 2: <code>--publish</code> · <code>--promote</code> (<code>--at</code>)</p>
-  </section>
 
-  <section id="promptcraft">
-    <h2><span class="no">§6b</span>Promptcraft <span style="font-size:14px;color:var(--muted);font-weight:400">(full spec: 50-promptcraft.md)</span></h2>
-    <p class="lede">Who writes the generation prompts: three layers — the Sonnet 5 style brief supplies the creative substance, editable templates in <code>prompts/</code> supply model-specific scaffolding, and deterministic assembly fills the placeholders. No extra LLM call; the templates are the encoded expertise, tunable in Notepad, hot-loaded per run, name+hash logged.</p>
-    <div class="grid2">
-      <div class="callout"><b>GPT Image 2 playbook</b> (official docs + graded research): fixed section order (use-case → scene → exact text → style → constraints), text as a locked asset — quoted strings, stated typography, <i>letter-by-letter spell-out for Czech diacritics</i>, "render verbatim, no extra characters"; quality tier medium/high whenever text is present; style-DNA scaffold repeated verbatim across carousel slides with only content fields changing; stateless anchor-referenced calls (avoids the documented "same-chat ghosting"); no vague quality tags; ≤2K production ceiling.</div>
-      <div class="callout"><b>Seedance 2.5 playbook</b>: director format — GOAL → REFERENCES → CONTINUITY → SCENE → STAGES → LOOK → CAMERA → AUDIO → RULES — over the official six-part formula; one sentence per @tag stating what it contributes <i>and</i> what it must not; hook text protected via CONTINUITY/RULES, never the generative 【 】 subtitle bracket; audio brackets ( ) music · &lt; &gt; SFX; @Video1 scoped to motion/pacing only (its people, captions, and music explicitly excluded); 2–4 timed stages with one primary change each; UGC realism vocabulary ("handheld, phone-camera look, slight grain, no 3D, no VFX").</div>
-    </div>
-  </section>
-
-  <section id="publishing">
-    <h2><span class="no">§6c</span>Publishing — Phase 2 <span style="font-size:14px;color:var(--muted);font-weight:400">(full spec: 60-publishing-postiz.md)</span></h2>
-    <p class="lede">After gallery review, <code>--publish &lt;run_id&gt;</code> pushes chosen creatives into Postiz as <b>drafts</b>: media uploaded per file, one post entry per platform with its own caption and settings (Instagram carousels/reels, TikTok's required fields with <code>video_made_with_ai: true</code>, LinkedIn document carousels), channel map resolved from your connected Postiz accounts. You approve inside Postiz; <code>--promote</code> or schedule slots (e.g. next free 09:00/18:00) take it from there. Auto-publish exists as a config flag and defaults off. Publishing is idempotent: assets carrying <code>PUBLISHED.marker</code> are always skipped (delete the marker to deliberately re-publish — v1.6.1 removed <code>--force</code> and the automated reconciliation; a lingering attempt-marker is named in the summary for a quick manual glance). Uploaded media ids are cached in each asset's <code>meta.yaml</code>, so a retry reuses them instead of re-uploading. Research verdict encoded honestly: Postiz's MCP server cannot ingest external media, so publishing runs over its public REST API. Deployment choice: <b>hosted Postiz cloud</b> (~$29/mo Standard) — skips Docker ops and the weeks-long Meta/TikTok developer-app approvals; self-hosting stays a config-only fallback.</p>
-    <div class="callout"><b>Also in this design:</b> campaign briefs (specific post types that override or blend with trends), niche configs (switch business/vertical by picking a config), and absolute secrets hygiene (keys never in prompts, models, or logs).</div>
-  </section>
-
-  <section id="outputs">
-    <h2><span class="no">§7</span>Outputs &amp; Logging <span style="font-size:14px;color:var(--muted);font-weight:400">(full spec: 40-outputs-and-logging.md)</span></h2>
-    <div class="filetree">output/20260808_143022_x7q2/
-├── gallery.html            ← the 30-second review page (written incrementally)
-├── run.log                 ← human narrative: every call, decision, dollar
-├── events.jsonl            ← same story, machine-readable, full prompts
-├── refs/&lt;trend&gt;/…          ← the actual Virlo reference images used
-├── Li_img_ai-agents_analyzed/
-│   ├── image.jpg · caption.txt · meta.yaml
-├── Ig_car_dance-trend_analyzed/
-│   ├── slide_01.jpg … slide_05.jpg · caption.txt · meta.yaml
-└── Tk_reel_hook-trend_analyzed/
-    ├── reel.mp4 · caption.txt · meta.yaml
-logs/trend_history.json     ← global: which trends were used, when</div>
+    <h3>Preview Modes (No Generation)</h3>
     <ul>
-      <li><b>Gallery:</b> fully offline, every card shows the creative <i>next to its source references</i> and hook — fidelity is judged by eye, side by side. A/B pairs sit together automatically via <code>pair_id</code>.</li>
-      <li><b>Logs:</b> flushed per event, so an interrupted run's tail is always truthful. Spend summary shows estimated vs. billed-attempts vs. delivered.</li>
-      <li><b>Failed creatives</b> keep their paid artifacts (caption, meta) plus a one-line <code>SKIP_REASON.txt</code>.</li>
-      <li><b>Trend history</b> records only successfully packaged trends — an interrupted run can be rerun safely.</li>
+      <li><b><code>--preview-sources</code>:</b> Show all topics and their verdicts (keep/strip/skip). Zero LLM/Kie spend. Virlo API cost only.</li>
+      <li><b><code>--preview-analysis</code>:</b> Also run Luna copy. Show topics, verdicts, assigned styles, verbatim copy selections. LLM cost; Kie cost zero.</li>
     </ul>
   </section>
 
   <section id="metrics">
-    <h2><span class="no">§8</span>Success Metrics</h2>
-    <div class="tablewrap"><table>
-      <tr><th>Metric</th><th>Target</th></tr>
-      <tr><td>Speed</td><td class="num">Images/carousels batch &lt; ~3 min · with reels &lt; ~8–10 min (gallery reviewable while reels finish)</td></tr>
-      <tr><td>Completion</td><td class="num">≥95% of runs finish without fatal errors · ≥95% of planned creatives produce output or a logged skip</td></tr>
-      <tr><td>Cost</td><td class="num">Under default config: image ~$0.03–0.05 · carousel ~$0.08–0.12 · reel ~$0.40–0.60 · shared LLM ~$0.01–0.02/run</td></tr>
-      <tr><td>Fidelity</td><td class="num">≥80% of rated runs score 2+ on the 3-point per-run operator rating — judged in-gallery against the references shown alongside</td></tr>
-      <tr><td>A/B</td><td>analyzed vs. direct concluded by operator judgment + logged cost/time deltas per pair</td></tr>
-    </table></div>
+    <h2>Success Metrics</h2>
+    <div class="tablewrap">
+      <table>
+        <tr>
+          <th>Metric</th>
+          <th>Target</th>
+          <th>Notes</th>
+        </tr>
+        <tr>
+          <td>Speed (images/carousels)</td>
+          <td>~3 minutes</td>
+          <td>Gallery written incrementally; images reviewable while processing</td>
+        </tr>
+        <tr>
+          <td>Speed (with reels)</td>
+          <td>~8–10 minutes</td>
+          <td>Reel seed frame generated first; animation follows</td>
+        </tr>
+        <tr>
+          <td>Completion rate</td>
+          <td>≥95% (last 20 runs)</td>
+          <td>Fatal = exit code 3; ≥95% of planned creatives produce output or skip reason</td>
+        </tr>
+        <tr>
+          <td>Per-image cost</td>
+          <td>$0.03–0.05</td>
+          <td>GPT Image 2 via Kie.ai</td>
+        </tr>
+        <tr>
+          <td>Per-carousel cost</td>
+          <td>$0.08–0.12</td>
+          <td>5 slides, anchor chaining, GPT Image 2</td>
+        </tr>
+        <tr>
+          <td>Per-reel cost (no motion ref)</td>
+          <td>$1.57 (5s, 720p)</td>
+          <td>Seedance 2.5, seed frame only; post-pivot removes motion-ref video</td>
+        </tr>
+        <tr>
+          <td>Fidelity (style adherence)</td>
+          <td>≥80% score 2+</td>
+          <td>1=poor, 2=acceptable, 3=strong; operator rates post-gallery per run</td>
+        </tr>
+      </table>
+    </div>
   </section>
 
   <section id="open">
-    <h2><span class="no">§9</span>Open Questions &amp; Amendment Protocol</h2>
+    <h2>Open Questions (Critical Path)</h2>
     <ul>
-      <li><b>OQ-17 — CLOSED (2026-08-09), with a route change:</b> Kie's text-to-image route accepts <em>no</em> reference inputs; the sibling <code>gpt-image-2-image-to-image</code> route does (<code>input_urls</code>, ≤16 URLs). The mimicry backbone rides that route; the day-one spike is one cheap render confirming references are honored qualitatively.</li>
-      <li><b>OQ-5/6/7 — CLOSED (2026-08-09):</b> file-upload API confirmed (three endpoints, ~24 h upload expiry, host <code>kieai.redpandaai.co</code>); Seedance serves the full reference tier (30 images / 10 videos ≤30 s total → <code>reel_reference_max_s: 28</code>); no GPT Image 2 quality tiers, no Thinking-Mode batch.</li>
-      <li><b>OQ-1/3/4 — closed:</b> Luna id confirmed (reasoning tokens billed); the Virlo wrapper decision stands with its premise updated (an official Virlo MCP now exists — swap path); five poll states (<code>waiting|queuing|generating|success|fail</code>), no batch endpoint, no seeds exposed.</li>
-      <li><b>OQ-2 — still open (the one true blocker), spend approved:</b> Seedance 2.5 pricing remains unpublished — reels can't be planned until <code>price_per_unit.reel_second</code> is configured. One measured 5 s test render settles it on day one; the operator green-lit the ~$1–2 day-one test spend (2026-08-09), so only the execution remains.</li>
-      <li><b>OQ-18 — Higgsfield re-evaluation trigger (re-verified 2026-08-09):</b> now three conditions, all required — public REST/API-key MCP with a Seedance 2.5 catalog (today: waitlist, OAuth-only MCP), published pay-per-use pricing (today: expiring subscription credits at ~5–6× Kie's cost), and a concrete need for Soul/Cinema-Studio/Sora-class exclusives. Full comparison table in 20-integrations §12a.</li>
-      <li><b>OQ-19–22 — NEW (v1.6):</b> Virlo API per-call pricing (deposit half answered — operator confirmed the account is funded, 2026-08-09), Kie result-URL lifetime (~14 days), Seedance image+video references composing in one job, and Luna + strict structured output — each a one-look or one-call check.</li>
-      <li><b>OQ-10 — Postiz plan gating (Phase 2):</b> largely answered — all paid plans include the Public API, and the operator confirmed (2026-08-09) they are on a hosted paid plan; one empirical key test remains. <b>OQ-15 (TikTok direct-post audit) is deferred to Phase 2 by operator decision:</b> until Postiz is implemented, all review happens from the <code>output/</code> folder on disk, then Postiz carries TikTok and every other platform. <b>OQ-8, 9, 11–14, 16</b> stay verify-at-build in 60-publishing-postiz.md (issue #717 is closed upstream; the full-payload defense stays as cheap insurance).</li>
+      <li><strong>OQ-2 — Reel pricing [operator]:</strong> Seedance 2.5 unit pricing entered in config as worst-case-honest scalar. Post-pivot: no motion-reference video, output seconds only.</li>
+      <li><strong>OQ-10 — Postiz API gating [build]:</strong> Confirm operator's hosted Postiz plan includes Public API access (Phase 2 blocker).</li>
+      <li><strong>OQ-19 — Virlo metering [observation]:</strong> Per-call billing dashboard observation after first paid run.</li>
     </ul>
-    <div class="callout red"><b>Amendment protocol (D15):</b> any future change amends the Markdown files, regenerates the overview diagram and this HTML, and republishes this artifact at the same URL — in the same cycle. A stale diagram is a bug.</div>
-    <div class="tablewrap"><table>
-      <tr><th>File</th><th>Covers</th></tr>
-      <tr><td>00-overview.md</td><td>Summary, goals, diagram, decision log D1–D35, metrics, complete OQ registry</td></tr>
-      <tr><td>10-pipeline.md</td><td>Run plan → selection → analysis → copy → generation → check → budget; FR-1–29, 90–109, 141–149, 200–209</td></tr>
-      <tr><td>20-integrations.md</td><td>MCP docs registry + client layer, Virlo wrapper, Notion, Postiz (P2), OpenRouter, Kie.ai, provider seam, secrets; FR-30–49, 110–129, 160–169, 240–249, 270–279</td></tr>
-      <tr><td>30-configuration-and-run.md</td><td>Config surface + sketch, first-run setup, run.bat, menu, CLI, scheduling; FR-50–69, 130–140, 170–177, 250–259, 280–289</td></tr>
-      <tr><td>40-outputs-and-logging.md</td><td>Run folders, gallery, run.log/events.jsonl, trend history, spend summary; FR-70–89, 150–159, 230–239</td></tr>
-      <tr><td>50-promptcraft.md</td><td>Prompt-design spec: prompts/ template folder, GPT Image 2 + Seedance 2.5 playbooks; FR-180–199, 260–269</td></tr>
-      <tr><td>60-publishing-postiz.md</td><td>Phase 2 publishing: Postiz REST integration, drafts, channel map, schedule slots; FR-210–229</td></tr>
-    </table></div>
   </section>
 
-  <p class="foot">HypeSocials PRD v1.6.2 (review hardening + operator decision &amp; readiness rounds) · 2026-08-09 · Lives at <code>C:\Users\Pavli\Desktop\HypeDigitaly\GIT\HypeSocials\prds\</code> · Markdown files are the normative source; this page is the visual companion, republished on every amendment.<br>v1.4 — expert-review hardening pass (2026-08-08): ~40 gap/contradiction fixes across all files, D31–D33 added, FR registry established; no D1–D30 decision changed.<br>v1.5 — model switching &amp; provider seam (2026-08-09): D34–D35 added; model ids config-swappable; render-provider interface + model profiles (Kie the only built implementation); Higgsfield evaluated and parked (OQ-18); product-ad brief example added.<br>v1.5.1 — operator defaults (2026-08-09): spend cap $10; first niche pack <code>niches/hypedigitaly/</code>; first brief <code>ai-audit-cta</code>; all API keys confirmed on hand — OQ-2 and OQ-10 tests unblocked for day one of the build.<br>v1.6 — four-track review hardening (2026-08-09): ~90 fixes from architecture / completeness / consistency / live fact-check reviews. OQ-3/4/5/6/7/17 closed from live docs (image refs move to the image-to-image route, <code>input_urls</code> ≤16; full Seedance reference tier; five poll states; upload endpoints + ~24 h expiry; duration 4–30 s). Official MCP doc registry added (Notion/Postiz/Virlo/Higgsfield; Kie has none); official Virlo MCP noted, wrapper kept by choice; Higgsfield re-verified and parked. Concurrency/budget/state hardening (permit rule, poll-failure-never-terminal, reservation reconciliation, intent-before-call ledger, stale-lock breaking, <code>latest.txt</code>). New OQ-19–22.<br>v1.6.1 — operator decision round (2026-08-09), 11 questions answered: <b>applied</b> — niches-as-configs (no pack machinery, no <code>--niche</code>), local crop/pad deleted, meta.yaml degradations collapsed to one tag list, one spend table, one-rule budget trim, <code>image_quality_tier</code> deleted, text-only-source machinery removed (D28 withdrawn), Phase-2 <code>--assets</code>/<code>--force</code>/auto-reconciliation cut (~590 est. lines saved); <b>kept by choice</b> — <code>both</code> A/B mode, provider seam + profiles, both preview modes, vision-check-off default, 2×/7-day trend defaults. G2 restated: target ~3,000 lines, hard ceiling 4,500. Decision record: REVIEW-v1.6-recommendations.md.<br>v1.6.2 — operator readiness round (2026-08-09), 4 questions answered: Virlo deposit funded (OQ-19 half-closed); day-one test spend (~$1–2: reference spike + 5 s Seedance render) green-lit (OQ-2 execution-only); Postiz hosted paid plan confirmed (OQ-10 key test remains); TikTok direct-post question deferred to Phase 2 — Phase 1 review is from the <code>output/</code> folder, Postiz then carries all platforms (OQ-15).</p>
+  <section id="files">
+    <h2>Documentation Structure</h2>
+    <p class="lede">Each file owns an FR block to prevent collisions. This is the complete registry:</p>
+    <div class="tablewrap">
+      <table>
+        <tr>
+          <th>File</th>
+          <th>FR Blocks</th>
+          <th>Purpose</th>
+        </tr>
+        <tr>
+          <td>10-pipeline.md</td>
+          <td>1–29, 90–109, 141–149, 200–209, 290–291, 294</td>
+          <td>Detailed run flow, topic extraction, filtering, copying, rendering, budget</td>
+        </tr>
+        <tr>
+          <td>20-integrations.md</td>
+          <td>30–49, 110–129, 160–169, 240–249, 270–279, 293</td>
+          <td>MCP clients, OpenRouter, Kie.ai, render-provider interface</td>
+        </tr>
+        <tr>
+          <td>30-configuration-and-run.md</td>
+          <td>50–69, 130–140, 170–177, 250–259, 280–289, 292, 295, 299–300</td>
+          <td>Config schema, run.bat, menu, CLI flags, branding, styles</td>
+        </tr>
+        <tr>
+          <td>40-outputs-and-logging.md</td>
+          <td>70–89, 150–159, 230–239, 296–298</td>
+          <td>Folder structure, gallery, run log, events, metadata, provenance</td>
+        </tr>
+        <tr>
+          <td>50-promptcraft.md</td>
+          <td>180–199, 260–269</td>
+          <td>Prompt design, template playbooks, registry, filter/copy/branding</td>
+        </tr>
+        <tr>
+          <td>60-publishing-postiz.md</td>
+          <td>210–229</td>
+          <td>Phase 2 publishing via Postiz MCP/REST</td>
+        </tr>
+      </table>
+    </div>
+    <p style="margin-top:20px"><strong>Next block: FR-301+</strong> for future amendments.</p>
+  </section>
+
+  <div class="foot">
+    <p><strong>Source of truth:</strong> <code>prds/*.md</code> files. This HTML is a current snapshot as of 2026-08-12 (v2.0.0, post-pivot). For the latest changes, see the amendment log in 00-overview.md or the individual PRD files.</p>
+    <p><strong>Built by:</strong> Technical Writer (T0.3), Topic-First Pivot amendment cycle.</p>
+  </div>
 
 </main>
+
+</body>
+</html>
