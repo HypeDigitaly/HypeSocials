@@ -3,7 +3,7 @@
 Module contract
 ---------------
 Purpose: turn *config + requested briefs* into an ordered plan of creatives, and *collected
-trends + history* into a ranked shortlist with a verdict per trend, then bind the two together.
+topics + history* into a ranked shortlist with a verdict per topic, then bind the two together.
 Public API: `select()` · `build_plan()` · `assign()` and their result objects
 (`Selection`/`TrendVerdict`, `Plan`/`BriefRequest`, `Assignment`/`AssignmentDecision`).
 
@@ -11,12 +11,18 @@ Invariants:
 - **Pure and instant** (NFR-2): no file, network or clock I/O and no logging — every decision
   leaves as data so `runner.py` logs it (NFR-5) and `previews.py` prints it at zero model spend
   (FR-139). History arrives as the dict `outputs.read_history()` returns.
-- **Every input trend comes back with a verdict** — `eligible` / `excluded` (with the date last
+- **One entry per creative** (v2.0.0, operator decision #2 — A/B mode withdrawn). Expansion emits
+  exactly one `PlanEntry` per requested creative, and one creative is one render. FR-3's
+  analyzed/direct duplication — two renders of one idea, tagged and cross-linked so a gallery
+  could pair them — is gone, and with it the two `PlanEntry` fields that carried the tag and the
+  link. Those fields survive as defaulted, unwritten leftovers until the Wave-3.5 excision; no id,
+  group or decision in this module is keyed on either any more.
+- **Every input topic comes back with a verdict** — `eligible` / `excluded` (with the date last
   used) / `unusable` (with the reason). Nothing is filtered away silently, because 10 §10's abort
   message must distinguish "excluded by history" from "rejected as unusable".
 - **Brief entries are emitted FIRST and an `atomic_group` is never split** — the two properties
   that make FR-106's single "trim from the END, in reverse plan order" rule sufficient.
-- **Nothing leaves the plan** (FR-4): a creative with no trend left keeps a terminal status and a
+- **Nothing leaves the plan** (FR-4): a creative with no topic left keeps a terminal status and a
   reason instead of vanishing from the accounting.
 
 Do not: price anything (`budget.py` owns cost and trimming), read files, or assume reels are
@@ -32,8 +38,8 @@ from typing import Any, Literal
 
 from hypesocials.config import Config
 from hypesocials.models import (
-    Brief, CreativeFormat, PlanEntry, PlanEntryStatus, TrendItem, Variant)
-from hypesocials.outputs import days_since_use
+    Brief, CreativeFormat, PlanEntry, PlanEntryStatus, SourcePost, TrendItem)
+from hypesocials.outputs import days_since_use, used_posts
 from hypesocials.util import slugify
 
 #: Canonical format order — the order counts are expanded in, and the order of a brief's slots.
@@ -56,23 +62,33 @@ Verdict = Literal["eligible", "excluded", "unusable"]
 
 @dataclass(slots=True)
 class TrendVerdict:
-    """One trend's fate, as `--preview-sources` prints it and a paid run would reach it (FR-139)."""
+    """One topic's fate, as the console prints it and a paid run would reach it (FR-139/FR-297).
+
+    The "arrived without pictures" flag this carried until v2.0.0 is gone with FR-90's last-resort
+    tier: Virlo is a text feed now and the pictures come from the style registry, so EVERY topic
+    would raise that flag and a label that said so on every single line marked nothing.
+    """
 
     trend: TrendItem
     verdict: Verdict
     reason: str = ""  # unusable: what was missing; excluded: which window it fell inside
     last_used: str | None = None  # FR-7: exclusions are logged WITH the date, always
-    text_only: bool = False  # eligible, but the last resort of FR-90
 
     @property
     def label(self) -> str:
-        """The exact operator-facing wording of FR-139's three verdicts."""
+        """The exact operator-facing wording of FR-139's three verdicts.
+
+        An exclusion carries its own reason rather than a fixed sentence, because FR-7 now has two
+        distinct causes — every source post already used, or a post-less topic inside the
+        topic-level window — and an operator deciding whether `--history-days` would help has to
+        be able to tell them apart.
+        """
         if self.verdict == "excluded":
             return (f"excluded (history, last used {self.last_used or 'unknown'}, "
-                    "no unused post left)")
+                    f"{self.reason or 'no unused post left'})")
         if self.verdict == "unusable":
             return f"unusable ({self.reason})"
-        return "eligible (text_only — last resort)" if self.text_only else "eligible"
+        return "eligible"
 
 
 @dataclass(slots=True)
@@ -86,7 +102,7 @@ class Selection:
 
     @property
     def eligible(self) -> list[TrendItem]:
-        """Usable, un-excluded trends, strongest first (FR-5's `strength` is the sort key)."""
+        """Usable, un-excluded topics, strongest first (FR-5's `strength` is the sort key)."""
         return [v.trend for v in self._of("eligible")]
 
     @property
@@ -100,22 +116,36 @@ class Selection:
 
 def select(trends: Sequence[TrendItem], config: Config,
            history: Mapping[str, dict[str, Any]] | None = None) -> Selection:
-    """Rank the collected trends and give each one a verdict (FR-5/6/7).
+    """Rank the collected topics and give each one a verdict (FR-5/6/7).
 
     Ranking consumes each adapter's own `strength` in 0–1 — the one cross-source contract; Select
     knows no source's internals. Usability (FR-6) is judged before the history window (FR-7),
-    because a trend with no text substance is unusable whether or not it was ever used and the
+    because a topic with no text substance is unusable whether or not it was ever used and the
     abort message must name *that* cause rather than sending the operator off to widen a window
     that would not have helped.
 
-    `history` is `outputs.read_history()`'s dict, keyed by `TrendItem.history_key`;
-    `run.trend_history_days` is the window and `0` disables it entirely. The window is applied at
-    MONITOR granularity only to a trend carrying no `chosen_post_ids`, because a trend that carries
-    them had FR-7 enforced upstream at POST granularity already. Returns every input trend as a
-    verdict, with `Selection.eligible` as the ranked shortlist `assign()` consumes.
+    `history` is `outputs.read_history()`'s dict, keyed by `TrendItem.history_key` — post-pivot
+    `"<monitor_id>::<topic_key>"`, so the window is per TOPIC and not per monitor;
+    `run.trend_history_days` is the window and `0` disables it entirely.
+
+    **FR-7 is enforced here, at POST granularity** (amended v2.0.0). The adapter used to drop
+    already-used posts while choosing a reference set; post-pivot `sources/virlo.py` deliberately
+    stops re-ordering on `used_posts` — the view rank of `TrendItem.posts` IS the sort proof the
+    console prints (FR-297a/b) and the `P<n>` labels the copy call quotes by (§1.7) — and hands
+    the exclusion decision to the stage that owns verdicts. So: a topic is excluded only when
+    every one of its source posts was already used inside the window, because a topic is a
+    standing subject that can be worked again the moment it surfaces a post whose text has not
+    shipped yet. A topic that arrived with no posts at all carries no post identity, and there the
+    topic-level `last_used` stamp is the only recency signal there is.
+
+    Returns every input topic as a verdict, with `Selection.eligible` as the ranked shortlist
+    `assign()` consumes.
     """
     known = dict(history or {})
     window = max(int(config.run.trend_history_days or 0), 0)
+    # One flat union: post ids are globally unique, so which history key burnt a post does not
+    # matter — a post whose text already shipped is burnt for every topic that carries it.
+    burnt = {post for posts in used_posts(known, within_days=window).values() for post in posts}
     ranked = sorted(trends, key=lambda t: (-float(t.strength or 0.0), t.name.lower(),
                                            t.history_key))
     verdicts: list[TrendVerdict] = []
@@ -123,38 +153,57 @@ def select(trends: Sequence[TrendItem], config: Config,
         if reason := _unusable_reason(trend):
             verdicts.append(TrendVerdict(trend, "unusable", reason=reason))
             continue
-        trend.text_only = _is_text_only(trend)  # item-level flag, re-derived from what arrived
-        # The adapter that chose this trend's reference set had already dropped every post used
-        # inside the window, so excluding the monitor as well would re-impose a throughput cap of
-        # monitors ÷ trend_history_days. An empty tuple — a `text_only` item, or a monitor whose
-        # every candidate set is used up — leaves monitor identity as the only recency signal.
-        age = days_since_use(known, trend.history_key)
-        if window and not trend.chosen_post_ids and age is not None and age < window:
+        if window and (reason := _exclusion_reason(trend, known, burnt, window)):
             entry = known.get(trend.history_key) or {}
             verdicts.append(TrendVerdict(
-                trend, "excluded", reason=f"used within the last {window} day(s)",
-                last_used=str(entry.get("last_used") or "").strip() or None,
-                text_only=trend.text_only))
+                trend, "excluded", reason=reason,
+                last_used=str(entry.get("last_used") or "").strip() or None))
             continue
-        verdicts.append(TrendVerdict(trend, "eligible", text_only=trend.text_only))
+        verdicts.append(TrendVerdict(trend, "eligible"))
     return Selection(verdicts=verdicts)
 
 
 def _unusable_reason(trend: TrendItem) -> str:
-    """FR-6: a name plus SOME text substance, else there is nothing to drive mimicry with."""
+    """FR-6: a name plus SOME text substance, else there is nothing to drive mimicry with.
+
+    Post-pivot the substance that matters most is the topic's own `posts` — the verbatim contract
+    (§1.7) quotes their strings and nothing else — so a topic whose theme-level prose is thin is
+    still perfectly usable when its winning posts carry text. The theme-level rows stay in the
+    check beside them: they are what a synthesized single-topic monitor arrives with (FR-293's
+    degenerate case), and either channel on its own is enough to write a creative from.
+    """
     if not (trend.name or "").strip():
         return "no trend name"
     substance = (trend.why_it_works.strip()
                  or any(t.strip() for t in trend.tactics)
-                 or any(d.strip() for d in trend.video_descriptions))
+                 or any(d.strip() for d in trend.video_descriptions)
+                 or any(_has_text(post) for post in trend.posts))
     if not substance:
-        return "no text substance (needs why_it_works, tactics or a top-video description)"
+        return "no text substance (needs post text, why_it_works, tactics or a description)"
     return ""
 
 
-def _is_text_only(trend: TrendItem) -> bool:
-    """FR-6: text but no picture — kept, flagged, and used only as FR-90's last resort."""
-    return trend.text_only or not any(url for group in trend.reference_groups for url in group)
+def _has_text(post: SourcePost) -> bool:
+    """True when this source post carries at least one quotable string — §1.7's candidate set."""
+    return any(str(text).strip() for text in (post.caption, post.description, *post.hooks,
+                                              *post.text_overlays, *post.panel_texts))
+
+
+def _exclusion_reason(trend: TrendItem, known: Mapping[str, dict[str, Any]],
+                      burnt: set[str], window: int) -> str:
+    """FR-7's cause for putting this topic out of the run, or `""` while it still has material.
+
+    Two shapes, and the caller needs the difference in words: a topic whose every post is burnt is
+    waiting for the source to surface a new post (widening the window cannot help, and neither can
+    re-running), while a post-less topic inside the window is the pre-pivot whole-topic exclusion
+    that `--history-days` genuinely does widen.
+    """
+    if trend.posts:
+        if any(post.post_id not in burnt for post in trend.posts):
+            return ""
+        return f"all {len(trend.posts)} source post(s) used within the last {window} day(s)"
+    age = days_since_use(known, trend.history_key)
+    return f"used within the last {window} day(s)" if age is not None and age < window else ""
 
 
 # --------------------------------------------------------------------- expansion (FR-1/2/3/143)
@@ -187,14 +236,13 @@ def build_plan(
     briefs: Sequence[BriefRequest] = (),
     allow_reels: bool | None = None,
 ) -> Plan:
-    """Expand requested counts into one entry per planned creative (FR-1/2/3/143).
+    """Expand requested counts into one entry per planned creative (FR-1/2/143).
 
     Counts are per format and are **never** multiplied across platforms (FR-2): each creative is
     round-robined over the platforms whose `formats:` allowlist enables that format, in config
-    order, so remainders land on the earlier platforms. `both` mode duplicates every creative into
-    an analyzed/direct pair sharing one `pair_id` and one `atomic_group` (FR-3) — except an
-    `override` brief creative, which makes no analysis call and therefore renders exactly once,
-    labelled `direct` with no `pair_id`.
+    order, so remainders land on the earlier platforms. Each requested creative becomes exactly
+    ONE entry (v2.0.0): FR-3's analyzed/direct duplication is withdrawn with generation mode, so a
+    run of 4 images plans 4 entries and submits 4 renders, not 8.
 
     Brief creatives are emitted **first**, which is what makes FR-106's reverse-order trim safe:
     the campaign post the run was launched for is the last thing dropped. A brief's `count` is
@@ -202,11 +250,11 @@ def build_plan(
     FR-131 price gate for a caller that has already reported the missing price.
 
     Returns a `Plan` whose entries carry `order` 0..N-1 and a provisional `asset_id` — `assign()`
-    rewrites the trend slug inside those ids — plus a `note` for every count that was dropped.
+    rewrites the topic slug inside those ids — plus a `note` for every count that was dropped.
     """
     entries: list[PlanEntry] = []
     notes: list[str] = []
-    creatives = count(1)  # one token per logical creative — the atomic_group / pair_id
+    creatives = count(1)  # one token per logical creative — the atomic_group
     reels_ok = config.reels_plannable if allow_reels is None else allow_reels
 
     for request in briefs:  # FIRST, per FR-106's trim contract
@@ -259,23 +307,24 @@ def _brief_slots(request: BriefRequest, config: Config, reels_ok: bool,
 
 def _emit(entries: list[PlanEntry], config: Config, fmt: CreativeFormat, platform: str,
           creatives: Iterator[int], *, brief: Brief | None = None) -> None:
-    """Append one logical creative: a single entry, or FR-3's analyzed/direct pair as one group."""
-    group = f"c{next(creatives):02d}"
-    variants: tuple[Variant, ...] = ("direct",)
-    if brief is None or brief.influence != "override":  # override has no analysis call to A/B
-        mode = config.run.generation_mode
-        variants = ("analyzed", "direct") if mode == "both" else (
-            ("analyzed",) if mode == "analyzed" else ("direct",))
-    for variant in variants:
-        entries.append(PlanEntry(
-            order=0,  # rewritten once the whole plan is emitted
-            asset_id="",  # provisional until _asset_id() runs; the trend slug lands in assign()
-            creative_format=fmt, platform=platform, language=config.language_for(platform),
-            aspect_ratio=_aspect_ratio(config, platform, fmt), variant=variant,
-            pair_id=group if len(variants) == 2 else None, atomic_group=group,
-            slide_count=config.platform(platform).carousel_slides if fmt == "carousel" else None,
-            brief_name=brief.name if brief else None,
-            brief_influence=brief.influence if brief else None))
+    """Append ONE logical creative as ONE entry (v2.0.0 — operator decision #2, A/B withdrawn).
+
+    The `atomic_group` token outlives the pair it was invented for. It is still the unit
+    `budget.trim` groups on when it cuts the plan back to the cap (`budget.py:548`) and the unit
+    `assign()` binds a topic to (`_groups` below), and a carousel is still one atomic creative
+    whose slides must never be split from each other (D31). Today every group holds exactly one
+    entry; the seam stays because the trim rule is written in terms of the group, not because
+    anything still pairs.
+    """
+    entries.append(PlanEntry(
+        order=0,  # rewritten once the whole plan is emitted
+        asset_id="",  # provisional until _asset_id() runs; the topic slug lands in assign()
+        creative_format=fmt, platform=platform, language=config.language_for(platform),
+        aspect_ratio=_aspect_ratio(config, platform, fmt),
+        atomic_group=f"c{next(creatives):02d}",
+        slide_count=config.platform(platform).carousel_slides if fmt == "carousel" else None,
+        brief_name=brief.name if brief else None,
+        brief_influence=brief.influence if brief else None))
 
 
 def _aspect_ratio(config: Config, platform: str, fmt: CreativeFormat) -> str:
@@ -290,10 +339,20 @@ def _aspect_ratio(config: Config, platform: str, fmt: CreativeFormat) -> str:
 
 
 def _asset_id(entry: PlanEntry, source_name: str) -> str:
-    """FR-71's `<Pl>_<fmt>_<slug>_<variant>_<NN>`; the ordinal is the entry's own plan position."""
+    """FR-71's id, post-pivot: `<Pl>_<fmt>_<slug>_<NN>` — the A/B tag segment is gone.
+
+    Nothing labels a creative `analyzed` or `direct` any more (v2.0.0), and a segment that reads
+    `direct` on every folder in every run is noise inside a name that has a MAX_PATH budget.
+
+    **The ordinal stays the tail.** It is the entry's own plan position and §1.10's provenance
+    block names a creative by it (`id` = the asset id's trailing ordinal, `…_07`), so it is the
+    operator's short handle across the console, the gallery and meta.yaml; anything appended after
+    it would break that read. Two creatives sharing platform + format + topic still differ here,
+    which is what keeps FR-71's "no silent folder overwrite" guarantee true without the A/B tag.
+    """
     platform = _PLATFORM_ABBR.get(entry.platform, entry.platform[:2].capitalize() or "Xx")
     fmt = _FORMAT_ABBR.get(entry.creative_format, entry.creative_format[:4])
-    return f"{platform}_{fmt}_{slugify(source_name)}_{entry.variant}_{entry.order + 1:02d}"
+    return f"{platform}_{fmt}_{slugify(source_name)}_{entry.order + 1:02d}"
 
 
 # ------------------------------------------------------------------- assignment (FR-8/90/144)
@@ -301,21 +360,31 @@ def _asset_id(entry: PlanEntry, source_name: str) -> str:
 
 @dataclass(slots=True)
 class AssignmentDecision:
-    """Why one creative (or one both-mode pair) got the trend it got — FR-90's audit trail."""
+    """Why one creative got the topic it got — FR-90's audit trail.
+
+    `asset_ids` stays a list although an atomic group now holds exactly one entry: it is the group
+    that is decided about, and the shape reads the same in run.log whether or not a future format
+    ever fans one group back out.
+    """
 
     atomic_group: str
     asset_ids: list[str]
     creative_format: CreativeFormat
     trend_key: str | None
-    #: affinity | rank_fallback | reuse | last_resort_text_only | brief_override | dropped
+    #: affinity | rank_fallback | reuse | brief_override | dropped
     reason: str
-    use_index: int = 0  # 1 = this trend's first use in the run; a both-mode pair counts once
+    use_index: int = 0  # 1 = this topic's first use in the run
     detail: str = ""
 
 
 @dataclass(slots=True)
 class Assignment:
-    """The result of binding trends to creatives, with the numbers FR-8 makes the operator see."""
+    """The result of binding topics to creatives, with the numbers FR-8 makes the operator see.
+
+    The field names keep saying `trend` where the amended FR-8 says `topic`: they are read by
+    `runner`, `previews` and the FR-155 funnel, and renaming a data shape mid-pivot buys wording
+    the operator never sees. The `summary_line` below — which IS what they see — says topic.
+    """
 
     decisions: list[AssignmentDecision] = field(default_factory=list)
     dropped: list[PlanEntry] = field(default_factory=list)  # surplus past the reuse bound
@@ -326,32 +395,44 @@ class Assignment:
     @property
     def summary_line(self) -> str:
         """FR-8's plain restatement, shown before generation proceeds."""
-        return (f"this plan needs {self.trends_needed} distinct trend(s); "
+        return (f"this plan needs {self.trends_needed} distinct topic(s); "
                 f"{self.usable_trends} are available after filtering "
                 f"(batch ceiling {self.batch_ceiling} creatives)")
 
 
 def assign(entries: Sequence[PlanEntry], selection: Selection, config: Config) -> Assignment:
-    """Bind ranked trends to planned creatives by format affinity, then rank (FR-8/90).
+    """Bind ranked topics to planned creatives by format affinity, then rank (FR-8/90).
 
-    A both-mode pair and a carousel are each ONE unit: the pair shares one trend (otherwise the
-    A/B comparison is meaningless) and counts as exactly one use against
-    `max_trend_reuses_per_run`. `override` brief creatives consume no trend at all (FR-144) — they
-    never touch the pool, the reuse budget or history. When the pool has no capacity left the
-    surplus group is kept in the plan with a terminal `skipped` status and a reason (FR-4/8).
+    A creative is ONE unit and counts as exactly one use against `max_trend_reuses_per_run` — a
+    carousel too, because its slides are render jobs inside one entry rather than entries of their
+    own. `override` brief creatives consume no topic at all (FR-144): they never touch the pool,
+    the reuse budget or history. When the pool has no capacity left the surplus group is kept in
+    the plan with a terminal `skipped` status and a reason (FR-4/8).
 
-    Mutates each assigned entry in place: `trend_key` is set, `trend_reuse_index` records this
-    group's 0-based position among the creatives on that trend (FR-91's rotation index, and with
-    it FR-9's brief pair), and `asset_id` is rewritten with the trend's slug (FR-71). Entries
-    already terminal — budget-trimmed, say — are left alone, and an `override` brief entry keeps
-    the default index 0 because it attaches no trend group at all.
-    Returns one decision per group (FR-90's audit trail), the dropped entries, and the counts the
-    console restatement of FR-8 needs.
+    Mutates each assigned entry in place:
+
+    - `trend_key` (the topic's `history_key`) and `topic_key` name the bound topic — the second
+      is what meta.yaml, the gallery and post-level recency read (FR-73/FR-153);
+    - `trend_reuse_index` records this creative's 0-based position among the creatives sharing
+      that topic. Post-pivot that index is the **sibling-divergence key**: `copywrite` quotes
+      `posts[index % len(posts)]` (§1.6/§1.7.6), so two creatives on one topic quote two different
+      source posts instead of shipping the same caption twice, and `styles.pick_reference_window`
+      turns the same index into which slice of the assigned style's reference images this job
+      attaches (A17's window rotation, re-homed);
+    - `asset_id` is rewritten with the topic's slug (FR-71).
+
+    Entries already terminal — budget-trimmed, say — are left alone, and an `override` brief entry
+    keeps the default index 0 because it attaches no topic at all. Returns one decision per group
+    (FR-90's audit trail), the dropped entries, and the counts the console restatement of FR-8
+    needs.
     """
     max_reuses = max(int(config.run.max_trend_reuses_per_run or 1), 1)
+    # No pre-filter here any more. The old "prefer topics that arrived with pictures" gate and the
+    # config key that switched it on are withdrawn with the media funnel (FR-90 amended): a
+    # post-pivot topic never arrives with pictures, so the gate either removed the whole pool or
+    # none of it, and both outcomes were misreadings of a rule about material that no longer
+    # exists. The visual authority is the assigned meta-style now (FR-290).
     pool = list(selection.eligible)
-    if config.run.require_reference_image and any(not t.text_only for t in pool):
-        pool = [t for t in pool if not t.text_only]  # FR-90: text_only only when nothing else is
     rank = {trend.history_key: index for index, trend in enumerate(pool)}
     uses: dict[str, int] = {}
     result = Assignment(usable_trends=len(pool), batch_ceiling=len(pool) * max_reuses)
@@ -359,7 +440,7 @@ def assign(entries: Sequence[PlanEntry], selection: Selection, config: Config) -
     for group, members in _groups(entries).items():
         ids = [entry.asset_id for entry in members]
         fmt = members[0].creative_format
-        if members[0].brief_influence == "override":  # FR-144: consumes no trend
+        if members[0].brief_influence == "override":  # FR-144: consumes no topic
             result.decisions.append(AssignmentDecision(
                 group, ids, fmt, None, "brief_override",
                 detail=f"brief {members[0].brief_name} owns this creative outright"))
@@ -370,7 +451,7 @@ def assign(entries: Sequence[PlanEntry], selection: Selection, config: Config) -
             for entry in members:
                 entry.status = PlanEntryStatus.SKIPPED
                 entry.skip_reason = (
-                    f"no_trend_available: {len(pool)} usable trend(s) x {max_reuses} reuse(s) "
+                    f"no_trend_available: {len(pool)} usable topic(s) x {max_reuses} reuse(s) "
                     "exhausted (FR-8)")
             result.dropped.extend(members)
             result.decisions.append(AssignmentDecision(group, ids, fmt, None, "dropped",
@@ -379,9 +460,10 @@ def assign(entries: Sequence[PlanEntry], selection: Selection, config: Config) -
         uses[trend.history_key] = use_index = uses.get(trend.history_key, 0) + 1
         for entry in members:
             entry.trend_key = trend.history_key
-            # FR-91: 0-based, so the FIRST group of the first creative on a trend is index 0. The
-            # whole atomic group shares one value — a both-mode A/B pair must compare like with
-            # like, and a deck's slides must come from one coherent set (D31).
+            entry.topic_key = trend.topic_key
+            # 0-based, so the FIRST creative on a topic is index 0 and quotes `posts[0]` — the
+            # top-viewed post. Every member of an atomic group shares one value: a deck's slides
+            # must be written from one coherent source (D31).
             entry.trend_reuse_index = use_index - 1
             entry.asset_id = _asset_id(entry, trend.name)
         result.decisions.append(AssignmentDecision(
@@ -393,7 +475,12 @@ def assign(entries: Sequence[PlanEntry], selection: Selection, config: Config) -
 
 
 def _groups(entries: Sequence[PlanEntry]) -> dict[str, list[PlanEntry]]:
-    """Pending entries bucketed by `atomic_group`, in plan order — the unit of assignment."""
+    """Pending entries bucketed by `atomic_group`, in plan order — the unit of assignment.
+
+    One entry per bucket since v2.0.0 (nothing pairs any more), and the bucket is kept because it
+    is the same unit `budget.trim` cuts on: assignment and trimming must not disagree about what a
+    creative is.
+    """
     grouped: dict[str, list[PlanEntry]] = {}
     for entry in entries:
         if entry.status is PlanEntryStatus.PENDING:
@@ -402,24 +489,33 @@ def _groups(entries: Sequence[PlanEntry]) -> dict[str, list[PlanEntry]]:
 
 
 def _affinity(trend: TrendItem, fmt: CreativeFormat) -> bool:
-    """FR-90: slideshow material fits carousels; video material fits images and reels."""
+    """FR-90: slideshow material fits carousels; video material fits images and reels.
+
+    `is_slideshow` is re-derived per topic post-pivot — the majority type across the topic's own
+    view-ranked posts (§1.6) — so affinity now follows the composition of the posts a creative
+    will actually quote instead of one label carried by a whole monitor.
+    """
     return trend.is_slideshow == (fmt == "carousel")
 
 
 def _pick(pool: Sequence[TrendItem], rank: Mapping[str, int], uses: Mapping[str, int],
           fmt: CreativeFormat, max_reuses: int) -> tuple[TrendItem | None, str]:
-    """The strongest trend that still has reuse capacity, affinity first (FR-8/90).
+    """The strongest topic that still has reuse capacity, affinity first (FR-8/90).
 
-    Sort key, in order: `text_only` last always (FR-90's last resort), then fewest uses so a
-    second creative prefers a fresh trend over a repeat, then affinity, then plain rank.
+    Sort key, in order: fewest uses, so a second creative prefers a fresh topic over a repeat;
+    then affinity; then plain rank.
+
+    The "arrived without pictures, use only as a last resort" tier that used to sort ahead of all
+    three is withdrawn with FR-90's amendment. Post-pivot no topic arrives with pictures — Virlo is
+    a text feed and the visuals come from the style registry — so a last-resort bucket that every
+    single candidate falls into is not a tie-break; it is a no-op that reads like one, and the
+    decision reason it produced would have labelled every assignment in every run.
     """
     candidates = [t for t in pool if uses.get(t.history_key, 0) < max_reuses]
     if not candidates:
         return None, "dropped"
-    best = min(candidates, key=lambda t: (
-        t.text_only, uses.get(t.history_key, 0), not _affinity(t, fmt), rank[t.history_key]))
-    if best.text_only:
-        return best, "last_resort_text_only"
+    best = min(candidates, key=lambda t: (uses.get(t.history_key, 0), not _affinity(t, fmt),
+                                          rank[t.history_key]))
     if uses.get(best.history_key, 0):
         return best, "reuse"
     return best, "affinity" if _affinity(best, fmt) else "rank_fallback"

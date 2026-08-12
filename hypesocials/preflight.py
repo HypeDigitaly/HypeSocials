@@ -46,6 +46,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from hypesocials import briefs, styles
+from hypesocials.util import wrapped
 from hypesocials.config import Config
 from hypesocials.models import PlanEntry
 from hypesocials.plan import BriefRequest
@@ -111,10 +112,18 @@ class Preflight:
 
     @property
     def report(self) -> str:
-        """Everything worth printing, in refusal-first order; empty when the run is clean."""
-        lines = [f"pre-flight refused: {line}" for line in self.errors]
-        lines += [f"warning: {line}" for line in self.warnings]
-        lines += [f"hint: {line}" for line in self.hints]
+        """Everything worth printing, in refusal-first order; empty when the run is clean.
+
+        Wrapped at the printer (FR-286): several hints run to sentence length, and this property
+        is the one place every grade passes through — wrapping in the data would put layout into
+        strings that also land in events.jsonl.
+        """
+        lines: list[str] = []
+        for prefix, group in (("pre-flight refused: ", self.errors),
+                              ("warning: ", self.warnings), ("hint: ", self.hints)):
+            for item in group:
+                lines += [part if first else f"  {part}"
+                          for first, part in wrapped(f"{prefix}{item}", 76)]
         return "\n".join(lines)
 
 

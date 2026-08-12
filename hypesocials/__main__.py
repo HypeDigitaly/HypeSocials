@@ -61,6 +61,7 @@ _PHASE_2_NOTE = (
 def main(argv: list[str] | None = None) -> int:
     """Parse, dispatch, and return the exit code. `run.bat` propagates it to Task Scheduler."""
     _force_utf8()
+    _configure_logging()
     _sweep_stale_scratch()
     load_dotenv(ROOT / ".env")
     opts = cli.parse_args(argv)  # unknown flag: argparse exits 2 here, before any load (FR-63)
@@ -97,6 +98,22 @@ def main(argv: list[str] | None = None) -> int:
         return runner.EXIT_INTERRUPTED
     finally:
         _close(loop)
+
+
+def _configure_logging() -> None:
+    """FR-296/D45's one-time root-logger decision: stdlib logging never reaches the console.
+
+    Unconfigured, `logging`'s last-resort handler leaked every module-level `logger.warning`
+    bare onto stderr — undesigned output on a random channel, beside a console whose bytes are
+    otherwise exactly run.log's (`session.say`). The sanctioned channels are `outputs.LogWriter`
+    (run.log + events.jsonl, redaction inside) and the `say`/`note` seams; anything an operator
+    must see is routed through those deliberately (the four virlo `_warn` sites do both). A
+    `NullHandler` on the root terminates everything else silently — pytest's caplog still works,
+    because pytest installs its own capturing handler above this one.
+    """
+    import logging
+
+    logging.getLogger().addHandler(logging.NullHandler())
 
 
 def _force_utf8() -> None:

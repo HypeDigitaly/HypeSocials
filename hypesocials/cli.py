@@ -46,7 +46,6 @@ from hypesocials.util import wrapped
 
 PROG = "run.bat"  # what the operator actually launches; `python -m hypesocials` is the inner call
 _WIDTH = 78  # FR-286: help wraps here, never at the console width, which legacy conhost mangles
-_MODES = ("analyzed", "direct", "both")
 _NOTION = ("off", "copy", "full")
 
 
@@ -69,11 +68,13 @@ class Options:
     config_name: str | None = None
     counts: dict[str, int] = field(default_factory=dict)  # only the formats a flag named
     platforms: list[str] | None = None
-    sources: tuple[str, ...] = ()  # `--sources`, the CLI twin of the menu's picker (FR-135)
+    sources: tuple[str, ...] = ()  # `--sources`, the CLI-only override of `sources.active`
     budget_usd: float | None = None
-    mode: str | None = None
     notion: str | None = None
     vision_check: bool = False
+    verbose: bool = False  # `--verbose`/`-v` (FR-299): the CONSOLE tier only. Read beside
+    #   `config.output.console_verbosity` by the runner — a flag, so it overrides nothing on the
+    #   `Config` object and `run.log`/`events.jsonl` stay identical either way.
     briefs: tuple[tuple[str, int], ...] = ()  # `--brief <name>:<count>`, repeatable (FR-171)
     yes: bool = False
     quick: bool = False  # skip the wizard's questions, keep the confirm gate — a modifier, not an
@@ -105,9 +106,9 @@ def parse_args(argv: Sequence[str] | None = None) -> Options:
         platforms=ns.platforms,  # already the checked, deduped list (`_platforms`)
         sources=tuple(ns.sources or ()),
         budget_usd=ns.budget,
-        mode=ns.mode,
         notion=ns.notion,
         vision_check=bool(ns.vision_check),
+        verbose=bool(ns.verbose),
         briefs=tuple(ns.brief or ()),
         yes=bool(ns.yes),
         quick=bool(ns.quick),
@@ -141,9 +142,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--sources", type=_sources, metavar="LIST",
                         help="comma-separated source list, overrides sources.active (FR-135)")
     parser.add_argument("--budget", type=float, metavar="USD", help="override the spend cap")
-    parser.add_argument("--mode", choices=_MODES, help="generation mode (D2)")
     parser.add_argument("--notion", choices=_NOTION, help="Notion influence level (D7)")
     parser.add_argument("--vision-check", action="store_true", help="enable the vision check (D3)")
+    parser.add_argument("--verbose", "-v", action="store_true",
+                        help="show per-topic/per-candidate detail on the console; run.log and "
+                             "events.jsonl are unchanged (FR-299)")
     parser.add_argument("--history-days", type=_history_days, metavar="N",
                         help="recency window in days for this run; 0 turns the window off")
     parser.add_argument("--brief", action="append", type=_brief, metavar="NAME:COUNT",
@@ -156,10 +159,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--list-monitors", action="store_true",
                         help="print every Virlo monitor id and name, then exit (FR-251)")
     parser.add_argument("--preview-sources", action="store_true",
-                        help="trends + verdicts, no model spend; Virlo's trend digest "
-                             "still meters against your Virlo deposit")
+                        help="topics + deterministic blocklist verdicts, no model spend; Virlo's "
+                             "trend digest still meters against your Virlo deposit (FR-139)")
     parser.add_argument("--preview-analysis", action="store_true",
-                        help="also style briefs and copy, LLM cost only (FR-140)")
+                        help="also the LLM filter verdicts, assigned styles and copy, "
+                             "LLM cost only (FR-140)")
     parser.add_argument("--publish", metavar="RUN_ID", help="(Phase 2, not implemented)")
     parser.add_argument("--promote", metavar="RUN_ID", help="(Phase 2, not implemented)")
     parser.add_argument("--at", metavar="ISO", help="(Phase 2, not implemented) --promote time")
@@ -197,11 +201,16 @@ def _action(ns: argparse.Namespace) -> Action:
 
 
 def _sources(value: str) -> tuple[str, ...]:
-    """`--sources virlo` → the source pick, validated exactly as the menu's picker validates it.
+    """`--sources virlo` → an override of `sources.active` for this run only.
 
-    Same two refusals as `menu._pick_sources` (FR-135), because this flag IS that step for an
-    unattended run: an unknown name lists the vocabulary, and a named-but-unbuilt adapter is
-    refused outright rather than accepted and silently skipped at Collect.
+    Two refusals, both at the flag boundary so a typo costs $0: an unknown name lists the
+    vocabulary `SOURCE_STATUS` owns (FR-121), and a named-but-unbuilt adapter is refused outright
+    rather than accepted and silently skipped at Collect.
+
+    The menu twin this flag used to mirror is gone: FR-135's source picker was withdrawn in
+    v2.0.0 (Virlo is the only production source), so `sources.active` is otherwise a config-file
+    decision. The flag itself survives as the CLI-only escape hatch, and its removal is an open
+    question: 30 §5's flag table no longer lists it either.
     """
     names = list(dict.fromkeys(name.strip() for name in str(value).split(",") if name.strip()))
     if not names or any(name not in SOURCE_STATUS for name in names):
@@ -259,9 +268,6 @@ def apply_overrides(config: Config, opts: Options) -> list[str]:
     if opts.budget_usd is not None:
         config.run.spend_cap_usd = float(opts.budget_usd)
         applied.append(f"run.spend_cap_usd={format_usd(config.run.spend_cap_usd)}")
-    if opts.mode:
-        config.run.generation_mode = opts.mode  # type: ignore[assignment]
-        applied.append(f"run.generation_mode={opts.mode}")
     if opts.notion:
         config.run.notion_influence = opts.notion  # type: ignore[assignment]
         applied.append(f"run.notion_influence={opts.notion}")
@@ -271,6 +277,9 @@ def apply_overrides(config: Config, opts: Options) -> list[str]:
     if opts.history_days is not None:  # already range-checked at the boundary by `_history_days`
         config.run.trend_history_days = int(opts.history_days)
         applied.append(f"run.trend_history_days={config.run.trend_history_days}")
+    # `--verbose` deliberately applies NOTHING here (FR-299). Verbosity is a console tier, not a
+    # config value: the runner reads `opts.verbose` beside `config.output.console_verbosity`, so
+    # the loaded config keeps saying what the file said and run.log/events.jsonl never move.
     return applied
 
 
@@ -336,8 +345,8 @@ async def confirm_spend(
     if assume_yes:
         return ConfirmOutcome(True, tuple(entries), estimate)
 
-    # The prompt states its own semantics because the wizard trains "Enter keeps the value" seven
-    # times before this line, and here Enter cancels. Only y/yes starts — now it says so.
+    # The prompt states its own semantics because the wizard trains "Enter keeps the value" at
+    # every step before this line, and here Enter cancels. Only y/yes starts — now it says so.
     question = (f"Start the run and spend up to {format_usd(estimate.expected_usd)} "
                 f"(worst case {format_usd(estimate.worst_case_usd)})?\n"
                 "  y = start · Enter or n = cancel, nothing is billed: ")

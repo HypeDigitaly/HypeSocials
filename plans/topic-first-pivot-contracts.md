@@ -610,3 +610,53 @@ plans/SESSION-C-CLOSEOUT.md; none silently resolved.
    and `inspiration_exemplars` lose their last allowlist at W2 (item 3 removes both from the
    copywriter role) while their PLACEHOLDERS removal is pinned to W3.5 (item 2) — the parity
    test's unreachable-name check carves out exactly these two, named, with a W3.5 pointer.
+
+---
+
+## W3 addendum — conductor decisions during Session D (binding for T3.5/T3.6, W3.5 and W4/W5)
+
+All disclosed in plans/SESSION-D-CLOSEOUT.md; none silently resolved.
+
+1. **`runner._write` is FOUR-argument:** `_write(session, live, trends, strip_brands)` — the
+   strip mapping is the pinned seam (previews pass their own; the runner passes
+   `session.strip_brands`, built by `_screen_topics` as `trend_key -> tuple(brands)`).
+2. **`generate.Env` gained the §1.10 console seams** beyond item 11's diff: `say`, `pulse`
+   (`util.Pulse`), `heartbeat_s`, `jobs_expected`/`jobs_submitted`/`jobs_done`/`jobs_ok`
+   (mutated by `_submit` only), and **`strip_brands`** (M6 — Session-C obligation 2: the
+   filter's LLM-discovered brands now reach every render prompt via
+   `Env.competitor_strings_for(entry)`; carousel/reel read the same fields duck-typed).
+3. **`util.Pulse`** is the one FR-299 silence clock: `stamp()` from `_Session.say`/`note`,
+   `due(wait_started=..., suppress_s=...)` from the waits (runner `_with_pulse`, generate
+   `_drain`). Cadence: 15 s verbose / 30 s interactive / 90 s `--yes`; suppression 10 s LLM,
+   20 s render (`generate._FIRST_HEARTBEAT_RENDER_S`).
+4. **`render.gate_stats() -> (running_w1, running_w2, queued)`** — a read-only accessor over
+   `RenderGate` (held permits tracked per entry tier at `permit()` scope); behaviour unchanged.
+5. **Counters (item 15) as shipped:** `add_topics(*, posts_in, topics_out, synthesized=0)` +
+   field `topics_synthesized` (the TOPICS header's `N synth`);
+   `record_render(*, jobs, dropped, style_refs, topics_used, styles_used)` with fields
+   `style_refs_min/max`, `topics_used`, `styles_used` (old `trend_refs_*`/`trends_used`/
+   `inspiration_each` gone). `as_event()["topics"]` += `synthesized`.
+6. **`copywrite.write_copy` gained `progress: dict | None`** (keeps total/done/in_flight
+   current for the COPY heartbeat; never read back by the module).
+7. **Console pure functions live in runner** (previews import them):
+   `_live_stages(config, *, brief_only)`, `_stage(session, stage, body, *, opening, elapsed_s)`,
+   `_topics_table(topics, verdicts)`, `_post_roster(topics, verdicts, live, *, topics_limit,
+   posts_limit)`, `_provenance_block(entries, records, trends, copy)`, `_dur`, `_compact`,
+   `_mon_codes`, `_verdict_cell`. `sources.STRENGTH_WEIGHTS` re-exports virlo's `_WEIGHTS` so
+   the table caption cannot drift from the scoring code.
+8. **Receipt slot precedence pinned to gallery's order** (headline, overlay_text, subline,
+   caption; then slides) — console and gallery quote the same string.
+9. **FILTER drops only `skip`** before Select; `strip` topics proceed with their brands
+   recorded. The console-ux §2 mockup's `11` into SELECT is illustrative, not normative.
+10. **`apply_brand_overrides` is WIRED** at Collect under `notion_influence == "full"` (barrel
+    export added) — dormant until a NOTION_TOKEN exists, per the operator's standing intent
+    that Notion is the brand source and config is the fallback.
+11. **W3.5 excision additions:** the orphaned `--sources` flag + `Options.sources` +
+    `apply_overrides` branch (FR-135 was withdrawn in Wave 0; T3.3 surfaced the remnant);
+    `copywrite._free_text_schema`'s `"hook_pattern_used"` exclusion entry;
+    virlo's `_build_item` only AFTER T3.5's re-base lands (Session-C note re-confirmed).
+12. **hypelead `background_hint` variant resolved to the light surface** in BOTH
+    `config._default_profiles()` and every shipped YAML (M9; the dark alternative is a
+    documented config swap, not a compiled default).
+13. **Root logger**: `__main__._configure_logging()` installs a `NullHandler` on the root —
+    stdlib logging is deliberately console-silent; LogWriter + say/note are the only channels.

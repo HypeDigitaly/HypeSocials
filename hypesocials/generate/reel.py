@@ -469,6 +469,11 @@ def _context(entry: PlanEntry, env: Env, copyset: CopySet | None, *, signed: boo
         # A15, same seam and same narrowness: only `reel_seed_frame.md` allowlists it, so the
         # director role drops it exactly as it drops the branding block.
         niche_visual_world=getattr(env, "niche_visual_world", ""),
+        # M6 (W3): config blocklist + this topic's guarded LLM strips — read through `getattr`
+        # like every Env read here (this module targets the duck-typed surface).
+        competitor_strings=(
+            *map(str, getattr(getattr(env, "branding", None), "competitors", ())),
+            *map(str, getattr(env, "strip_brands", {}).get(entry.trend_key or "", ()))),
         text_budgets=env.config.run.text_budgets, **slots)
 
 

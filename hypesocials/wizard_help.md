@@ -11,12 +11,19 @@ documentation for whoever edits this file and is never printed.
 
 The `purpose.*` sections are the per-step purpose lines FR-284 requires, so
 they are printed on every run rather than only on `?`. Their **first line is
-the step heading**: `menu._step` prefixes it with the `n/7` counter, and every
-following line carries its own five spaces of indent. Keep a `purpose.*` first
-line at or under 72 characters, because five go to the counter.
+the step heading**: `menu._step` prefixes it with an `n/N` counter DERIVED
+from the step's position in `menu._live_steps()` (FR-300 — never a number
+typed here or at a call site), and every following line carries its own five
+spaces of indent. Keep a `purpose.*` first line at or under 72 characters,
+because five go to the counter.
 
-Prose lives here rather than in `menu.py` for one reason: ~140 lines of help
-text would push that module past the 500-line split threshold in
+One section pair per live step, and the keys ARE the step names in
+`menu._WIZARD_STEPS`: config, counts, cap, briefs, confirm — NFR-16's five
+operator inputs. A step deleted from that list takes its two sections with it
+(v2.0.0 deleted the source picker and the mode picker this way).
+
+Prose lives here rather than in `menu.py` for one reason: a hundred-odd lines
+of help text would push that module past the 500-line split threshold in
 CODING_GUIDELINES.md, and this is text, not logic. It is deliberately *not*
 under `prompts/`, which pre-flight validates as a template tree.
 
@@ -27,13 +34,8 @@ under `prompts/`, which pre-flight validates as a template tree.
 
 ## purpose.config
 
-Config — the niche, caption language, monitor set and counts this run
-     starts from. A config with no monitor ids can collect nothing.
-
-## purpose.sources
-
-Sources — a source is where trends come from; virlo reads the Virlo
-     monitors saved in this config, one trend per monitor.
+Config — the niche, caption language, monitor set, brand and counts this
+     run starts from. No monitor ids or no usable style: it cannot run.
 
 ## purpose.counts
 
@@ -44,16 +46,6 @@ Formats & counts — how many finished creatives to build, as one line.
 
 Spend cap — the ceiling for this run, checked before anything is
      ordered. A limit, not a target; a run spends what it needs.
-
-## purpose.mode
-
-Mode & Notion influence — how much thinking and brand context to spend
-     per trend.
-     mode: analyzed = one extra LLM call per trend writes a style brief ·
-     direct = no analysis call · both = both variants, ~2x the calls
-     notion: off = nothing · copy = brand voice shapes the captions ·
-     full = also shapes visuals. Without NOTION_TOKEN in .env, copy and
-     full fall back to off at pre-flight and the run still happens.
 
 ## purpose.briefs
 
@@ -70,12 +62,13 @@ Confirm — the cost estimate and the final yes/no come next. Nothing has
 
   Four ways in, and none of them spends money yet.
 
-  [1] guided run  asks all seven questions. Pick this the first time,
-                  and whenever counts, mode or briefs should change.
+  [1] guided run  asks all five questions. Pick this the first time,
+                  and whenever counts, cap or briefs should change.
   [2] quick run   asks nothing before the price. It uses the first
-                  config that is actually ready (one with Virlo
-                  monitor ids), prints which one it picked, and goes
-                  straight to the cost estimate. You still say yes.
+                  config that is actually ready — Virlo monitor ids
+                  AND at least one usable style — prints which one it
+                  picked, and goes straight to the cost estimate. You
+                  still say yes.
   [3] publish     Phase 2. Not built here. It only tells you so.
   [4] monitor ids opens Virlo, prints every monitor id and name you
                   own, then exits with no model spend.
@@ -90,18 +83,29 @@ Confirm — the cost estimate and the final yes/no come next. Nothing has
 
   A config file is one whole set of choices: which niche you speak to,
   which language captions come out in, which Virlo monitors feed the
-  trends, how many creatives of each kind, and what a run may spend.
+  topics, which brand signs the posts, how many creatives of each kind,
+  and what a run may spend.
 
   Each row is two lines. The first is the config name and its one-line
   self-description. The second is the readiness facts:
 
-    language · monitor ids · counts as img/car/reel · verdict
+    language · monitors · counts as img/car/reel · brand · styles
+
+  The last two are what decides whether a run can happen at all: the
+  brand this config signs with, and how many of the house styles in
+  prompts/styles.yaml can be used under that brand.
 
   What the verdicts mean:
 
     recommended       the shipped choice; Enter takes it
     NOT RUNNABLE      no monitor ids, so Virlo can return nothing;
-                      the run refuses for free at pre-flight
+                      the run refuses for free at pre-flight. With
+                      '- pick [4]' the monitor-id helper cures it
+    NO STYLES         the style registry will not load, or has no
+                      style for a format this config asks for under
+                      its brand; that is a pre-flight refusal too,
+                      and it is shown here instead of three prompts
+                      later. Fix prompts/styles.yaml, or the brand
     reels unpriced    reels are requested but no per-second rate
                       exists, so they would be dropped later
 
@@ -110,24 +114,7 @@ Confirm — the cost estimate and the final yes/no come next. Nothing has
   language — read the language column, not the description.
 
   If you get it wrong: press q, or pick again. Nothing is loaded but the
-  file itself, and nothing is spent until step 7.
-
-## sources
-
-  A source is where trends come from. `virlo` reads the Virlo monitors
-  saved in the config you just picked. A monitor is a saved search Virlo
-  keeps ranking for you, and one run takes one trend per monitor.
-
-  `google_trends` and `hacker_news` are named for future adapters. They
-  are not built; picking one is refused rather than accepted and then
-  silently skipped at collect time.
-
-  A good value: virlo, which is the pre-fill. Change this only once a
-  second adapter exists.
-
-  If you get it wrong: a source with zero monitor ids collects nothing,
-  and the run refuses at pre-flight before any money moves — naming the
-  key, and pointing you at action [4].
+  file itself, and nothing is spent until the confirm step.
 
 ## counts
 
@@ -137,8 +124,8 @@ Confirm — the cost estimate and the final yes/no come next. Nothing has
     carousels  one multi-slide deck; the slide count comes from the
                config (five by default), so 2 carousels order 10
                images, not 2
-    reels      one short video — a seed frame plus a real viral clip
-               used as a motion reference. By far the priciest item
+    reels      one short video — a still seed frame with the hook
+               baked in, then animated. By far the priciest item
 
   Edit the line as `images=4 carousels=2 reels=0`. A key you leave out
   keeps its current value: typing only `images=1` leaves carousels
@@ -151,8 +138,8 @@ Confirm — the cost estimate and the final yes/no come next. Nothing has
   A good value: the pre-filled line. Raise counts once a run has come
   out the way you wanted it.
 
-  If you get it wrong: step 7 shows the cost before anything is billed,
-  and declining there costs nothing.
+  If you get it wrong: the confirm step shows the cost before anything
+  is billed, and declining there costs nothing.
 
 ## cap
 
@@ -165,40 +152,14 @@ Confirm — the cost estimate and the final yes/no come next. Nothing has
   it — which is exactly what happened on this tool's first ever run, at
   a cap of one cent.
 
-  A good value: a couple of dollars for images and carousels; well above
-  five if the plan holds a reel, since one 5-second 720p reel with a
-  motion reference can approach five dollars on its own.
+  A good value: a couple of dollars for images and carousels. Well above
+  that if the plan holds a reel: a reel is billed per output second, at
+  whatever your config's price_per_unit.reel_second says, so one clip
+  can outweigh every still in the run.
 
   If you get it wrong: too low is caught here or at pre-flight and costs
   nothing. Too high never spends more than the plan estimates — the cap
   is a ceiling, not a budget to use up.
-
-## mode
-
-  Two settings on one line, edited as `mode=analyzed notion=off`.
-
-  Generation mode decides how much thinking happens per trend:
-
-    analyzed  one extra LLM call per trend writes a style brief, and
-              the render follows it. The default, and the reason
-              output resembles the trend it came from
-    direct    no analysis call. Cheaper and faster, less faithful
-    both      renders everything twice, analyzed and direct, paired
-              in the gallery. Roughly doubles LLM calls and renders
-
-  Notion influence decides how much brand context is injected:
-
-    off   nothing from Notion
-    copy  brand voice, offers and audience notes shape captions only
-    full  the same context also shapes visual direction
-
-  Notion needs `NOTION_TOKEN` in your `.env` and the pages shared with
-  the integration once. Without that token, `copy` and `full` fall back
-  to `off` at pre-flight with one warning — the run still happens, just
-  without Notion.
-
-  A good value: `mode=analyzed notion=off` until Notion is set up. Use
-  `mode=both` when comparing approaches and happy to pay twice.
 
 ## briefs
 

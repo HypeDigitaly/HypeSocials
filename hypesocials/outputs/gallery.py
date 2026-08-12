@@ -3,8 +3,8 @@
 Module contract
 ---------------
 Purpose: turn a run folder into a single self-contained HTML page a human can judge in ~30
-seconds — every creative next to the source references it mimicked, its caption, its badges and
-its cost.
+seconds — every creative next to the house-style references it was rendered from, its caption,
+its identity badges, the receipt for the words it quoted, and its cost.
 Public API: `write_gallery(run_dir, title=..., log=...) -> Path | None`.
 Invariants:
 - **Self-contained** (FR-75): CSS inlined in one `<style>`, media referenced by relative path,
@@ -14,6 +14,17 @@ Invariants:
   refreshing mid-write never sees a truncated file.
 - **Never blocks delivery** (NFR-22): any failure is caught, logged and returns `None` — the
   assets are on disk either way, and a template bug must not cost the operator a run.
+- **One card per creative, in folder order** (D42/D43): A/B mode is dead, so there is no pairing,
+  no pair badge and no row grouping — the ordinal in the asset id is the whole ordering. FR-231
+  survives as the SELECTION artifact only (the header documents the marker file); its withdrawn
+  half was the A/B integrity badge.
+- **The judging question lives in the footer** (FR-150 as amended): style adherence + topical
+  accuracy. Not fidelity to a trend's pixels — the run no longer has any.
+- **The card answers "where did this come from"** (FR-76 as amended, FR-298): topic name, the
+  assigned style key, the brand and whether this one was signed, the post it quoted and the
+  exact ref label it quoted (`quotes P1.hook.2 verbatim`), and the source Virlo URL. Every one
+  of those is a `meta.yaml` field written by `generate._record` — this module reads, never
+  derives.
 - **Badges come from `models.DegradationTag`**, looped (FR-73). A new tag needs no change here;
   a hardcoded badge list would be a second vocabulary and would rot on the first new tag.
 - Reels use `<video preload="metadata">` with `seed_frame.*` as `poster` — the browser draws the
@@ -27,7 +38,7 @@ from __future__ import annotations
 
 import html
 from pathlib import Path
-from typing import Any, Iterable, Protocol
+from typing import Any, Protocol
 from urllib.parse import quote
 
 from hypesocials.models import DegradationTag
@@ -45,6 +56,12 @@ GALLERY_FILE = "gallery.html"
 _VIDEO_EXTS = frozenset({".mp4", ".mov", ".webm"})
 _Meta = dict[str, Any]
 _Card = tuple[Path, _Meta]
+
+#: `copy_source_refs` slots in the order a human reads the creative (FR-298): the words that
+#: became the biggest pixels first, the caption last. The first slot present is the one the
+#: headline receipt quotes; the rest are listed after it. Slot names are `CopySet` field names,
+#: set by `copywrite` when it resolves a ref to bytes.
+_RECEIPT_SLOTS = ("headline", "overlay_text", "slide_1", "subline", "caption")
 
 
 class _Log(Protocol):
@@ -80,20 +97,20 @@ def write_gallery(
 # --------------------------------------------------------------------------- page assembly
 
 def _page(run: Path, title: str) -> str:
-    groups = _grouped(_load(run))
-    delivered = sum(1 for group in groups for _, meta in group if meta.get("status") == "success")
-    total = sum(len(group) for group in groups)
+    cards = _load(run)
+    delivered = sum(1 for _, meta in cards if meta.get("status") == "success")
     spend = sum(
         float(meta.get("actual_cost_usd") or meta.get("estimated_cost_usd") or 0.0)
-        for group in groups for _, meta in group
+        for _, meta in cards
     )
-    body = "\n".join(_group_html(run, group) for group in groups) or (
+    body = "\n".join(_card_html(run, folder, meta) for folder, meta in cards)
+    body = f'<div class="row">{body}</div>' if body else (
         '<p class="empty">No asset folders yet — this page refreshes as creatives land.</p>'
     )
     return _TEMPLATE.format(
         title=html.escape(title),
         run_id=html.escape(run.name),
-        summary=f"delivered {delivered} of {total} · ${spend:.2f} spent",
+        summary=f"delivered {delivered} of {len(cards)} · ${spend:.2f} spent",
         selected=SELECTED_MARKER, publish_list=PUBLISH_LIST,
         body=body,
     )
@@ -109,40 +126,6 @@ def _load(run: Path) -> list[_Card]:
     return cards
 
 
-def _grouped(cards: Iterable[_Card]) -> list[list[_Card]]:
-    """A/B siblings share one row, paired by `pair_id` — automatic, no config (FR-76/FR-22)."""
-    groups: list[list[_Card]] = []
-    pairs: dict[str, list[_Card]] = {}
-    for card in cards:
-        pair_id = str(card[1].get("pair_id") or "")
-        if not pair_id:
-            groups.append([card])
-        elif pair_id in pairs:
-            pairs[pair_id].append(card)
-        else:
-            pairs[pair_id] = [card]
-            groups.append(pairs[pair_id])
-    return groups
-
-
-def _group_html(run: Path, group: list[_Card]) -> str:
-    note = _pair_note(group)
-    banner = f'<div class="pairnote">{html.escape(note)}</div>' if note else ""
-    cards = "\n".join(_card_html(run, folder, meta) for folder, meta in group)
-    return f'<section class="pair">{banner}<div class="row">{cards}</div></section>'
-
-
-def _pair_note(group: list[_Card]) -> str:
-    """FR-231's pair-integrity badge: a broken pair is labelled, never shown as a fair A/B."""
-    if not group[0][1].get("pair_id"):
-        return ""
-    if any(DegradationTag.ANALYSIS_MISSING.value in _tags(meta) for _, meta in group):
-        return "A/B invalid — analysis fell back to direct"
-    if len(group) < 2 or any(meta.get("status") != "success" for _, meta in group):
-        return "A/B pair incomplete — one variant did not ship"
-    return "A/B pair — analyzed vs direct, same trend and copy"
-
-
 def _card_html(run: Path, folder: Path, meta: _Meta) -> str:
     failed = meta.get("status") != "success"
     parts = [f'<article class="card{" failed" if failed else ""}">',
@@ -150,22 +133,19 @@ def _card_html(run: Path, folder: Path, meta: _Meta) -> str:
              f'<div class="badges">{_badges(folder, meta)}</div>',
              _media_html(folder, meta),
              f'<div class="facts">{_facts(meta)}</div>']
-    origin = " · ".join(str(meta.get(key) or "") for key in ("source_name", "hook_pattern_used"))
-    if origin.strip(" ·"):
-        parts.append(f'<p class="hook">{html.escape(origin.strip(" ·"))}</p>')
-    # FR-76's source hook text, verbatim from the trend (models.AssetRecord.source_hook, v1.6.4) —
-    # what the creative was mimicking, next to the pattern name it followed (FR-100/146).
+    # The topic this creative is about (FR-76). `source_name` is the topic's own name, not the
+    # monitor's; `topic_key` is its stable slug and stands in when a brief-driven creative or an
+    # older meta has no name to show.
+    topic = str(meta.get("source_name") or meta.get("topic_key") or "").strip()
+    if topic:
+        parts.append(f'<p class="prov">Topic: {html.escape(topic)}</p>')
+    parts.extend(_receipt_html(meta))
+    # The topic's own winning hook line, verbatim (`models.AssetRecord.source_hook`) — context for
+    # the copy above it: this is what the trend sounded like, whether or not this creative quoted
+    # that particular string.
     source_hook = str(meta.get("source_hook") or "").strip()
     if source_hook:
         parts.append(f'<p class="hook">Source hook: “{html.escape(source_hook)}”</p>')
-    # A24: what our own analysis ASKED FOR — pattern · angle · palette
-    # (`models.AssetRecord.style_brief_summary`). Next to the source hook above, the card now
-    # carries all three sides of the judgement: what won, what we told the model to do about it,
-    # and what came back. Absent in direct mode and after FR-12's degrade, where the
-    # `analysis_missing` badge is already saying there was no brief.
-    brief = str(meta.get("style_brief_summary") or "").strip()
-    if brief:
-        parts.append(f'<p class="hook">Brief asked for: {html.escape(brief)}</p>')
     skip = _text(folder / SKIP_REASON_FILE)
     if skip:
         parts.append(f'<p class="skip">Skipped: {html.escape(skip)}</p>')
@@ -176,15 +156,58 @@ def _card_html(run: Path, folder: Path, meta: _Meta) -> str:
     url = str(meta.get("virlo_url") or "")
     if url:
         safe = html.escape(url, quote=True)
-        parts.append(f'<p class="src"><a href="{safe}">source trend</a></p>')
+        parts.append(f'<p class="src"><a href="{safe}">source topic on Virlo</a></p>')
     parts.append("</article>")
     return "".join(part for part in parts if part)
 
 
+def _receipt_html(meta: _Meta) -> list[str]:
+    """FR-298's verbatim receipt: WHICH post this creative quoted, and WHICH exact strings.
+
+    One headline line naming the most visible quoted slot (`quotes P1.hook.2 verbatim as the
+    headline`) plus, when more than one slot was quoted, a second line listing the rest — the ref
+    labels are the same `P<n>.<kind>[.<i>]` grammar the copy call was offered, so a label on the
+    card can be traced straight to the post roster in run.log. Silent when nothing was quoted
+    (an override brief, or a copy degrade that shipped our own words): an empty receipt is the
+    honest answer, and the `copy_degraded` badge is already saying why.
+    """
+    refs = meta.get("copy_source_refs")
+    refs = {str(slot): str(label) for slot, label in refs.items()
+            if str(label).strip()} if isinstance(refs, dict) else {}
+    post_id = str(meta.get("copy_source_post_id") or "").strip()
+    if not refs:
+        return [f'<p class="prov">Quoted post: {html.escape(post_id)}</p>'] if post_id else []
+    order = [slot for slot in _RECEIPT_SLOTS if slot in refs]
+    order += [slot for slot in refs if slot not in order]  # slides 2..N and anything newer
+    lead = order[0]
+    line = f"Quotes {refs[lead]} verbatim as the {_slot_label(lead)}"
+    if post_id:
+        line += f" · post {post_id}"
+    out = [f'<p class="prov">{html.escape(line)}</p>']
+    if rest := order[1:]:
+        also = " · ".join(f"{_slot_label(slot)} {refs[slot]}" for slot in rest)
+        out.append(f'<p class="prov">Also quoted: {html.escape(also)}</p>')
+    return out
+
+
+def _slot_label(slot: str) -> str:
+    """A `CopySet` field name as a human reads it: `overlay_text` → overlay, `slide_1` → slide 1."""
+    return slot.removesuffix("_text").replace("_", " ")
+
+
 def _badges(folder: Path, meta: _Meta) -> str:
     """Identity badges, then EVERY degradation tag, looped over the enum (FR-73's single source)."""
-    labels = [str(meta.get("platform") or "?"), str(meta.get("creative_format") or "?"),
-              str(meta.get("variant") or "")]
+    labels = [str(meta.get("platform") or "?"), str(meta.get("creative_format") or "?")]
+    # FR-76/FR-73's post-pivot identity: which house style rendered this, which brand system it
+    # belongs to, and whether the branding rotation signed THIS one (FR-292 brands a deterministic
+    # fraction, so "unsigned" is a normal outcome and is stated rather than left to be inferred
+    # from an absent badge). `brief_override` is a style key like any other — it says the override
+    # brief, not the registry, was the visual authority for this creative (M14).
+    if style_key := str(meta.get("style_key") or "").strip():
+        labels.append(f"style: {style_key}")
+    if brand := str(meta.get("brand") or "").strip():
+        labels.append(f"brand: {brand}")
+        labels.append("signed" if meta.get("branded") else "unsigned")
     if meta.get("brief_name"):
         labels.append(f"brief: {meta['brief_name']}")
     labels.append(f"status: {meta.get('status', 'pending')}")
@@ -243,11 +266,21 @@ def _media_html(folder: Path, meta: _Meta) -> str:
 
 
 def _refs_html(run: Path, folder: Path, meta: _Meta) -> str:
-    """The source references this creative mimicked — FR-150 judges fidelity by comparison."""
-    key = str(meta.get("source") or "")
-    # The run-level store is keyed by the slugified trend key; `source` may still be the raw
-    # agent id, so both spellings are tried rather than silently showing no references.
-    sources = [folder / REFS_DIR, run / REFS_DIR / key, run / REFS_DIR / slugify(key)]
+    """The references this creative was rendered from — FR-150 judges adherence by comparison.
+
+    Two stores, both shown: the run-level `refs/<style_key>/` folder holding the house-style
+    images every creative on that style was given (post-pivot the store is keyed by STYLE, since
+    the style is the visual authority and one style serves many topics), and the asset's own
+    `refs/` holding an override brief's images (D26), which belong to this creative alone.
+    """
+    key = str(meta.get("style_key") or "").strip()
+    # Registry keys are slug-shaped already, but `save_reference` slugifies before writing, so
+    # both spellings are tried rather than silently showing no references. A creative with no
+    # style key contributes no run-level path at all — `refs/` itself holds only folders, so an
+    # empty key would scan the whole store and quietly find nothing.
+    sources = [folder / REFS_DIR]
+    if key:
+        sources += [run / REFS_DIR / key, run / REFS_DIR / slugify(key)]
     tiles: list[str] = []
     for directory in dict.fromkeys(sources):
         if not directory.is_dir():
@@ -296,12 +329,10 @@ _TEMPLATE = """<!DOCTYPE html>
 body {{ margin:0; padding:24px; background:var(--bg); color:var(--fg); font:15px/1.5
   system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }}
 header {{ border-bottom:1px solid var(--line); padding-bottom:14px; margin-bottom:20px; }}
+footer {{ border-top:1px solid var(--line); padding-top:14px; margin-top:22px; }}
 h1 {{ font-size:22px; margin:0 0 4px; }} h2 {{ font-size:13px; margin:0 0 8px; font-weight:600; }}
 .sub, .howto {{ color:var(--mut); font-size:13px; margin:4px 0 0; }}
 code {{ background:var(--card); border:1px solid var(--line); border-radius:4px; padding:1px 5px; }}
-.pair {{ margin:0 0 22px; }}
-.pairnote {{ font-size:12px; color:var(--warn); background:var(--warnbg); border-radius:6px;
-  padding:4px 9px; display:inline-block; margin-bottom:8px; }}
 .row {{ display:flex; flex-wrap:wrap; gap:16px; align-items:flex-start; }}
 .card {{ flex:1 1 380px; max-width:640px; background:var(--card); border:1px solid var(--line);
   border-radius:10px; padding:14px; }}
@@ -315,7 +346,8 @@ code {{ background:var(--card); border:1px solid var(--line); border-radius:4px;
 .refs {{ margin-top:10px; padding-top:8px; border-top:1px dashed var(--line); }}
 .refs img, .refs video {{ max-height:74px; border-radius:5px; }}
 .refs span {{ font-size:11px; color:var(--mut); text-transform:uppercase; letter-spacing:.06em; }}
-.facts, .hook, .src {{ font-size:12px; color:var(--mut); margin:9px 0 0; }}
+.facts, .hook, .prov, .src {{ font-size:12px; color:var(--mut); margin:9px 0 0; }}
+.prov {{ color:var(--fg); }}
 .skip {{ font-size:12px; color:var(--warn); margin:9px 0 0; }}
 .caption {{ white-space:pre-wrap; font:13px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace;
   background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:10px;
@@ -330,9 +362,14 @@ a {{ color:inherit; }}
 <p class="howto">To publish a subset: put an empty <code>{selected}</code> file in an asset
 folder, or list asset ids (one per line) in <code>{publish_list}</code> next to this page.
 With nothing selected, <code>--publish</code> sends every successfully packaged asset.
-Judge fidelity by comparing each creative with the source references shown on its card;
 <code>caption.txt</code> is the one file you may edit — publishing sends it verbatim.</p>
 </header>
 {body}
+<footer>
+<p class="howto">Rate this batch on <strong>style adherence</strong> and <strong>topical
+accuracy</strong>: does each creative look like the house style shown in its references, and is
+it about the topic and the post it quotes verbatim? Those two questions are the whole judgement
+— fidelity to a trend's own pixels is no longer what these are made from.</p>
+</footer>
 </body></html>
 """

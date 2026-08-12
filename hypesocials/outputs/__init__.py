@@ -7,9 +7,9 @@ Callers import from `hypesocials.outputs` only, never from its modules (guidelin
     Ledger          append-only outstanding-task ledger in the run folder (FR-203, FR-89)
     read_history    logs/trend_history.json, warn-and-start-fresh on corruption (FR-82/83)
     days_since_use  a trend's recency in days, for Select's window check (NFR-24)
-    used_posts      per trend, the post ids used inside the window, for Collect (FR-153, NFR-24)
-    record_use      lock-guarded, pruned, atomic history update — trend entry and its post ids
-                    written together; False = went read-only (FR-82, FR-153, FR-254)
+    used_posts      per topic, the post ids QUOTED inside the window, for Collect (FR-153, NFR-24)
+    record_use      lock-guarded, pruned, atomic history update — topic entry and the posts it
+                    quoted, each with its URL (FR-298); False = went read-only (FR-82/153/254)
     set_latest      canonical output/latest.txt + best-effort latest/ junction (FR-254, NFR-20)
     resolve_latest  the newest run folder that packaged assets, or None (Phase 2 --publish)
 
@@ -18,7 +18,8 @@ Append-only list: T2.5 adds the packager and gallery exports here; existing name
     AssetFolder     one asset folder + its meta.yaml lifecycle, pending -> terminal (FR-72–74,
                     NFR-21); `finish()` / `skip()` / `update()` / `mark()` / `store_render()`
     create_run_folder   output/<run_id>/ (+ its shared refs/), made at launch (FR-70)
-    save_reference  a used reference stored at refs/<trend>/image_1.jpg for the gallery (FR-71/150)
+    save_reference  a style's attached reference stored at refs/<style_key>/image_1.png for the
+                    gallery's adherence comparison (FR-71/150, re-keyed trend->style in W3)
     read_meta / update_meta / set_marker / has_marker / clear_marker
                     path-based meta + marker mutators — also Phase 2 publishing's write path
                     (FR-88, FR-231, 60 FR-215)

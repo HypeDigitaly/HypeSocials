@@ -98,6 +98,38 @@ class Stopwatch:
 
 
 @dataclass(slots=True)
+class Pulse:
+    """The FR-299 silence-breaker clock: heartbeats fire on QUIET, never on a schedule.
+
+    One instance per run, stamped by every console print (`_Session.say`/`note` both call
+    `stamp()`), read by the waits that can go mute for minutes — the render `_drain` loop and the
+    LLM stages. `due()` answers "has nothing printed for `interval_s`?", so a run that is already
+    talking never hears a heartbeat and a bounded log volume follows by construction (a heartbeat
+    is itself a printed line, so it re-stamps the clock through the same seam).
+
+    `suppress_s` is the "first heartbeat suppressed" rule (contracts item 16): a wait passes the
+    moment it STARTED, and no heartbeat fires until both the quiet interval and the suppression
+    window have passed — 10 s for LLM waits, 20 s for render waits, so a fast healthy stage stays
+    heartbeat-free even under the verbose 15 s cadence. Monotonic like every other timer (FR-243).
+    """
+
+    interval_s: float = 30.0
+    last: float = field(default_factory=time.monotonic)
+
+    def stamp(self) -> None:
+        """Any printed line resets the quiet clock — called from the one console seam."""
+        self.last = time.monotonic()
+
+    def due(self, *, wait_started: float | None = None, suppress_s: float = 0.0) -> bool:
+        """True when the console has been silent for `interval_s` (and the wait is past its
+        suppression window). The CALLER prints and the print re-stamps; `due()` mutates nothing."""
+        now = time.monotonic()
+        if wait_started is not None and now - wait_started < suppress_s:
+            return False
+        return now - self.last >= self.interval_s
+
+
+@dataclass(slots=True)
 class Deadline:
     """The run's soft elapsed-time ceiling (FR-108), monotonic like every other timer (FR-243).
 

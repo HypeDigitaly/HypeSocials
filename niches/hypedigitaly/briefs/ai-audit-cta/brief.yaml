@@ -9,9 +9,14 @@
 name: ai-audit-cta
 description: "Direct-response CTA post offering HypeDigitaly's free AI audit of one real workflow."
 
-# override = this creative consumes NO trend (FR-144): no analysis call, no trend-history entry,
-# no reuse budget spent, and the visual directives below take the place of the style brief's
-# render prompt. The campaign post is the point here, not mimicry of whatever is trending.
+# override = this creative consumes NO topic (FR-144, amended v2.0.0): it sits out the ranked topic
+# assignment, spends no reuse budget, and writes no history entry. It also SUPPRESSES the assigned
+# meta-style outright - no style render prompt, no style reference images, and meta.yaml records
+# `style_key: brief_override` - so the visual directives below are the entire visual instruction.
+# Its copy is the other exception: an override brief is a FREE-TEXT creative, the one place the
+# model still WRITES instead of quoting a source post verbatim (D42), so the copy directives below
+# are read as a writing brief and the config's `run.languages` decides the language.
+# The campaign post is the point here, not mimicry of whatever is trending.
 influence: override
 
 # Formats this brief applies to; the requested count spreads across them, then across the
@@ -45,10 +50,12 @@ copy_directives:
     stack. Never invent client names, revenue figures, percentages or case studies: if a number is
     not in this brief or the source material, leave it out entirely.
   tone: >-
-    Practitioner to practitioner, English, short sentences, no hype vocabulary — no
-    "revolutionary", no "game-changing", no "unlock the power of AI". Written for founders,
-    marketing leads and ops people at SMBs and agencies who are evaluating AI, not shopping for
-    inspiration.
+    Practitioner to practitioner, short sentences, no hype vocabulary — no "revolutionary", no
+    "game-changing", no "unlock the power of AI". Written in the creative's own caption language
+    (`run.languages`: EN under configs/hypedigitaly.yaml, CS under configs/hypedigitaly-cs.yaml) —
+    this file is reachable from both configs, so it names no language of its own. Written for
+    founders, marketing leads and ops people at SMBs and agencies who are evaluating AI, not
+    shopping for inspiration.
   avoid: >-
     No fear-mongering about job loss, no "AI will replace you", no fabricated urgency or
     countdowns, no guarantees that cannot be verified, no emoji-stuffed bullet lists.
@@ -63,8 +70,12 @@ visual_directives:
     negative space around it, and the CTA line at the bottom edge as a small high-contrast bar or
     pill. Nothing decorative may cross the headline.
   palette: >-
-    Near-black background, off-white type, exactly one electric accent in the cyan-to-violet
-    range used on at most two words or a single rule. No full-frame gradients, no second accent.
+    Near-black background, off-white type, exactly one electric accent in the cyan-to-teal range
+    used on at most two words or a single rule. No full-frame gradients, no second accent. The
+    accent stays inside the active brand's own range on purpose: this brief used to say
+    "cyan-to-violet", which collides with HypeLead's "no indigo or violet" colour guard the moment
+    the creative is branded, and a brief that fights the branding block just makes the render
+    unpredictable.
   typography: >-
     Heavy geometric sans for the headline in sentence case with tight tracking, light sans for the
     supporting line. A strict two-level hierarchy: never more than three type sizes in one frame.
@@ -77,9 +88,12 @@ visual_directives:
     automation-graph fragment, or a terminal block. Decoration only; it must never compete with
     the headline or carry legible text of its own.
   avoid: >-
-    No other company's logo or wordmark, no invented HypeDigitaly logo or brand lockup, no
-    platform stickers or app UI chrome, no faux screenshots showing fabricated metrics, no
-    watermarks, no usernames.
+    No other company's logo or wordmark, no invented logo, monogram or brand lockup of any kind,
+    no platform stickers or app UI chrome, no faux screenshots showing fabricated metrics, no
+    watermarks, no usernames. Our own wordmark is not an exception you make here: when this
+    creative is branded, the engine quotes the wordmark into the render prompt's TEXT block and
+    that quoted string is the only signature the frame may carry; when it quotes none, the frame
+    is unsigned.
 
 # Optional. Paths are relative to this folder (or absolute); every one must exist and be an image
 # file. Left out on purpose — this brief ships no images of its own, so its creatives render from

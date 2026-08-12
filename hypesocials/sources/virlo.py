@@ -195,6 +195,10 @@ class Counters:
     # buys, and re-counting a monitor's rows once per topic is the exact defect it prevents.
     posts_in: int = 0
     topics_out: int = 0
+    #: FR-296's TOPICS header prints `N synth`: how many of `topics_out` were SYNTHESIZED from a
+    #: monitor aggregate (zero themes, or the `-1` kill switch) rather than split from a named
+    #: theme — the never-fewer-items invariant made visible instead of silently indistinguishable.
+    topics_synthesized: int = 0
 
     # --- filter: FR-294's competitor screen. Recorded by the caller (`runner._screen_topics`),
     # because the filter runs between Collect and Select and this adapter never sees a verdict.
@@ -236,14 +240,17 @@ class Counters:
     excluded_by_history: int = 0
     unusable: int = 0
 
-    # --- the render forecast. Recorded by the caller once assignment has run.
+    # --- the render forecast. Recorded by the caller once assignment has run. Re-based at W3
+    # (contracts item 15): the jobs attach STYLE references now — `trends_used` became
+    # `topics_used`, `trend_refs_*` became `style_refs_*`, the inspiration channel died, and
+    # `styles_used` joined so the funnel can state rotation coverage.
     render_seen: bool = False
     jobs: int = 0
     jobs_dropped: int = 0
-    trends_used: int = 0
-    trend_refs_min: int = 0
-    trend_refs_max: int = 0
-    inspiration_each: int = 0
+    topics_used: int = 0
+    styles_used: int = 0
+    style_refs_min: int = 0
+    style_refs_max: int = 0
     refs_total: int = 0
 
     # ----------------------------------------------------------------- accumulation
@@ -290,16 +297,18 @@ class Counters:
         self.duplicates_dropped += (videos_raw + slideshows_raw) - (videos_kept + slideshows_kept)
         self.total_available += total_available
 
-    def add_topics(self, *, posts_in: int, topics_out: int) -> None:
+    def add_topics(self, *, posts_in: int, topics_out: int, synthesized: int = 0) -> None:
         """One monitor's split (FR-293): the posts it offered, and the topics they became.
 
         Called once per monitor, with the monitor's post count — NOT once per topic, and never
         with a topic's own share. `9 topics` beside `200 posts` is the sentence the operator needs
         ("did the split lose material?"); nine rows of 200 would be the same lie the pre-FR-155
-        `virlo_payload` told about duplicates.
+        `virlo_payload` told about duplicates. `synthesized` counts the aggregate fallbacks among
+        `topics_out` (zero themes / kill switch) for FR-296's `N synth` clause.
         """
         self.posts_in += posts_in
         self.topics_out += topics_out
+        self.topics_synthesized += synthesized
 
     def record_filter(self, verdicts: Any) -> None:
         """FR-294's verdicts, as `runner._screen_topics` received them.
@@ -350,19 +359,21 @@ class Counters:
         self.verdict_seen = True
         self.eligible, self.excluded_by_history, self.unusable = eligible, excluded, unusable
 
-    def record_render(self, *, jobs: int, dropped: int, trend_refs: Sequence[int],
-                      inspiration_each: int, trends_used: int) -> None:
-        """The forecast end of the funnel: how many jobs attach how much of this material.
+    def record_render(self, *, jobs: int, dropped: int, style_refs: Sequence[int],
+                      topics_used: int, styles_used: int) -> None:
+        """The forecast end of the funnel: how many jobs attach how much STYLE material (item 15).
 
-        `trend_refs` is one count per creative that will render, so the block can say "3 trend
-        ref(s)" when they agree and "2-3" when they do not, instead of inventing an average.
+        `style_refs` is one window size per creative that will render — the assigned style's
+        usable reference images clipped to `styles.refs_per_job`, 0 under an override brief —
+        so the block can say "2 style ref(s)" when they agree and "1-2" when they do not,
+        instead of inventing an average.
         """
         self.render_seen = True
-        self.jobs, self.jobs_dropped, self.trends_used = jobs, dropped, trends_used
-        self.trend_refs_min = min(trend_refs) if trend_refs else 0
-        self.trend_refs_max = max(trend_refs) if trend_refs else 0
-        self.inspiration_each = inspiration_each
-        self.refs_total = sum(trend_refs) + inspiration_each * jobs
+        self.jobs, self.jobs_dropped = jobs, dropped
+        self.topics_used, self.styles_used = topics_used, styles_used
+        self.style_refs_min = min(style_refs) if style_refs else 0
+        self.style_refs_max = max(style_refs) if style_refs else 0
+        self.refs_total = sum(style_refs)
 
     # ----------------------------------------------------------------- derived views
 
@@ -405,6 +416,7 @@ class Counters:
                       "duplicates_dropped": self.duplicates_dropped,
                       "total_available": self.total_available},
             "topics": {"posts_in": self.posts_in, "topics_out": self.topics_out,
+                       "synthesized": self.topics_synthesized,
                        "returned": self.trends_returned},
             "filter": {"kept": self.filter_kept, "stripped": self.filter_stripped,
                        "skipped": self.filter_skipped, "degraded": self.filter_degraded},
@@ -492,10 +504,10 @@ async def fetch(cfg: Config, *, cache_dir: Path | None = None, log: LogWriter | 
     used = frozenset(str(post) for post in used_posts or ())
     size = max(1, min(cfg.sources.virlo_session_pool, len(ids) + (1 if include_digest else 0)))
     async with SessionPool(_server(cfg), size, log=log) as pool:
-        jobs: list[Any] = [_monitor_item(pool, mid, cfg, log, used, counters=counters)
+        jobs: list[Any] = [_monitor_item(pool, mid, cfg, log, used, counters=counters, say=say)
                            for mid in ids]
         if include_digest:
-            jobs.append(_digest(pool, log))
+            jobs.append(_digest(pool, log, say=say))
         results = await asyncio.gather(*jobs, return_exceptions=True)
 
     items: list[TrendItem] = []
@@ -511,7 +523,7 @@ async def fetch(cfg: Config, *, cache_dir: Path | None = None, log: LogWriter | 
             if label != "digest":  # a dead digest is not a dead monitor: it creates no item (20 §3)
                 counters.monitors_failed += 1
             _warn(log, "virlo_monitor_failed", f"monitor {label} returned no data: {result}",
-                  monitor_id=label, error=type(result).__name__)
+                  say=say, monitor_id=label, error=type(result).__name__)
         elif isinstance(result, list):  # one monitor's topics (FR-293), zero of them if it failed
             items.extend(result)
         elif isinstance(result, tuple):
@@ -593,7 +605,8 @@ def _server(cfg: Config) -> ServerConfig:
 async def _monitor_item(pool: SessionPool, monitor_id: str, cfg: Config,
                         log: LogWriter | None = None,
                         used: Collection[str] = frozenset(),
-                        *, counters: Counters | None = None) -> list[TrendItem]:
+                        *, counters: Counters | None = None,
+                        say: Callable[[str], None] | None = None) -> list[TrendItem]:
     """One monitor's three calls on one borrowed session, split into TOPICS (FR-293).
 
     Both media calls ask for the monitor's WINNERS: `views desc`, one page of `_MEDIA_LIMIT`.
@@ -623,7 +636,8 @@ async def _monitor_item(pool: SessionPool, monitor_id: str, cfg: Config,
     # Virlo reports how deep the pool it just answered from is; one sorted page of `_MEDIA_LIMIT`
     # is all the adapter takes, and `total_available` is what makes that choice legible later.
     tally.total_available = int(_num(videos.get("total")) + _num(shows.get("total")))
-    items = _split_topics(monitor_id, analysis, clips, panels, cfg, log=log, counters=tally)
+    items = _split_topics(monitor_id, analysis, clips, panels, cfg, log=log, counters=tally,
+                          say=say)
     for item in items:
         _payload_event(log, item, tally)
         _topic_posts_event(log, item)
@@ -670,7 +684,8 @@ def _payload_event(log: LogWriter | None, item: TrendItem, tally: Counters) -> N
 
 
 async def _digest(pool: SessionPool,
-                  log: LogWriter | None) -> tuple[str, dict[str, float]]:
+                  log: LogWriter | None, *,
+                  say: Callable[[str], None] | None = None) -> tuple[str, dict[str, float]]:
     """Cross-monitor context and any confidence values the daily digest carries.
 
     THE ONLY METERED VIRLO CALL ($0.25/run, RESULTS.md §A). It creates no topics (20 §3) and its
@@ -687,7 +702,8 @@ async def _digest(pool: SessionPool,
         async with pool.acquire() as session:
             payload = await _call(session, "get_trends")
     except (MCPClientError, MCPError, VirloToolError, ValueError) as exc:
-        _warn(log, "virlo_digest_failed", f"trend digest unavailable: {exc}", error=type(exc).__name__)
+        _warn(log, "virlo_digest_failed", f"trend digest unavailable: {exc}", say=say,
+              error=type(exc).__name__)
         return "", {}
     rows = [row for group in payload.get("groups") or [] for row in group.get("trends") or []]
     rows.sort(key=lambda row: _num(row.get("ranking")) or 10_000)
@@ -839,7 +855,8 @@ def _confidence(value: Any) -> float | None:
 
 def _split_topics(monitor_id: str, analysis: Mapping[str, Any], videos: list[Any], shows: list[Any],
                  cfg: Config, *, log: LogWriter | None = None,
-                 counters: Counters | None = None) -> list[TrendItem]:
+                 counters: Counters | None = None,
+                 say: Callable[[str], None] | None = None) -> list[TrendItem]:
     """Split one monitor's three tool returns into its topics (FR-293) — the post-pivot join.
 
     The shape, in one line: dedupe the rows, rank them by views, seed one topic per theme, deal
@@ -875,10 +892,11 @@ def _split_topics(monitor_id: str, analysis: Mapping[str, Any], videos: list[Any
         # shipped nothing", which is a different fix entirely.
         _warn(log, "virlo_monitor_empty",
               f"{facts.name}: monitor returned no posts — its topic(s) carry the monitor's "
-              "analysis text and nothing quotable (FR-6)", monitor_id=str(monitor_id))
+              "analysis text and nothing quotable (FR-6)", say=say, monitor_id=str(monitor_id))
     items = [_topic_item(theme, share, facts)
              for theme, share in zip(themes, _allocate(rows, themes), strict=True)]
-    tally.add_topics(posts_in=len(rows), topics_out=len(items))
+    tally.add_topics(posts_in=len(rows), topics_out=len(items),
+                     synthesized=sum(1 for theme in themes if not theme.key))
     return items
 
 

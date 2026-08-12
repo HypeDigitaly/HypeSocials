@@ -13,31 +13,31 @@ label: "neutral template - no monitor ids yet, not runnable"
 run:
   formats: { image: 4, carousel: 2, reel: 0 }   # reels ship OFF (PRD v1.6): raise only after price_per_unit.reel_second is real (FR-131)
   platforms: [linkedin, instagram, tiktok]
-  languages: { linkedin: en, instagram: en, tiktok: en }   # en | cs per platform (D6)
-  generation_mode: analyzed        # analyzed | direct | both
+  languages: { linkedin: en, instagram: en, tiktok: en }   # en | cs per platform (D6). Post-D42
+                                   # this is the language SLOT a creative is planned for, not a
+                                   # translation order: topic-driven copy is quoted verbatim from
+                                   # the source post, so a Czech slot fed by English posts ships
+                                   # English text. It still fully governs the free-text creatives
+                                   # (override briefs, post-less topics), which are the only copy
+                                   # the model still writes.
   notion_influence: off            # off | copy | full (needs NOTION_TOKEN + pages shared once)
   vision_check: false              # cs platforms get a startup hint to turn this on
   spend_cap_usd: 10.00             # pre-flight control; --yes trims to fit, interactive refuses
   trend_history_days: 7            # 0 disables the repeat-prevention window
-  max_trend_reuses_per_run: 6      # how many creatives may share one trend. Was 2 until
+  max_trend_reuses_per_run: 6      # how many creatives may share one TOPIC. Was 2 until
                                    # 2026-08-11, when D36's post-level recency made a higher
                                    # number safe (exclusion is per POST now, so reuse is no
-                                   # longer a throughput ceiling) and FR-91's per-reuse rotation
-                                   # made it useful: each of the 6 attaches a DIFFERENT one of
-                                   # the ~36 reference sets the adapter already downloads, and
-                                   # gets its own style brief for that set (FR-9/FR-12).
+                                   # longer a throughput ceiling). Post-pivot it is also what
+                                   # makes siblings interesting: each reuse of a topic gets its
+                                   # own meta-style from the rotation and quotes a DIFFERENT
+                                   # source post of that topic (FR-99/FR-291), so six siblings
+                                   # are six different-looking posts, not six near-duplicates.
   carousel_anchor: true            # slide 1 renders first and references slides 2-N
   reel_overlay_text: seed_frame    # seed_frame | in_model | none
   reel_audio: true                 # Seedance generate_audio; false ships a silent clip
-  reel_video_reference: true       # yt-dlp -> Kie upload -> Seedance motion ref; degrades on failure
-  reel_reference_max_s: 28         # qualifying duration bound for that motion reference
-                                   # COST TRAP (spikes/RESULTS.md §C): the reference's seconds are
-                                   # BILLED. 28 s makes a 5 s reel ~4x more expensive than no
-                                   # reference at all; break-even is input_s < 0.65 x output_s.
   reel_duration_s: 5               # 4-30 (Seedance verified range); out-of-range is CLAMPED at pre-flight
   reel_resolution: 720p            # 480p | 720p (480p = the cheap test option)
   nsfw_checker: true               # provider knob, always sent (provider's own default is false)
-  require_reference_image: true    # a text_only trend is last resort unless this is false
   onimage_text_language: {}        # per-platform override for on-image text; else the caption language
   text_budgets:                    # on-image character ceilings, enforced BEFORE submission (FR-101)
     image_headline: 42
@@ -47,23 +47,101 @@ run:
   run_deadline_min: 25             # soft elapsed ceiling, monotonic clock (FR-108). DEPENDS ON
                                    # models.video_job_timeout_s below: this file ships reels OFF,
                                    # so 25 stands; turn reels on and it must exceed that timeout
-                                   # (30 min) plus the analyze/copy/image stages, or the deadline
+                                   # (30 min) plus the filter/copy/image stages, or the deadline
                                    # abandons the run before a slow reel can ever finish.
 
 sources:
   active: [virlo]                  # google_trends, hacker_news: named in the picker, not built yet
   virlo_monitor_ids: []            # run `run.bat --list-monitors` to print yours (FR-251)
   virlo_session_pool: 3            # bounded wrapper sessions; never one subprocess per monitor
-  media_download_cap: 18           # reference IMAGES per trend (the video ref is bounded
-                                   # separately). Was 6 until 2026-08-11. FR-91's per-reuse
-                                   # rotation needs one DOWNLOADED group per reuse, and at 6 a
-                                   # trend only ever kept 2 groups, so 6 siblings rotated over 2
-                                   # sets. 18 = max_trend_reuses_per_run (6) x
-                                   # reference_images_per_job (3). Downloads are free CDN GETs;
-                                   # the per-ANALYSIS-CALL image count is unchanged at FR-93's ~6.
-  reference_images_per_job: 3      # references attached to one render job, as a coherent set
-  inspiration_folders: []          # flat global list of local folders (D13); empty = off
-  inspiration_mix: minority        # off | minority | exclusive
+  virlo_topics_per_monitor: 9      # TOPICS one monitor may contribute (FR-293/FR-170). Virlo is a
+                                   # TEXT-ONLY source post-pivot: a monitor's analysis is split
+                                   # into themes, and each theme becomes a topic with its own
+                                   # view-ranked posts and its own strength, min-maxed across the
+                                   # run. This caps the split so one prolific monitor cannot flood
+                                   # the pool it is ranked in. `-1` = the kill switch, one topic
+                                   # per monitor (pre-pivot cardinality); `0` is refused as a
+                                   # config error - drop the monitor instead of muting it.
+
+styles:
+  refs_per_job: 2                  # local reference images from the ASSIGNED meta-style that ride
+                                   # along with each render job (FR-290). The registry itself is
+                                   # prompts/styles.yaml, never config; the rotation picks WHICH
+                                   # images, this is only how wide that window is. It multiplies
+                                   # every job's upload count and reference budget, so raising it
+                                   # costs uploads and crowds out a blend brief's own images.
+
+# Brand identity for branded creatives (FR-292/D43), replacing the retired `niche.brand` keys.
+# TWO CHANNELS, deliberately: the WORDMARK is quoted into the render prompt's TEXT block (never
+# composited, never invented by the model), and everything else here reaches the prompt through the
+# branding block, ranked BELOW the assigned meta-style - branding tints and signs a style, it never
+# replaces one. Notion brand facts are a FUTURE override of these keys, not a dependency: these
+# values are the MVP source of truth.
+branding:
+  brand: hypedigitaly              # SELECTOR, never a mix: hypedigitaly (parent/corporate) or
+                                   # hypelead (product). It also filters the style rotation - a
+                                   # style whose `brand_affinity` names the other brand is not
+                                   # assignable (B3). The shipped niche configs pick `hypelead`,
+                                   # whose house kit the registry's brand-card style is built from.
+  brand_ratio: 0.5                 # fraction of the plan that carries the wordmark, as a floor
+                                   # predicate on entry.order (FR-291): `floor(N x ratio)` signed,
+                                   # deterministic, and stable when a later trim drops entries.
+                                   # 0 = never signed, 1 = every creative signed (reads as a
+                                   # watermark across a feed, which is why 0.5 is the default).
+  mode: overlay                    # background_tint | overlay | both. `overlay` leaves the style's
+                                   # own ground alone; `background_tint` also hands the model the
+                                   # profile's `background_hint`, a much stronger claim on the frame.
+  placement: bottom-center         # wordmark placement hint, honoured through the TEXT block entry
+  competitors: []                  # DETERMINISTIC blocklist, layer 1 of the topic filter (FR-294):
+                                   # matched in code, so it still holds when the LLM screen
+                                   # degrades. Fail-closed - "the model was unavailable" must never
+                                   # be why a rival's name ships in our pixels. Our own
+                                   # product_nouns are protected from being stripped as competitors.
+  profiles:                        # The two house brand systems, spelled out so they are visible
+                                   # and editable here and not only in code. These ARE the compiled
+                                   # defaults; override any single key - the loader merges key by
+                                   # key, so one colour edit keeps the rest of the profile intact.
+    hypedigitaly:                  # parent / corporate: indigo->teal gradient, Montserrat
+      wordmark: "HypeDigitaly"     # CamelCase, no space; rendered one weight, one colour
+      colors:
+        indigo: "#34288B"
+        teal: "#00A59A"
+        gradient: ["#34288B", "#2B3F8E", "#0C8897", "#00A59A"]   # indigo -> blue -> teal, L to R
+      fonts: { brand: "Montserrat", web: "Geist" }
+      # A render model cannot install a font, so the font is DESCRIBED, not named at it (F21).
+      font_character: "Montserrat — geometric grotesque, near-circular bowls, medium x-height, uniform stroke"
+      background_hint: "flat royal-indigo field, gradient arrow glyphs sweeping the right half, vast negative space"
+      # COLOUR guards - injected into EVERY branded prompt under this brand, whatever style was
+      # assigned. Orange #F97316 is a website-only accent that appears in no brand asset, so it is
+      # in neither profile's colours and both name it here to keep it out of the pixels.
+      never_always: ["no teal pill highlights", "no dot-grid ground", "no orange #F97316 (web-only)"]
+      never_style: []              # MEDIUM guards, applied only under brand-affine styles; the
+                                   # corporate system has no medium of its own to defend.
+      # Our own product names: copy may use them, and the topic filter must never "strip a
+      # competitor brand" that is one of these (M15).
+      product_nouns: ["AI Audit", "HypeLead", "AI Chatbot", "AI Voicebot", "AI Agent", "AI Automatizace"]
+    hypelead:                      # product: teal-only, Geist, pill grammar - never mixed with the above
+      wordmark: "HypeLead"
+      colors:
+        teal_bright: "#0FCFC4"
+        teal_mid: "#57E6DC"
+        teal_deep: "#0A7F78"
+        teal_light: "#8BF2E9"
+        dark: "#14130F"            # reads as charcoal-GREEN under teal glow, not neutral black
+        offwhite: "#FAFAF7"
+      fonts: { primary: "Geist", mono: "Geist Mono" }
+      font_character: "Geist — clean grotesque, tight tracking, even color"
+      # ONE resolved variant on purpose (conductor decision, 2026-08-12 / M9): the kit also has a
+      # charcoal-green dark mode, but a hint that offers the model a choice is a hint that makes two
+      # different-looking posts from one setting. Swap the whole string for "charcoal-green ground
+      # with vignette and teal glow" to run the dark mode instead.
+      background_hint: "off-white ground with faint dot-grid and soft teal bloom"
+      never_always: ["no indigo or violet", "no orange #F97316"]
+      # Medium guards, brand-affine styles only: six of the seven neutral styles are legitimately
+      # photographic or hand-drawn, so applying these everywhere would quietly ban most of the
+      # registry the moment a creative got a wordmark (M6).
+      never_style: ["no photography/stock/3D", "no serif or handwritten type", "teal is accent only, never full-bleed canvas"]
+      product_nouns: ["HypeLead"]
 
 platforms:
   # `formats` is each platform's allowlist (FR-132): a requested format outside it is dropped from
@@ -87,7 +165,10 @@ platforms:
     conventions: {}
 
 models:
-  analysis: anthropic/claude-sonnet-5       # OpenRouter chat id - style briefs + vision check
+  analysis: anthropic/claude-sonnet-5       # OpenRouter chat id - the VISION CHECK role only.
+                                            #   (The style-brief call this role used to make died
+                                            #   with the pivot; the visual authority is now the
+                                            #   local meta-style registry, FR-290.)
   copy: openai/gpt-5.6-luna                 # OpenRouter chat id - captions/hooks/on-image text
   image: gpt-image-2-image-to-image         # Kie route, reference-bearing (input_urls <= 16);
                                             #   the profile routes reference-free jobs to
@@ -103,20 +184,20 @@ models:
                                    # returns HTTP 404 (spikes/RESULTS.md §E). Set it only for a
                                    # model whose OpenRouter catalog lists it. FR-129 needs D15.
   max_tokens: { analysis: 12000, copy: 3000 }  # sized for the GROUPED calls, not single answers.
-                                   # analysis was 2000 until 2026-08-11, and at that cap EVERY
-                                   # style-brief call this tool ever made hit `llm_truncated`:
-                                   # a successful brief serializes to 12,938-23,388 chars, which
-                                   # is ~3,600-6,500 output tokens. Sonnet-5 also thinks unbidden
-                                   # (0-3,057 reasoning tokens billed INSIDE completion_tokens
-                                   # despite reasoning_effort being None for this role), so the
-                                   # cap has to clear a real brief plus reasoning, not just a
-                                   # real brief. Raising it also CUTS spend: the old cap bought
-                                   # three attempts of ~12,430 prompt tokens per call.
+                                   # The `copy` cap covers one grouped sibling call (FR-99). The
+                                   # `analysis` cap is inherited headroom from the style-brief era
+                                   # (raised 2000 -> 12000 on 2026-08-11 because every brief call
+                                   # hit `llm_truncated`); the vision check that now owns the role
+                                   # answers in a few hundred tokens, so the cap costs nothing -
+                                   # max_tokens is a ceiling, only produced tokens are billed - and
+                                   # it still absorbs Sonnet-5's unbidden reasoning tokens, which
+                                   # are billed INSIDE completion_tokens even with reasoning_effort
+                                   # unset for this role.
   max_tokens_floor: { analysis: 6000, copy: 1000 }  # NFR-111: a smaller max_tokens is clamped UP
                                    # to the floor with a warning - a tiny cap otherwise truncates
                                    # every call and makes the truncation retry the normal path.
-                                   # analysis floor was 600, i.e. below a realistic brief, so it
-                                   # protected nothing; 6000 is the smallest brief observed.
+                                   # The analysis floor was 600 and protected nothing; 6000 is kept
+                                   # deliberately generous for the same reasoning-token reason.
   price_per_unit:                  # ESTIMATOR INPUTS ONLY - never billing-authoritative.
                                    # These belong to the models named above; a swap leaves them
                                    # untouched and the pre-flight prints which model each price is
@@ -129,32 +210,26 @@ models:
     reel_second:
       # ---------------------------------------------------------------------------------------
       # UNSET ON PURPOSE (OQ-2, FR-131/FR-258). Reels are simply not planned until a real number
-      # is typed in - the engine refuses to guess with your money.
+      # is typed in - the engine refuses to guess with your money. This is the shipped first-run
+      # state, not a fault, and it is why formats.reel is 0 above.
       #
-      # OQ-2 IS NOW MEASURED (spikes/RESULTS.md §C) AND THE FINDING IS WORSE THAN A MISSING PRICE:
-      #   Kie bills Seedance 2.5 as  Price x (Input + Output) seconds when a video reference is
-      #   attached, and  Price x Output  when none is.
-      #     720p: 38 credits/s WITH a video ref  |  63 credits/s with none
-      #     480p: 17 credits/s WITH a video ref  |  28 credits/s with none   ($0.005 per credit)
-      #   Measured live: 5 s / 720p / 1 image ref / 10 s video ref = 570 credits = $2.85.
+      # OQ-2 IS MEASURED (spikes/RESULTS.md §C). Kie bills Seedance 2.5 as
+      #     Price x Output seconds                     when no video reference is attached
+      #     Price x (Input + Output) seconds           when one is - the reference is BILLED too
+      #     720p: 63 credits/s with none  |  38 credits/s WITH a video ref   ($0.005 per credit)
+      #     480p: 28 credits/s with none  |  17 credits/s WITH a video ref
       #
-      # A FLAT PER-SECOND SCALAR UNDERSTATES THE REAL COST whenever a video reference is attached,
-      # because the reference's own seconds are billed too - and its duration is only known after
-      # the yt-dlp probe, i.e. AFTER the pre-flight estimate is shown. With the shipped
-      # reel_reference_max_s: 28 a single 5 s 720p reel costs 1254 credits = $6.27.
-      #
-      # SO FR-258's `reel_second` WAS RESHAPED - AND THAT RESHAPE LANDED (PRD v1.6.6, 30 §2):
-      # the key is now DEFINED as a WORST-CASE-HONEST per-output-second scalar you derive as
-      #     unit_with_video x (reel_reference_max_s + reel_duration_s) / reel_duration_s
-      #   with THIS file's shipped 28 s bound and 5 s clip:
-      #     720p: 0.190 x (28 + 5) / 5 = 1.254 / output second  ($6.27 per 5 s reel)
-      #     480p: 0.085 x (28 + 5) / 5 = 0.561 / output second  ($2.81 per 5 s reel)
-      # Understating is the one unacceptable estimator error (D11/FR-282), so the scalar
-      # deliberately overstates the cheaper branches (no video reference at all: 720p 0.315/s).
-      # Lowering reel_reference_max_s lowers the scalar directly - it is a price lever, not just
-      # a safety bound. A fully worked derivation sits in configs/hypedigitaly.yaml (§reel_second,
-      # for its own 20 s bound); copy it, RECOMPUTE for your two values, then raise formats.reel.
-      # The keys stay unset HERE so a fresh checkout ships with reels unplanned (FR-131).
+      # POST-PIVOT ONLY THE FIRST LINE CAN HAPPEN (v2.0.0, D44): the yt-dlp motion reference is
+      # withdrawn, so a reel is a seed frame plus Seedance with nothing else attached. That makes
+      # the flat per-second scalar this key has always been an HONEST number again, rather than
+      # the worst-case-with-reference derivation FR-258 needed while a reference's own duration
+      # was unknowable at estimate time:
+      #     720p: 63 x $0.005 = 0.315 per output second  ($1.575 per 5 s reel)
+      #     480p: 28 x $0.005 = 0.140 per output second  ($0.700 per 5 s reel)
+      # Type those two numbers in (configs/hypedigitaly.yaml already ships them, worked through
+      # inline) and raise formats.reel. Understating is the one unacceptable estimator error
+      # (D11/FR-282), so re-check the rates against Kie's price page before trusting them with a
+      # spend cap. The keys stay unset HERE so a fresh checkout ships with reels unplanned.
       # ---------------------------------------------------------------------------------------
       480p: null
       720p: null
@@ -217,6 +292,11 @@ output:
   dir: output/
   gallery: { title: "HypeSocials Run" }
   log_verbosity: normal            # normal | verbose (verbose adds full prompts to events.jsonl)
+  console_verbosity: normal        # normal | verbose - the CONSOLE tier only (FR-299, or --verbose
+                                   # / -v per run). run.log and events.jsonl are unaffected: audit
+                                   # and analytics never depend on what the operator chose to
+                                   # watch. verbose adds every filter verdict, all posts of all
+                                   # topics, per-upload style-file lines, job ids and heartbeats.
 
 # Phase 2 publishing pointer (FR-176) - present, parsed, and completely unused in the MVP.
 # Authoritative shape: prds/60-publishing-postiz.md §6. Distinct from mcp_servers.postiz above,

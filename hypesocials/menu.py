@@ -1,10 +1,10 @@
-"""The interactive wizard — the action choice and six prompts between `run.bat` and a run.
+"""The interactive wizard — the action choice and four prompts between `run.bat` and a run.
 
 Module contract
 ---------------
-Purpose: own every question HypeSocials asks a human (30 §4: FR-56–60, FR-135/136/137, FR-284/285,
-NFR-16), plus the FR-28 over-cap offer and the FR-232 fidelity rating. The wizard decides *what* a
-run should be; it never starts one, opens a session, or prices a plan of its own.
+Purpose: own every question HypeSocials asks a human (30 §4: FR-56–60, FR-136/137, FR-284/285,
+FR-300, NFR-16), plus the FR-28 over-cap offer and the FR-232 fidelity rating. The wizard decides
+*what* a run should be; it never starts one, opens a session, or prices a plan of its own.
 
 Public API: `Console` · `MenuResult` · `run_menu()` · `await offer_reduced_plan()` ·
 `await ask_fidelity_rating()`.
@@ -12,54 +12,70 @@ Public API: `Console` · `MenuResult` · `run_menu()` · `await offer_reduced_pl
 Invariants:
 - **Numbers and Enter, never spelling** (30 §4): every prompt shows the value in effect and takes
   a bare Enter to keep it (FR-57); a bad answer re-asks instead of guessing intent.
+- **Five inputs, and the counter derives from the live ones** (FR-300/NFR-16): config, counts,
+  cap, briefs, confirm. `_live_steps()` is the ordered list; `_step()` reads a step's position
+  out of it. No call site ever types a counter — a step a run does not ask is absent from the
+  list, and numerator and denominator move together. (v2.0.0 deleted two steps this way: the
+  source picker, because Virlo is the only source, and the mode picker, because generation has
+  no modes.)
 - **Every step explains itself** (FR-284) from `wizard_help.md` — purpose lines on every run,
   fuller prose on `?`. `?` **re-asks**: returning the pre-fill instead would validate on the cap,
   counts and briefs steps and silently advance three steps.
 - **Every line this module prints is ≤ 78 characters** (FR-286), with the text it does not own
   (config names, niche descriptors, paths) truncated by `_fit` and placed last. No colour, no box
-  drawing, no `✓` — legacy conhost renders none of them.
-- **Platforms are never asked** (FR-137) — config file or `--platforms`, nothing else.
-- **Step 7 (Confirm) is deliberately NOT here.** `cli.confirm_spend()` owns it, after plan
+  drawing, no `✓`, no `→` — legacy conhost renders none of them.
+- **Platforms and branding are never asked** (FR-137/FR-300) — config file or `--platforms`. The
+  brand, its ratio and its mode are *shown* at the confirm step and edited nowhere but the file:
+  the operator's direction for v2.0.0 was fewer inputs, not more.
+- **The confirm step is deliberately NOT here.** `cli.confirm_spend()` owns it, after plan
   expansion, where the estimate is real; pricing a plan that does not exist yet would be a
-  parallel estimator (guidelines §2). Step 4 therefore *validates* the cap against
+  parallel estimator (guidelines §2). The cap step therefore *validates* the cap against
   `Config.min_single_creative_usd` — the one price floor — and never estimates a plan.
-- **Nothing here spends or contacts anything** (FR-58/59): steps 1–6 read `configs/` and
-  `briefs_dir` off local disk, and quitting at any point costs $0. The quick action never falls
-  through to `default.yaml` either: it resolves a *runnable* config or refuses (FR-285).
+- **Nothing here spends or contacts anything** (FR-58/59): every step reads `configs/`,
+  `prompts/styles.yaml` and `briefs_dir` off local disk, and quitting at any point costs $0. The
+  quick action never falls through to `default.yaml` either: it resolves a *runnable* config or
+  refuses (FR-285), where runnable now means FR-295's registry check too.
 - **`run_menu()` is synchronous and runs BEFORE the event loop** (`__main__`, right after
   `cli.parse_args`). The two post-plan prompts are async because they are called from inside a
   running loop, and both read the console through `asyncio.to_thread` — never on the loop thread.
 
-Do not: parse flags (`cli.py`), price anything (`budget.py`), read `.env` (D30), load or validate
+Do not: parse flags (`cli.py`), price anything (`budget.py`), read `.env` (D30), grade a style
+registry (`styles.validate()` owns that — the picker only reports its verdict), load or validate
 brief *contents* (`briefs.py` — the picker lists names only), or start a run (`runner.py`).
 """
 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Sequence
+import logging
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from hypesocials import cli
+from hypesocials import cli, styles
 from hypesocials.budget import estimate as estimate_plan, format_usd, trim
 from hypesocials.config import (
     CONFIGS_DIR, Config, ConfigError, ConfigSummary, list_configs, load_config)
 from hypesocials.models import PlanEntry, PlanEntryStatus
+from hypesocials.prompts_engine import PROMPTS_DIR
 from hypesocials.util import fit, read_text
 
 #: FR-286: 78 is the ceiling for every printed line. `  [n] ` + a 15-char name + two spaces = 23,
-#: so a picker label gets 55; a facts line is indented 6 and keeps 12 chars of slack at 66.
-_NAME_WIDTH, _LABEL_WIDTH, _FACTS_WIDTH = 15, 55, 66
+#: so a picker label gets 55; a facts line is indented 6, so 70 leaves two columns of slack for a
+#: glyph a legacy console renders double-width.
+_NAME_WIDTH, _LABEL_WIDTH, _FACTS_WIDTH = 15, 55, 70
 #: FR-284's prose, beside this module and NOT under `prompts/` (pre-flight validates that tree).
 _HELP_FILE = Path(__file__).with_name("wizard_help.md")
 _HELP: dict[str, str] = {}
 _FORMATS = ("image", "carousel", "reel")
 _PLURAL = {"image": "images", "carousel": "carousels", "reel": "reels"}
 _COUNT_KEYS = {**{name: name for name in _FORMATS}, **{v: k for k, v in _PLURAL.items()}}
-_MODES = ("analyzed", "direct", "both")
-_NOTION = ("off", "copy", "full")
-_FUTURE_SOURCES = ("google_trends", "hacker_news")  # named in the picker, not built (D20/FR-135)
+#: NFR-16's five inputs, in ask order — the ONE source of every `n/N` counter (FR-300). The keys
+#: are also `wizard_help.md`'s section names (`purpose.<key>` and `<key>`).
+_WIZARD_STEPS = ("config", "counts", "cap", "briefs", "confirm")
+#: `--quick` / action [2] asks nothing before the price (FR-285), so one live step remains.
+_QUICK_STEPS = ("confirm",)
 _PREFERRED_CONFIGS = ("hypedigitaly", "default")  # shipped picker default (30 §2 §Niche packs)
 _BRIEF_SUFFIXES = (".yaml", ".yml", ".md", ".txt")
 _RATING_PROMPT = ("Fidelity of this batch to its trends? "
@@ -110,10 +126,10 @@ class Console:
 class MenuResult:
     """What the wizard resolved.
 
-    `options` is dispatch-ready: every answer now has a CLI flag behind it — the source pick
-    included, since `--sources` landed (30 §5, FR-65/135) — so re-loading `config_name` and
-    re-applying `cli.apply_overrides()` reproduces the wizard exactly. `config` is that same file
-    already loaded and mutated, passed on so the runner skips a redundant second load.
+    `options` is dispatch-ready: every answer the wizard takes has a CLI flag behind it (30 §5,
+    FR-65), so re-loading `config_name` and re-applying `cli.apply_overrides()` reproduces the
+    wizard exactly. `config` is that same file already loaded and mutated, passed on so the runner
+    skips a redundant second load.
     """
 
     options: cli.Options
@@ -155,26 +171,40 @@ def run_menu(base: cli.Options | None = None, *, console: Console | None = None,
             config = _quick_config(io, opts, configs_dir)
             return None if config is None else MenuResult(
                 replace(_options_from(opts, config, opts.briefs), quick=True), config)
-        config = _pick_config(io, opts, configs_dir)
+        steps = _live_steps(quick=False)
+        config = _pick_config(io, opts, steps, configs_dir)
         if config is None:
             return None
-        _pick_sources(io, config)
-        _pick_counts(io, config)
-        _pick_cap(io, config)
-        _pick_mode(io, config)
-        briefs = _pick_briefs(io, config, opts)
-        _say_confirm_ahead(io, config)
+        _pick_counts(io, config, steps)
+        _pick_cap(io, config, steps)
+        briefs = _pick_briefs(io, config, opts, steps)
+        _say_confirm_ahead(io, config, steps)
         return MenuResult(_options_from(opts, config, briefs), config)
     except _Quit:
         io.say("\ncancelled — no run was started and nothing was spent")
         return None
 
 
+def _live_steps(*, quick: bool) -> tuple[str, ...]:
+    """The steps THIS run actually asks, in ask order — the only source of an `n/N` counter.
+
+    FR-300: counters are DERIVED from a position in this list, never typed at the call site. A
+    step a run does not ask is absent from the list, so the numerator and the denominator can
+    never disagree — which is exactly what broke when v2.0.0 deleted two of the seven steps while
+    seven call sites still printed a hardcoded seven-step counter.
+
+    The one branch today is `--quick` / action [2], which asks nothing before the price (FR-285)
+    and so runs with the confirm notice alone. A future config-disabled step joins by filtering
+    this list here and nowhere else.
+    """
+    return _QUICK_STEPS if quick else _WIZARD_STEPS
+
+
 def _pick_action(io: Console) -> str:
     """The pre-wizard action choice: one key, four options (FR-56/285).
 
     Quick run and the monitor-id helper ride THIS prompt rather than adding one, so NFR-16's count
-    — one action choice plus seven inputs — is untouched: it bounds inputs, not options.
+    — one action choice plus five inputs — is untouched: it bounds inputs, not options.
     """
     while True:
         io.say("\n" + _explain("purpose.action"))
@@ -195,7 +225,8 @@ def _quick_config(io: Console, opts: cli.Options, configs_dir: Path | None) -> C
     summaries = list_configs(configs_dir)
     order = _preference(summaries, opts.config_name)
     if not order:
-        io.say("\nquick run needs a config that can collect trends; none of these can:")
+        io.say("\nquick run needs a config that can collect trends and dress them;")
+        io.say("none of these can:")
         for index, row in enumerate(summaries, start=1):
             for line in _rows(index, row):
                 io.say(line)
@@ -212,16 +243,22 @@ def _quick_config(io: Console, opts: cli.Options, configs_dir: Path | None) -> C
     io.say("\nquick run — nothing more is asked before the price. Chosen config:")
     for line in _rows(1, row):
         io.say(line)
-    _say_confirm_ahead(io, config)
+    _say_confirm_ahead(io, config, _live_steps(quick=True))
     return config
 
 
-def _step(io: Console, number: str, key: str, *facts: str) -> None:
-    """`4/7  Spend cap — …`: the counter, that step's prose (FR-284), then this run's facts.
+def _step(io: Console, steps: Sequence[str], key: str, *facts: str) -> None:
+    """`n/N  Spend cap — …`: the DERIVED counter, that step's prose (FR-284), then this run's facts.
 
+    The counter is `key`'s position in `steps` (FR-300) — the reason no caller may pass a number.
     The prose is English, so it lives in `wizard_help.md` beside the fuller `?` text — first line
     the heading, the rest already indented. `facts` are what only this config can say.
+
+    Raises:
+        ValueError: `key` is not a live step. A programmer error by construction (every call site
+            names a `_WIZARD_STEPS` member), and louder is better than a wizard that miscounts.
     """
+    number = f"{steps.index(key) + 1}/{len(steps)}"
     head, _, rest = _explain(f"purpose.{key}").partition("\n")
     io.say(f"\n{number}  {head.strip()}")
     if rest.strip():
@@ -230,14 +267,32 @@ def _step(io: Console, number: str, key: str, *facts: str) -> None:
         io.say("     " + fact)
 
 
-def _say_confirm_ahead(io: Console, config: Config) -> None:
-    """Step 7's purpose line (FR-284): how long a run of this shape takes, where output lands."""
-    minutes = "8-10 minutes" if config.run.formats.get("reel", 0) else "about 3 minutes"
-    _step(io, "7/7", "confirm", f"A run of this shape takes {minutes}, and everything",
-          "it makes lands under " + _fit(config.output.dir.rstrip("/\\"), 40) + "/<run id>/")
+def _say_confirm_ahead(io: Console, config: Config, steps: Sequence[str]) -> None:
+    """The confirm step's purpose line (FR-284): duration, brand signature, output folder.
+
+    The durations are re-derived for v2.0.0 (FR-300e). The old "8-10 minutes" counted a chain that
+    no longer exists — yt-dlp downloading the trend's winning video and uploading it to Kie as a
+    motion reference. What is left is LLM calls (one batched topic filter, one copy call per
+    topic) plus render jobs: still images and carousel slides come back in tens of seconds, while
+    a reel is a seed-frame render followed by a Seedance generation whose own ceiling is
+    `render.video_job_timeout_s` (300 s per job by default). Hence about three minutes without
+    reels, five to eight with them — an estimate, printed as one.
+
+    The branding line is DISPLAY-ONLY on purpose (FR-300d): v2.0.0's direction was fewer operator
+    inputs, and brand/ratio/mode are run-wide config facts, not per-run choices. Named future
+    option if that ever changes: make it an editable `brand=hypelead ratio=0.50` line parsed by
+    `_parse_pairs`, exactly like the counts step — one prompt, not three.
+    """
+    minutes = "5-8 minutes" if config.run.formats.get("reel", 0) else "about 3 minutes"
+    branding = config.branding
+    _step(io, steps, "confirm", f"A run of this shape takes {minutes}, and everything",
+          "it makes lands under " + _fit(config.output.dir.rstrip("/\\"), 40) + "/<run id>/",
+          _fit(f"brand {branding.brand} · ratio {branding.brand_ratio:.2f} · {branding.mode}"
+               " · config, not asked", _FACTS_WIDTH))
 
 
-def _pick_config(io: Console, opts: cli.Options, configs_dir: Path | None) -> Config | None:
+def _pick_config(io: Console, opts: cli.Options, steps: Sequence[str],
+                 configs_dir: Path | None) -> Config | None:
     """Step 1 (FR-56/173/284): two lines per config — its own label, then its readiness facts."""
     summaries = list_configs(configs_dir)
     if not summaries:
@@ -246,7 +301,7 @@ def _pick_config(io: Console, opts: cli.Options, configs_dir: Path | None) -> Co
         return None
     default = _default_config_index(summaries, opts.config_name)
     while True:
-        _step(io, "1/7", "config")
+        _step(io, steps, "config")
         for index, summary in enumerate(summaries, start=1):
             for line in _rows(index, summary, recommended=index == default):
                 io.say(line)
@@ -288,77 +343,144 @@ def _default_config_index(summaries: Sequence[ConfigSummary], named: str | None)
 
 
 def _rows(index: int, summary: ConfigSummary, *, recommended: bool = False) -> tuple[str, str]:
-    """One config as two lines (FR-284): its own label, then its readiness facts.
+    """One config as two lines (FR-284/FR-300): its own label, then its readiness facts.
+
+    The facts line answers the two questions that decide whether a run can happen at all — can
+    Virlo be asked (monitor ids), and can its answer be dressed (styles under the active brand) —
+    at pick time rather than at a pre-flight refusal three prompts later (FR-295)::
+
+        cs · 2 mon · 4/2/1 · hypelead · 8 styles · recommended
+        en · 0 mon · 4/2/0 · hypedigitaly · NO STYLES · NOT RUNNABLE
+        en · 1 mon · 4/2/0 · WILL NOT LOAD
+
+    The style count is the count usable under THIS config's brand, and it is replaced outright by
+    `NO STYLES` when the registry will not serve this run — a broken registry has no number worth
+    printing, and swapping the fact rather than appending a badge keeps both blockers on one line.
 
     `summary.label` is the file's own one-liner and already fits; a derived niche join is three
     sentences and gets cut. Every variable-length string is LAST on its line, so a wide glyph can
     only spoil a tail. Reels read `Config.reels_plannable`, not `formats.reel > 0` — an unpriced
     `reel_second` means `plan.build_plan` drops every reel, so a row implying otherwise would lie.
     """
+    ready = _readiness(summary)
     counts = "/".join(str(summary.formats.get(name, 0)) for name in _FORMATS)
-    facts = [summary.language or "en", f"{summary.monitor_count} monitors",
-             f"{counts} img/car/reel"]
-    if not _runnable(summary):
-        facts.append("NOT RUNNABLE - pick [4]")
-    elif recommended:
+    facts = [summary.language or "en", f"{summary.monitor_count} mon", counts]
+    if not ready.loadable:
+        # `list_configs` reads a file's summary fields without validating it, so a row can exist
+        # for a config that `load_config` refuses. Saying so here beats printing a brand and a
+        # style count that were never read from anything.
+        facts.append("WILL NOT LOAD")
+    else:
+        facts.append(ready.brand)
+        facts.append("NO STYLES" if ready.styles_blocked else f"{ready.usable_styles} styles")
+    if summary.monitor_count <= 0:
+        # `[4]` prints monitor ids, which cures THIS blocker only: offering it beside NO STYLES
+        # would send the operator to a helper that cannot fix a style registry (and the shorter
+        # badge is what keeps a doubly-blocked row inside FR-286's ceiling).
+        facts.append("NOT RUNNABLE" if ready.styles_blocked else "NOT RUNNABLE - pick [4]")
+    elif recommended and not ready.styles_blocked:
         facts.append("recommended")
-    if summary.formats.get("reel", 0) and not _reels_priced(summary):
+    if summary.formats.get("reel", 0) and not ready.reels_priced:
         facts.append("reels unpriced")
     return (f"  [{index}] {_fit(summary.name, _NAME_WIDTH):<{_NAME_WIDTH}}  "
             f"{_fit(summary.description or 'no description', _LABEL_WIDTH)}",
             "      " + _fit(" · ".join(facts), _FACTS_WIDTH))
 
 
-def _reels_priced(summary: ConfigSummary) -> bool:
-    """`Config.reels_plannable` for a row that wants reels; an unloadable file claims nothing."""
+@dataclass(slots=True)
+class _Readiness:
+    """What only a LOADED config — and the style registry it resolves — can tell the picker.
+
+    One load answers every question the facts row asks, so a redraw never loads the same file
+    three times and no rule is re-derived here that `config.py` or `styles.py` already owns.
+    Nothing raises: a file that will not load, or a registry that will not parse, is a row that
+    reads NOT RUNNABLE / NO STYLES, which is the whole point of showing it at pick time.
+    """
+
+    brand: str = ""
+    usable_styles: int = 0  # styles assignable under `brand` (FR-291's brand filter)
+    styles_blocked: bool = True  # FR-295: registry missing/broken, or a requested format has none
+    reels_priced: bool = False
+    loadable: bool = False
+
+
+#: Keyed on (path, mtime, size): the picker asks per row on every redraw, and an operator who
+#: edits a config between two redraws gets a new key rather than yesterday's verdict. Deliberately
+#: does not key on `styles.yaml` — one registry serves every row and a wizard lives seconds.
+_READINESS: dict[tuple[str, int, int], _Readiness] = {}
+
+
+def _readiness(summary: ConfigSummary) -> _Readiness:
+    """Load `summary`'s config once and ask it, and its style registry, the facts row's questions.
+
+    The registry is resolved exactly as `preflight._check_styles` resolves it — override folder
+    first, then the shipped `prompts/` tree (FR-174) — and graded by `styles.validate()`, so a row
+    can never disagree with the pre-flight refusal it is predicting (FR-295).
+    """
     try:
-        return load_config(summary.path).reels_plannable
+        stat = summary.path.stat()
+        key = (str(summary.path), stat.st_mtime_ns, stat.st_size)
+    except OSError:  # a config that vanished between listing and reading claims nothing
+        key = (str(summary.path), 0, 0)
+    if (cached := _READINESS.get(key)) is not None:
+        return cached
+    ready = _Readiness()
+    _READINESS[key] = ready
+    try:
+        with _quiet_probe():
+            config = load_config(summary.path)
     except ConfigError:
-        return False
+        return ready
+    ready.loadable = True
+    ready.reels_priced = config.reels_plannable
+    ready.brand = config.branding.brand
+    try:
+        registry = styles.load_registry([config.prompts_dir, PROMPTS_DIR])
+    except styles.StyleRegistryError:
+        return ready  # missing or unparseable: FR-295 exit 2, shown here as NO STYLES
+    ready.usable_styles = sum(1 for style in registry.styles
+                              if styles.brand_ok(style, ready.brand))
+    ready.styles_blocked = bool(styles.validate(registry, config)[0])
+    return ready
+
+
+@contextmanager
+def _quiet_probe() -> Iterator[None]:
+    """Silence the config loader's warning logger while the picker PROBES files nobody chose yet.
+
+    `config._warn` logs one line per advisory finding (unpriced reels, a clamped bound, an unknown
+    key). That is right for the config a run actually uses — the runner loads it again moments
+    later and those lines reach run.log through the real path. Emitting them once per LISTED file,
+    while the operator is still reading the menu, would bury the picker in advice about configs
+    they are not going to pick, on a channel (`logging`'s last-resort handler) the wizard does not
+    own. Suppression is scoped to the probe and restored on every exit path.
+    """
+    logger = logging.getLogger("hypesocials.config")
+    previously_disabled = logger.disabled
+    logger.disabled = True
+    try:
+        yield
+    finally:
+        logger.disabled = previously_disabled
 
 
 def _runnable(summary: ConfigSummary) -> bool:
-    """Whether this config can collect a trend at all: no monitor ids, no Virlo answer."""
-    return summary.monitor_count > 0
+    """Whether this config can serve a run at all — the two blockers that cost nothing to check.
+
+    No monitor ids means Virlo can return nothing (FR-283). A registry that will not parse, or
+    that has no style affine to a requested format under the active brand, is a pre-flight exit 2
+    (FR-295). Both used to surface after the operator had answered four more prompts; FR-300 moves
+    them to the row, and `_preference` therefore never offers such a config to a quick run.
+    """
+    return summary.monitor_count > 0 and not _readiness(summary).styles_blocked
 
 
-def _pick_sources(io: Console, config: Config) -> None:
-    """Step 2 (FR-135/284): `sources.active` plus the named-but-unbuilt adapters, which refuse."""
-    rows = list(dict.fromkeys([*config.sources.active, *_FUTURE_SOURCES]))
-    monitors = len(config.sources.virlo_monitor_ids)
-    while True:
-        _step(io, "2/7", "sources")
-        for index, name in enumerate(rows, start=1):
-            note = ("   (named, not yet implemented)" if name in _FUTURE_SOURCES else
-                    f"   ({monitors} monitor id(s) in this config)" if name == "virlo" else "")
-            io.say(f"  [{index}] {name}{note}")
-        current = ",".join(str(rows.index(name) + 1) for name in config.sources.active)
-        io.say(f"     In effect now: {_fit(', '.join(config.sources.active), 50)}")
-        answer = io.prompt("  pick one or more (comma-separated)", current, help_key="sources")
-        picked, bad = [], ""
-        for token in answer.replace(",", " ").split():
-            index = _int(token)
-            if index is None or not 1 <= index <= len(rows):
-                bad = token
-                break
-            picked.append(rows[index - 1])
-        if bad or not picked:
-            io.say(f"  '{_fit(bad or answer, 20)}' is not one of 1–{len(rows)}")
-            continue
-        if unbuilt := [name for name in picked if name in _FUTURE_SOURCES]:
-            io.say("  that adapter is named for a future release and is not built yet — pick")
-            io.say(f"  virlo instead. Not built: {_fit(', '.join(unbuilt), 40)}")
-            continue
-        config.sources.active = list(dict.fromkeys(picked))
-        return
-
-
-def _pick_counts(io: Console, config: Config) -> None:
-    """Step 3 (FR-136/284): formats and counts as ONE editable line, never a prompt per format."""
+def _pick_counts(io: Console, config: Config, steps: Sequence[str]) -> None:
+    """Step 2 (FR-136/284): formats and counts as ONE editable line, never a prompt per format."""
     slides = max((config.platform(name).carousel_slides for name in config.run.platforms),
                  default=5)
     while True:
-        _step(io, "3/7", "counts",
+        _step(io, steps, "counts",
               f"A carousel is a deck of {slides} slides, so 2 order {2 * slides} images.",
               "Platforms come from the config or --platforms, never asked here:"
               "\n     " + _fit(", ".join(config.run.platforms), 50))
@@ -382,17 +504,17 @@ def _pick_counts(io: Console, config: Config) -> None:
         return
 
 
-def _pick_cap(io: Console, config: Config) -> None:
-    """Step 4 (D11/FR-284): the run's spend cap, VALIDATED against the one price floor.
+def _pick_cap(io: Console, config: Config, steps: Sequence[str]) -> None:
+    """Step 3 (D11/FR-284): the run's spend cap, VALIDATED against the one price floor.
 
     No plan estimate here, deliberately. The floor is `Config.min_single_creative_usd` READ, never
     recomputed; a second estimator would need plan entries that do not exist yet, would omit the
-    briefs step below it, and would print a *lower* number than step 7's. Two disagreeing prices
-    three prompts apart is worse than one honest price late.
+    briefs step below it, and would print a *lower* number than the confirm step's. Two
+    disagreeing prices two prompts apart is worse than one honest price late.
     """
     floor = config.min_single_creative_usd
     while True:
-        _step(io, "4/7", "cap", *([f"The cheapest single creative this config can buy is "
+        _step(io, steps, "cap", *([f"The cheapest single creative this config can buy is "
                                    f"${floor:.2f}."] if floor else []))
         answer = io.prompt("  dollars for this run", f"{config.run.spend_cap_usd:.2f}",
                            help_key="cap")
@@ -408,27 +530,12 @@ def _pick_cap(io: Console, config: Config) -> None:
         return
 
 
-def _pick_mode(io: Console, config: Config) -> None:
-    """Step 5 (D2/D7/FR-284): generation mode and Notion influence in one grouped prompt."""
-    while True:
-        _step(io, "5/7", "mode")
-        current = f"mode={config.run.generation_mode} notion={config.run.notion_influence}"
-        pairs = _parse_pairs(io.prompt("  edit the line", current, help_key="mode")) or {}
-        mode, notion = pairs.get("mode"), pairs.get("notion")
-        if set(pairs) - {"mode", "notion"} or mode not in _MODES or notion not in _NOTION:
-            io.say("  expected e.g. mode=both notion=off")
-            continue
-        config.run.generation_mode = mode  # type: ignore[assignment]
-        config.run.notion_influence = notion  # type: ignore[assignment]
-        return
-
-
-def _pick_briefs(io: Console, config: Config,
-                 opts: cli.Options) -> tuple[tuple[str, int], ...]:
-    """Step 6 (FR-171/D26/FR-284): names and counts only — never blocks, blank Enter is none."""
+def _pick_briefs(io: Console, config: Config, opts: cli.Options,
+                 steps: Sequence[str]) -> tuple[tuple[str, int], ...]:
+    """Step 4 (FR-171/D26/FR-284): names and counts only — never blocks, blank Enter is none."""
     folder = Path(config.briefs_dir)
     names = _brief_names(folder)
-    _step(io, "6/7", "briefs")
+    _step(io, steps, "briefs")
     if not names:
         io.say("  none found — skipped. A missing or empty briefs folder is not an error.")
         io.say(f"  Looked in: {_fit(str(folder), 60)}")
@@ -479,12 +586,17 @@ def _parse_briefs(answer: str, names: Sequence[str]) -> tuple[tuple[str, int], .
 
 def _options_from(opts: cli.Options, config: Config,
                   briefs: tuple[tuple[str, int], ...]) -> cli.Options:
-    """Every wizard answer in the shape the dispatcher already understands (`cli.Options`)."""
+    """Every wizard answer in the shape the dispatcher already understands (`cli.Options`).
+
+    `sources` and `notion` are carried over from the resolved config rather than from a prompt:
+    neither is a wizard question any more (FR-300 withdrew the source picker with FR-135, and the
+    mode/Notion step with it), but both still have a flag, so the round-trip stays exact.
+    """
     return replace(
         opts, action=cli.Action.RUN, config_name=config.name,
         counts={name: int(config.run.formats.get(name, 0)) for name in _FORMATS},
         sources=tuple(config.sources.active),
-        budget_usd=config.run.spend_cap_usd, mode=config.run.generation_mode,
+        budget_usd=config.run.spend_cap_usd,
         notion=config.run.notion_influence, briefs=briefs, yes=False)
 
 

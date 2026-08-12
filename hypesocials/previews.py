@@ -3,23 +3,30 @@
 Module contract
 ---------------
 Purpose: run the first stages of a real run and show what they produced, without ever reaching
-the renderer. `--preview-sources` stops after Collect + Select's filtering pass and prints every
-trend with the verdict a paid run would reach (FR-139); `--preview-analysis` goes two stages
-further and prints the style briefs and the copy, spending LLM cost only (FR-140).
+the renderer. `--preview-sources` stops after Collect + the deterministic half of the competitor
+screen and prints the same topics table a paid run prints, at zero model spend (FR-139);
+`--preview-analysis` goes on through the real LLM screen, Select, style + branding assignment and
+the copy call, and shows the verbatim copy a paid run would render — LLM cost only (FR-140).
 
 Public API: `await preview_sources(opts)` · `await preview_analysis(opts)` — both return an
-FR-202 exit code (`0` shown, `2` config/pre-flight refusal, `3` transport-dead source or a trend
+FR-202 exit code (`0` shown, `2` config/pre-flight refusal, `3` transport-dead source or a topic
 famine, `4` Ctrl+C) and neither ever raises for a preview outcome.
 
 Invariants:
 - **A preview is a prefix, never a parallel pipeline** (D19). Every stage below is `runner.py`'s
-  own helper, called verbatim: `_open`, `_launch_summary`, `_collect`, `_select`, `_analyze`,
-  `_write`, `_cleanup`. Reaching into a sibling module's private stage functions is the
-  deliberate design (plan §2 T5.2) — a second dry-run implementation would drift from the paid
-  path, which is precisely the thing preview modes exist to rule out.
-- **Nothing reaches Kie and nothing spawns yt-dlp** (FR-139/140). The render seam is never
-  configured (so `KIE_API_KEY` is neither needed nor used) and `_launch_video_refs()` is never
-  called, which is what keeps the D23 chain — and its scratch dir — completely inert.
+  own helper, called verbatim: `_open`, `_launch_summary`, `_collect`, `_screen_topics`,
+  `_select`, `_record_style_forecast`, `_write`, `_cleanup` — and the operator-facing blocks come
+  from there too (`_topics_table`, `_post_roster`, `_funnel_block`), which is what makes
+  "previews show what a paid run will do" a fact about the code rather than a promise. Reaching
+  into a sibling module's private stage functions is the deliberate design (plan §2 T5.2): a
+  second dry-run implementation would drift from the paid path, which is precisely the thing
+  preview modes exist to rule out.
+- **`--preview-sources` makes no model call at all** (FR-139). No LLM client is built, so the
+  competitor screen runs on its deterministic blocklist layer alone and the table says so on its
+  own line — the LLM verdicts are `--preview-analysis`'s to show and to pay for.
+  `--preview-analysis` builds the LLM seam ONLY (FR-140): the render seam is never configured, so
+  `KIE_API_KEY` is neither needed nor used, and no image job, video job or Kie upload exists on
+  either path.
 - **The run folder is log-only and never claims `latest`** (FR-253): `_package()` is not called,
   so `set_latest()`, `record_use()` and the gallery never run, and the empty `refs/` folder
   `create_run_folder()` makes is removed again so the folder holds exactly `run.log` +
@@ -38,41 +45,50 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from contextlib import suppress
 
-from hypesocials import cli, plan, preflight, runner
+from hypesocials import cli, plan, preflight, runner, styles, topic_filter
 from hypesocials.budget import format_usd
 from hypesocials.config import Config, ConfigError, load_config
 from hypesocials.copywrite import CopyResult
-from hypesocials.models import PlanEntry, PlanEntryStatus, StyleBrief, TrendItem
+from hypesocials.models import PlanEntry, PlanEntryStatus, TrendItem
 from hypesocials.outputs import read_history
+from hypesocials.prompts_engine import PROMPTS_DIR
 from hypesocials.util import fit, wrapped
 
-# D19: the paid run's own stage calls, borrowed rather than copied (see the module contract).
+# D19: the paid run's own stage calls and display blocks, borrowed rather than copied (see the
+# module contract). Everything here is `runner`-owned and previews only choose WHEN to call it.
 from hypesocials.runner import (
     _Abort,
-    _analyze,
-    _assigned_trends,
     _cleanup,
     _collect,
     _configure_llm,
     _funnel_block,
     _launch_summary,
     _open,
-    _record_render_forecast,
+    _post_roster,
+    _record_style_forecast,
+    _screen_topics,
     _select,
-    _sources_block,
+    _topics_table,
     _write,
 )
 
 _REFS_DIR = "refs"  # created by `create_run_folder()`; a log-only folder does not keep it
+#: FR-286: 6 spaces of indent + a 9-column label + 61 of text = 76, inside the 78-column ceiling.
+_ROW_LABEL, _ROW_WIDTH = 9, 61
+#: The one line that tells a `--preview-sources` reader which half of the screen they are seeing.
+#: Not a degradation notice: a $0 mode that cannot call a model is working exactly as specified.
+_BLOCKLIST_NOTE = (
+    "  verdicts  blocklist only ($0) — the LLM screen runs in --preview-analysis\n"
+    "            no competitor-promo skip can appear here; a paid run may add one")
 
 
 async def preview_sources(opts: cli.Options, control: runner.Control | None = None) -> int:
-    """FR-139: Collect + Select's filters, every trend printed with its verdict, $0 model spend."""
+    """FR-139: Collect + the $0 blocklist screen, every topic on one line, zero model spend."""
     return await _preview(opts, control, deep=False)
 
 
 async def preview_analysis(opts: cli.Options, control: runner.Control | None = None) -> int:
-    """FR-140: also Analyze + Write, style briefs and copy printed, LLM cost only — no render."""
+    """FR-140: also the LLM screen, Select, style/brand assignment and the verbatim copy."""
     return await _preview(opts, control, deep=True)
 
 
@@ -105,35 +121,12 @@ async def _preview(opts: cli.Options, control: runner.Control | None, *, deep: b
         for line in brief_warnings:
             session.log.warn("brief_dropped", line)
         trends = await _collect(session)
-        if deep:
-            await _deep_stages(session, trends, resolved.entries)
-        else:
-            selection = plan.select(trends, config, read_history(runner.LOGS_DIR, session.log))
-            # FR-155 / FR-139: the funnel goes ABOVE the per-trend list, never below it —
-            # `_verdict_block` already emits ~8 lines per trend, so the rollup an operator reads
-            # first must not be sitting under 176 lines of detail once Increment B lands.
-            session.counters.record_selection(eligible=len(selection.eligible),
-                                              excluded=len(selection.excluded),
-                                              unusable=len(selection.unusable))
-            session.say(_funnel_block(session.counters))
-            # A24: the post inventory, EVERY trend rather than the paid run's strongest three —
-            # FR-139 exists to show the operator the whole supply before they commit to it. It
-            # sits above `_verdict_block` because inventory reads before judgement, and it adds
-            # what the verdict list has never carried: Virlo's own hook/tone labels, the tactics,
-            # the chosen-post count and whether a motion reference qualified.
-            if inventory := _sources_block([item.trend for item in selection.verdicts],
-                                           limit=None):
-                session.say(inventory)
-            session.say(_verdict_block(selection))
-            # FR-154: zero ELIGIBLE trends is a failed answer, not a clean one. Counting verdicts
-            # instead would call the 3-returned-all-excluded shape a success — the exact config
-            # that then exits 3 on a real run. The decision lives inside this branch because
-            # `selection` does not exist on the `deep` path, and reading it there would raise.
-            if not selection.eligible and not session.control.stop.is_set():
-                session.say(_nothing_eligible(selection, config))
-                return runner.EXIT_NOTHING_USABLE
+        code = (await _deep_stages(session, trends, resolved.entries) if deep
+                else await _shallow_stages(session, trends))
+        if code != runner.EXIT_OK:
+            return code
         return runner.EXIT_INTERRUPTED if session.control.stop.is_set() else runner.EXIT_OK
-    except _Abort as abort:  # dead source (exit 3), or a trend famine in the deep path
+    except _Abort as abort:  # dead source (exit 3), unusable registry (exit 2), or a topic famine
         session.say(str(abort))
         return abort.code
     except Exception as exc:  # noqa: BLE001 — NFR-9: a preview never crashes the process
@@ -144,132 +137,289 @@ async def _preview(opts: cli.Options, control: runner.Control | None, *, deep: b
         await _cleanup(session)
 
 
-async def _deep_stages(session: runner._Session, trends: Sequence[TrendItem],
-                       entries: Sequence[PlanEntry]) -> None:
-    """FR-140's two extra stages: assign, analyze, write — the same calls the paid run makes.
+async def _shallow_stages(session: runner._Session, trends: Sequence[TrendItem]) -> int:
+    """FR-139's stages: the deterministic screen, then Select — one line per topic, no model call.
 
-    Verdicts are logged by `_select()` exactly as in a run; what is *printed* here is FR-140's
-    required display — the briefs and the copy — plus FR-8's supply restatement and FR-155's
-    funnel, which this mode reuses from the runner rather than forking (both preview modes owe
-    the identical block a paid run prints).
+    `topic_filter.screen(llm=None)` is the SAME entry point `runner._screen_topics` wraps, called
+    with its model layer left out, so layer 1 (the `branding.competitors` blocklist, fail-closed)
+    decides exactly what it would decide in a paid run. What this mode cannot show is layer 2's
+    judgement — the competitor-promo `skip` and the incidental-mention `strip` a model finds — and
+    the note under the table says so rather than letting an empty verdict column read as "clean".
+
+    The funnel prints LAST here (console-UX rule 6: once, at the end). It used to sit above the
+    per-topic detail because that detail ran to ~8 lines per trend and would have buried the
+    rollup; FR-297a's one-line-per-topic table removed the reason.
     """
-    assignment = _select(session, list(trends), list(entries))
-    live = [entry for entry in entries if entry.status is PlanEntryStatus.PENDING]
-    by_key = {trend.history_key: trend for trend in trends}
-    _record_render_forecast(session, live, by_key, dropped=len(assignment.dropped))
+    config = session.config
+    verdicts = _blocklist_only(await topic_filter.screen(list(trends), config, llm=None))
+    session.counters.record_filter(verdicts)
+    kept = _kept(trends, verdicts)
+    selection = plan.select(kept, config, read_history(runner.LOGS_DIR, session.log))
+    session.counters.record_selection(eligible=len(selection.eligible),
+                                      excluded=len(selection.excluded),
+                                      unusable=len(selection.unusable))
+    if table := _topics_table(list(trends), verdicts):  # empty only when Collect returned nothing
+        session.say(table)
+        session.say(_BLOCKLIST_NOTE)
     session.say(_funnel_block(session.counters))
-    # A24: the post inventory for the trends this plan actually assigned, uncapped — FR-140's
-    # whole purpose is to show what a paid run would do before it does it. The brief half of A24
-    # is not repeated here: `_analysis_block` below already prints each style brief in more
-    # detail than the paid run's four-row summary does.
-    if inventory := _sources_block(_assigned_trends(live, by_key), limit=None):
-        session.say(inventory)
-    session.say(assignment.summary_line)
-    # LLM seam only, built by the runner's own splinter of `_configure_providers()` (D19):
-    # the full call would also build the Kie client and demand KIE_API_KEY, a key this action's
-    # pre-flight does not require and this path may never use.
+    # FR-154: zero ELIGIBLE topics is a failed answer, not a clean one. Counting verdicts instead
+    # would call the "3 returned, all excluded" shape a success — the exact config that then exits
+    # 3 on a real run, which is the run this mode exists to predict.
+    if not selection.eligible and not session.control.stop.is_set():
+        session.say(_nothing_eligible(selection, config, skipped=len(trends) - len(kept)))
+        return runner.EXIT_NOTHING_USABLE
+    return runner.EXIT_OK
+
+
+async def _deep_stages(session: runner._Session, trends: Sequence[TrendItem],
+                       entries: Sequence[PlanEntry]) -> int:
+    """FR-140's stages: the real screen, Select, assignment, styles, branding and the copy call.
+
+    Every call here is the paid run's own, in the paid run's order — the LLM seam first (and ONLY
+    the LLM seam, `_configure_llm` rather than `_configure_providers`, so no Kie client is built
+    and no `KIE_API_KEY` is read), then screen, select, assign, dress, write. What differs from
+    `runner._pipeline` is only what comes after: no reference upload, no render, no packaging.
+
+    Printing order follows the console mockups (§1.10): the topics table with the LLM verdicts,
+    the per-topic post roster UNCAPPED (a paid run shows the top 3×3 — showing everything is the
+    whole point of a preview), FR-8's supply restatement, one determinism-receipt line per
+    creative, the copy itself, and the funnel once at the end.
+    """
+    config = session.config
     _configure_llm(session)
-    style_briefs = await _analyze(session, live, by_key)
-    copy_result = await _write(session, live, by_key, style_briefs)
-    session.say(_analysis_block(by_key, style_briefs, copy_result))
+    verdicts = await _screen_topics(session, trends)
+    kept = _kept(trends, verdicts)
+    assignment = _select(session, list(kept), list(entries))
+    live = [entry for entry in entries if entry.status is PlanEntryStatus.PENDING]
+    by_key = {trend.history_key: trend for trend in kept}
+
+    registry = _registry(session)
+    styles.assign_styles(live, registry, config.branding.brand)
+    styles.assign_branding(live, config.branding.brand_ratio)
+    _record_style_forecast(session, live, registry, dropped=len(assignment.dropped))
+
+    if table := _topics_table(list(trends), verdicts):
+        session.say(table)
+    if roster := _post_roster(list(trends), verdicts, live,
+                              topics_limit=None, posts_limit=None):
+        session.say(roster)
+    session.say(_wrap(assignment.summary_line))
+    session.say(_assign_block(live, by_key, registry))
+    # `_screen_topics` already turned the ordinal-keyed verdicts round into `history_key -> brands`
+    # on the session (that mapping also rides `generate.Env` on a paid run); passing it back in is
+    # the pinned `_write` contract, and re-deriving it here would be a second implementation of
+    # the same turn, free to disagree with the first.
+    copy_result = await _write(session, live, by_key, session.strip_brands)
+    session.say(_copy_block(copy_result, live))
+    session.say(_funnel_block(session.counters))
     session.say(f"LLM spend {format_usd(session.budget.spent_usd)} against the "
                 f"{format_usd(session.budget.cap_usd)} cap — nothing was rendered (FR-140).")
+    return runner.EXIT_OK
 
 
-def _verdict_block(selection: plan.Selection) -> str:
-    """FR-139's display: every returned trend, its verdict, and the material behind it."""
-    lines = [f"{len(selection.verdicts)} trend(s) returned — {len(selection.eligible)} eligible, "
-             f"{len(selection.excluded)} excluded by history, "
-             f"{len(selection.unusable)} unusable",
-             "  no model spend; Virlo's own API calls still meter your Virlo deposit"]
-    for item in selection.verdicts:
-        trend = item.trend
-        refs = [url for group in trend.reference_groups for url in group]
-        lines.append(f"  {fit(trend.name, 46)}  [{fit(item.label, 26)}]")
-        lines.append(f"      strength {trend.strength:.3f} · "
-                     f"{'slideshow' if trend.is_slideshow else 'video'} source · "
-                     f"views {trend.total_views:,} (median {trend.median_views:,})")
-        # FR-286(a): a permalink and a CDN url have no word boundary, so each goes alone on its
-        # own line rather than being cut — the operator opens and copies these.
-        lines.append(f"      {trend.virlo_url or 'no virlo url'}")
-        for field, text in (("hooks ", trend.hook_texts[:3]), ("panels", trend.panel_texts[:5])):
-            for first, part in (wrapped(" | ".join(text), 62) if text else ()):
-                lines.append(f"      {field if first else '      '}  {part}")
-        lines.append(f"      refs    {len(refs)} image(s)"
-                     + ("" if refs else " — text_only, this trend arrived with no pictures"))
-        lines.extend(f"        {url}" for url in refs[:3])
-    if not selection.verdicts:
-        lines.append("  the active source(s) returned nothing — no trend to judge")
+# --------------------------------------------------------------------------- filter plumbing
+
+
+def _blocklist_only(verdicts: dict[int, topic_filter.Verdict]) -> dict[int, topic_filter.Verdict]:
+    """Re-label the $0 screen's verdicts: no model layer HERE is the design, not a degradation.
+
+    `topic_filter.screen(llm=None)` stamps every verdict with `filter_degraded: no model call
+    available`, and for a paid run that is the right marker — one operator warning, and a run that
+    proceeds on the blocklist alone. `--preview-sources` asks for that state deliberately (FR-139
+    forbids the spend), so carrying the marker through would raise a degradation warning about a
+    mode working exactly as specified, and would flip the funnel's `filter_degraded` flag on every
+    single $0 preview. The verdicts and their brand lists are untouched: only the reason line is
+    rewritten, back to what layer 1 actually decided.
+    """
+    for verdict in verdicts.values():
+        verdict.reason = (f"blocklist: {', '.join(verdict.brands_to_strip)}"
+                          if verdict.brands_to_strip else "")
+    return verdicts
+
+
+def _kept(topics: Sequence[TrendItem],
+          verdicts: Mapping[int, topic_filter.Verdict]) -> list[TrendItem]:
+    """The topics that survive the screen: `keep` and `strip`, never `skip` (FR-294).
+
+    A `strip` topic stays in the run and loses the named brands inside its copy and its render
+    prompt — that is what `brands_to_strip` is FOR, and dropping it would throw away usable
+    material over an incidental mention. Only `skip` (the post primarily promotes a competitor)
+    leaves before any spend.
+
+    Ordinals are 1-based over the SAME sequence the screen saw, so this must never be handed a
+    re-ordered list; every caller passes `trends` in collect order, which is also the order the
+    table numbers and the strength rank.
+    """
+    return [topic for ordinal, topic in enumerate(topics, 1)
+            if getattr(verdicts.get(ordinal), "verdict", "keep") != "skip"]
+
+
+def _registry(session: runner._Session) -> styles.StyleRegistry:
+    """Load the meta-style registry through the FR-174 seam, exactly as pre-flight loaded it.
+
+    `--preview-analysis` assigns styles for real — that assignment IS one of the things FR-140
+    exists to show — so it needs the real registry rather than a stand-in. `preflight.check` has
+    already refused this action when the file is missing or unusable (FR-295, exit 2), so a raise
+    here means the file changed between the two reads; it becomes the same one-line refusal rather
+    than a stack trace.
+
+    The loaded registry is published on the session because that is the seam the paid run's later
+    stages read it from (`_Session.registry`), and previews never runs `_pipeline`, which is where
+    a paid run fills it in.
+    """
+    config = session.config
+    try:
+        registry = styles.load_registry([config.prompts_dir, PROMPTS_DIR])
+    except styles.StyleRegistryError as exc:
+        raise _Abort(runner.EXIT_PREFLIGHT, str(exc)) from None
+    session.registry = registry
+    session.log.event("style_registry", f"{len(registry)} style(s) from {registry.origin}",
+                      origin=registry.origin, content_hash=registry.content_hash,
+                      version=registry.version)
+    return registry
+
+
+# --------------------------------------------------------------------------- display blocks
+
+
+def _assign_block(live: Sequence[PlanEntry], trends: Mapping[str, TrendItem],
+                  registry: styles.StyleRegistry) -> str:
+    """One line per creative: ordinal, format, topic, assigned style, signed or plain.
+
+    The determinism receipt of FR-291. Style and branding are both pure functions of `entry.order`
+    over the brand-filtered registry, so this block is the thing an operator re-reads after a
+    second preview to confirm that the same topic set produced the same dressing — which is how
+    the rotation is verified without a debugger.
+
+    The leading number is the asset id's trailing ordinal, the short handle every other §1.10
+    surface uses for a creative (the provenance block, the render lines, the gallery).
+    """
+    head = (f"Assignment — {len(live)} creative(s), {len({e.style_key for e in live})} style(s), "
+            f"{sum(1 for e in live if e.branded)} branded")
+    lines = [fit(head, 78), f"  {_brand_line(registry)}"]
+    for entry in live:
+        topic = trends.get(entry.trend_key or "")
+        name = topic.name if topic is not None else (entry.brief_name or "no topic")
+        lines.append(f"      {_ordinal(entry)} {fit(entry.creative_format, 8):<10}"
+                     f"{fit(name, 24):<25}{fit(entry.style_key or '-', 19):<20}"
+                     f"{'brand' if entry.branded else 'plain'}")
     return "\n".join(lines)
 
 
-def _nothing_eligible(selection: plan.Selection, config: Config) -> str:
+def _brand_line(registry: styles.StyleRegistry) -> str:
+    """Which registry dressed this preview — FR-184's origin+hash attribution, extended to styles.
+
+    The hash is the part that matters across two previews: identical hashes plus an identical
+    topic set must produce an identical assignment block, and a changed hash explains the one case
+    where they legitimately differ.
+    """
+    return f"registry v{registry.version} · {len(registry)} style(s) · sha {registry.content_hash}"
+
+
+def _copy_block(copy_result: CopyResult, live: Sequence[PlanEntry]) -> str:
+    """FR-140's headline display: the copy, verbatim, in the language of the post it was taken from.
+
+    Every string here is a byte-for-byte quote from a `SourcePost` (§1.7 resolves references to
+    bytes rather than asking a model to retype), so it is WRAPPED and never truncated — reading
+    the actual words is the entire reason to spend the copy call before the render call. The `refs`
+    row names which candidate each field resolved from (`P1.hook.2`), which is what makes the
+    quote checkable against the post roster printed above.
+    """
+    lines = [f"Copy — {len(copy_result.copy)} creative(s), quoted verbatim in the language",
+             "  of the post each string came from; nothing was rendered (FR-140)"]
+    for entry in live:
+        copy = copy_result.copy.get(entry.asset_id)
+        if copy is None:
+            continue
+        marks = [tag.value for tag in copy_result.tags.get(entry.asset_id, ())]
+        # The indent is built OUTSIDE `fit`, which collapses leading whitespace along with every
+        # other run of it — an id line that lost its indent reads as a new block, not a heading.
+        lines.append("  " + fit(f"{_ordinal(entry)} {entry.asset_id} [{copy.language}]"
+                                + (f"  ({', '.join(marks)})" if marks else ""), 76))
+        lines += _source_rows(copy_result, entry.asset_id)
+        if copy.headline or copy.subline:
+            lines += _rows("on-image", " / ".join(t for t in (copy.headline, copy.subline) if t))
+        for index, slide in enumerate(copy.slide_texts, 1):
+            lines += _rows(f"slide {index}", slide)
+        if copy.overlay_text:
+            lines += _rows("overlay", copy.overlay_text)
+        if copy.motion_beat:
+            lines += _rows("motion", copy.motion_beat)
+        lines += _rows("caption", copy.caption or "(none)")
+        if copy.hashtags:
+            lines += _rows("tags", " ".join(copy.hashtags))
+    if not copy_result.copy:
+        lines.append("  nothing was written — see the lines above for the reason")
+    return "\n".join(lines)
+
+
+def _source_rows(copy_result: CopyResult, asset_id: str) -> list[str]:
+    """FR-298's provenance for one creative: which post it quoted, and which strings of it."""
+    provenance = copy_result.provenance.get(asset_id)
+    if provenance is None:
+        return []
+    rows = _rows("quoted", provenance.post_id or "(free text — no post quoted)")
+    if provenance.refs:
+        rows += _rows("refs", " ".join(f"{slot}={label}"
+                                       for slot, label in sorted(provenance.refs.items())))
+    return rows
+
+
+def _rows(label: str, text: str) -> list[str]:
+    """One labelled field, wrapped rather than cut, aligned under its own text on continuation.
+
+    `wrapped` and not `fit` because this module's whole job is to show the operator the strings a
+    paid run would burn into pixels: a caption cut at 60 characters answers a question nobody
+    asked of `--preview-analysis`. FR-286's ceiling is met by wrapping instead — 6 spaces of
+    indent plus a 9-column label plus 61 columns of text is 76.
+    """
+    return [f"      {label if first else '':<{_ROW_LABEL}}{part}"
+            for first, part in wrapped(text, _ROW_WIDTH)]
+
+
+def _wrap(text: str, width: int = 78) -> str:
+    """A plain sentence, re-flowed onto FR-286-sized lines with nothing cut.
+
+    Used for the strings this module borrows whole from elsewhere — FR-8's supply restatement is
+    one sentence built by `plan.Assignment`, and at four-digit counts it runs past 78 columns.
+    Wrapping at the printer keeps the rule where it belongs (FR-286 is about what the tool prints)
+    without editing a data shape three other callers read.
+    """
+    return "\n".join(part for _, part in wrapped(text, width))
+
+
+def _ordinal(entry: PlanEntry) -> str:
+    """A creative's short handle: the asset id's trailing ordinal (§1.10's provenance block).
+
+    Read off the id rather than recomputed from `order`, so this cannot drift from the folder name
+    the operator will actually look in. Falls back to the plan position for an entry whose id is
+    still provisional.
+    """
+    tail = str(entry.asset_id or "").rsplit("_", 1)[-1]
+    return tail if tail.isdigit() else f"{entry.order + 1:02d}"
+
+
+def _nothing_eligible(selection: plan.Selection, config: Config, *, skipped: int = 0) -> str:
     """FR-154: say which cause applies and what to change, never 'see the lines above'.
 
     This is the mode an operator runs *to check their config*, so a clean exit here was the most
-    misleading output in the tool — it blessed a config that then failed a paid run.
+    misleading output in the tool — it blessed a config that then failed a paid run. `skipped`
+    counts the topics the competitor screen removed before Select ever saw them (FR-294): they are
+    a cause of famine that no history window and no ranking change can fix, so they have to be
+    named separately from what Select itself rejected.
     """
-    if not selection.verdicts:
+    if not selection.verdicts and not skipped:
         ids = [str(i).strip() for i in config.sources.virlo_monitor_ids if str(i).strip()]
         cause = ("no monitor ids are configured" if not ids else
                  f"the {len(ids)} configured monitor id(s) returned nothing")
         return f"  NOT USABLE: {cause} — run run.bat --list-monitors to see the real ids"
     excluded, unusable = len(selection.excluded), len(selection.unusable)
-    parts = ([f"{excluded} have no unused reference set left"] if excluded else []) + \
+    parts = ([f"{skipped} skipped by the competitor screen"] if skipped else []) + \
+            ([f"{excluded} with no unused source post left"] if excluded else []) + \
             ([f"{unusable} lack usable material"] if unusable else [])
     return ("  NOT USABLE: " + ", ".join(parts) + " — a real run on this config would exit 3."
             + ("\n  Widen the window with --history-days, or wait for new posts." if excluded
-               else "\n  Wait for the monitors to surface richer trends."))
-
-
-def _analysis_block(trends: Mapping[str, TrendItem], style_briefs: Mapping[str, StyleBrief],
-                    copy_result: CopyResult) -> str:
-    """FR-140's display: one block per style brief, then one per creative's copy.
-
-    Briefs are keyed by the `(trend, reference group)` pair (FR-9/12), so the trend is named from
-    the brief's own `trend_key` and the group is printed beside it — with rotation on, one trend
-    can produce several briefs and an operator comparing them needs to see which pictures each
-    one looked at.
-    """
-    lines = [f"{len(style_briefs)} style brief(s) and copy for {len(copy_result.copy)} "
-             "creative(s) — LLM spend only, no image or video job was submitted (FR-140)"]
-    for brief in style_briefs.values():
-        trend = trends.get(brief.trend_key)
-        name = trend.name if trend is not None else brief.trend_key
-        groups = len(trend.reference_groups) if trend is not None else 0
-        lines.append(f"  style brief — {name}"
-                     + (f"  [reference group {brief.reference_group_index + 1} of {groups}]"
-                        if groups > 1 else ""))
-        zones = ", ".join(zone.position for zone in brief.layout_zones) or "none"
-        lines.append(f"      prompt  {_short(brief.render_prompt, 300)}")
-        lines.append(f"      zones   {_short(zones)}")
-        lines.append(f"      palette {_short(', '.join(brief.palette) or 'none', 80)} · "
-                     f"type {_short(brief.typography, 80)}")
-        lines.append(f"      hook    {_short(brief.hook_pattern, 120)}")
-    for asset_id, copy in copy_result.copy.items():
-        # Every copy-stage tag, read off the one carrier — so A20's `no_onimage_text` and A21's
-        # `hook_pattern_generic` show up here the day they exist, with no second list to update.
-        marks = [tag.value for tag in copy_result.tags.get(asset_id, ())]
-        lines.append(f"  copy — {asset_id} [{copy.language}]"
-                     + (f"  ({', '.join(marks)})" if marks else ""))
-        lines.append(f"      on-image {_short(copy.headline, 60)}"
-                     + (f" / {_short(copy.subline, 80)}" if copy.subline else ""))
-        if copy.slide_texts:
-            lines.append(f"      slides  {_short(' | '.join(copy.slide_texts), 300)}")
-        if copy.overlay_text:
-            lines.append(f"      overlay {_short(copy.overlay_text, 80)}")
-        lines.append(f"      caption {_short(copy.caption, 240)}")
-        lines.append(f"      tags    {_short(' '.join(copy.hashtags), 160)} · "
-                     f"pattern {_short(copy.hook_pattern_used, 100)}")
-    if not copy_result.copy:
-        lines.append("  nothing was analyzed or written — see the lines above for the reason")
-    return "\n".join(lines)
-
-
-def _short(text: str, limit: int = 160) -> str:
-    """One console line: whitespace collapsed, ASCII ellipsis (a Windows console may be cp1252)."""
-    line = " ".join(str(text or "").split())
-    return line if len(line) <= limit else line[:max(limit - 3, 1)].rstrip() + "..."
+               else "\n  Wait for the monitors to surface richer topics."))
 
 
 __all__ = ["preview_analysis", "preview_sources"]

@@ -1,4 +1,4 @@
-"""State that outlives a single asset folder: trend history, the latest-pointer, the ledger.
+"""State that outlives a single asset folder: topic history, the latest-pointer, the ledger.
 
 Module contract
 ---------------
@@ -7,13 +7,31 @@ Purpose: own every cross-run shared file (`logs/trend_history.json`, `output/lat
 and corruption rules inside — no caller re-implements them.
 Public API: `read_history()` · `days_since_use()` · `used_posts()` · `record_use()` ·
 `set_latest()` · `resolve_latest()` · `Ledger`.
+
+What the history records (post-pivot, D42/FR-293/FR-298): the posts whose **texts** a creative
+QUOTED. Copy is now verbatim source text selected by reference, so a burnt post id means "this
+post's words already shipped this week", not "this post's picture was attached to a render" —
+the pre-pivot reading, when the same map tracked the media a run downloaded from its source
+posts. The two dimensions the recency window protects are therefore the topic (entry key) and
+the quoted post (the `posts` map).
+
 Invariants:
 - Every shared-file write is atomic (temp+rename, same directory) — FR-254.
+- Entry keys are `TrendItem.history_key` = `"<monitor_id>::<topic_key>"` (§1.6): one monitor
+  yields several topics and each is its own recency subject. **Migration by design** (D44): a
+  pre-pivot entry keyed by the bare monitor id simply stops matching, the first post-pivot run
+  sees an empty window, and those entries age out through the normal `_prune` horizon. There is
+  no migration pass and no schema version — a rolling window can afford to forget.
 - History is guarded by an advisory pid+timestamp lock; a busy lock degrades to read-only with
   one warning and NEVER blocks or fails a run, a lock older than 60 s is stale and gets broken
   (FR-254); missing/corrupt history warns and starts fresh (FR-83); every write prunes entries
   past `max(trend_history_days, 90)` days, and each survivor's `posts` map on the same pass
   against the same horizon — rolling window, not an archive (FR-82, FR-153).
+- A `posts` value is `{"date": "<ISO>", "url": "<permalink>"}` (FR-153 as amended by FR-298: the
+  post URL rides beside the date, so a burnt id can be opened without a Virlo lookup). READERS
+  ACCEPT BOTH SHAPES: a bare string is read as that date with no URL, so entries written before
+  the amendment age out instead of crashing. The writer emits one shape, so the file converges
+  without a migration pass.
 - An entry with no `posts` key reads as "no posts used", so FR-153 needs no migration and there
   is never a window in which post-level recency protection is silently off.
 - `latest.txt` is canonical; `latest/` is a best-effort junction made by `mklink /J` **as a
@@ -21,7 +39,7 @@ Invariants:
   never raised (NFR-20).
 - `LEDGER.txt` is append-only: never edited or rewritten, last line for a taskId wins (FR-203).
 Do not: call `set_latest()` from a run that packaged nothing or from a preview (FR-253), or
-record an unpackaged trend (FR-82) — both are the caller's rule, only it knows what landed.
+record an unpackaged topic (FR-82) — both are the caller's rule, only it knows what landed.
 
 Blocking note: JSON read, atomic write and ledger appends are synchronous few-KB file ops —
 microseconds, the same trade FR-81 makes for the log writer. Only the two genuinely waiting
@@ -86,22 +104,27 @@ def read_history(logs_dir: str | Path, log: _Log | None = None) -> dict[str, dic
     return {key: value for key, value in loaded.items() if isinstance(value, dict)}
 
 
-def days_since_use(history: dict[str, dict[str, Any]], trend_key: str) -> float | None:
-    """Age in days of a trend's `last_used`, or None if unknown — NFR-24's window input.
+def days_since_use(history: dict[str, dict[str, Any]], history_key: str) -> float | None:
+    """Age in days of a topic's `last_used`, or None if unknown — NFR-24's window input.
 
-    Tolerant of both shapes an entry may carry (`YYYY-MM-DD` as written here, or a full ISO
-    timestamp from an older file), so Select never re-implements date parsing.
+    `history_key` is `TrendItem.history_key` (`"<monitor_id>::<topic_key>"`); an entry written
+    under the pre-pivot bare-monitor-id key never matches and answers None, which is exactly the
+    "never used" the migration note promises. Tolerant of both date shapes an entry may carry
+    (`YYYY-MM-DD` as written here, or a full ISO timestamp from an older file), so Select never
+    re-implements date parsing.
     """
-    return _age_days(history.get(trend_key) or {})
+    return _age_days(history.get(history_key) or {})
 
 
 def used_posts(history: dict[str, dict[str, Any]], *, within_days: float) -> dict[str, set[str]]:
-    """Per trend key, the post ids used inside the window — NFR-24 at post granularity (FR-153).
+    """Per history key, the post ids used inside the window — NFR-24 at post granularity (FR-153).
 
-    The map Collect needs to choose a reference set and a motion reference that were not used
-    recently. A trend key missing from the result — including every entry written before FR-153,
-    which carries no `posts` key at all — means "no posts used", so every candidate is fresh; that
-    is the whole of the no-migration guarantee. `within_days <= 0` disables the window (FR-7).
+    The map Collect needs so a topic's post is not quoted twice inside the window: a burnt id is
+    a post whose TEXT already shipped. Post ids ONLY — the recorded permalink is record-side
+    provenance (FR-298) and would just make every caller strip it again. A key missing from the
+    result — including every entry that carries no `posts` key at all — means "no posts used", so
+    every candidate is fresh; that is the whole of the no-migration guarantee. `within_days <= 0`
+    disables the window (FR-7).
     """
     if within_days <= 0:
         return {}
@@ -112,24 +135,29 @@ def used_posts(history: dict[str, dict[str, Any]], *, within_days: float) -> dic
 
 async def record_use(
     logs_dir: str | Path,
-    uses: Mapping[str, Sequence[str]],
+    uses: Mapping[str, Sequence[tuple[str, str]]],
     run_id: str,
     *,
     history_days: int = 7,
     log: _Log | None = None,
 ) -> bool:
-    """Record packaged trends with the post ids they used, and prune. False if read-only.
+    """Record packaged topics with the posts they quoted, and prune. False if read-only.
 
-    The single writer of `trend_history.json` (FR-82, FR-153). The CALLER decides what qualifies:
-    a trend key only for a trend that packaged a creative, and under it only the post ids that
-    creative genuinely ATTACHED — an empty sequence is legitimate and still records the trend
-    (`inspiration_mix: exclusive` attaches zero trend images, and a reel whose motion reference
-    failed to download never used it). One lock, one critical section, one status: the entry and
-    its `posts` map are written together, never in two calls. FR-254: when the lock cannot be
-    taken in a short wait, the run continues read-only — one warning, no update, no exception.
+    The single writer of `trend_history.json` (FR-82, FR-153, FR-298). `uses` maps a
+    `history_key` (`"<monitor_id>::<topic_key>"`) to the `(post_id, url)` PAIRS whose text that
+    topic's packaged creatives quoted — the runner builds them from the `SourcePost` each
+    creative was assigned, so the pair travels together and the URL lands beside the date without
+    a second lookup. A bare post-id string is tolerated in place of a pair (it records an empty
+    URL) so a caller that has no permalink is not forced to invent one.
+
+    The CALLER decides what qualifies: a key only for a topic that packaged a creative, and under
+    it only the posts a creative genuinely QUOTED — an empty sequence is legitimate and still
+    records the topic (an override brief quotes nothing, and a copy degrade may ship our own
+    words). One lock, one critical section, one status: the entry and its `posts` map are written
+    together, never in two calls. FR-254: when the lock cannot be taken in a short wait, the run
+    continues read-only — one warning, no update, no exception.
     """
-    wanted = {key: [pid for pid in dict.fromkeys(posts) if pid]
-              for key, posts in uses.items() if key}
+    wanted = {key: _pairs(posts) for key, posts in uses.items() if key}
     if not wanted:
         return True
     logs = Path(logs_dir)
@@ -143,7 +171,7 @@ async def record_use(
     try:
         history = read_history(logs, log)
         today = today_iso()
-        for key, post_ids in wanted.items():
+        for key, posts in wanted.items():
             entry = history.get(key) or {"first_used": today, "run_ids": []}
             entry["last_used"] = today
             entry.setdefault("first_used", today)
@@ -151,7 +179,7 @@ async def record_use(
             entry["run_ids"] = (previous + [run_id])[-RUN_IDS_KEPT:]
             seen = entry.get("posts")  # a junk value is discarded, never a crash (FR-83)
             entry["posts"] = ((dict(seen) if isinstance(seen, dict) else {})
-                              | {pid: today for pid in post_ids})
+                              | {pid: {"date": today, "url": url} for pid, url in posts.items()})
             history[key] = entry  # `posts` is dropped again by _prune when it stays empty
         pruned = _prune(history, history_days)
         atomic_write(logs / HISTORY_FILE,
@@ -159,10 +187,37 @@ async def record_use(
     finally:
         (logs / LOCK_FILE).unlink(missing_ok=True)
     if log:
-        log.event("trend_history_updated", f"recorded {len(wanted)} trend(s)",
-                  trends=list(wanted), posts=sum(len(ids) for ids in wanted.values()),
+        log.event("trend_history_updated", f"recorded {len(wanted)} topic(s)",
+                  trends=list(wanted), posts=sum(len(posts) for posts in wanted.values()),
                   pruned=pruned)
     return True
+
+
+def _pairs(posts: Sequence[Any]) -> dict[str, str]:
+    """`(post_id, url)` pairs (or bare ids) → `{post_id: url}`, deduped, blanks dropped.
+
+    One creative can quote the same post twice (a headline and the caption off one `SourcePost`)
+    and two siblings on one topic can land on the same post after a `reuse_index` wrap, so the id
+    is the namespace and the first URL seen for it wins — unless it was empty and a later pair
+    knows the permalink, in which case the knowing one upgrades it. A pair whose id is blank —
+    or an item of a shape no reading fits — is not a post and is dropped rather than raised on:
+    history is the one subsystem that never costs a run its packaging step (FR-83).
+    """
+    merged: dict[str, str] = {}
+    for item in posts:
+        if isinstance(item, str):
+            post_id, url = item, ""
+        else:
+            try:
+                post_id, url, *_ = (*item, "")  # tolerate a bare 1-tuple as well as the pair
+            except TypeError:
+                continue
+        post_id, url = str(post_id or "").strip(), str(url or "").strip()
+        if not post_id:
+            continue
+        if not merged.get(post_id):
+            merged[post_id] = url
+    return merged
 
 
 def _prune(history: dict[str, dict[str, Any]], history_days: int) -> int:
@@ -185,13 +240,40 @@ def _prune(history: dict[str, dict[str, Any]], history_days: int) -> int:
     return len(stale)
 
 
-def _fresh_posts(posts: Any, within_days: float) -> dict[str, str]:
-    """The `posts` entries still inside a window. Dates go through `_age_days`, so both shapes it
-    already tolerates work here and no second date parser exists; anything else is junk, dropped."""
+def _fresh_posts(posts: Any, within_days: float) -> dict[str, dict[str, str]]:
+    """The `posts` entries still inside a window, normalized to `{date, url}` (FR-153/FR-298).
+
+    Dates go through `_age_days`, so both date spellings it already tolerates work here and no
+    second date parser exists; anything else is junk and is dropped. Survivors come back in the
+    current shape whatever shape they were stored in, which is why an older file needs no
+    migration pass: `_prune` writes back what this returns, so the file converges on one shape
+    the first time a run touches it.
+    """
     if not isinstance(posts, dict):
         return {}
-    return {str(pid): str(seen) for pid, seen in posts.items()
-            if (age := _age_days({"last_used": seen})) is not None and age <= within_days}
+    fresh: dict[str, dict[str, str]] = {}
+    for pid, seen in posts.items():
+        record = _post_record(seen)
+        age = _age_days({"last_used": record["date"]})
+        if age is not None and age <= within_days:
+            fresh[str(pid)] = record
+    return fresh
+
+
+def _post_record(value: Any) -> dict[str, str]:
+    """One `posts` value in the current shape, whatever it was written as.
+
+    Three spellings reach this: the current `{"date": ..., "url": ...}` mapping; a bare date
+    string from before FR-298 (no URL was recorded, so there is none to invent); and the
+    `"<date>|<url>"` pipe spelling FR-153's amendment text uses — read here so a file written to
+    that reading is understood rather than aged out early. Anything else yields a blank date,
+    which `_age_days` reports as unknown and the caller drops.
+    """
+    if isinstance(value, Mapping):
+        return {"date": str(value.get("date") or "").strip(),
+                "url": str(value.get("url") or "").strip()}
+    date, separator, url = str(value or "").partition("|")
+    return {"date": date.strip(), "url": url.strip() if separator else ""}
 
 
 def _age_days(entry: dict[str, Any]) -> float | None:

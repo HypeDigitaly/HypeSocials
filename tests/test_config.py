@@ -8,8 +8,17 @@ The invariant behind most of these: a config file is *data*, so an absent key mu
 (FR-50/NFR-19) and a malformed key must produce exactly ONE operator-facing line naming the key
 and the expected shape (FR-51/69) — never a traceback, never a partial load.
 
-The tail section covers a flag that overrides this same surface for one run (`--sources`,
-FR-61/65/135): it lives here because what it changes — and never rewrites — is a config.
+The tail section covers the flags that override this same surface for one run (FR-61/137/299):
+they live here because what they change — and never rewrite — is a config. `--sources` is
+deliberately NOT among them: it is a dead FR-135 remnant scheduled for deletion, and a test for
+it would freeze a corpse. `--mode` is already gone (A/B mode withdrawn, v2.0.0) and is asserted
+gone rather than exercised.
+
+A handful of keys below (`run.generation_mode`, `sources.inspiration_mix`,
+`sources.inspiration_folders`) are withdrawn CONCEPTS whose keys still load: the pivot's
+additive-then-subtractive migration removes them at Wave 3.5, at which point they become
+unknown-key warnings — the desired end state. Their tests assert what the loader does today and
+are expected to be deleted with the keys.
 """
 
 from __future__ import annotations
@@ -454,34 +463,60 @@ def test_config_default_path_points_at_the_repo_configs_folder() -> None:
     assert CONFIGS_DIR.name == "configs"
 
 
-# --------------------------------------------------------------------------- the --sources flag
+# --------------------------------------------------------------- the flags over this surface
 
 
-def test_fr65_the_sources_flag_overrides_sources_active_without_rewriting_the_file(
+def test_fr299_console_verbosity_is_a_sibling_of_log_verbosity_and_defaults_to_normal(
     tmp_path: Path,
 ) -> None:
-    """30 §5: the CLI twin of the menu's source picker — flags win for this run only (FR-61)."""
-    path = write(tmp_path, "sources:\n  active: [google_trends]\n")
-    cfg = load_config("unit", configs_dir=tmp_path)
+    """FR-299 (contracts item 16): a NEW `output.console_verbosity` key beside `log_verbosity`.
 
-    assert cli.parse_args([]).sources == ()  # no flag, no override: the file's list stands
-    applied = cli.apply_overrides(cfg, cli.parse_args(["--sources", "virlo, virlo"]))
+    Two dials, deliberately separate. `log_verbosity` governs how much detail reaches
+    events.jsonl; this one moves ONLY what reaches the screen — run.log and events.jsonl are
+    unchanged by it. A single dial would have made a readable console cost the forensic record,
+    which is the trade §1.10 exists to refuse.
+    """
+    default = load(tmp_path, "run: {}\n")
+    assert (default.output.console_verbosity, default.output.log_verbosity) == ("normal", "normal")
 
-    assert cfg.sources.active == ["virlo"]  # deduped, exactly as the picker dedupes its pick
-    assert "sources.active=virlo" in applied
-    assert "google_trends" in path.read_text(encoding="utf-8")
+    loud = load(tmp_path, "output:\n  console_verbosity: verbose\n")
+    assert loud.output.console_verbosity == "verbose"
+    assert loud.output.log_verbosity == "normal", "the console dial never moves the log dial"
+
+    line = refusal(tmp_path, "output:\n  console_verbosity: loud\n")
+    assert "output.console_verbosity" in line and "normal | verbose" in line
 
 
-def test_fr135_the_sources_flag_refuses_an_unknown_and_an_unbuilt_adapter_in_one_line(
-    capsys: pytest.CaptureFixture[str],
+def test_fr299_the_verbose_flag_is_a_console_tier_and_never_a_config_override(
+    tmp_path: Path,
 ) -> None:
-    """FR-63/69: one line, exit 2, before any config load — and never a silent no-op (FR-135)."""
-    for value, expected in (("reddit", "expected a comma-separated list of"),
-                            ("virlo,google_trends", "not built yet")):
-        with pytest.raises(SystemExit) as caught:
-            cli.parse_args(["--sources", value])
-        assert caught.value.code == 2
-        assert expected in capsys.readouterr().err
+    """`--verbose`/`-v` (FR-299) is the flag twin of the key above — but it applies NOTHING to the
+    config. Verbosity is a console tier, not a config value: the runner reads `opts.verbose`
+    beside `config.output.console_verbosity`, so `apply_overrides` has nothing to write and the
+    run's override list stays a list of things that changed what the run DOES.
+    """
+    assert cli.parse_args([]).verbose is False
+    assert cli.parse_args(["--verbose"]).verbose is True
+    assert cli.parse_args(["-v"]).verbose is True  # the short form the operator will actually type
+
+    cfg = load(tmp_path, "run: {}\n")
+    applied = cli.apply_overrides(cfg, cli.parse_args(["-v"]))
+
+    assert applied == []
+    assert cfg.output.console_verbosity == "normal"  # untouched: the flag is read, not applied
+
+
+def test_the_mode_flag_is_gone_with_ab_mode(capsys: pytest.CaptureFixture[str]) -> None:
+    """30 §5's `--mode` row is deleted (v2.0.0, operator decision #2): there is one render per
+    creative, so there is no analyzed/direct/both to pick. argparse refuses it by name with exit
+    2 — the same one-line boundary refusal every unknown flag gets (FR-63/69) — rather than
+    accepting it and silently doing nothing, which is how a withdrawn flag rots."""
+    with pytest.raises(SystemExit) as caught:
+        cli.parse_args(["--mode", "both"])
+
+    assert caught.value.code == 2
+    assert "unrecognized arguments: --mode" in capsys.readouterr().err
+    assert not hasattr(cli.parse_args([]), "mode")
 
 
 def test_fr137_the_platforms_flag_refuses_the_same_typo_at_the_flag_boundary(

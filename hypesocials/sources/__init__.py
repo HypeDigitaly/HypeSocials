@@ -39,9 +39,12 @@ from hypesocials.config import Config
 from hypesocials.models import TrendItem
 from hypesocials.sources import virlo as _virlo
 from hypesocials.sources.inspiration import InspirationPool, Mix, apply_mix, load_pool
-from hypesocials.sources.notion import BrandContext, fetch_brand_context
+from hypesocials.sources.notion import BrandContext, apply_brand_overrides, fetch_brand_context
 from hypesocials.sources.virlo import (
     Counters, TrendFeed, cleanup, list_monitors, reference_paths)
+#: FR-297a: the topics table's caption states the strength formula by READING the adapter's own
+#: weights — one definition, so the printed sentence can never drift from the scoring code.
+from hypesocials.sources.virlo import _WEIGHTS as STRENGTH_WEIGHTS
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from hypesocials.outputs import LogWriter
@@ -153,7 +156,9 @@ async def fetch(
 
 
 __all__ = [
-    "SOURCE_STATUS", "BrandContext", "Counters", "InspirationPool", "Mix", "TrendFeed",
-    "apply_mix", "brief_key", "cleanup", "fetch", "fetch_brand_context", "list_monitors",
+    "SOURCE_STATUS", "STRENGTH_WEIGHTS", "BrandContext", "Counters", "InspirationPool", "Mix",
+    "TrendFeed",
+    "apply_brand_overrides", "apply_mix", "brief_key", "cleanup", "fetch", "fetch_brand_context",
+    "list_monitors",
     "load_pool", "reference_group", "reference_group_index", "reference_paths",
 ]

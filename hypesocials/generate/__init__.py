@@ -45,6 +45,7 @@ Do not: call Kie directly, name a Kie field, spell an asset path, re-derive a pr
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -79,7 +80,7 @@ from hypesocials.prompts_engine import (
     UnresolvedPlaceholderError,
     build_context,
 )
-from hypesocials.util import Deadline
+from hypesocials.util import Deadline, fit
 
 # Both format modules back-import this package under TYPE_CHECKING only, so importing them here
 # is safe and keeps the dispatch a plain name lookup (which is also what makes it fakeable).
@@ -148,10 +149,25 @@ class Env:
     #   `refs.style_of` is the one resolver (the lazy-import precedent, contracts item 11)
     branding: BrandingConfig = field(default_factory=BrandingConfig)  # FR-292 brand selector +
     #   profiles; prompts_engine renders it, refs/carousel/reel read entry.branded beside it
+    #: M6 (W3): the topic filter's guarded LLM `strip` verdicts, `trend_key -> brands`. Merged
+    #: with `branding.competitors` into every prompt's `competitor_strings` — LLM-discovered
+    #: brands must reach the RENDER prompt, not only the CopySet (Session-C obligation 2).
+    strip_brands: Mapping[str, Sequence[str]] = field(default_factory=dict)
     stop: asyncio.Event | None = None  # Ctrl+C: stop ORDERING new work (FR-201)
     deadline: Deadline | None = None  # the run's soft monotonic ceiling (FR-108/243)
     credits_exhausted: bool = False  # FR-167, latched once
     disk_full: bool = False  # 10 §10, latched once: further downloads stop run-wide
+    # --- FR-299 (D45): the RENDER phase must never be silent past `heartbeat_s`. `say` is the
+    # runner's console seam (identical bytes to run.log); `pulse` is the run's ONE silence clock
+    # (any printed line anywhere resets it). Both None keeps this module console-mute — previews
+    # and unit tests never wire them. Counters are mutated by `_submit` only.
+    say: Any = None
+    pulse: Any = None  # util.Pulse — Any keeps generate free of a util type at the seam
+    heartbeat_s: float = 30.0  # resolved cadence: 30 interactive / 90 --yes / 15 verbose
+    jobs_expected: int = 0  # the runner's pre-computed submission forecast (heartbeat denominator)
+    jobs_submitted: int = 0
+    jobs_done: int = 0  # reached a terminal outcome, success or not
+    jobs_ok: int = 0  # terminal AND usable — the RENDER closing header's `ok` count
 
     @property
     def halted(self) -> bool:
@@ -159,6 +175,13 @@ class Env:
         before each submission, so an interrupt costs at most one in-flight job."""
         return bool(self.stop is not None and self.stop.is_set()) or bool(
             self.deadline is not None and self.deadline.expired)
+
+    def competitor_strings_for(self, entry: PlanEntry) -> tuple[str, ...]:
+        """M6, resolved ONCE for every render role: the config blocklist (fail-closed) plus the
+        filter's guarded LLM strips for THIS creative's topic. Every `build_context` call in this
+        package passes exactly this, so no prompt path can miss an LLM-discovered brand."""
+        return (*map(str, self.branding.competitors),
+                *map(str, self.strip_brands.get(entry.trend_key or "", ())))
 
 
 @dataclass(slots=True)
@@ -209,6 +232,22 @@ async def create(entries: Sequence[PlanEntry], env: Env) -> Report:
     return report
 
 
+#: FR-299: the first render heartbeat is suppressed this long after the wait begins — a healthy
+#: fast batch stays heartbeat-free even under the verbose 15 s cadence (contracts item 16).
+_FIRST_HEARTBEAT_RENDER_S = 20.0
+
+
+def _heartbeat_line(env: Env, elapsed_s: float) -> str:
+    """FR-299's render heartbeat, read straight off the permit gate — never off a guess."""
+    running_w1, running_w2, queued = render.gate_stats()
+    total = max(env.jobs_expected, env.jobs_submitted)
+    minutes, rest = divmod(int(elapsed_s), 60)
+    stamp = f"{minutes}m{rest:02d}s" if minutes else f"{int(elapsed_s)}s"
+    return (f"          render {env.jobs_done}/{total} done, "
+            f"{running_w1 + running_w2} running ({running_w1} w1, {running_w2} w2), "
+            f"{queued} queued ... {stamp}")
+
+
 async def _drain(tasks: list[asyncio.Task[AssetRecord]], env: Env) -> list[AssetRecord]:
     """Wait for every creative, then honour FR-108's single grace window.
 
@@ -217,19 +256,31 @@ async def _drain(tasks: list[asyncio.Task[AssetRecord]], env: Env) -> list[Asset
     before it is cancelled: the entry goes terminal as `abandoned` with its taskId in the ledger,
     and the job is left to complete unclaimed at Kie (FR-108's stated cost). Never resubmitted,
     never awaited past the grace, and cancellation never escapes this function.
+
+    This poll loop is ALSO the FR-299 render heartbeat's hook (§1.10): a silence-breaker, not a
+    ticker — it prints only when `env.pulse` reports nothing has printed for `heartbeat_s`, and
+    the print itself re-stamps the clock through the runner's `say` seam.
     """
     pending: set[asyncio.Task[AssetRecord]] = set(tasks)
     shown = False
+    wait_started = time.monotonic()
     while pending and not env.halted:
         done, pending = await asyncio.wait(pending, timeout=_HALT_POLL_S)
         if done and not shown:  # FR-76: the first creatives are reviewable while reels still run
             shown = True  # NFR-22 is inside `write_gallery` — it returns None, it never raises
             write_gallery(env.run_dir, title=env.config.output.gallery.title, log=env.log)
+            if env.say is not None:  # FR-297f: the gallery path prints the moment it exists
+                env.say(f"  gallery   {env.run_dir / 'gallery.html'}")
+        if (pending and env.say is not None and env.pulse is not None
+                and env.pulse.due(wait_started=wait_started,
+                                  suppress_s=_FIRST_HEARTBEAT_RENDER_S)):
+            env.say(_heartbeat_line(env, time.monotonic() - wait_started))
     if pending:
-        env.log.warn("grace_poll",
-                     f"{len(pending)} creative(s) still in flight — one {GRACE_S:.0f}s grace "
-                     "window, then they are abandoned and left unclaimed at Kie (FR-108)",
-                     in_flight=len(pending))
+        grace_line = (f"{len(pending)} creative(s) still in flight — one {GRACE_S:.0f}s grace "
+                      "window, then they are abandoned and left unclaimed at Kie (FR-108)")
+        env.log.warn("grace_poll", grace_line, in_flight=len(pending))
+        if env.say is not None:
+            env.say(f"  {grace_line}")
         _, pending = await asyncio.wait(pending, timeout=GRACE_S)
     for task in pending:
         task.cancel()
@@ -464,22 +515,51 @@ async def _submit(
         held = await env.budget.commit(projected, label=label, category=SpendCategory.RENDER,
                                        asset_id=entry.asset_id, kind=kind)
     token = _CURRENT_ASSET.set(entry.asset_id)
+    env.jobs_submitted += 1
     try:
         outcome = await render.run(profile, params, refs, priority)
     except render.KieOutOfCredits:
         await env.budget.release(held)  # nothing was submitted, so nothing was billed
+        env.jobs_submitted -= 1
         raise
     except render.RenderError as exc:  # seam misuse or an unknown profile: no job ever left
         await env.budget.release(held)
+        env.jobs_submitted -= 1
         env.log.error("render_seam_error", f"{entry.asset_id}: {exc}", asset_id=entry.asset_id)
         return RenderOutcome(kind=RenderOutcomeKind.FAIL, fail_message=str(exc))
     finally:
         _CURRENT_ASSET.reset(token)
     await env.budget.reconcile(held, outcome.cost_usd if outcome.cost_usd else None)
+    env.jobs_done += 1
+    if outcome.kind is RenderOutcomeKind.SUCCESS and outcome.result_urls:
+        env.jobs_ok += 1
     _OPEN_TASKS.pop(entry.asset_id, None)  # it reached a terminal state: nothing to abandon
     env.ledger.terminal(entry.asset_id, outcome.request_token or "", outcome.task_id,
                         outcome.fail_cause.value if outcome.fail_cause else outcome.kind.value)
+    if env.say is not None:  # FR-299: one event-driven terminal line per submission
+        env.say(_job_line(entry, label, priority, outcome))
     return outcome
+
+
+def _job_line(entry: PlanEntry, label: str, priority: RenderPriority,
+              outcome: RenderOutcome) -> str:
+    """`ok/failed · NN fmt · w1|w2 · what · dur · $cost` — the §1.10 per-job console line.
+
+    `what` is the submission label's descriptive half (`carousel slide 4/5`, `reel clip`,
+    `moderation retry`), which is the honest per-job identity this seam already carries; a failed
+    job shows its cause instead of a price, because the cause is what the operator acts on.
+    """
+    ordinal = entry.asset_id.rsplit("_", 1)[-1]
+    wave = "w1" if priority is RenderPriority.WAVE1 else "w2"
+    what = label.split(" · ", 1)[0]
+    ok = outcome.kind is RenderOutcomeKind.SUCCESS and bool(outcome.result_urls)
+    if ok:
+        return (f"          ok      {ordinal:>2} {entry.creative_format:<8} {wave}  "
+                f"{what[:20]:<20} {outcome.elapsed_s:>4.0f}s  ${outcome.cost_usd:.3f}")
+    cause = outcome.fail_cause.value if outcome.fail_cause else outcome.kind.value
+    detail = (outcome.fail_message or "no usable result").replace("\n", " ")
+    head = f"          failed  {ordinal:>2} {entry.creative_format:<8} {wave}  "
+    return head + fit(f"{what}: {cause} — {detail}", 78 - len(head))
 
 
 # --------------------------------------------------------------------------- inputs
@@ -505,9 +585,9 @@ def _assemble(entry: PlanEntry, env: Env, attached: Sequence[Reference], *,
         niche_visual_world=env.niche_visual_world,  # A15: render-side art direction
         branding_block=branding_block(entry, env, style),  # FR-292 channel 2 (never the wordmark)
         wordmark=wordmark_of(entry, env),  # FR-292 channel 1: TEXT-block only, branded only (B1)
-        # M6: the deterministic blocklist reaches every render prompt; the filter's LLM-proposed
-        # strips are applied at the CopySet by `copywrite._apply_strip` (W3 threads verdicts).
-        competitor_strings=tuple(env.branding.competitors),
+        # M6: the deterministic blocklist AND the filter's LLM-proposed strips for this topic
+        # reach every render prompt — the CopySet-level strip alone is not the whole guarantee.
+        competitor_strings=env.competitor_strings_for(entry),
         text_budgets=env.config.run.text_budgets,
         reference_roles=role_lines(attached),  # FR-191: one line per attachment, by provenance
     )
@@ -593,6 +673,10 @@ def _abandon(entry: PlanEntry, env: Env, folder: AssetFolder) -> AssetRecord:
     # FR-73: `event_id` points at the line that explains this asset — never null on a terminal.
     event_id = env.log.warn("abandoned", f"{entry.asset_id}: {reason}", asset_id=entry.asset_id,
                             task_id=task_id or "")
+    if env.say is not None:  # §1.10: the abandoned line carries FR-108's grace sentence
+        ordinal = entry.asset_id.rsplit("_", 1)[-1]
+        env.say(f"          abandoned {ordinal:>2} {entry.creative_format:<8} "
+                f"job {task_id or 'unknown'} — billed at submission, may still complete unclaimed")
     return folder.skip(reason, DegradationTag.ABANDONED, event_id=event_id)
 
 

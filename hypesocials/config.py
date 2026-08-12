@@ -235,6 +235,10 @@ class OutputConfig:
     dir: str = "output/"
     gallery: GalleryConfig = field(default_factory=GalleryConfig)
     log_verbosity: Literal["normal", "verbose"] = "normal"
+    #: FR-299 (D45): the CONSOLE tier only. run.log and events.jsonl are unchanged by this —
+    #: `log_verbosity` above governs events.jsonl detail, this key (or `--verbose`) only decides
+    #: whether `_Session.note()` lines reach the screen. Sibling by design, never merged.
+    console_verbosity: Literal["normal", "verbose"] = "normal"
 
 
 @dataclass(slots=True)
@@ -334,8 +338,10 @@ def _default_profiles() -> dict[str, BrandProfile]:
                     "teal_light": "#8BF2E9", "dark": "#14130F", "offwhite": "#FAFAF7"},
             fonts={"primary": "Geist", "mono": "Geist Mono"},
             font_character="Geist — clean grotesque, tight tracking, even color",
-            background_hint="off-white ground with faint dot-grid and soft teal bloom, or "
-                            "charcoal-green dark mode with teal glow",
+            # W3 conductor decision (M9 — no unresolved variants anywhere a model might read):
+            # the light surface is THE hypelead ground. The artifact's ", or charcoal-green dark
+            # mode with teal glow" alternative is a config-file swap, not a compiled default.
+            background_hint="off-white ground with faint dot-grid and soft teal bloom",
             never_always=["no indigo or violet", "no orange #F97316"],
             never_style=["no photography/stock/3D", "no serif or handwritten type",
                          "teal is accent only, never full-bleed canvas"],

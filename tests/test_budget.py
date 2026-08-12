@@ -3,6 +3,14 @@
 Naming convention: `test_fr<NNN>_<what the bullet says>`. Each FR-107 test quotes its bullet in
 the docstring so a reader can check the assertion against the requirement without leaving the
 file. Fixtures live here (not in `conftest.py`) because nothing else needs them yet.
+
+**FR-107's LLM bullets post-pivot (v2.0.0, folded in by T3.5).** The style-brief `analysis_call`
+line is withdrawn with the vision stage that produced it (D41) — no LLM is asked what a trend
+looks like any more — and the `analysis` ROLE survives as the VISION CHECK's role, priced through
+`_check_price` (FR-27/FR-105). In its place FR-107 gained a first bullet: one batched
+`filter_call` for the competitor screen (FR-294), priced pre-Collect at the worst-case bound
+`len(monitors) x virlo_topics_per_monitor`. `siblings_of()` is keyed off asset ids rather than
+`pair_id` — A/B mode is withdrawn, so every creative has its own CopySet.
 """
 
 from __future__ import annotations
@@ -161,9 +169,11 @@ def test_fr107_vision_check_image_tokens_are_priced_at_native_render_resolution(
     """"**vision image tokens** — **vision-check calls priced at native render resolution**"
     (FR-107 as amended v2.0.0).
 
-    T2.4: the paired half of this test asserted that the STYLE-BRIEF analysis line stayed flat
-    across tiers because FR-93 downscaled its images. That line is gone with the vision stage
-    (D41), and FR-107's bullet now names the check only. Full rewrite of this suite: T3.5.
+    The bullet names the CHECK alone now. Its pre-pivot twin asserted that the style-brief
+    analysis line stayed flat across resolution tiers because FR-93 downscaled its images to
+    ~1024 px before sending them; that line, that downscale and the whole vision-analysis stage
+    are withdrawn (D41/FR-128), and the check has NEVER downscaled — it reads the render we just
+    paid for, at the size we paid for it. So the tier moves this price, and must.
     """
     cfg.run.vision_check = True
 
@@ -212,7 +222,12 @@ def test_fr107_topic_filter_screen_is_one_call_priced_at_the_worst_case_topic_bo
 ) -> None:
     """FR-107 (v2.0.0), first bullet: "**Topic filter call** — one batched LLM screen of all
     candidate topics at the worst-case bound `len(monitors) x virlo_topics_per_monitor x
-    per-topic-tokens` priced pre-Collect" (T2.4 — added with the line; T3.5 owns the full suite).
+    per-topic-tokens` priced pre-Collect".
+
+    The bound is deliberately the CONFIG's, not the plan's: the screen is priced before Collect,
+    so the only honest number is the most Virlo could hand back. A monitor that answers with three
+    topics simply costs less than the line said, which is the safe direction (D11); understating
+    is the one unacceptable estimator error.
     """
     cfg.sources.virlo_monitor_ids = ["m1", "m2"]
     plan = [entry(0, trend_key="t1")]
@@ -330,28 +345,52 @@ def test_fr107_unpriced_non_reel_line_participates_at_zero_and_says_so(cfg: Conf
 # ------------------------------------------------- v1.6.5 estimator fidelity fix (M1 finding)
 
 
-def test_copy_priced_per_distinct_assigned_trend(cfg: Config) -> None:
+def test_copy_priced_per_distinct_assigned_topic(cfg: Config) -> None:
     """v1.6.5 (00-overview amendment log): M1's actual $0.23 beat its $0.16 worst case partly
     because a per-call line "priced one call while two distinct trends were assigned".
 
     `plan.assign()` binds a topic per ATOMIC GROUP and prefers the least-used one, so two groups
     can consume two distinct topics whatever `max_trend_reuses_per_run` says — the reuse ceiling
-    only ever *reduces* the count when the pool is short. The pre-confirm estimate therefore
-    prices the honest worst case: one copy call (FR-99) per group.
+    only ever *reduces* the count when the pool is short. `_stamp_provisional` models exactly that
+    worst case before Collect, and the estimate prices one copy call (FR-99) per group off it.
 
-    T2.4: the `analysis_call` half of this test went with the style-brief stage (D41); what it was
-    really guarding — provisional keys are DISTINCT per group, so the grouped-call count is not
-    understated — is what the copy assertion below carries. Full rewrite: T3.5.
+    The `analysis_call` half of this test went with the style-brief stage (D41); what it was
+    really guarding — provisional keys are DISTINCT per group, so the grouped-call count is never
+    understated — is what the copy assertion carries now.
     """
     from hypesocials.runner import _stamp_provisional  # the pre-Collect half of the same fix
 
-    cfg.run.max_trend_reuses_per_run = 2  # the M1 setting that hid the second trend
+    cfg.run.max_trend_reuses_per_run = 2  # the M1 setting that hid the second topic
     plan = [entry(0), entry(1)]
     _stamp_provisional(plan)
 
     assert len({e.trend_key for e in plan}) == 2  # one distinct topic per atomic group
     est = estimate(cfg, plan)
-    assert len(lines(est, "copy_call")) == 2  # FR-99 groups by (trend x language), same worst case
+    assert len(lines(est, "copy_call")) == 2  # FR-99 groups by (topic x language), same worst case
+    assert lines(est, "analysis_call") == [], "the style-brief line is withdrawn (D41)"
+
+
+def test_siblings_are_counted_by_asset_id_now_that_nothing_pairs(cfg: Config) -> None:
+    """`budget.siblings_of()` re-based off `pair_id` (v2.0.0, contracts W2 blocker fix).
+
+    A both-mode pair used to be TWO renders of ONE CopySet, so the copy call's sibling count was
+    the number of distinct `pair_id`s. A/B mode is withdrawn (D42): every creative gets its own
+    CopySet, so the distinct ASSET IDS are the siblings — and reading `pair_id` here would raise
+    `AttributeError` on every `estimate()` the moment the field is excised at W3.5, which is the
+    one thing this module may never do to a run.
+
+    Both creatives below share a topic and a language, so FR-99 groups them into ONE call whose
+    prompt has to carry two sibling briefs — visibly dearer than the single-sibling call.
+    """
+    solo = one(estimate(cfg, [entry(0, trend_key="t1")]), "copy_call")
+    paired = one(estimate(cfg, [entry(0, trend_key="t1"), entry(1, trend_key="t1")]), "copy_call")
+
+    assert "1 siblings" in solo.label and "2 siblings" in paired.label
+    assert solo.unit_price is not None and paired.unit_price is not None
+    assert paired.unit_price > solo.unit_price  # one more sibling brief in the same prompt
+    # ... and the split allowance (FR-99's per-creative fallback) counts the same siblings.
+    assert one(estimate(cfg, [entry(0, trend_key="t1"), entry(1, trend_key="t1")]),
+               "copy_split_allowance").quantity == 2
 
 
 def test_truncation_retry_allowance_in_worst_case_not_expected(cfg: Config) -> None:
@@ -360,8 +399,8 @@ def test_truncation_retry_allowance_in_worst_case_not_expected(cfg: Config) -> N
     `worst_case_usd` only, because FR-106a's expected projection is never gated on a contingency
     that mostly never happens.
 
-    T2.4: re-based off the withdrawn `analysis_call` line (D41) onto the copy call, which is the
-    surviving grouped LLM call and carries the identical two-wide-calls shape. Full rewrite: T3.5.
+    Re-based off the withdrawn `analysis_call` line (D41) onto the copy call, which is the
+    surviving grouped LLM call and carries the identical two-wide-calls shape.
     """
     plan = [entry(0), entry(1)]
     from hypesocials.runner import _stamp_provisional
@@ -380,11 +419,27 @@ def test_truncation_retry_allowance_in_worst_case_not_expected(cfg: Config) -> N
     assert est.expected_usd == pytest.approx(bare)
 
 
-# T2.4 DELETED `test_worst_case_covers_a_call_that_truncation_retries_and_parse_retries`: its whole
-# subject was the style-brief `analysis_call` line (W6 runs wrfc/ax10, `max_tokens.analysis` at
-# 12,000), which the pivot withdrew (D41). The compound-retry BOUND it pinned survives in
-# `test_truncation_retry_allowance_in_worst_case_not_expected` above and in the `_widened_cap`
-# parity test at the end of this file. A copy-role equivalent belongs to T3.5's rewrite.
+def test_every_llm_role_carries_the_same_compound_retry_bound(cfg: Config) -> None:
+    """FR-127's widened truncation retry and FR-41's parse retry are INDEPENDENT, each capped at
+    one, and one call can spend both (`llm._run_attempts`) — so every LLM role carries an
+    allowance of exactly two wide calls per call it makes, never `max(...)` of the two.
+
+    This replaces the pre-pivot `analysis_call` version of the bound, deleted with the style-brief
+    stage (D41). Both surviving roles are asserted in one place so a new role cannot quietly ship
+    with a cheaper allowance than the code will actually spend: the filter is one batched call
+    (2 retries), copy is one call per FR-99 group (2 per group).
+    """
+    cfg.sources.virlo_monitor_ids = ["m1", "m2"]
+    est = estimate(cfg, [entry(0, trend_key="t1"), entry(1, trend_key="t2")])
+
+    for call_code, retry_code, expected in (("filter_call", "filter_retry_allowance", 2),
+                                            ("copy_call", "copy_retry_allowance", 4)):
+        call, retry = lines(est, call_code)[0], one(est, retry_code)
+        assert retry.allowance and retry.category is SpendCategory.LLM, retry_code
+        assert retry.quantity == expected, retry_code
+        assert retry.unit_price is not None and call.unit_price is not None
+        assert retry.unit_price > call.unit_price, retry_code  # priced at the widened cap
+        assert retry.amount_usd == pytest.approx(retry.unit_price * expected), retry_code
 
 
 def test_job_projection_is_the_one_per_submission_price(cfg: Config) -> None:
@@ -401,8 +456,12 @@ def test_job_projection_is_the_one_per_submission_price(cfg: Config) -> None:
     assert cfg.reel_price_per_second is None
     assert budget.job_projection(cfg, reel, "clip") == 0.0
 
-    priced_reels(cfg, 0.57)  # the hypedigitaly.yaml worst-case-honest scalar (v1.6.6)
-    assert budget.job_projection(cfg, reel, "clip") == pytest.approx(2.85)
+    # `configs/hypedigitaly.yaml`'s shipped 720p scalar, re-based at v2.0.0: 63 credits/s x $0.005
+    # = $0.315 per OUTPUT second. The old 0.950/0.425 pair priced Seedance's with-a-video-reference
+    # branch, which the pivot made unreachable — no motion reference is attached any more (D44) —
+    # and overstating a reel ~3x silently trimmed creatives out of plans that would have fitted.
+    priced_reels(cfg, 0.315)
+    assert budget.job_projection(cfg, reel, "clip") == pytest.approx(1.575)  # a 5 s reel
 
 
 def test_nfr18_estimate_is_computed_from_local_config_only(cfg: Config) -> None:
@@ -428,8 +487,9 @@ def test_fr282_every_priced_line_carries_key_origin_and_assumed_model(cfg: Confi
         assert line.price_key and line.price_origin and line.assumed_model
         assert line.price_key.startswith("models.price_per_unit.")
     assert one(est, "image_render").assumed_model == cfg.models.image
-    # T2.4: the `analysis_call` row went with the style-brief stage (D41); the `analysis` ROLE is
-    # still asserted here through the vision check, which is what it prices now (FR-27/FR-105).
+    # The `analysis_call` row went with the style-brief stage (D41). The `analysis` ROLE did not:
+    # it is the vision check's role now, which is exactly what these lines price (FR-27/FR-105),
+    # so `models.analysis` and `max_tokens.analysis` keep meaning something and keep being named.
     assert all(check.assumed_model == cfg.models.analysis
                for check in lines(est, "vision_check"))
     assert one(est, "copy_call").assumed_model == cfg.models.copy
@@ -474,41 +534,48 @@ def test_unknown_price_tier_is_unpriced_rather_than_silently_retiered(cfg: Confi
 
 
 def _mixed_plan() -> list[PlanEntry]:
-    """Brief entries first (FR-1), then a both-mode pair, then a carousel — plan order is the
-    trim order, reversed."""
+    """Brief entries first (FR-1), then a two-entry trim unit, then a carousel — plan order is the
+    trim order, reversed.
+
+    The two-entry group used to be a both-mode A/B pair, which is withdrawn (v2.0.0): `plan._emit`
+    puts exactly one entry in a group today. The fixture builds one by hand anyway, because FR-106
+    is written in terms of the GROUP and not the entry — `budget.trim` must be unable to take half
+    a unit whatever a future format puts inside one, and a carousel is already an atomic creative
+    whose slides may never be split (D31).
+    """
     return [
         entry(0, brief_name="ai-audit-cta", atomic_group="brief-ai-audit-cta"),
         entry(1, trend_key="t1"),
-        entry(2, trend_key="t2", variant="analyzed", pair_id="p1", atomic_group="pair-p1"),
-        entry(3, trend_key="t2", variant="direct", pair_id="p1", atomic_group="pair-p1"),
+        entry(2, trend_key="t2", atomic_group="unit-a2"),
+        entry(3, trend_key="t2", atomic_group="unit-a2"),
         entry(4, "carousel", trend_key="t3", atomic_group="deck-a4"),
     ]
 
 
 def test_fr106_trim_removes_whole_groups_from_the_end_in_reverse_plan_order(cfg: Config) -> None:
     """FR-106: "entries are removed from the end of the plan, in reverse plan order" — a carousel
-    and a both-mode pair are one unit each, and brief creatives are trimmed last."""
+    and a multi-entry group are one unit each, and brief creatives are trimmed last."""
     survivors_only = estimate(cfg, [entry(0, brief_name="ai-audit-cta"), entry(1, trend_key="t1")])
     plan = _mixed_plan()
 
     result = trim(cfg, plan, cap_usd=survivors_only.expected_usd)
 
     assert [e.asset_id for e in result.kept] == ["a0", "a1"]  # the brief entry survives
-    assert [d.order for d in result.trimmed] == [4, 2, 3]  # deck first, then the whole pair
-    assert {d.atomic_group for d in result.trimmed} == {"deck-a4", "pair-p1"}
+    assert [d.order for d in result.trimmed] == [4, 2, 3]  # deck first, then the whole unit
+    assert {d.atomic_group for d in result.trimmed} == {"deck-a4", "unit-a2"}
     assert result.fits and result.estimate.expected_usd <= result.cap_usd
     assert result.original_estimate_usd > result.cap_usd
 
 
 def test_fr106_atomic_groups_are_never_split_by_a_trim(cfg: Config) -> None:
-    """A both-mode pair is one plan entry rendered two ways — trimming may never take one half."""
-    # A cap that leaves room for the deck-less plan minus a hair reaches INTO the pair: one half
-    # would fit, so a per-entry trim would split it. Both halves must go.
+    """One trim unit goes whole or stays whole — trimming may never take half of it."""
+    # A cap that leaves room for the deck-less plan minus a hair reaches INTO the two-entry unit:
+    # one half would fit, so a per-entry trim would split it. Both halves must go.
     without_deck = estimate(cfg, _mixed_plan()[:4]).expected_usd
     result = trim(cfg, _mixed_plan(), cap_usd=without_deck - 0.001)
 
-    assert len([d for d in result.trimmed if d.atomic_group == "pair-p1"]) == 2
-    assert not any(e.atomic_group == "pair-p1" for e in result.kept)
+    assert len([d for d in result.trimmed if d.atomic_group == "unit-a2"]) == 2
+    assert not any(e.atomic_group == "unit-a2" for e in result.kept)
     assert [e.asset_id for e in result.kept] == ["a0", "a1"]
 
 
@@ -666,9 +733,11 @@ def test_format_usd_rounds_half_up_to_cents() -> None:
 
 def test_the_retry_allowance_prices_the_cap_llm_will_actually_ask_for() -> None:
     """`llm._widen` clamps the widened retry at `_output_ceiling` (16,384), which the estimate
-    ignored — over-stating every analysis allowance line by ~3,800 output tokens once
-    `max_tokens.analysis` rose to 12,000. Over-stating is the safe direction (D11), but a number
-    the operator reads should be the number the code will spend.
+    ignored — over-stating every retry-allowance line by ~3,800 output tokens once a role's
+    `max_tokens` rose to 12,000. Over-stating is the safe direction (D11), but a number the
+    operator reads should be the number the code will spend. Post-pivot the lines this governs
+    are the filter's and copy's (D41 withdrew the style-brief one), and both go through
+    `budget._widened_cap`, so one parity assertion still covers every role there is.
 
     Re-homed verbatim from `test_reference_rotation.py` (deleted in the topic-first pivot's W1,
     plan v2.2 blocker fix): the parity assertion below was that file's one test unrelated to

@@ -22,6 +22,12 @@ Everything asserts on the **specific message text**, never on `ok` — `ok` also
 free disk space and configured prices, so an `ok`-based assertion would be flaky and would not prove
 that this rule fired. `output.dir` is redirected into `tmp_path` because `_check_disk` really does
 `mkdir` plus a write probe. Nothing here contacts anything: no network, no MCP, no spend.
+
+The tail sections are the post-pivot additions (v2.0.0), folded in by T3.5: FR-295's registry
+refusal — the meta-style registry is the visual authority and has NO built-in tier (D41), so a
+missing `styles.yaml` is exit 2 rather than a silent default — FR-292's branding validation, and
+FR-286's wrapping of `Preflight.report`, whose lines grew past one console line once the hints
+started explaining a verbatim-copy pipeline.
 """
 
 from __future__ import annotations
@@ -77,22 +83,21 @@ def _config(
 def _entry(order: int, *, brief: str | None = None, influence: str = "override") -> PlanEntry:
     """One plan entry, carrying the only two fields the supply predicate reads.
 
-    A brief with `influence="override"` needs no trend (FR-144); anything else — including a
-    `blend` brief (FR-145) — takes a trend like any other entry and therefore cannot run.
+    A brief with `influence="override"` needs no topic (FR-144); anything else — including a
+    `blend` brief (FR-145) — takes a topic like any other entry and therefore cannot run. The
+    asset id is FR-71's post-pivot four-segment shape; the variant tag is withdrawn (v2.0.0).
     """
-    needs_trend = brief is None or influence != "override"
+    needs_topic = brief is None or influence != "override"
     return PlanEntry(  # type: ignore[arg-type]
         order=order,
-        asset_id=f"Li_img_{brief or 'dance-challenge'}_"
-                 f"{'analyzed' if needs_trend else 'direct'}_{order + 1:02d}",
+        asset_id=f"Li_img_{brief or 'dance-challenge'}_{order + 1:02d}",
         creative_format="image",
         platform="linkedin",
         language="en",
         aspect_ratio="16:9",
-        variant="analyzed" if needs_trend else "direct",
         brief_name=brief,
         brief_influence=influence if brief else None,  # type: ignore[arg-type]
-        trend_key="dance-challenge" if needs_trend else None,
+        trend_key="m1::dance-challenge" if needs_topic else None,
     )
 
 
@@ -271,12 +276,11 @@ def test_10pipeline_one_override_brief_is_what_flips_error_into_warning(tmp_path
     assert _supply_errors(mixed) == [] and len(_supply_warnings(mixed)) == 1
 
 
-# ------------------------------------------------- (e) FR-295 registry / FR-292 branding (T2.4)
+# -------------------------------------------------- (e) FR-295 registry / FR-292 branding
 #
-# Added with the checks themselves; the FULL rewrite of this suite is T3.5's. Every registry here
-# is built inside `tmp_path` and reached through `config.prompts_dir` (the FR-174 override-first
-# seam), so these tests never depend on the shipped `prompts/styles.yaml` — and a broken shipped
-# registry would fail them for the right reason rather than by accident.
+# Every registry here is built inside `tmp_path` and reached through `config.prompts_dir` (the
+# FR-174 override-first seam), so these tests never depend on the shipped `prompts/styles.yaml` —
+# and a broken shipped registry would fail them for the right reason rather than by accident.
 
 _ONE_IMAGE_STYLE = """
 version: 1
@@ -429,6 +433,56 @@ def test_f22_the_diacritics_hint_follows_the_source_post_not_the_configured_lang
 
     assert len([hint for hint in verbatim.hints if "verbatim" in hint]) == 1, verbatim.report
     assert [hint for hint in brief_only.hints if "verbatim" in hint] == []
+
+
+def test_f22_a_czech_config_still_gets_the_certain_hint_rather_than_the_possible_one(
+    tmp_path: Path,
+) -> None:
+    """The two hints are siblings, and only one fires: a configured `cs` is a CERTAINTY (it decides
+    brief-override creatives and every degrade path), where a verbatim creative is only a
+    possibility. Printing both would say the same thing twice with two confidences."""
+    config = _styled_config(tmp_path, languages={"linkedin": "cs"}, platforms=["linkedin"])
+    config.run.formats = {"image": 2, "carousel": 0, "reel": 0}
+
+    hints = check(config, action="run", entries=[_entry(0)]).hints
+
+    assert len([hint for hint in hints if "linkedin render Czech text" in hint]) == 1, hints
+    assert [hint for hint in hints if "quoted verbatim" in hint] == []
+    # ... and the check being ON silences the whole family: something IS reading the glyphs back.
+    config.run.vision_check = True
+    assert check(config, action="run", entries=[_entry(0)]).hints == ()
+
+
+def test_fr286_the_report_wraps_long_lines_instead_of_overflowing_the_console(
+    tmp_path: Path,
+) -> None:
+    """`Preflight.report` wraps every grade at 76 columns (`util.wrapped`), continuations indented
+    by two, so the whole block honours FR-286's 78-column ceiling.
+
+    Wrapping lives at the PRINTER and not in the data: the same strings land in events.jsonl, and
+    layout baked into them would travel there too. It became load-bearing post-pivot because the
+    hints grew — FR-294's verbatim-language hint is a three-clause sentence explaining why an
+    `en` config may still render accented glyphs — and a `fit()`-style truncation would have cut
+    the cure off the end of the very line that names it.
+    """
+    config = _styled_config(tmp_path)
+    config.run.formats = {"image": 2, "carousel": 0, "reel": 0}
+
+    report = check(config, action="run", entries=[_entry(0)]).report
+    lines = report.splitlines()
+
+    assert lines and any(line.startswith("hint: ") for line in lines)
+    assert len(lines) > 1, "the verbatim hint alone is longer than one console line"
+    # A filesystem path is the one token `wrapped` cannot break — it carries no whitespace — so a
+    # line that is nothing but this test's very long `tmp_path` is excluded, exactly as FR-286
+    # carves out the bare permalink in the FR-297b post roster. A shipped `prompts/styles.yaml`
+    # path fits with room to spare; a pytest temp directory does not.
+    for line in (row for row in lines if str(tmp_path) not in row):
+        assert len(line) <= 78, f"{len(line)} chars (FR-286 allows 78): {line!r}"
+    continuations = [line for line in lines if line.startswith("  ")]
+    assert continuations, "a wrapped grade must be visibly a continuation, not a new finding"
+    # No word was cut in half by the wrap: rejoining the parts restores the original sentence.
+    assert "consider --vision-check" in " ".join(line.strip() for line in lines)
 
 
 # --------------------------------------------------------------------------- refusal is free

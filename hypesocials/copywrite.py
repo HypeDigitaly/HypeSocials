@@ -228,6 +228,7 @@ async def write_copy(
     brand_context: str = "",
     competitors: Sequence[str] = (),
     strip_brands: Mapping[str, Sequence[str]] | None = None,
+    progress: dict[str, int] | None = None,
     log: Any = None,
 ) -> CopyResult:
     """Copy for every entry, one grouped call per (topic × language), all groups concurrent.
@@ -253,6 +254,9 @@ async def write_copy(
         strip_brands: `trend_key -> brands_to_strip`, the topic filter's `strip` verdicts. These
             have ALREADY passed `topic_filter.screen`'s M15 guards; this module applies them, it
             never re-judges them.
+        progress: OPTIONAL live tally for FR-299's COPY heartbeat — this function keeps
+            `{"total", "done", "in_flight"}` current while the group calls run and never reads
+            it back. The runner's silence-breaker prints from it; `None` costs nothing.
 
     Returns:
         `CopyResult`. Every entry has a `CopySet`; `tags` (with its `degraded`/`trimmed` views)
@@ -264,7 +268,20 @@ async def write_copy(
                brand_context=brand_context, competitors=tuple(competitors),
                strip_brands=strip_brands or {}, log=log)
     groups = _build_groups(entries, trends or {}, campaign_briefs or {})
-    outcomes = await asyncio.gather(*(_write_group(group, run) for group in groups))
+
+    async def _tracked(group: _Group) -> Any:
+        if progress is not None:
+            progress["in_flight"] = progress.get("in_flight", 0) + 1
+        try:
+            return await _write_group(group, run)
+        finally:
+            if progress is not None:
+                progress["in_flight"] -= 1
+                progress["done"] = progress.get("done", 0) + 1
+
+    if progress is not None:
+        progress.update(total=len(groups), done=0, in_flight=0)
+    outcomes = await asyncio.gather(*(_tracked(group) for group in groups))
     result = CopyResult()
     for copies, tags, provenance in outcomes:
         result.copy.update(copies)

@@ -3,9 +3,12 @@
 # behavioural line - `run.languages` below - which is what makes the picker `label:` load-bearing.
 # See prds/30-configuration-and-run.md §2 for the full field reference
 
-# A niche is an ordinary config file (D27, v1.6.1): this `niche:` block plus three ordinary path
-# keys IS the whole mechanism. Picking this file is switching the niche. Only overrides appear
-# below - every key not listed here inherits its documented default from §2, not from default.yaml.
+# A niche is an ordinary config file (D27, v1.6.1): this `niche:` block plus the two ordinary path
+# keys below (briefs_dir, prompts_dir) IS the whole mechanism. Picking this file is switching the
+# niche. Only overrides appear below - every key not listed here inherits its documented default
+# from §2, not from default.yaml - with one deliberate exception: the `branding:` block spells out
+# the compiled default profiles in full, because brand facts an operator cannot see are brand facts
+# an operator cannot correct.
 
 # FR-173: the config picker prints this line verbatim. It MUST name the caption language in
 # words, because this file and configs/hypedigitaly.yaml differ in exactly one behavioural line
@@ -16,53 +19,148 @@ label: "AI-agency niche - CZECH captions and on-image text"
 
 niche:
   # `run.languages` below sets cs on all three platforms, so this descriptor - which is injected
-  # verbatim into Analyze and Write (FR-147) - must say CS, not EN. It said EN until 2026-08-10.
+  # verbatim into the copy and render prompts (FR-147) - must say CS, not EN. It said EN until
+  # 2026-08-10. Post-pivot the descriptor is the ONLY place this file still states its language to
+  # the copy model, because the copy itself is no longer written - see `languages` below.
   audience: "founders, marketing leads and ops people at SMBs and agencies evaluating AI automation - CS (Czech-speaking), LinkedIn-led, Instagram/TikTok secondary"
   vibe: "no-fluff practitioner proof: specific numbers, real workflows, contrarian takes on AI hype; we ship the thing, we don't theorise about it"
   visual_world: "dark UI and dashboard screenshots, terminal/automation-graph fragments, one electric accent on near-black, heavy geometric sans headlines, numbered playbook cards, whiteboard-style arrows"
 
 run:
   formats: { image: 4, carousel: 2, reel: 0 }
-  # The reel-pricing D15 amendment LANDED (v1.6.6, 2026-08-09): reel_second below is the
-  # worst-case-honest scalar for this config's reel shape. formats.reel stays 0 as the everyday
-  # default (a 5 s 720p reel is ~$2.85); enable per run with --reels N when a reel is wanted.
+  # Post-pivot (v2.0.0, D44) a reel is a seed frame plus Seedance with NO video reference, so it
+  # bills at the plain no-reference per-second rate set under price_per_unit.reel_second below:
+  # ~$1.58 for a 5 s 720p clip, where the withdrawn motion-reference path cost ~$2.85-$4.75.
+  # formats.reel still ships 0 as the everyday default - a reel is ~15x an image even now -
+  # so enable it per run with --reels N when a reel is actually wanted.
   platforms: [linkedin, instagram, tiktok]
+  # READ THIS BEFORE TRUSTING THE `cs`: since D42 (2026-08-12) topic-driven copy is SELECTED
+  # VERBATIM from the source post and is never translated - "a Czech candidate stays Czech, an
+  # English one stays English". For those creatives `cs` no longer commissions Czech writing; it
+  # declares the language slot the creative is planned for, groups siblings for the copy call
+  # (FR-99), and drives that platform's tone/length conventions and the on-image text language.
+  # With the English-only monitor configured below, this file therefore ships ENGLISH strings
+  # inside a Czech-audience plan. `cs` still fully governs the FREE-TEXT creatives - override
+  # briefs and the post-less degrade path - which are the only copy still written rather than
+  # quoted, so briefs from niches/hypedigitaly/briefs/ do come out Czech here. To get Czech
+  # topic-driven creatives, point sources.virlo_monitor_ids at a monitor that collects Czech posts
+  # (the old "CZ coverage probe" was the only one, and it is frozen - see the note there).
   languages: { linkedin: cs, instagram: cs, tiktok: cs }
-  # Cost lever (30 §2 v1.6.6): the motion reference's seconds are BILLED at the full with-video
-  # rate. 20 s (operator decision v1.6.7, was 10) lets most real TikToks qualify for motion
-  # mimicry at a worst case of ~$4.75 per 5 s 720p reel; the break-even vs no-reference is
-  # input < 0.65 x output (~3 s for a 5 s reel). The provider ceiling 28/30 s is a cost trap.
-  reel_reference_max_s: 20
   # 45 min (operator decision 2026-08-10, default is 25). This is a REEL-CAPABLE config, so the
-  # deadline MUST exceed models.video_job_timeout_s (1800 s = 30 min) plus the analyze/copy/image
-  # stages - otherwise the run is abandoned before a slow reel can reach its own timeout and the
-  # 30 min ceiling is decorative. Still a soft ceiling on the monotonic clock (FR-108).
+  # deadline MUST exceed models.video_job_timeout_s (1800 s = 30 min) plus the topic-filter, copy
+  # and image stages that run ahead of it - otherwise the run is abandoned before a slow reel can
+  # reach its own timeout and the 30 min ceiling is decorative. Still a soft ceiling on the
+  # monotonic clock (FR-108).
   run_deadline_min: 45
 
 sources:
   # ONE monitor by operator decision (2026-08-11) - see the same note in hypedigitaly.yaml. Read the
   # trade-off here before changing this file: the dropped "CZ coverage probe" was the ONLY Virlo
-  # source with english_only: false, so this Czech config now analyses ENGLISH-language trends and
-  # writes Czech copy from them (niche.audience + copy.language still drive the output language).
-  # That is deliberate - the probe was a one-shot frozen at 2026-08-06 and would only have gone
-  # staler - but it means no Czech-language reference material reaches the style brief any more.
+  # source with english_only: false, so this config reads ENGLISH-language posts. That was already
+  # a compromise - the probe was a one-shot frozen at 2026-08-06 and would only have gone staler -
+  # but D42 sharpened it: the copy is now quoted verbatim from those posts instead of rewritten, so
+  # what ships is English text under a Czech language slot (see `languages` above). Point this key
+  # at a Czech-collecting monitor when you want Czech creatives; nothing else in this file can
+  # produce them.
   virlo_monitor_ids:
     - "9c96fddf-dc35-4be0-bbd9-12f4d22aea12"   # AI Trends Tracker - weekly, english_only: true
-  # Curated local reference material (D13). This is the repo's existing top-level folder; when
-  # T5.3 seeds niches/hypedigitaly/Inspiration/, point this there instead.
-  # "Inspiration/Linkedin/Viral posts" carries 16 paired `NN.jpg` / `NN.txt` files - proven,
-  # human-written viral copy beside its image. A16 (2026-08-11) made that `.txt` readable: a
-  # picked image's sibling text now reaches the COPY call as exemplar material. It never reaches
-  # a render prompt - inspiration images carry an explicit "no words" role line, and feeding
-  # proven copy to an image model invites verbatim text baked into pixels. Adding the folder also
-  # widens the IMAGE pool the mix draws from, which is a fidelity change, not only a copy one.
-  # NOTE: this config ships CZECH captions; the exemplars here are English. They are STYLE
-  # material (structure, hook shape, rhythm), never strings to reuse - FR-147's language rule
-  # still binds the output.
-  inspiration_folders:
-    - "Inspiration/Tiktok and IG"
-    - "Inspiration/Linkedin/Viral posts"
-  inspiration_mix: minority        # at most 1 inspiration image alongside 2 trend references
+  # How many TOPICS this one monitor may contribute (FR-293/FR-170, 30 §2 Sources). Post-pivot
+  # Virlo is a TEXT-ONLY feed: one monitor's analysis is split into several themes, each becoming
+  # its own topic with its own view-ranked posts and its own strength. 9 is the default and, with a
+  # single monitor configured above, it IS this run's whole candidate pool - lower it only to make
+  # the pool tighter, never to save money (collection is one call either way). `-1` is the kill
+  # switch: one topic per monitor, i.e. the pre-pivot cardinality. `0` is a config error, not a
+  # setting - a monitor that contributes nothing should be removed from the list instead.
+  virlo_topics_per_monitor: 9
+
+styles:
+  # Run-side knob for the meta-style registry (FR-290); the registry ITSELF is prompts/styles.yaml
+  # (or a prompts_dir override), never config. This is how many of the assigned style's own local
+  # reference images ride along with each render job - the rotation picks WHICH ones, this is only
+  # how wide that window is. It multiplies every job's upload count and reference budget, which is
+  # why it is a config key: 2 keeps a job's references coherent (one layout exemplar plus one
+  # palette exemplar) without crowding out the brief's own images when a blend brief supplies any.
+  refs_per_job: 2
+
+# Brand identity for this config (FR-292/D43) - which brand the run signs with, how often, and in
+# what shape. Only the branded fraction below carries the wordmark. The wordmark itself is NOT
+# composited: it is quoted into the render prompt's TEXT block, so it is spelled by the same
+# mechanism as every other rendered string. Everything else here (accent colours, font character,
+# placement, background hint, the `never:` guards) reaches the prompt through the branding block,
+# ranked BELOW the assigned meta-style - branding tints and signs a style, it never replaces one.
+# The wordmark is a NAME, not a caption: it stays "HypeLead"/"HypeDigitaly" in a Czech creative
+# exactly as it is here, and is never localised.
+branding:
+  # SELECTOR, never a mix (operator decision 6, 2026-08-12): one run is one brand. It also filters
+  # the style rotation - a style whose `brand_affinity` names the other brand is simply not
+  # assignable here (B3). `hypelead` is the product brand and owns the house SOCIAL-POST kit the
+  # registry's brand-card style is built from; switch to `hypedigitaly` for parent/corporate posts
+  # (indigo->teal, Montserrat) and the brand-card style drops out of the rotation on its own.
+  brand: hypelead
+  # Fraction of the emitted plan that carries the wordmark, applied as a deterministic floor
+  # predicate on entry.order (FR-291), so `floor(N x ratio)` creatives are signed and the choice is
+  # stable across re-runs and unaffected by a later trim. 0.5 = half the batch signed, half clean:
+  # a feed where every post is signed reads as a watermark, and one where none is reads as nobody's.
+  brand_ratio: 0.5
+  # background_tint | overlay | both. `overlay` keeps the meta-style's own ground intact and adds
+  # the accent + signature on top; `background_tint` also hands the model the profile's
+  # `background_hint` below, which is a much stronger visual claim on the frame.
+  mode: overlay
+  placement: bottom-center         # wordmark placement hint, honoured through the TEXT block entry
+  # Layer 1 of the competitor filter (FR-294) and the only DETERMINISTIC one: these strings are
+  # matched in code, before and independently of the LLM screen, and they stay enforced when that
+  # screen degrades. Fail-closed on purpose - "the model was unavailable" must never be the reason
+  # a competitor's name ships inside our pixels. Add rivals you never want rendered or captioned;
+  # our own product_nouns below are protected from being stripped as if they were competitors.
+  competitors: []
+  # The two house brand systems, spelled out so they are visible and editable here rather than only
+  # in code. These values ARE the engine's compiled defaults (config.py `_default_profiles`), with
+  # one deliberate exception noted at hypelead.background_hint. Override any single key - the
+  # loader merges key by key, so touching one colour keeps the rest of the profile intact.
+  profiles:
+    hypedigitaly:                  # parent / corporate: indigo->teal gradient, Montserrat
+      wordmark: "HypeDigitaly"     # CamelCase, no space; rendered one weight, one colour
+      colors:
+        indigo: "#34288B"
+        teal: "#00A59A"
+        gradient: ["#34288B", "#2B3F8E", "#0C8897", "#00A59A"]   # indigo -> blue -> teal, L to R
+      fonts: { brand: "Montserrat", web: "Geist" }
+      # A render model cannot install a font, so the font is described, not named at it (F21).
+      font_character: "Montserrat — geometric grotesque, near-circular bowls, medium x-height, uniform stroke"
+      background_hint: "flat royal-indigo field, gradient arrow glyphs sweeping the right half, vast negative space"
+      # COLOUR guards - injected into EVERY branded prompt under this brand, whatever style was
+      # assigned. Orange #F97316 is a website-only accent and appears in no brand asset, so it is
+      # in neither profile's colours and is named here to keep it out of the pixels.
+      never_always: ["no teal pill highlights", "no dot-grid ground", "no orange #F97316 (web-only)"]
+      # MEDIUM guards - injected ONLY when the assigned style is affine to this brand. Empty here:
+      # the corporate system has no medium of its own to defend.
+      never_style: []
+      # Our own product names: the copy may use them, and the topic filter must never "strip a
+      # competitor brand" that is one of these (M15). Czech-market names belong here too - the list
+      # is matched case-insensitively and is the reason "AI Automatizace" is spelled out.
+      product_nouns: ["AI Audit", "HypeLead", "AI Chatbot", "AI Voicebot", "AI Agent", "AI Automatizace"]
+    hypelead:                      # product: teal-only, Geist, pill grammar - never mixed with the above
+      wordmark: "HypeLead"
+      colors:
+        teal_bright: "#0FCFC4"
+        teal_mid: "#57E6DC"
+        teal_deep: "#0A7F78"
+        teal_light: "#8BF2E9"
+        dark: "#14130F"            # reads as charcoal-GREEN under teal glow, not neutral black
+        offwhite: "#FAFAF7"
+      fonts: { primary: "Geist", mono: "Geist Mono" }
+      font_character: "Geist — clean grotesque, tight tracking, even color"
+      # ONE resolved variant on purpose (conductor decision, 2026-08-12 / M9): the brand kit also
+      # has a charcoal-green dark mode, but a hint that offers the model a choice is a hint that
+      # makes two different-looking posts from one setting. Swap the whole string for
+      # "charcoal-green ground with vignette and teal glow" to run the dark mode instead.
+      background_hint: "off-white ground with faint dot-grid and soft teal bloom"
+      never_always: ["no indigo or violet", "no orange #F97316"]
+      # Medium guards, brand-affine styles only: six of the seven neutral styles are legitimately
+      # photographic or hand-drawn, so applying these everywhere would quietly ban most of the
+      # registry the moment a creative got a wordmark (M6).
+      never_style: ["no photography/stock/3D", "no serif or handwritten type", "teal is accent only, never full-bleed canvas"]
+      product_nouns: ["HypeLead"]
 
 # Niche asset paths (D27). A missing folder is not an error - the contribution is simply absent
 # for that run, logged once at info level (30 §8).
@@ -79,34 +177,29 @@ models:
   price_per_unit:
     reel_second:
       # ---------------------------------------------------------------------------------------
-      # MEASURED, WORST-CASE-HONEST reel pricing for THIS config's reel shape (PRD v1.6.6:
-      # this derivation is now the documented meaning of reel_second - 30 §2 / FR-258).
+      # MEASURED NO-REFERENCE reel pricing for THIS config's reel shape (30 §2 price block,
+      # FR-131/FR-258, amended v2.0.0). The estimator multiplies the scalar for the configured
+      # run.reel_resolution by run.reel_duration_s; an unset scalar means reels are not planned
+      # at all rather than guessed at (FR-131).
       #
       # Kie's published Seedance 2.5 formula (spikes/RESULTS.md §C, confirmed to the credit):
       #     no video reference   ->  cost = unit x  output_s
       #     with video reference ->  cost = unit x (input_s + output_s)      <- the ref is BILLED
-      #     720p: 38 credits/s with video | 63 credits/s without   ($0.005 per credit)
-      #     480p: 17 credits/s with video | 28 credits/s without
-      #   Live measurement: 5 s / 720p / 1 image ref / 10 s video ref = 570 credits = $2.85.
+      #     720p: 63 credits/s without a video ref | 38 with   ($0.005 per credit)
+      #     480p: 28 credits/s without a video ref | 17 with
       #
-      # The estimator has only ONE scalar per resolution, multiplied by reel_duration_s, and it
-      # runs BEFORE the yt-dlp probe - so the reference's real duration is unknown at estimate
-      # time. The value below therefore prices the WORST CASE this config can produce, with
-      # run.reel_reference_max_s: 20 (operator decision v1.6.7 - most real TikToks qualify):
-      #     720p: 38 x (reel_reference_max_s 20 + reel_duration_s 5) = 950 cr = $4.75 / 5 s
-      #           = 0.950 per output second
-      #     480p: 17 x (20 + 5)                                      = 425 cr = $2.125 / 5 s
-      #           = 0.425 per output second
-      #   Understating is the one unacceptable error here (D11/FR-282), so the scalar overstates
-      #   the cheaper branches on purpose:
-      #     no video reference at all, 720p -> 0.315 / output second ($1.575 per 5 s reel)
+      # POST-PIVOT THE SECOND BRANCH IS UNREACHABLE (v2.0.0, D44): the yt-dlp motion reference is
+      # withdrawn, a reel is a seed frame plus Seedance and NOTHING else is attached, so every
+      # reel this tool can submit bills on the no-reference line. The old worst-case-with-reference
+      # scalars (0.950/0.425, derived from a 20 s reference bound that no longer exists) overstated
+      # a real reel by ~3x and are gone with it - overstating is safe for the spend cap but it
+      # silently trims creatives out of a plan that would have fitted.
+      #     720p: 63 credits/s x $0.005 = 0.315 per output second  ($1.575 per 5 s reel)
+      #     480p: 28 credits/s x $0.005 = 0.140 per output second  ($0.700 per 5 s reel)
       #
-      # HOW TO MAKE REELS CHEAPER STILL: attaching a reference is cheaper than not attaching one
-      # only while input_s < 0.65 x output_s - about 3 s for a 5 s reel. Lowering
-      # run.reel_reference_max_s to ~3 would drop the honest 720p scalar to 0.315, at the cost
-      # of disqualifying most real TikTok references (0 of 8 probed candidates were <=3 s).
-      #
-      # IF YOU CHANGE reel_reference_max_s OR reel_duration_s, RECOMPUTE THESE TWO NUMBERS.
+      # These are per-SECOND rates, so changing run.reel_duration_s needs no recomputation here -
+      # only a Kie price change or a model-family swap does (a swap never rewrites them: FR-282,
+      # and the pre-flight prints which model each price is assumed for).
       # ---------------------------------------------------------------------------------------
-      480p: 0.425
-      720p: 0.950
+      480p: 0.140
+      720p: 0.315

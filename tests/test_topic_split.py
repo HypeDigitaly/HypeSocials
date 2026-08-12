@@ -606,7 +606,9 @@ def test_the_funnel_event_and_its_run_log_sentence_read_the_post_pivot_stages() 
 
     payload = counters.as_event()
 
-    assert payload["topics"] == {"posts_in": 9, "topics_out": 3, "returned": 3}
+    # W3 conductor decision (FR-296): `synthesized` joined the topics group so the TOPICS stage
+    # header can print its `N synth` clause — a monitor-aggregate fallback is now countable.
+    assert payload["topics"] == {"posts_in": 9, "topics_out": 3, "synthesized": 0, "returned": 3}
     assert payload["input"]["duplicates_dropped"] == 1
     assert payload["input"]["total_available"] == 2_039
     line = counters.summary_line()

@@ -235,7 +235,8 @@ class _Deck:
     ) -> RenderOutcome | None:
         """The one door to `submit`: tally every outcome, apply FR-97, swallow the 402 (FR-167)."""
         outcome = await self._submit(prompt, urls, kind=kind, priority=priority,
-                                     label=f"carousel slide {number} · {self.entry.asset_id}")
+                                     label=f"carousel slide {number}/{self.entry.slide_count}"
+                                           f" · {self.entry.asset_id}")
         if (outcome is None or outcome.kind is RenderOutcomeKind.SUCCESS
                 or outcome.fail_cause is not RenderFailCause.MODERATION or not urls):
             return outcome
@@ -347,6 +348,12 @@ class _Deck:
                 campaign_brief=getattr(env, "campaign_briefs", {}).get(
                     self.entry.brief_name or ""),
                 niche_visual_world=getattr(env, "niche_visual_world", ""),  # A15, same seam
+                # M6 (W3): config blocklist + this topic's guarded LLM strips — read through
+                # `getattr` like every Env read here (this module targets the duck-typed surface).
+                competitor_strings=(
+                    *map(str, getattr(getattr(env, "branding", None), "competitors", ())),
+                    *map(str, getattr(env, "strip_brands", {}).get(
+                        self.entry.trend_key or "", ()))),
                 # M12: an anchored slide 2–N inherits the signature from the picture it reproduces,
                 # so the branding block rides the anchor alone; an independently generated deck
                 # (`carousel_anchor: false`, or the FR-95 fallback) needs it on every slide.

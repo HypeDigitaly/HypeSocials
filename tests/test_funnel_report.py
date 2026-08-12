@@ -1,26 +1,35 @@
-"""A19 / FR-155 — the Virlo funnel report: what came in, what survived, what a job will attach.
+"""FR-155 — the Virlo funnel report, re-shaped for the topic pipeline (v2.0.0, T3.5).
 
-Across all 36 archived run folders a paid run's console said **nothing at all** about Virlo volume
-between the launch block and the spend table, and four degradation counters (`reference_shortfall`,
-`reference_image_dropped`, `trend_text_only`, `reference_free`) had never fired once — leaving an
-operator unable to tell "nothing was lost" from "the counter is dead". `sources.Counters` plus
-`runner._funnel_block()` is the answer, and this file locks the four properties that make it worth
-printing:
+The block is now the end-of-run reconciliation of FIVE stages — input -> topics -> filter ->
+Select's verdicts -> the style-forecast render row — and it prints **exactly once, at DONE**
+(§1.10 rule 6). Three things about the old suite died with the media funnel:
 
-1. **It fits the console.** Every line ≤78 characters (FR-286) in the healthy, degraded and
-   zero-material shapes — and at Increment-B scale, where 20+ monitors and seven-digit counts must
-   make the row packer WRAP onto continuation lines rather than overflow.
-2. **It is ASCII where it counts.** `util.fit`'s docstring names `·`, `—`, `…` and `←` as the only
-   non-ASCII glyphs proven safe on a legacy conhost. `→` is not among them and must never appear.
-3. **The arithmetic reconciles.** input − dropped = output at every stage, asserted on the real
-   captured Virlo page rather than on numbers a test author chose.
-4. **It always prints.** Unlike `_restate`, which is gated on `assignment.dropped or interactive`,
-   the funnel block is unconditional — "everything worked" is the answer the operator came for —
-   and it sits ABOVE the per-trend detail in both preview modes, because `_verdict_block` emits
-   ~8 lines per trend and would bury the rollup at Increment-B's 22 trends.
+1. **The `sets` / `chosen` / `images` rows are gone.** Virlo is a text-only source (D41), so there
+   are no reference sets to qualify, no motion tier to classify and no CDN pass to survive. The
+   render row counts STYLE references instead — the meta-style registry is the visual authority.
+2. **The funnel's three stage-gate placements are gone.** FR-296's stage headers carry the same
+   counts the moment they become true, so a rollup printed three times would restate numbers the
+   operator has already read; the block appears once, in `_package`, above the spend table.
+3. **The spend table's `virlo` chain row is gone.** §1.10's rule is that a number appears in
+   exactly ONE of {stage header, table, funnel, spend row}, and the funnel now prints directly
+   above the spend table — repeating the chain there would double every count it carries.
+
+What survives unchanged is why the block is worth printing at all, and this file pins it:
+
+- **It fits the console.** Every ROW ≤78 characters (FR-286) in the healthy, degraded, empty and
+  Increment-B shapes, and the row packer WRAPS rather than overflows at seven-digit counts.
+  (The header overflow T3.5 pinned as a strict xfail was fixed in-wave: compact `available`
+  count + `·` clause joins + a `wrapped` fallback — its test now passes plainly.)
+- **It is ASCII where it counts.** `util.fit`'s docstring names `·`, `—`, `…` and `←` as the only
+  non-ASCII glyphs proven safe on a legacy conhost. `→` is not among them and must never appear.
+- **The arithmetic reconciles**, asserted on the real captured Virlo page and the real captured
+  nine-theme analysis rather than on numbers a test author chose.
+- **It always prints.** Unlike `_restate`, which is gated, the funnel is unconditional — "nothing
+  was lost" is the answer the operator came for, and a dead counter must be distinguishable from
+  a healthy zero.
 
 Everything is offline: `Counters` is a plain dataclass, `_funnel_block` a pure function of it, and
-the one test that needs real volume reads `tests/fixtures/virlo/` from disk. No network, no MCP
+the tests that need real volume read `tests/fixtures/virlo/` from disk. No network, no MCP
 subprocess, no `VIRLO_API_KEY`, no run folder.
 """
 
@@ -34,7 +43,7 @@ from typing import Any
 
 import pytest
 
-from hypesocials import plan, previews, runner
+from hypesocials import previews, runner
 from hypesocials.budget import SpendRow, SpendSummary
 from hypesocials.config import Config
 from hypesocials.sources import Counters
@@ -59,7 +68,7 @@ class Recorder:
     """`LogWriter`'s event surface, with POSITIONAL-ONLY heads.
 
     Both loggers under test pass a `name=` keyword of their own (`virlo_payload` carries the
-    trend's name), so a recorder spelled `def event(self, name, message, **data)` collides with
+    topic's name), so a recorder spelled `def event(self, name, message, **data)` collides with
     the code it is recording — which is a fixture bug that reads exactly like a production one.
     """
 
@@ -76,13 +85,24 @@ class Recorder:
         return [(message, data) for name, message, data in self.events if name == event_type]
 
 
-def console_safe(block: str) -> None:
-    """Every FR-286 rule the funnel owes, in one call: width, glyphs, and no `→`."""
+def glyph_safe(block: str) -> None:
+    """The glyph half of FR-286: nothing outside `util.fit`'s proven-safe set, and never `→`."""
     for line in block.splitlines():
-        assert len(line) <= WIDTH, f"{len(line)} chars (FR-286 allows {WIDTH}): {line!r}"
         assert "→" not in line, f"the unsafe arrow glyph reached the console: {line!r}"
         stray = {char for char in line if ord(char) > 127} - SAFE_GLYPHS
         assert not stray, f"glyph(s) outside util.fit's proven-safe set {sorted(stray)}: {line!r}"
+
+
+def console_safe(block: str) -> None:
+    """Width AND glyphs, line by line — the whole of what FR-286 asks of a printed block."""
+    glyph_safe(block)
+    for line in block.splitlines():
+        assert len(line) <= WIDTH, f"{len(line)} chars (FR-286 allows {WIDTH}): {line!r}"
+
+
+def rows_of(block: str) -> str:
+    """Everything under the header — the part `_funnel_row` lays out and guarantees the width of."""
+    return "\n".join(block.splitlines()[1:])
 
 
 def labels(block: str) -> list[str]:
@@ -96,63 +116,56 @@ def continuations(block: str) -> list[str]:
     return [line for line in block.splitlines()[1:] if line.startswith(" " * 4) and line.strip()]
 
 
-# --------------------------------------------------------------------------- the three shapes
+# --------------------------------------------------------------------------- the four shapes
 
 
 def healthy() -> Counters:
-    """The plan's own literal example (§3.4b), so the block this suite pins is the one designed."""
+    """A three-monitor run that lost nothing: the shape §1.10's DONE block was designed around."""
     return Counters(
-        monitors_asked=3, monitors_failed=0, rows_per_call=50, download_cap=6, total_available=2674,
+        monitors_asked=3, monitors_failed=0, rows_per_call=50, total_available=2674,
         videos_raw=150, slideshows_raw=139, videos_kept=145, slideshows_kept=133,
-        slideshow_sets=74, frame_sets=33, slideshows_thin=26, families_thin=15,
-        videos_in_sets=99, videos_in_thin_families=46,
-        chosen_fresh=3, motion_tiers={"fresh_same_creator": 1, "fresh": 2},
-        images_attempted=18, images_downloaded=18, trends_returned=3,
-        verdict_seen=True, eligible=3,
-        render_seen=True, jobs=6, trend_refs_min=3, trend_refs_max=3, inspiration_each=1,
-        refs_total=24, trends_used=3)
+        posts_in=278, topics_out=9, topics_synthesized=0, trends_returned=9,
+        filter_kept=8, filter_stripped=1, filter_skipped=0,
+        verdict_seen=True, eligible=6, excluded_by_history=2, unusable=1,
+        render_seen=True, jobs=6, jobs_dropped=0, topics_used=3, styles_used=3,
+        style_refs_min=2, style_refs_max=2, refs_total=12)
 
 
 def degraded() -> Counters:
-    """The plan's degraded example: dead CDN urls, a text-only trend, two jobs with no trend left."""
+    """Every post-pivot loss at once: a competitor promo skipped, the filter's LLM layer failed
+    open, one style shipped without its pictures (a 0-wide window), and two creatives found no
+    topic left."""
     tally = healthy()
-    tally.images_downloaded, tally.images_dead = 14, 4
-    tally.trends_text_only = 1
+    tally.filter_kept, tally.filter_stripped, tally.filter_skipped = 6, 2, 1
+    tally.filter_degraded = True
+    tally.eligible, tally.excluded_by_history, tally.unusable = 1, 1, 1
     tally.jobs, tally.jobs_dropped = 4, 2
-    tally.inspiration_each = 0
-    tally.unusable, tally.excluded_by_history, tally.eligible = 1, 1, 1
-    tally.chosen_fresh, tally.chosen_repeated, tally.chosen_last_resort = 1, 1, 1
-    tally.motion_tiers = {"fresh": 1, "repeat": 1, "none": 1}
+    tally.style_refs_min, tally.style_refs_max, tally.refs_total = 0, 2, 6
+    tally.topics_used, tally.styles_used = 2, 2
     return tally
 
 
 def increment_b() -> Counters:
-    """Increment B's shape: 22 monitors, seven-digit counts, all four motion tiers populated.
+    """The arithmetic edge the row packer exists for: 22 monitors and seven-digit counts.
 
-    Nothing here is achievable today — it is the arithmetic edge `_funnel_row`'s wrap exists for,
-    and the plan says explicitly that nine themes must produce ONE block, not nine. If the packer
-    ever stopped wrapping, this is the shape that catches it before an operator's console does.
+    Nothing here is achievable today. Nine themes per monitor must still produce ONE block, not
+    198 of them, and if the packer ever stopped wrapping this is the shape that catches it before
+    an operator's console does.
     """
     return Counters(
-        monitors_asked=22, monitors_failed=1, rows_per_call=100, download_cap=18,
-        total_available=2_039_000,
+        monitors_asked=22, monitors_failed=1, rows_per_call=100, total_available=2_039_000,
         videos_raw=2_200_000, slideshows_raw=1_398_000,
         videos_kept=2_198_431, slideshows_kept=1_397_002,
-        slideshow_sets=1_074_233, frame_sets=302_115, last_resort_sets=12,
-        slideshows_thin=411_007, families_thin=98_222,
-        chosen_fresh=1_234_567, chosen_repeated=9_876, chosen_last_resort=1_042,
-        motion_tiers={"fresh_same_creator": 1_111_111, "fresh": 2_222_222,
-                      "repeat": 3_333_333, "none": 4_444_444},
-        images_attempted=1_800_000, images_downloaded=1_799_123, images_dead=877,
-        trends_text_only=4_321, trends_returned=22,
+        posts_in=3_595_433, topics_out=198, topics_synthesized=4, trends_returned=198,
+        filter_kept=1_234_567, filter_stripped=222_222, filter_skipped=33_333,
         verdict_seen=True, eligible=1_234_567, excluded_by_history=222_222, unusable=33_333,
-        render_seen=True, jobs=1_234_567, jobs_dropped=8_642, trend_refs_min=2, trend_refs_max=3,
-        inspiration_each=1, refs_total=4_000_000, trends_used=22)
+        render_seen=True, jobs=1_234_567, jobs_dropped=8_642, topics_used=22, styles_used=8,
+        style_refs_min=1, style_refs_max=3, refs_total=4_000_000)
 
 
 def nothing_returned() -> Counters:
     """Every monitor answered, none of them with a row — the shape a dead trial key produces."""
-    return Counters(monitors_asked=3, monitors_failed=3, rows_per_call=100, download_cap=18)
+    return Counters(monitors_asked=3, monitors_failed=3, rows_per_call=100)
 
 
 ALL_SHAPES = {"healthy": healthy, "degraded": degraded, "increment_b": increment_b,
@@ -163,49 +176,118 @@ ALL_SHAPES = {"healthy": healthy, "degraded": degraded, "increment_b": increment
 
 
 @pytest.mark.parametrize("shape", sorted(ALL_SHAPES))
-def test_every_printed_line_fits_the_console_in_every_shape(shape: str) -> None:
-    """FR-286 across the whole funnel surface, one shape at a time so a failure names it."""
-    console_safe(runner._funnel_block(ALL_SHAPES[shape]()))
+def test_every_printed_row_fits_the_console_in_every_shape(shape: str) -> None:
+    """FR-286 across the funnel's rows, one shape at a time so a failure names it.
+
+    The rows are what `_funnel_row` lays out, and its packer is the guarantee: a clause is never
+    split, so a row that cannot fit wraps onto a continuation line rather than overflowing. The
+    header is laid out by hand and is asserted separately below — it does NOT hold today.
+    """
+    block = runner._funnel_block(ALL_SHAPES[shape]())
+
+    console_safe(rows_of(block))
+    glyph_safe(block)  # the header's glyphs are fine; only its width is not
 
 
-def test_the_healthy_block_names_every_stage_and_reads_as_the_plan_designed_it() -> None:
+def test_fr286_the_funnel_header_fits_the_console_at_a_real_runs_scale() -> None:
+    """FR-286: "no console line exceeds 78 columns". The header is a console line.
+
+    `total_available` was promoted into the header by FR-297d so an operator can see how deep the
+    one page each call asked for reaches into Virlo's own row total. It SUMS across monitors
+    (`absorb`) and reaches seven digits on real runs, so the raw number overflowed the header —
+    this test shipped as T3.5's strict xfail pinning that defect, and flipped to a plain pass
+    when the conductor's fix landed: the header now prints FR-297's compact form (`2.7K
+    available`) and wraps as a last resort (`util.wrapped`). Asserted at Increment-B scale too.
+    """
+    header = runner._funnel_block(healthy()).splitlines()[0]
+    assert len(header) <= WIDTH, f"{len(header)} chars: {header!r}"
+
+    big = healthy()
+    big.monitors_asked, big.total_available = 22, 2_039_000
+    for line in runner._funnel_block(big).splitlines():
+        assert len(line) <= WIDTH, f"{len(line)} chars: {line!r}"
+
+
+def test_the_healthy_block_names_every_surviving_stage_and_reads_as_designed() -> None:
+    """The five rows of the post-pivot funnel, in pipeline order, with their exact wording."""
     block = runner._funnel_block(healthy())
 
     assert block.splitlines()[0].startswith("Virlo funnel")
-    assert labels(block) == ["input", "sets", "chosen", "images", "verdict", "render"]
-    assert "3 monitor(s) asked, 50 row(s) per call, 0 failed" in block
+    assert labels(block) == ["input", "topics", "filter", "verdict", "render"]
+    # Conductor fix for the FR-286 header overflow: `total_available` prints in FR-297's
+    # compact form (2,674 -> 2.7K) and the clauses join on `·` — the raw figure stays in the
+    # `collect_funnel` event.
+    assert "3 monitor(s) asked · 50 rows/call · 0 failed · 2.7K available" in block
     assert "150 video(s) + 139 slideshow(s)" in block and "11 duplicate row(s) dropped" in block
-    assert "107 coherent set(s) qualified" in block and "41 too thin" in block
-    assert "3 fresh, 0 repeated, 0 last-resort" in block
-    assert "motion 1 same-creator, 2 fresh" in block
-    assert "18 of 18 downloaded, 0 dead URL" in block and "cap 6 per trend" in block
-    assert "6 job(s) will attach 3 trend ref(s) + 1 inspiration each" in block
-    assert len(block.splitlines()) == 7, "one block, seven lines — no wrapping at this scale"
+    assert "278 post(s) split into 9 topic(s)" in block and "0 synthesized" in block
+    assert "8 kept, 1 stripped, 0 skipped" in block
+    assert "6 eligible, 2 excluded by history, 1 unusable" in block
+    assert "6 job(s) will attach 2 style ref(s) each" in block
+    assert "3 style(s) over 3 topic(s)" in block
+    assert len(block.splitlines()) == 6, "one block, six lines — no wrapping at this scale"
 
 
-def test_the_degraded_shape_names_the_loss_instead_of_the_cap() -> None:
-    """The `images` row swaps its cap clause for the loss when a trend fell to text-only, and the
-    `render` row gains the dropped-jobs clause. Both are what the operator is looking for."""
+def test_the_media_rows_died_with_the_media_funnel() -> None:
+    """D41: Virlo is a text feed, so the reference-set, motion-tier and CDN-download rows have no
+    subject. Their counters survive in the dataclass until the W3.5 excision — populating them
+    must not resurrect a row, or the operator reads a funnel describing a pipeline that never ran.
+    """
+    tally = healthy()
+    tally.slideshow_sets, tally.frame_sets, tally.slideshows_thin = 74, 33, 26
+    tally.chosen_fresh, tally.motion_tiers = 3, {"fresh": 3}
+    tally.images_attempted, tally.images_downloaded, tally.images_dead = 18, 14, 4
+    tally.trends_text_only = 1
+
+    block = runner._funnel_block(tally)
+
+    assert labels(block) == ["input", "topics", "filter", "verdict", "render"]
+    for dead in ("set(s)", "coherent", "motion", "downloaded", "dead URL", "text-only",
+                 "inspiration", "trend ref"):
+        assert dead not in block, f"a withdrawn media clause reached the funnel: {dead!r}"
+
+
+def test_the_degraded_shape_names_every_loss_it_carries() -> None:
+    """The clauses that only appear when something went wrong — each one is what the operator is
+    looking for when the run delivered less than the plan asked for."""
     block = runner._funnel_block(degraded())
 
-    console_safe(block)
-    assert "14 of 18 downloaded, 4 dead URL" in block
-    assert "1 trend fell to text-only" in block and "cap 6 per trend" not in block
-    assert "4 job(s) will attach 3 trend ref(s)" in block
-    assert "2 dropped, no trend left" in block
+    console_safe(rows_of(block))
+    assert "6 kept, 2 stripped, 1 skipped" in block
+    assert "LLM layer degraded — blocklist only" in block
     assert "1 eligible, 1 excluded by history, 1 unusable" in block
+    assert "4 job(s) will attach 0-2 style ref(s)" in block, \
+        "a mixed window prints the range, never an invented average"
+    assert "2 dropped, no topic left" in block
 
 
 def test_a_run_where_virlo_returned_nothing_says_so_in_words() -> None:
-    """The one shape that is not "print the zeros": `0 video(s) + 0 slideshow(s); 0 duplicate row(s)
-    dropped` would dress a failed fetch as a clean funnel."""
+    """The one shape that is not "print the zeros": `0 video(s) + 0 slideshow(s); 0 duplicate
+    row(s) dropped` would dress a failed fetch as a clean funnel. The topics row goes with it —
+    "0 posts split into 0 topics" is arithmetic about material that never arrived."""
     block = runner._funnel_block(nothing_returned())
 
-    console_safe(block)
+    console_safe(rows_of(block))
     assert "Virlo returned no video and no slideshow" in block
     assert "0 video(s)" not in block and "duplicate row(s) dropped" not in block
-    assert labels(block) == ["input"], "no sets/chosen/images rows for material that never arrived"
+    assert labels(block) == ["input"], "no topics/filter/verdict rows for material never collected"
     assert "3 monitor(s) asked" in block and "3 failed" in block
+
+
+def test_a_healthy_zero_still_prints_its_row() -> None:
+    """**Zeros are the point.** Four pre-pivot counters fired in NONE of the archived runs, which
+    left an operator unable to tell "nothing was lost" from "the counter is dead". Every stage
+    that RAN prints, whatever its numbers — the empty-fetch shape above is the only exception."""
+    tally = healthy()
+    tally.filter_stripped = tally.filter_skipped = 0
+    tally.excluded_by_history = tally.unusable = 0
+    tally.jobs_dropped = 0
+    tally.style_refs_min = tally.style_refs_max = 0
+
+    block = runner._funnel_block(tally)
+
+    assert "0 stripped, 0 skipped" in block
+    assert "0 excluded by history, 0 unusable" in block
+    assert "0 style ref(s)" in block  # a style whose files are all missing is still a style
 
 
 @pytest.mark.parametrize("shape", ["healthy", "degraded", "nothing_returned", "untouched"])
@@ -215,24 +297,23 @@ def test_at_todays_scale_nothing_is_lost_to_the_ellipsis(shape: str) -> None:
     a number with its tail cut off and no sign that anything is missing.
 
     ⚠️ Deliberately NOT asserted for the Increment-B shape. There, single clauses like
-    `"N eligible, N excluded by history, N unusable, N without images"` are one string with no
-    clause boundary the packer can split on, so seven-digit counts do reach `fit()` and the row
-    loses its tail. See this wave's report — it is a legibility gap that lands with Increment B,
-    not one that exists today.
+    `"N eligible, N excluded by history, N unusable"` are one string with no clause boundary the
+    packer can split on, so seven-digit counts do reach `fit()` and the row loses its tail. That
+    is a legibility gap that lands with Increment B, not one that exists today.
     """
     for line in runner._funnel_block(ALL_SHAPES[shape]()).splitlines():
         assert not line.endswith("…"), f"a count was cut at today's scale: {line!r}"
 
 
 def test_increment_b_scale_wraps_onto_continuation_lines_rather_than_overflowing() -> None:
-    """The row packer's reason to exist. Nine themes produce ONE block (a run-wide rollup), but the
-    counts inside it grow — and a clause is never split, so a wrapped row reads as its own
-    continuation rather than as a cut sentence."""
+    """The row packer's reason to exist. 22 monitors × 9 themes produce ONE block (a run-wide
+    rollup), but the counts inside it grow — and a clause is never split, so a wrapped row reads
+    as its own continuation rather than as a cut sentence."""
     block = runner._funnel_block(increment_b())
 
-    console_safe(block)
+    console_safe(rows_of(block))
     assert continuations(block), "the packer overflowed instead of wrapping"
-    assert labels(block) == ["input", "sets", "chosen", "images", "verdict", "render"], \
+    assert labels(block) == ["input", "topics", "filter", "verdict", "render"], \
         "22 monitors still produce ONE block with one row per stage"
     # A wrapped clause stays whole: no continuation line starts mid-number or mid-word.
     for line in continuations(block):
@@ -240,36 +321,40 @@ def test_increment_b_scale_wraps_onto_continuation_lines_rather_than_overflowing
 
 
 def test_the_unsafe_arrow_never_appears_in_any_console_string_this_module_prints() -> None:
-    """`->`, never `→`. The block, the A24 detail rows and the spend table's funnel row all pass
-    through `_funnel_row`, so one sweep over every shape covers the lot."""
+    """`->`, never `→` (FR-155). One sweep over every shape plus the spend table covers the lot."""
     printed = [runner._funnel_block(shape()) for shape in ALL_SHAPES.values()]
-    printed.append(runner._spend_table(_summary(), healthy()))
+    printed.append(runner._spend_table(_summary()))
 
     for block in printed:
-        assert "→" not in block
-        console_safe(block)
-    assert "->" in printed[-1], "the spend table's funnel chain still uses the ASCII arrow"
+        glyph_safe(block)
+
+
+# --------------------------------------------------------------------------- the spend table
 
 
 def _summary() -> SpendSummary:
     return SpendSummary(
         headline="requested 6 creatives, delivered 5",
-        rows=(SpendRow("20260811_1200_ab12_01image", "image", 0.04, 0.04, True),),
+        rows=(SpendRow("Li_img_ai-agents-that-ship_01", "image", 0.04, 0.04, True),),
         by_format={"image": 0.04}, llm_usd=0.11, render_usd=0.20, total_usd=0.31, cap_usd=1.0,
         over_cap_usd=0.0, skipped_budget=0, skipped_other=1, cap_status="within the $1.00 cap")
 
 
-def test_the_spend_tables_one_funnel_row_states_the_whole_chain_under_the_headline() -> None:
-    """FR-84/FR-155: a run "shrunk by trend supply" must be legible beside the headline that says
-    it delivered less than it was asked for."""
-    table = runner._spend_table(_summary(), healthy())
+def test_the_spend_table_no_longer_restates_the_funnel_chain() -> None:
+    """§1.10 rule 5: a number appears in exactly ONE of {stage header, table, funnel, spend row}.
+
+    The funnel prints directly above this table at DONE, so the single-line `virlo` chain row the
+    table used to carry would double every count the block already states — and `_spend_table`
+    consequently takes the summary alone, with no `Counters` parameter left to disagree with.
+    """
+    assert list(inspect.signature(runner._spend_table).parameters) == ["summary"]
+
+    table = runner._spend_table(_summary())
 
     console_safe(table)
-    row = next(line for line in table.splitlines() if line.startswith("  virlo"))
-    assert "278 post(s) -> 107 set(s) -> 3 trend(s) -> 24 ref(s) on 6 job(s)" in row
-    # …and a run with no Virlo material at all prints no row rather than a chain of zeros.
-    assert "virlo" not in runner._spend_table(_summary(), nothing_returned())
-    assert "virlo" not in runner._spend_table(_summary(), None)
+    assert "virlo" not in table and "post(s)" not in table
+    assert table.splitlines()[0] == "requested 6 creatives, delivered 5"
+    assert "TOTAL  llm" in table and "within the $1.00 cap" in table
 
 
 # --------------------------------------------------------------------------- the arithmetic
@@ -286,8 +371,17 @@ def _corpus() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
              for row in body("slideshows_views_desc_limit100.json")["data"]["slideshows"]])
 
 
-def _tallied(*, duplicate_page: bool = False) -> tuple[Counters, Any]:
-    """One monitor's `TrendItem` built from the real page, with its own private tally.
+def _analysis(*, themed: bool) -> dict[str, Any]:
+    """The real captured nine-theme `analysis_data`, or the degenerate no-theme monitor."""
+    detail = json.loads((FIXTURES / "agent_detail.json").read_text(encoding="utf-8"))
+    analysis = dict(detail["data"]["analysis_data"]) if themed else {"why_it_works": "proof",
+                                                                     "themes": []}
+    analysis["name"] = "AI Trends Tracker"
+    return analysis
+
+
+def _tallied(*, themed: bool = True, duplicate_page: bool = False) -> tuple[Counters, list[Any]]:
+    """One monitor's topics built from the real page, with its own private tally.
 
     `duplicate_page` feeds the same rows twice, which is how the 11 repeated rows a real
     three-monitor run produced are reproduced offline — `virlo_payload` reported those as material
@@ -297,17 +391,16 @@ def _tallied(*, duplicate_page: bool = False) -> tuple[Counters, Any]:
     if duplicate_page:
         videos, shows = [*videos, *videos], [*shows, *shows]
     tally = Counters()
-    item = virlo._build_item(MONITOR, {"name": "AI Trends Tracker", "why_it_works": "proof",
-                                       "themes": []},
-                             videos, shows, Config(), counters=tally)
-    tally.trends_returned = 1
-    return tally, item
+    items = virlo._split_topics(MONITOR, _analysis(themed=themed), videos, shows, Config(),
+                                counters=tally)
+    tally.trends_returned = len(items)
+    return tally, items
 
 
 def test_the_input_stage_reconciles_raw_minus_duplicates_equals_kept() -> None:
     """`virlo_payload` used to report `len(clips)`/`len(panels)` from BEFORE `_dedupe`, so the
     operator read what Virlo shipped and the pipeline used something smaller."""
-    tally, _item = _tallied(duplicate_page=True)
+    tally, _items = _tallied(duplicate_page=True)
 
     assert tally.posts_raw == 400, "both pages, twice"
     assert tally.posts_kept == 200, "…and every repeat dropped"
@@ -316,84 +409,122 @@ def test_the_input_stage_reconciles_raw_minus_duplicates_equals_kept() -> None:
     assert "200 duplicate row(s) dropped" in runner._funnel_block(tally)
 
 
-def test_the_sets_stage_accounts_for_every_row_the_input_stage_kept() -> None:
-    """NFR-5's "every skip with its reason". Both `_MIN_PANELS` and `_MIN_THUMBS` rejections were
-    silent until FR-155, which is how a live run discarded 41 of 148 candidate sources in silence.
+def test_the_topics_stage_accounts_for_every_post_the_input_stage_kept() -> None:
+    """FR-293's split, on the real page and the real nine-theme analysis: the posts are dealt out
+    EXCLUSIVELY, so nothing is lost between input and topics and nothing is counted twice.
+
+    `posts_in` is recorded once PER MONITOR, never per topic — nine topics each reporting the
+    monitor's 200 rows would be 1,800, the same over-reporting defect the dedupe fix closed one
+    level up, and the two-level `absorb` seam is what prevents it.
     """
-    tally, item = _tallied()
+    tally, items = _tallied()
 
-    assert tally.slideshows_kept == tally.slideshow_sets + tally.slideshows_thin
-    assert tally.videos_kept == (tally.videos_in_sets + tally.videos_in_thin_families
-                                 + tally.videos_without_thumbnail)
-    assert tally.sets_qualified == tally.slideshow_sets + tally.frame_sets
-    assert tally.sets_thin == tally.slideshows_thin + tally.families_thin
-    # Every rejection carries a name, and the names add up to the thin count exactly.
-    assert set(tally.rejection_reasons) <= {"slideshow_under_min_panels",
-                                            "frame_family_under_min_thumbs",
-                                            "video_without_thumbnail"}
-    assert (tally.rejection_reasons.get("slideshow_under_min_panels", 0)
-            + tally.rejection_reasons.get("frame_family_under_min_thumbs", 0)) == tally.sets_thin
-    assert len(item.reference_groups) == tally.sets_qualified + tally.last_resort_sets
+    assert tally.posts_in == tally.posts_kept == 200
+    assert tally.topics_out == len(items) == 9
+    assert tally.topics_synthesized == 0
+    assert sum(len(topic.posts) for topic in items) == tally.posts_in
+    assert len({post.post_id for topic in items for post in topic.posts}) == tally.posts_in
+    assert "200 post(s) split into 9 topic(s)" in runner._funnel_block(tally)
 
 
-def test_the_choice_stage_classifies_every_returned_trend_exactly_once() -> None:
-    """Four buckets, one trend each — a trend counted twice or not at all would make the `chosen`
-    row disagree with the `verdict` row printed two lines below it."""
-    tally, _item = _tallied()
+def test_a_monitor_with_no_themes_synthesizes_exactly_one_topic_and_says_so() -> None:
+    """FR-293's never-fewer-items invariant: zero themes synthesizes ONE topic from the monitor
+    aggregate — the pre-pivot item shape. The funnel's `N synthesized` clause is what makes that
+    fallback visible instead of indistinguishable from a real one-theme monitor."""
+    tally, items = _tallied(themed=False)
 
-    classified = (tally.chosen_fresh + tally.chosen_repeated + tally.chosen_last_resort
-                  + tally.chosen_none)
-    assert classified == tally.trends_returned == 1
-    assert sum(tally.motion.values()) == tally.trends_returned
-    assert set(tally.motion) == {"fresh_same_creator", "fresh", "repeat", "none"}, \
-        "all four tiers always present, so a zero is visible rather than silent"
+    assert len(items) == tally.topics_out == 1
+    assert tally.topics_synthesized == 1
+    assert "200 post(s) split into 1 topic(s)" in runner._funnel_block(tally)
+    assert "1 synthesized" in runner._funnel_block(tally)
 
 
-def test_the_images_stage_reconciles_attempted_minus_dead_equals_downloaded() -> None:
+def test_the_filter_row_counts_every_verdict_exactly_once() -> None:
+    """FR-294. `record_filter` is duck-typed on `.verdict`/`.reason`, so the funnel never imports
+    the filter and the filter never imports the funnel — and the three buckets must therefore add
+    up to the number of topics screened, with an unrecognised verdict counting as `keep` (the
+    filter's own total-by-construction default) rather than vanishing.
+    """
+    from hypesocials.topic_filter import Verdict
+
     tally = Counters()
-    tally.add_downloads(attempted=18, downloaded=14)
+    verdicts = {1: Verdict(1), 2: Verdict(2, "strip", ["Acme"]),
+                3: Verdict(3, "skip", reason="promotes Acme Cloud"),
+                4: Verdict(4, "nonsense-from-a-model")}
+    tally.record_filter(verdicts)
 
-    assert tally.images_attempted - tally.images_dead == tally.images_downloaded
-    tally.add_downloads(attempted=6, downloaded=6)  # a second monitor folds in additively
-    assert (tally.images_attempted, tally.images_downloaded, tally.images_dead) == (24, 20, 4)
+    assert (tally.filter_kept, tally.filter_stripped, tally.filter_skipped) == (2, 1, 1)
+    assert tally.filter_kept + tally.filter_stripped + tally.filter_skipped == len(verdicts)
+    assert tally.filter_degraded is False
+    assert "2 kept, 1 stripped, 1 skipped" in runner._funnel_block(tally)
+
+
+def test_the_filter_row_shows_the_fail_open_degrade() -> None:
+    """§1.5: layer 2 fails OPEN — a dead model keeps every topic, with the blocklist still
+    deciding. The funnel is where a run says it screened on half its evidence."""
+    from hypesocials.topic_filter import Verdict
+
+    tally = Counters()
+    tally.record_filter({1: Verdict(1, reason="filter_degraded: model returned no JSON")})
+
+    assert tally.filter_degraded is True
+    assert "LLM layer degraded — blocklist only" in runner._funnel_block(tally)
 
 
 def test_the_verdict_row_reconciles_with_the_three_buckets_select_actually_produced() -> None:
     """Recorded by the caller because Select owns the verdicts, so the two can drift. Asserted
-    against a real `plan.select()` over the real corpus item rather than against chosen numbers."""
-    tally, item = _tallied()
-    selection = plan.select([item], Config(), {})
+    against a real `plan.select()` over the real corpus topics rather than against chosen numbers.
+    """
+    from hypesocials import plan
+
+    tally, items = _tallied()
+    selection = plan.select(items, Config(), {})
 
     tally.record_selection(eligible=len(selection.eligible), excluded=len(selection.excluded),
                            unusable=len(selection.unusable))
 
     assert tally.verdict_seen is True
     assert tally.eligible + tally.excluded_by_history + tally.unusable == len(selection.verdicts)
-    assert len(selection.verdicts) == tally.trends_returned
+    assert len(selection.verdicts) == tally.trends_returned == tally.topics_out
     assert f"{tally.eligible} eligible" in runner._funnel_block(tally)
 
 
-def test_absorbing_a_monitors_tally_sums_quantities_and_carries_the_ask() -> None:
-    """The two-level accumulation: a monitor's counts ADD, the shape of the ask does not.
+def test_the_render_row_states_a_range_rather_than_an_average() -> None:
+    """Contracts item 13/15: `record_render` takes ONE window size per creative that will render —
+    the assigned style's usable reference images clipped to `styles.refs_per_job`, 0 under an
+    override brief (M14). So the block says "2 style ref(s)" when they agree and "0-2" when they
+    do not; an average would invent a number no job will ever attach."""
+    agreed, mixed = Counters(), Counters()
+    agreed.record_render(jobs=3, dropped=0, style_refs=[2, 2, 2], topics_used=2, styles_used=3)
+    mixed.record_render(jobs=3, dropped=1, style_refs=[0, 1, 2], topics_used=2, styles_used=3)
 
-    `rows_per_call: 100` folded three times would read as 300 rows per call, which is the exact
-    lie the run-wide rollup exists to avoid once Increment B makes one monitor several themes.
+    assert agreed.refs_total == 6 and agreed.style_refs_min == agreed.style_refs_max == 2
+    assert "3 job(s) will attach 2 style ref(s) each" in runner._funnel_block(agreed)
+    assert mixed.refs_total == 3 and (mixed.style_refs_min, mixed.style_refs_max) == (0, 2)
+    assert "3 job(s) will attach 0-2 style ref(s) each" in runner._funnel_block(mixed)
+    assert "1 dropped, no topic left" in runner._funnel_block(mixed)
+
+
+def test_absorbing_a_monitors_tally_sums_quantities_and_carries_the_ask() -> None:
+    """The two-level accumulation (contracts item 15): a monitor's counts ADD, the shape of the
+    ask does not.
+
+    `rows_per_call: 100` folded three times would read as 300 rows per call — the exact lie the
+    run-wide rollup exists to avoid now that one monitor really does produce nine topics.
     """
-    run_wide = Counters(monitors_asked=3, rows_per_call=100, download_cap=18)
+    run_wide = Counters(monitors_asked=3, rows_per_call=100)
     for _ in range(3):
         one_monitor = Counters()
         one_monitor.add_input(videos_raw=100, slideshows_raw=100, videos_kept=98,
                               slideshows_kept=97, total_available=2674)
-        one_monitor.reject("slideshow_under_min_panels", 26)
-        one_monitor.add_choice(fresh=True, has_set=True, last_resort=False, motion_tier="fresh")
+        one_monitor.add_topics(posts_in=195, topics_out=9, synthesized=1)
         run_wide.absorb(one_monitor)
 
-    assert (run_wide.rows_per_call, run_wide.download_cap) == (100, 18), "the ask is carried"
-    assert run_wide.min_panels == virlo._MIN_PANELS and run_wide.min_frames == virlo._MIN_THUMBS
+    assert run_wide.rows_per_call == 100, "the ask is carried, never summed"
     assert run_wide.posts_raw == 600 and run_wide.posts_kept == 585
+    assert run_wide.duplicates_dropped == 15
     assert run_wide.total_available == 3 * 2674
-    assert run_wide.rejection_reasons == {"slideshow_under_min_panels": 78}
-    assert run_wide.chosen_fresh == 3
+    assert (run_wide.posts_in, run_wide.topics_out, run_wide.topics_synthesized) == (585, 27, 3)
     assert run_wide.verdict_seen is False and run_wide.render_seen is False
 
 
@@ -427,26 +558,31 @@ def test_fr77_every_mcp_call_line_carries_the_row_count_the_prd_example_shows() 
     assert [data["rows"] for _n, _m, data in log.events] == [100, 100, 0, None]
 
 
-def test_fr155_the_virlo_payload_line_reports_what_the_pipeline_read_not_what_virlo_shipped() -> None:
-    """`virlo.py` passed `len(clips)`/`len(panels)` from BEFORE the dedupe, so the operator read
-    the rows Virlo shipped and the pipeline used something smaller — 11 rows out on a real
-    three-monitor run. The raw figures stay beside the deduped ones so the drop is measurable."""
-    log = Recorder()
-    videos, shows = _corpus()
-    tally = Counters()
-    item = virlo._build_item(MONITOR, {"name": "AI Trends Tracker", "why_it_works": "proof",
-                                       "themes": []},
-                             [*videos, *videos], [*shows, *shows], Config(), counters=tally)
-    virlo._payload_event(log, item, tally)
+def test_fr155_the_virlo_payload_line_reports_a_topics_own_posts_not_the_monitors() -> None:
+    """FR-293 one level up from the dedupe fix: a TOPIC reports ITS OWN posts.
 
-    (_name, message, data), = [row for row in log.events if row[0] == "virlo_payload"]
-    assert "after dedup 100 videos, 100 slideshows" in message
-    assert (data["videos"], data["slideshows"]) == (100, 100)
+    Nine topics each printing one monitor-wide "100 videos, 100 slideshows" would be the same
+    over-reporting the pre-FR-155 line was guilty of — it passed `len(clips)`/`len(panels)` from
+    before `_dedupe`, so a real three-monitor run over-reported its material by 11 rows. The
+    monitor-wide figures stay in `data` beside the topic's own, because the dedupe drop is a fact
+    about the monitor and cannot be attributed to any one topic.
+    """
+    log = Recorder()
+    tally, items = _tallied(duplicate_page=True)
+    topic = items[0]
+    virlo._payload_event(log, topic, tally)
+
+    (message, data), = log.named("virlo_payload")
+    assert data["posts"] == len(topic.posts) < tally.posts_kept
+    assert data["videos"] + data["slideshows"] == len(topic.posts)
+    assert f"after dedup {data['videos']} videos, {data['slideshows']} slideshows" in message
+    assert (data["monitor_videos_kept"], data["monitor_slideshows_kept"]) == (100, 100)
     assert (data["videos_raw"], data["slideshows_raw"]) == (200, 200)
     assert data["duplicates_dropped"] == 200
+    assert data["topic"] == topic.topic_key
 
 
-# ------------------------------------------------------- unconditional, and above the detail
+# ---------------------------------------------- printed ONCE, at DONE, in the pinned order
 
 
 @pytest.mark.parametrize("shape", sorted(ALL_SHAPES))
@@ -454,7 +590,7 @@ def test_the_block_prints_for_every_shape_including_an_untouched_counters(shape:
     """Unlike `_restate` — gated on `assignment.dropped or session.opts.interactive`, so a clean
     `--yes` run printed nothing at all — the funnel is unconditional. There is no shape of
     `Counters` for which it returns an empty string, which is what makes the single unguarded
-    `session.say(_funnel_block(...))` call in `runner._pipeline` honest."""
+    `session.say(_funnel_block(...))` call in `runner._package` honest."""
     block = runner._funnel_block(ALL_SHAPES[shape]())
 
     assert block.strip(), "a shape that prints nothing is a silence the operator cannot read"
@@ -462,59 +598,93 @@ def test_the_block_prints_for_every_shape_including_an_untouched_counters(shape:
     assert len(block.splitlines()) >= 2, "a header with no rows says nothing about the funnel"
 
 
-def test_the_runner_says_the_funnel_unconditionally_and_restate_stays_gated() -> None:
-    """The gating difference, read off the two call sites. `_restate`'s `session.say` sits under an
-    `if`; the funnel's does not, and that asymmetry is the whole FR-155 decision."""
-    pipeline = inspect.getsource(runner._pipeline)
+def test_the_funnel_is_said_exactly_once_unconditionally_and_at_done() -> None:
+    """FR-155 re-placed (§1.10 rule 6). The three pre-pivot stage-gate placements are superseded
+    by FR-296's stage headers, which carry the same counts the moment they become true — so the
+    block appears in `_package` alone, before the spend table, and nowhere else in the runner.
+
+    The gating asymmetry with `_restate` is the whole FR-155 decision and is asserted beside it:
+    the funnel's `session.say` sits at the function's own indent, `_restate`'s sits under an `if`.
+    """
+    module = Path(runner.__file__).read_text(encoding="utf-8")
+    package = inspect.getsource(runner._package)
     restate = inspect.getsource(runner._restate)
 
-    said = next(line for line in pipeline.splitlines()
-                if "say(_funnel_block(" in line)
-    assert said.startswith("    session.say("), f"the funnel say is nested under a branch: {said!r}"
+    assert "_funnel_block" not in inspect.getsource(runner._pipeline)
+    assert module.count("_funnel_block(") == 2, "the definition and exactly ONE call site"
+    said = [line for line in package.splitlines() if "say(_funnel_block(" in line]
+    assert len(said) == 1
+    assert said[0].startswith("    session.say("), f"the funnel say is nested: {said[0]!r}"
+    assert package.index("_funnel_block(") > package.index("_provenance_block(")
+    assert package.index("_funnel_block(") < package.index("_spend_table(")
+
     assert "if assignment.dropped or session.opts.interactive:" in restate
-    assert restate.index("if assignment.dropped") < restate.index("session.say(line)")
+    assert restate.index("if assignment.dropped") < restate.index("session.say(")
 
 
-def test_the_funnel_prints_above_the_per_trend_detail_in_both_preview_modes() -> None:
-    """FR-139/155. `previews._verdict_block` emits ~8 lines per trend; at Increment B's 22 trends
-    that is 176 lines, and a rollup printed underneath them is a rollup nobody reads."""
-    shallow = inspect.getsource(previews._preview)
+def test_the_pipeline_runs_the_stages_in_the_pinned_topic_first_order() -> None:
+    """The plan's own stage order, read off `_pipeline`'s source (§1.10 / plan §3's W3 row):
+
+        confirm -> collect -> screen_topics -> select -> assign
+        -> assign_styles + assign_branding -> store_references -> write_copy -> create
+
+    Textual order in the source is the only offline proxy for execution order, and it is enough:
+    every one of these is a single awaited call in a straight-line coroutine. The two style calls
+    live INSIDE `_assign_visuals`, so they are asserted against that function's own source.
+    """
+    pipeline = inspect.getsource(runner._pipeline)
+    stages = ["_confirm(", "_collect(", "_screen_topics(", "_select(", "_assign_visuals(",
+              "_store_references(", "_write(", "_create(", "_package("]
+    positions = [pipeline.index(token) for token in stages]
+
+    assert positions == sorted(positions), dict(zip(stages, positions))
+
+    visuals = inspect.getsource(runner._assign_visuals)
+    assert visuals.index("assign_styles(") < visuals.index("assign_branding(")
+    # FILTER really does sit between Collect and Select — a `skip` must never reach Select, and
+    # it is metered, so it must never run before the Confirm gate.
+    assert pipeline.index("_screen_topics(") > pipeline.index("_confirm(")
+
+
+def test_both_preview_modes_print_the_funnel_last_and_reuse_the_runners_own_block() -> None:
+    """FR-139/140 + console-UX rule 6. The funnel used to sit ABOVE the per-trend detail because
+    `_verdict_block` emitted ~8 lines per trend and would have buried the rollup; FR-297a's
+    one-line-per-topic table removed that reason, so both previews now close with it — the same
+    position a paid run puts it in.
+
+    Both reuse `runner._funnel_block` rather than forking one (D19): two blocks would be two
+    shapes free to disagree about the same run.
+    """
+    shallow = inspect.getsource(previews._shallow_stages)
     deep = inspect.getsource(previews._deep_stages)
 
-    assert shallow.index("_funnel_block(session.counters)") < shallow.index("_verdict_block(")
-    assert shallow.index("_funnel_block(session.counters)") < shallow.index("_sources_block(")
-    assert deep.index("_funnel_block(session.counters)") < deep.index("_sources_block(")
-    assert deep.index("_funnel_block(session.counters)") < deep.index("_analysis_block(")
-    # Both previews reuse the runner's own block rather than forking one (D19).
+    assert shallow.index("_topics_table(") < shallow.index("_funnel_block(session.counters)")
+    for earlier in ("_topics_table(", "_post_roster(", "_assign_block(", "_copy_block("):
+        assert deep.index(earlier) < deep.index("_funnel_block(session.counters)"), earlier
     assert previews._funnel_block is runner._funnel_block
 
 
-def test_the_paid_run_prints_the_funnel_before_any_per_trend_detail_too() -> None:
-    pipeline = inspect.getsource(runner._pipeline)
-
-    assert pipeline.index("_funnel_block(") < pipeline.index("_sources_block(")
-    assert pipeline.index("_funnel_block(") < pipeline.index("_brief_block(")
+# --------------------------------------------------------------------------- no topic names
 
 
-# --------------------------------------------------------------------------- no trend names
-
-
-def test_a_trend_name_cannot_reach_the_funnel_block_because_counters_cannot_hold_one() -> None:
+def test_a_topic_name_cannot_reach_the_funnel_block_because_counters_cannot_hold_one() -> None:
     """The structural reason the block needs no `fit()` on its rows: the object it is built from
-    has no string-valued field at all. Trend names are the one unbounded token in this pipeline,
+    has no string-valued field at all. Topic names are the one unbounded token in this pipeline,
     and every width guarantee above rests on their absence.
 
     The two dictionaries are keyed by a CLOSED vocabulary — four motion tiers and three rejection
-    reasons, all spelled in `virlo.py` — so they cannot carry operator data either.
+    reasons, both spelled in `virlo.py` and both dying at W3.5 — so they cannot carry operator
+    data either.
     """
     for spec in dataclasses.fields(Counters):
         assert spec.type in ("int", "bool", "dict[str, int]"), \
-            f"Counters.{spec.name}: {spec.type} — a non-numeric field can carry a trend name"
+            f"Counters.{spec.name}: {spec.type} — a non-numeric field can carry a topic name"
 
-    tally, item = _tallied()
-    tally.record_selection(eligible=1, excluded=0, unusable=0)
+    tally, items = _tallied()
+    tally.record_selection(eligible=len(items), excluded=0, unusable=0)
     block = runner._funnel_block(tally)
 
-    assert item.name and item.name not in block
-    for word in item.name.split():
-        assert word not in block, f"a trend-name token reached the funnel: {word!r}"
+    for topic in items:
+        assert topic.name
+        for word in topic.name.split():
+            assert word not in block, f"a topic-name token reached the funnel: {word!r}"

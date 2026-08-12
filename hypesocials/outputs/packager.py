@@ -85,21 +85,28 @@ def create_run_folder(output_dir: str | Path, run_id: str) -> Path:
 
 def save_reference(
     run_dir: str | Path,
-    source_key: str,
+    key: str,
     data: bytes,
     *,
     index: int,
-    kind: str = "image",
     suffix: str = "",
 ) -> Path:
-    """Store one reference the run actually used at `refs/<source_key>/<kind>_<n><ext>` (FR-71).
+    """Store one reference image the run actually attached at `refs/<key>/image_<n><ext>` (FR-71).
 
-    The gallery shows these next to the creative so fidelity can be judged by comparison
-    (FR-150); the video reference of the D23 chain lands here as `video_1.mp4` beside the images.
+    `key` is the **style key** the images belong to (post-pivot: the visual authority is the
+    meta-style registry, so the comparison folder is keyed by style, not by topic — one folder
+    per style, however many creatives rotated onto it). It is slugified for the folder name, and
+    registry keys are slug-shaped already, so the folder reads as its style: `refs/hypelead-
+    brand-card/image_1.png`. An override brief's own images are NOT stored here: they are copied
+    into the asset's own `refs/` by `AssetFolder.add_reference()` (D26), because they belong to
+    one creative rather than to a style every creative may draw on.
+
+    The gallery shows these next to each creative so FR-150's judgement — style adherence and
+    topical accuracy — can be made by comparison rather than from memory. Everything here is an
+    image: the D23 video-reference chain is gone with the pivot, so there is no second `kind`.
     """
-    folder = Path(run_dir) / REFS_DIR / slugify(source_key)
-    default = ".mp4" if kind == "video" else ".jpg"
-    return _write_bytes(folder / f"{kind}_{int(index)}{suffix or default}", data)
+    folder = Path(run_dir) / REFS_DIR / slugify(key)
+    return _write_bytes(folder / f"image_{int(index)}{suffix or '.jpg'}", data)
 
 
 # --------------------------------------------------------------------------- asset folder

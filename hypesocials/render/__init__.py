@@ -96,13 +96,15 @@ class RenderGate:
     Provider-free by design — capacity in, turns out — so its starvation test is pure asyncio.
     """
 
-    __slots__ = ("_capacity", "_held", "_waiters")
+    __slots__ = ("_capacity", "_held", "_held_by_tier", "_waiters")
 
     def __init__(self, capacity: int) -> None:
         if int(capacity) < 1:
             raise RenderError(f"max_inflight_render_jobs must be >= 1, got {capacity!r}")
         self._capacity = int(capacity)
         self._held = 0
+        self._held_by_tier: dict[RenderPriority, int] = {
+            RenderPriority.WAVE2: 0, RenderPriority.WAVE1: 0}
         self._waiters: dict[RenderPriority, deque[asyncio.Future[None]]] = {
             RenderPriority.WAVE2: deque(),
             RenderPriority.WAVE1: deque(),
@@ -113,13 +115,26 @@ class RenderGate:
         """Permits currently held — the number of jobs this gate believes are live."""
         return self._held
 
+    def stats(self) -> tuple[int, int, int]:
+        """`(running_w1, running_w2, queued)` — read-only, for FR-299's render heartbeat.
+
+        The per-tier running counts are tracked at `permit()` scope (the tier a HOLDER entered
+        under, regardless of how its permit was transferred), so the heartbeat's `(0 w1, 2 w2)`
+        split names who is actually rendering, not who queued first. Behaviour of the gate is
+        untouched — this observes, it never decides.
+        """
+        return (self._held_by_tier[RenderPriority.WAVE1], self._held_by_tier[RenderPriority.WAVE2],
+                sum(len(queue) for queue in self._waiters.values()))
+
     @asynccontextmanager
     async def permit(self, priority: RenderPriority) -> AsyncIterator[None]:
         """Holds one permit for the body. Release is unconditional, including on cancellation."""
         await self._acquire(priority)
+        self._held_by_tier[priority] += 1
         try:
             yield
         finally:
+            self._held_by_tier[priority] -= 1
             self._release()
 
     async def _acquire(self, priority: RenderPriority) -> None:
@@ -238,6 +253,15 @@ def get_profile(name: str) -> RenderProfile:
     return _profiles.get(name)
 
 
+def gate_stats() -> tuple[int, int, int]:
+    """`(running_w1, running_w2, queued)` for the configured run, or zeros before `configure()`.
+
+    The FR-299 heartbeat's one window into the permit gate — read-only by contract; `generate`'s
+    `_drain` loop prints from it and never steers it.
+    """
+    return _gate.stats() if _gate is not None else (0, 0, 0)
+
+
 def _require() -> tuple[RenderSettings, KieClient, RenderGate]:
     if _settings is None or _client is None or _gate is None:
         raise RenderError("render.configure() has not been called for this run")
@@ -247,5 +271,5 @@ def _require() -> tuple[RenderSettings, KieClient, RenderGate]:
 __all__ = [
     "KieError", "KieOutOfCredits", "KieUploadError", "ReferenceLimits", "RenderError",
     "RenderGate", "RenderProfile", "RenderSettings", "UnknownProfileError", "aclose",
-    "configure", "get_profile", "run", "upload_file",
+    "configure", "gate_stats", "get_profile", "run", "upload_file",
 ]
