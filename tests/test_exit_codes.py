@@ -261,9 +261,12 @@ def test_fr202_the_fully_degraded_analysis_clause_is_withdrawn_with_the_stage() 
 
     assert not hasattr(runner_module, "_analysis_degrade_counts")
     assert not hasattr(runner_module, "_analysis_degraded_line")
+    # W3.5 excised the tag itself; a benign non-loss tag stands in to prove tags alone never
+    # move the code (the loss set is exactly `_DELIVERED_LOSS_TAGS`).
+    assert not hasattr(DegradationTag, "ANALYSIS_MISSING")
 
     entries = [entry(index) for index in range(6)]
-    tags = {item.asset_id: [DegradationTag.ANALYSIS_MISSING] for item in entries}
+    tags = {item.asset_id: [DegradationTag.TEXT_TRIMMED] for item in entries}
     assert decide_exit_code(entries, degradations=tags) == EXIT_OK
 
 
@@ -324,13 +327,13 @@ def test_fr248_copy_degraded_is_the_only_llm_starved_tag_left_and_still_costs_ex
     a loss to surface, and a batch that silently shipped fallback copy is not a full success. The
     latch stamps every hit entry with a `skip_reason`, which is what moves the run off exit 0.
 
-    `analysis_missing` left the `llm_starved` set with the analysis stage, so a creative carrying
-    it alone is no longer charged to the latch.
+    The pre-pivot `analysis_missing` tag left `llm_starved` — and at W3.5 the enum — with the
+    analysis stage, so a creative carrying any non-copy tag is no longer charged to the latch.
     """
     entries = [entry(0), entry(1)]
     report = SimpleNamespace(records={
         entries[0].asset_id: _record(entries[0].asset_id, DegradationTag.COPY_DEGRADED),
-        entries[1].asset_id: _record(entries[1].asset_id, DegradationTag.ANALYSIS_MISSING)})
+        entries[1].asset_id: _record(entries[1].asset_id, DegradationTag.TEXT_TRIMMED)})
     session = SimpleNamespace(llm=SimpleNamespace(credits_exhausted=True))
 
     line = _credits_exhausted_line(session, entries, report)

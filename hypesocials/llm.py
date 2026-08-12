@@ -21,8 +21,8 @@ Invariants enforced here, once, for every caller:
 - **Never raises for a provider outcome.** Transport failure, HTTP error, unparseable body and
   credit exhaustion all come back as a `ParsedResult` with `degraded=True`, `parsed=None` and a
   short operator-facing cause in `reason` (`raw_text` keeps the body, for events.jsonl); callers
-  write `if result.degraded: <fall back>` and attach `analysis_missing` / `copy_degraded`
-  themselves. Only a programmer error (unknown role) raises.
+  write `if result.degraded: <fall back>` and attach `copy_degraded` (or fail open, for the
+  topic filter) themselves. Only a programmer error (unknown role) raises.
 - **402 is a run condition (FR-248).** The first 402 latches `credits_exhausted`; that call and
   every later one short-circuit to a degraded result reading exactly `CREDITS_EXHAUSTED_REASON`
   — no retry, no further HTTP. Reported distinctly from Kie's 402 (FR-167): different fix.

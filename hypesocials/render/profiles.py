@@ -61,10 +61,9 @@ class UnknownProfileError(LookupError):
 class ReferenceLimits:
     """What one model family will actually accept as reference media.
 
-    Declared so callers cap *before* spending (FR-272). `video_pixel_window` is the constraint
-    that bites hardest in practice: a raw 1080x1920 phone download is 2 073 600 px and is
-    rejected outright, so `video_ref.py`'s yt-dlp format selection must pick a format inside
-    this window (spikes/RESULTS.md §C) — it reads the bound from here rather than hardcoding it.
+    Declared so callers cap *before* spending (FR-272). `video_pixel_window` is kept as the
+    profile's own documented bound (spikes/RESULTS.md §C) even though nothing uploads reference
+    video any more — a future video-reference feature must read it from here, not hardcode it.
     """
 
     max_image_urls: int = 0

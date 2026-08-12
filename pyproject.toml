@@ -16,8 +16,6 @@ dependencies = [
     "httpx==0.28.1",           # all async HTTP: OpenRouter, Kie.ai, Virlo CDN downloads
     "PyYAML==6.0.3",           # config + meta.yaml
     "mcp==2.0.0",              # official MCP Python SDK: Virlo wrapper + Notion stdio client
-    "yt-dlp==2026.7.4",        # reel video-reference download (D23); routine-bump policy NFR-160
-    "Pillow==12.3.0",          # image downscale ONLY (FR-93, NFR-25) — never re-encode/compose
     "python-dotenv==1.2.2",    # .env loading; secrets never leave headers/env dicts (D30)
     "pywin32==312; sys_platform == 'win32'",  # win32job kill-on-close job objects (FR-111)
 ]

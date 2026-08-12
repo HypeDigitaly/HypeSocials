@@ -9,7 +9,7 @@ injected `submit` does all three (FR-106 a/b/c, FR-203).
 
 **No motion reference (v2.0.0, topic-first pivot).** A reel is the seed frame plus Seedance and
 nothing else: Virlo is a text-only topic feed now, so there is no winning video to download, no
-yt-dlp chain to wait on, and every clip is billed at the provider's no-reference rate. The clip's
+video-download chain to wait on, and every clip is billed at the provider's no-reference rate. The clip's
 movement comes from the assigned style's `motion_profile` and the copy's one named `motion_beat`
 (F24), both of which travel through the prompt rather than through a downloaded file.
 

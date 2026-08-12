@@ -484,9 +484,9 @@ def _llm_lines(config: Config, entries: Sequence[PlanEntry], lines: list[Estimat
     def siblings_of(members: Sequence[PlanEntry]) -> int:
         """One sibling line per CREATIVE — post-pivot every asset gets its own CopySet.
 
-        It used to be one line per `pair_id`, because a both-mode pair was two renders of one
+        It used to be one line per A/B pair key, because a both-mode pair was two renders of one
         CopySet. A/B mode is withdrawn (v2.0.0/D42), so the distinct asset ids ARE the siblings —
-        and reading `pair_id` here would raise `AttributeError` on every `estimate()` the moment
+        and reading the dead pair key here would raise `AttributeError` on every `estimate()` the moment
         the field is excised, which is the one thing this module may never do to a run.
         """
         return len({e.asset_id for e in members})

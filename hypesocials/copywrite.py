@@ -786,13 +786,8 @@ def _selection_schema() -> dict[str, Any]:
 
 
 def _free_text_schema() -> dict[str, Any]:
-    """The override-brief / post-less shape: `CopySet` minus what the engine owns.
-
-    `hook_pattern_used` is excluded because A21 is dead (§1.7.2): nothing validates it, nothing
-    reads it, and asking for a field we discard is asking the model to spend tokens on nothing.
-    The field itself survives on `CopySet` until the W3.5 excision and stays at its default.
-    """
-    creative = json_schema_for(CopySet, exclude={"language", "trend_key", "hook_pattern_used"})
+    """The override-brief / post-less shape: `CopySet` minus what the engine owns."""
+    creative = json_schema_for(CopySet, exclude={"language", "trend_key"})
     return {
         "name": "social_copy",
         "schema": {"type": "object", "properties": {"creatives": {"type": "array",

@@ -288,7 +288,7 @@ def decide_exit_code(
       delivered". `_DELIVERED_LOSS_TAGS` is what closes it; a `skip_reason` on a delivered creative
       (FR-248's credits latch stamps one) remains a loss exactly as before.
 
-    The pre-pivot "every analyzed creative carries `analysis_missing`" clause died with the
+    The pre-pivot fully-degraded-analysis clause died with the
     analysis stage itself (v2.0.0 — FR-202's analyzed clause deleted; there is no analyzed/direct
     split to degrade between). `COPY_DEGRADED` remains a code-1 loss through the FR-248 latch and
     the `llm_starved` set — an explicit D42 decision: a failed copy call is still a loss to
@@ -1364,7 +1364,7 @@ def _credits_exhausted_line(session: _Session, entries: Sequence[PlanEntry],
     """
     if session.llm is None or not session.llm.credits_exhausted:
         return ""
-    # v2.0.0: `analysis_missing` left the set with the analysis stage; a failed copy call is
+    # v2.0.0: the analysis tag left the set with its stage; a failed copy call is
     # still the loss FR-248 charges to the latch (COPY_DEGRADED keeps its exit-1 semantics).
     llm_starved = {DegradationTag.COPY_DEGRADED}
     degraded = {asset_id for asset_id, record in report.records.items()
@@ -1398,7 +1398,7 @@ def _metered(session: _Session) -> Any:
         await session.budget.reconcile(held, result.cost_usd or None)
         # NFR-5: model, duration and the prompt IN FULL. `messages` is a `_FULL_ONLY_KEYS` name, so
         # events.jsonl keeps the whole payload and run.log gets its size — 40 §4's split, verbatim.
-        # (The pre-pivot `hook_pattern_used` extra died with A21 — NFR-5 v2.0.0 logs style key,
+        # (The pre-pivot A21 audit extra died with its validator — NFR-5 v2.0.0 logs style key,
         # registry hash and filter verdicts instead, each at its own site.)
         extra: dict[str, Any] = {"messages": messages}
         session.log.event("llm_call", f"{role} call complete", duration_ms=watch.elapsed_ms,
@@ -1426,7 +1426,7 @@ def _halt(session: _Session, stage: str) -> bool:
 
 def _stamp_provisional(entries: Sequence[PlanEntry]) -> None:
     """Give each atomic group its own provisional trend key, so the pre-Collect estimate counts
-    the analysis (FR-9) and copy (FR-99) calls the operator can really be billed for.
+    the copy calls (FR-99/107) the operator can really be billed for.
 
     **Worst-case-honest, per the v1.6.5 estimator fidelity fix.** `plan.assign()` binds trends per
     *atomic group* and `_pick()` prefers the least-used trend, so a group gets a DISTINCT trend
@@ -1654,10 +1654,6 @@ async def _cleanup(session: _Session) -> None:
             pass  # the child died with the console before cleanup ran (RESULTS.md §F)
         except Exception as exc:  # noqa: BLE001 — cleanup never re-raises
             logger.warning("cleanup step failed: %s: %s", type(exc).__name__, exc)
-    try:
-        sources.cleanup()  # scratch downloads (FR-249), idempotent
-    except OSError as exc:
-        logger.warning("scratch cleanup failed: %s", exc)
     session.log.close()
 
 

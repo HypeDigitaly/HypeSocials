@@ -89,12 +89,8 @@ from hypesocials.generate.refs import wordmark as wordmark_of
 from hypesocials.generate.carousel import render_carousel
 from hypesocials.generate.reel import render_reel
 
-#: The one image role post-pivot (F16's merged template). The two legacy names stay importable
-#: until W3.5 — nothing here uses them; their templates/built-ins survive as FR-183 fallbacks
-#: for the transition only.
+#: The one image role post-pivot (F16's merged template).
 ROLE_IMAGE = "image_post.md"
-ROLE_ANALYZED = "image_single_post.md"  # W3.5-doomed
-ROLE_DIRECT = "image_direct.md"  # W3.5-doomed
 
 #: FR-108's "one short grace poll (~30 s)": at the deadline — or at the first Ctrl+C (FR-201) —
 #: outstanding jobs get exactly this long to land, because work seconds from completing is work
@@ -135,7 +131,7 @@ class Env:
     copy_provenance: Mapping[str, CopyProvenance] = field(default_factory=dict)
     #: `CopyResult.tags` — `asset_id -> the DegradationTags the copy stage earned this creative`
     #: (FR-99's `copy_degraded`, FR-101's `text_trimmed`, A20's `no_onimage_text`, A21's
-    #: `hook_pattern_generic`). ONE field rather than one frozenset per tag: the copy stage is
+    #: the audit tags). ONE field rather than one frozenset per tag: the copy stage is
     #: free to grow a new degradation without a new field here and a new branch in `_record`.
     copy_tags: Mapping[str, Sequence[DegradationTag]] = field(default_factory=dict)
     #: FR-200/191: `asset_id -> ((path, kind), …)`, kind in {"style", "brief"} — the provenance
@@ -619,10 +615,6 @@ def _record(entry: PlanEntry, env: Env) -> AssetRecord:
         source_name=trend.name if trend else (entry.brief_name or ""),
         platform=entry.platform,
         creative_format=entry.creative_format,
-        variant=entry.variant,
-        pair_id=entry.pair_id,
-        generation_mode=entry.variant,
-        hook_pattern_used=copyset.hook_pattern_used if copyset else "",
         source_hook=next((hook for hook in (trend.hook_texts if trend else ()) if hook), ""),
         # FR-73 (v2.0.0) identity quartet + the FR-298 verbatim receipt:
         style_key=entry.style_key or ("brief_override" if entry.brief_influence == "override"
@@ -699,5 +691,4 @@ def _fail(entry: PlanEntry, env: Env, folder: AssetFolder, reason: str,
     return folder.skip(reason, tag, **extra)
 
 
-__all__ = ["Env", "GRACE_S", "Report", "ROLE_IMAGE", "ROLE_ANALYZED", "ROLE_DIRECT", "create",
-           "ledger_hooks"]
+__all__ = ["Env", "GRACE_S", "Report", "ROLE_IMAGE", "create", "ledger_hooks"]

@@ -43,10 +43,10 @@ from hypesocials import cli, menu, previews, runner
 #: Repo root — `.env` sits beside `run.bat`, never inside the package.
 ROOT = Path(__file__).resolve().parent.parent
 
-#: The %TEMP% scratch folders `sources/virlo.py` and `generate/video_ref.py` create. FR-249 deletes
-#: them on every exit path bar one: the second Ctrl+C leaves through `os._exit`, which runs no
-#: cleanup at all. The next run sweeps that aftermath — a day old cannot belong to a live run, so
-#: a concurrent run's fresh scratch is never touched.
+#: %TEMP% scratch left by PRE-PIVOT runs (the reference-download and video-reference chains,
+#: both excised in W3.5 — nothing creates these folders any more). The sweep stays for one
+#: release so a hard-killed pre-pivot run's leftovers still get cleaned; a day old cannot belong
+#: to a live run, so nothing fresh is ever touched (FR-249).
 _SCRATCH_GLOBS = ("hypesocials-refs-*", "hypesocials-videoref-*")
 _SCRATCH_MAX_AGE_S = 24 * 60 * 60
 

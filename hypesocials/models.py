@@ -16,8 +16,6 @@ from typing import Any, Literal, Protocol
 
 # Closed vocabularies that are config strings, not enums.
 CreativeFormat = Literal["image", "carousel", "reel"]  # 10 FR-1
-Variant = Literal["analyzed", "direct"]  # 10 FR-22 — no other variant tokens exist
-GenerationMode = Literal["analyzed", "direct", "both"]  # 10 FR-3
 InfluenceMode = Literal["override", "blend"]  # 10 FR-144/145, D26
 Platform = str  # platform names are config keys (30 §2), never hardcoded
 
@@ -28,7 +26,6 @@ class DegradationTag(str, Enum):
     owns only the spelling, so a new tag needs no schema change (the gallery loops over them).
     """
 
-    ANALYSIS_MISSING = "analysis_missing"  # FR-12
     COPY_DEGRADED = "copy_degraded"  # FR-99 (Notion absence is a warning, never a tag)
     # KEPT, REDEFINED at W2 (v2.0.0, contracts item 7): "no source string fits this style's
     # on-image budget — caption-only creative." Under the §1.7 verbatim contract an over-budget
@@ -52,10 +49,6 @@ class DegradationTag(str, Enum):
     # check, so the style shipped as text-only (its prose still steers the render, its pictures do
     # not). A warning at pre-flight, never an error: a style without its files is still a style.
     STYLE_REFS_MISSING = "style_refs_missing"
-    # A21 — `hook_pattern_used` came back generic twice (the value the copywriter template itself
-    # calls a failed answer). Never fails the creative; it marks the audit trail as weak so a
-    # reviewer knows the pattern line on this card was not earned.
-    HOOK_PATTERN_GENERIC = "hook_pattern_generic"
     REFERENCE_FREE = "reference_free"  # FR-18
     REFS_DROPPED_MODERATION = "refs_dropped_moderation"  # FR-97
     TEXT_TRIMMED = "text_trimmed"  # FR-101
@@ -66,11 +59,6 @@ class DegradationTag(str, Enum):
     SEED_FRAME_URL_UNREACHABLE = "seed_frame_url_unreachable"  # FR-24
     AUDIO_DROPPED_CONTENT_AUDIT = "audio_dropped_content_audit"  # FR-141 content-audit degrade
     #   (v1.6.6): clip re-submitted once with generate_audio=false; references kept
-    PROBE_FAILED = "probe_failed"  # video-ref chain, FR-142 / 20 FR-160
-    NO_QUALIFYING_VIDEO = "no_qualifying_video"
-    DOWNLOAD_FAILED = "download_failed"
-    UPLOAD_FAILED = "upload_failed"
-    MALFORMED_METADATA = "malformed_metadata"
 
 
 class PlanEntryStatus(str, Enum):
@@ -103,29 +91,6 @@ class VisionCheckResult(str, Enum):
     RETRIED_PASSED = "retried_passed"
     RETRIED_FAILED = "retried_failed"
     NOT_CHECKED = "not_checked"
-
-
-@dataclass(slots=True)
-class ReferenceSet:
-    """ONE coherent reference set and every field derived from it — chosen as a single unit.
-
-    A candidate is all panels of one slideshow, or one creator's video thumbnails (FR-91 forbids
-    mixing sources inside a job's reference set). Its urls, the posts they came from and the panel
-    metadata the style brief and copy read are ONE decision, so no caller ever aligns a url list
-    against an id list by hand — that invariant reappearing means the sets have desynchronised.
-    `post_ids` is what FR-7's post-level window is checked against and what history records once
-    the set was actually attached; `author` is the handle the reel's motion reference prefers, so a
-    slideshow's copy is not animated by a stranger's clip.
-    """
-
-    urls: list[str] = field(default_factory=list)  # CDN image urls, in panel order
-    post_ids: tuple[str, ...] = ()  # stable Virlo ids of the posts these urls came from
-    is_slideshow: bool = False  # drives format affinity (FR-90) for the item that picks this set
-    panel_texts: list[str] = field(default_factory=list)  # per-slide word-count rhythm (FR-13)
-    narrative_arc: str = ""
-    text_density: str = ""
-    source_url: str | None = None  # this set's own Virlo permalink
-    author: str | None = None  # creator handle, for motion-reference coherence
 
 
 @dataclass(slots=True)
@@ -178,22 +143,20 @@ class TrendItem:
     topic_key: str = ""
     # The topic's own winning posts, view-ranked. This list is the ONLY source of quotable text
     # post-pivot (FR-99/100) and the provenance the history record, the FR-297b roster and the
-    # gallery receipt all read; the flat `hook_texts`/`panel_texts` lists further down are the
-    # pre-pivot, post-less shape and die at W3.5.
+    # gallery receipt all read; the flat `hook_texts`/`panel_texts` lists further down
+    # remain as deduped monitor-level views the prompt engine and previews read.
     posts: list[SourcePost] = field(default_factory=list)
     source: str = "virlo"  # adapter id (20 FR-121)
     strength: float = 0.0  # 0–1, computed by the adapter — the one cross-source contract (FR-5)
     strength_components: dict[str, float] = field(default_factory=dict)  # logged verbatim (FR-5)
-    text_only: bool = False  # item-level: no usable image (FR-6; last resort per FR-90)
-    is_slideshow: bool = False  # drives format affinity (FR-90)
+    is_slideshow: bool = False  # drives format affinity (FR-90): the topic's view-ranked posts
+    #   are majority-slideshow (§1.6 re-derivation — every post-pivot item is text-only by design)
     confidence: float | None = None
     why_it_works: str = ""
     tactics: list[str] = field(default_factory=list)
     hook_texts: list[str] = field(default_factory=list)  # few-shot exemplars for FR-100
     text_overlay_contents: list[str] = field(default_factory=list)
     panel_texts: list[str] = field(default_factory=list)  # per-slide word-count rhythm (FR-13)
-    narrative_arc: str = ""
-    text_density: str = ""
     video_descriptions: list[str] = field(default_factory=list)  # feeds FR-96 content sentence
     # Virlo's own `intelligence` labels for the winning posts, deduped and view-ranked like the
     # exemplar lists above. FR-100 currently asks the copywriter to DERIVE a hook pattern in prose
@@ -209,21 +172,12 @@ class TrendItem:
     # them, while `copywrite._hashtags()` invented tags from the trend-name slug on the FR-99
     # fallback path. Reference material for the copy call only — the model still chooses.
     hashtags: list[str] = field(default_factory=list)
-    # Each group is ONE coherent source (all panels of a single slideshow, or one creator's
-    # thumbnails). FR-91 forbids mixing groups inside a job's reference set; panels lead.
-    reference_groups: list[list[str]] = field(default_factory=list)  # CDN URLs
-    winning_video_url: str | None = None  # yt-dlp motion-reference candidate (FR-142)
     virlo_url: str | None = None
     total_views: int = 0
     median_views: int = 0
     newest_published_at: datetime | None = None  # velocity/momentum input (FR-5)
     engagement: dict[str, int] = field(default_factory=dict)  # likes/shares/comments/bookmarks
     cross_monitor_context: str = ""  # digest timing analysis + connecting threads (20 §3)
-    # FR-7 at post granularity: the posts the CHOSEN `ReferenceSet` came from, so freshness is
-    # already enforced when this is non-empty. Empty on a `text_only` item — it has no post
-    # identity at all — and then the monitor-level window applies exactly as before.
-    chosen_post_ids: tuple[str, ...] = ()
-    winning_video_post_id: str | None = None  # the motion reference's own post id, for history
 
 
 @dataclass(slots=True)
@@ -231,7 +185,7 @@ class PlanEntry:
     """One planned creative — the unit of accounting (FR-4) and of trimming. Trimming removes
     entries from the END in reverse plan order (FR-106), so expansion emits brief entries FIRST;
     `atomic_group` makes that one rule sufficient — entries sharing a group trim together and
-    never split (a both-mode A/B pair, FR-3/22, and a carousel's slides are each one unit, D31).
+    never split (a carousel and its slides are one unit, D31).
     """
 
     order: int  # 0-based plan position; trim order is descending
@@ -240,20 +194,17 @@ class PlanEntry:
     platform: Platform
     language: str
     aspect_ratio: str  # from platform+format (FR-21); an API param, never prompt text
-    variant: Variant = "direct"
-    pair_id: str | None = None  # shared by the analyzed/direct siblings of one creative (FR-3/22)
     atomic_group: str = ""  # trim unit; defaults to the entry's own id when it stands alone
     slide_count: int | None = None  # carousels; config ceiling = estimate basis (FR-95)
     brief_name: str | None = None  # campaign brief (FR-143)
     brief_influence: InfluenceMode | None = None  # per-entry mode override (D26)
     trend_key: str | None = None  # assigned trend's history_key; None for override briefs (FR-144)
-    # FR-91's rotation index: this creative's 0-based position among the creatives sharing its
-    # trend, set by `plan.assign` from the `use_index` it already counts. It selects the reference
-    # group (`reference_groups[i % len]`) AND the style brief, because FR-9/FR-12 analyse one
-    # (trend, reference group) pair — a creative steered by a brief describing pictures it is not
-    # attaching is the defect this index exists to prevent. Every member of an atomic group shares
-    # one value: a both-mode A/B pair must compare like with like, and a carousel's slides must
-    # come from one coherent set. 0 for override briefs, which attach no trend group at all.
+    # §1.6's rotation index, re-scoped by the pivot: this creative's 0-based position among the
+    # creatives sharing its topic, set by `plan.assign` from the `use_index` it already counts.
+    # It picks WHICH `SourcePost` this sibling quotes (`posts[i % len]`, copywrite) AND turns the
+    # style reference window (`styles.pick_reference_window`) — sibling divergence on one topic
+    # is this one number. Every member of an atomic group shares one value: a carousel's slides
+    # must quote one post. 0 for override briefs, which quote nothing at all.
     trend_reuse_index: int = 0
     # --- style + branding assignment (v2.0.0, FR-290/291/292) ---
     # Written by `styles.assign_styles` / `styles.assign_branding` right after `plan.assign`, both
@@ -289,13 +240,13 @@ class LayoutZone:
 class MetaStyle:
     """One meta-style registry entry (§1.3) — the post-pivot visual authority.
 
-    Replaces the per-trend `StyleBrief` as the source of a creative's look: styles are authored
+    Replaces the per-trend vision analysis as the source of a creative's look: styles are authored
     once in `prompts/styles.yaml` (FR-290, loaded through the FR-174 `prompts_dir` seam) and
     ASSIGNED to entries by a deterministic order-indexed rotation (FR-291), instead of being
     re-derived by an LLM from whatever pictures a trend happened to carry. That is why there is no
     built-in fallback tier — an unusable registry is a pre-flight exit 2 (FR-295), not a degrade.
 
-    `render_prompt` is the executable instruction (a variant left unresolved here reaches the image
+    `render_prompt` is the executable instruction (an either/or left unresolved here reaches the image
     model as a choice it will make differently on every slide, so M9 forbids it); the five DNA
     fields feed `style_dna` byte-identically across a deck; `exclusions` are LITERAL strings quoted
     from the reference files, because a described wordmark is a string nothing downstream can block.
@@ -319,40 +270,13 @@ class MetaStyle:
     text_placement: str = ""
     image_treatment: str = ""
     visual_pacing: str = ""
-    # Free prose under `carousel_cover` / `carousel_slide` (M9's variant-resolution home), plus the
+    # Free prose under `carousel_cover` / `carousel_slide` (M9's either/or-resolution home), plus the
     # one marker key `carousel_role` with value "cover_only" or "slides_only": a slides-only style
     # can never anchor a deck, and under anchor-chaining that means it never takes a carousel entry
     # at all. `styles.fmt_affine` owns that reading — no caller re-implements it.
     per_format_guidance: dict[str, str] = field(default_factory=dict)
     exclusions: list[str] = field(default_factory=list)  # LITERAL strings from the refs (M8)
     reference_images: list[str] = field(default_factory=list)  # REPO-ROOT-relative paths (§1.3)
-
-
-@dataclass(slots=True)
-class StyleBrief:
-    """Structured trend analysis, one per selected trend per run (FR-9/11/12/92). Forensic
-    description only, vague adjectives banned (FR-10). The FULL brief is logged; only
-    `render_prompt` and `layout_zones` are ever injected into a render prompt (FR-94).
-    """
-
-    trend_key: str
-    # Which of the trend's reference groups this brief actually looked at (FR-9/FR-12, amended
-    # 2026-08-11). The brief is keyed by the (trend, group) PAIR, not by the trend alone; this
-    # field keeps the group visible on the object itself so a logged brief can be matched to the
-    # pictures it describes without reconstructing the dictionary key.
-    reference_group_index: int = 0
-    layout_zones: list[LayoutZone] = field(default_factory=list)
-    exclusions: list[str] = field(default_factory=list)  # UI chrome, watermarks, counters
-    render_prompt: str = ""  # compact <=120 words, alone fit to send to the image model
-    palette: list[str] = field(default_factory=list)  # approximate values
-    typography: str = ""
-    text_placement: str = ""  # placement zones + density
-    image_treatment: str = ""  # photo vs graphic vs screenshot, filters, borders, crops
-    visual_pacing: str = ""
-    hook_pattern: str = ""
-    content_angle: str = ""
-    per_format_guidance: dict[str, str] = field(default_factory=dict)  # image/carousel/reel
-    raw: dict[str, Any] = field(default_factory=dict)  # exactly what the model returned, logged
 
 
 @dataclass(slots=True)
@@ -402,7 +326,6 @@ class CopySet:
     through_line: str = ""  # reel: one-line content through-line for the video prompt
     motion_beat: str = ""  # reel: ONE named physical action for Stage 2 (F24) — resolved from
     #   `CopySelection.motion_beat`; free text because it never becomes pixels (§1.7)
-    hook_pattern_used: str = ""  # FR-100/146 — string, auditable, logged and written to meta
 
 
 @dataclass(slots=True)
@@ -415,18 +338,9 @@ class AssetRecord:
     source_name: str
     platform: Platform
     creative_format: CreativeFormat
-    variant: Variant = "direct"
-    pair_id: str | None = None
-    generation_mode: Variant = "direct"  # --- provenance & degradations ---
-    hook_pattern_used: str = ""
-    source_hook: str = ""  # the trend's original hook line, verbatim — gallery card (FR-76, v1.6.4)
-    # A24 — what the style brief ASKED FOR, in one line: pattern · angle · palette. The full
-    # `StyleBrief` is logged to events.jsonl under `verbose_only` and nowhere else, so an operator
-    # judging a finished creative could not see the instruction it was judged against without
-    # opening a JSONL file with verbose logging already switched on. Empty in direct mode and
-    # after FR-12's degrade, which is itself the answer: there was no brief.
-    style_brief_summary: str = ""
-    ref_source: str = ""  # "virlo" | "brief" | "inspiration"
+    # --- provenance & degradations ---
+    source_hook: str = ""  # the topic's original hook line, verbatim — gallery card (FR-76, v1.6.4)
+    ref_source: str = ""  # "style" | "brief" (contracts item 8 — what the references came FROM)
     # FR-73 (v2.0.0) — post-pivot identity: the assigned meta-style, the brand system and the
     # branding-rotation outcome, and the topic this creative came from (gallery + provenance
     # block read all four; T3.2's gallery re-base is their first consumer).
@@ -483,7 +397,7 @@ class ParsedResult:
     retried: bool = False  # the single FR-41 content retry was spent
     tolerant_parsed: bool = False  # strict parse failed; FR-126 local parse rescued it
     truncated: bool = False  # finish/stop reason said token limit (FR-127)
-    degraded: bool = False  # caller must fall back (analysis_missing / copy_degraded)
+    degraded: bool = False  # caller must fall back (copy_degraded, or fail open at the filter)
     # WHY this exists next to `raw_text`: on a truncated call `raw_text` is a slab of unfinished
     # JSON, so an operator warning built from it cannot tell "the model was cut off" apart from
     # "the model returned garbage". `reason` is the short, operator-facing cause and is set on
@@ -643,10 +557,9 @@ class BriefLoader(Protocol):
 #: FR-181 two-level template layout, level 1: the three GLOBAL role templates sit FLAT in
 #: `prompts/`. They belong to the OpenRouter roles, not to any render profile, and exist once.
 GLOBAL_TEMPLATES: tuple[str, ...] = (
-    # W2 transition (v2.0.0): `topic_filter_system.md` joins here; `style_brief_system.md`
-    # leaves at W3.5 with the analyze stage (final global trio per contracts item 4).
-    "style_brief_system.md", "copywriter_system.md", "vision_check_question.md",
-    "topic_filter_system.md",
+    # Final post-pivot trio (W3.5, contracts item 4): the copywriter, the vision check and the
+    # FR-294 topic filter — the style-brief role died with the analyze stage.
+    "copywriter_system.md", "vision_check_question.md", "topic_filter_system.md",
 )
 
 #: Level 2: per-profile render sets under `prompts/<profile>/` (FR-181/262). A new profile ships
@@ -654,10 +567,10 @@ GLOBAL_TEMPLATES: tuple[str, ...] = (
 #: a new profile's set is validated at pre-flight instead (FR-263).
 PROFILE_TEMPLATES: dict[str, tuple[str, ...]] = {
     "gpt-image-2": (
-        # W2 transition (v2.0.0): the merged `image_post.md` (F16) ships beside the two files it
-        # merges; `image_single_post.md` + `image_direct.md` leave every surface at W3.5.
-        "image_single_post.md", "carousel_slide.md", "carousel_anchor_instruction.md",
-        "image_direct.md", "reel_seed_frame.md", "image_post.md",
+        # Post-W3.5 set: the merged `image_post.md` (F16) is the ONE image role — the two files
+        # it merged left every surface with the excision.
+        "image_post.md", "carousel_slide.md", "carousel_anchor_instruction.md",
+        "reel_seed_frame.md",
     ),
     "seedance-2-5": ("reel_director.md",),
 }
@@ -672,9 +585,10 @@ PLACEHOLDERS: frozenset[str] = frozenset(
     {
         "render_prompt", "layout_zones", "onimage_text", "exclusions", "style_dna",
         "slide_index", "seed_frame_ref", "audio_cue",  # render scaffolds
-        "sibling_list", "source_hooks", "style_brief_summary", "platform_conventions",
-        "brand_context",  # copywriter_system.md
-        "reference_image_count", "trend_texts", "engagement_numbers", "output_format",
+        "sibling_list", "source_hooks", "platform_conventions",
+        "brand_context",  # copywriter_system.md — `source_hooks` is the §1.7 candidate table,
+        #   OVERWRITTEN by copywrite after build_context returns (W2 addendum item 4)
+        "trend_texts",
         "niche_descriptor", "brief_directives", "content_sentence",  # pipeline-required slots
         # W1 barrier review additions (2026-08-09):
         "text_budgets",  # in-force on-image text budgets line (FR-101/105/188) — config-sourced,
@@ -683,26 +597,14 @@ PLACEHOLDERS: frozenset[str] = frozenset(
         #   stays reserved for FR-96's deterministic direct-mode/reference-free sentence
         "reference_roles",  # one engine-emitted line per attached reference: index · source kind ·
         #   contribution · exclusions (FR-191/91) — carries the RESULTS.md §B wordmark defense
-        # W2 barrier operator decision (v1.6.4, 2026-08-09):
-        "brand_accent",  # FR-109's ONLY brand slot in render templates: one engine-built line of
-        #   accent colour + product nouns under Notion `full` influence — never fonts/layouts;
-        #   empty when influence is off. Dedicated so render-side allowlists stay narrow.
         # A15 steering fix (2026-08-11):
-        # A16 wire-in (2026-08-11):
-        "inspiration_exemplars",  # the `.txt` files paired with the configured Inspiration images
-        #   (`01.jpg` + `01.txt`) — whole posts a human wrote and an audience rewarded, pooled on
-        #   `InspirationPool.exemplar_texts`. FORM material for the COPY call and for nothing else:
-        #   allowlisted for `copywriter_system.md` alone, because an Inspiration image already
-        #   reaches a render under an explicit "no words" role line and handing an image model
-        #   proven copy is how that copy ends up baked into pixels. The same two-step discipline
-        #   A20 exists to protect — a pattern to abstract, never a string to reuse.
         "niche_visual_world",  # `niche.visual_world` ALONE — the operator's standing art direction
         #   in the only shape a render prompt may carry it. Deliberately NOT `niche_descriptor`,
         #   which also carries `audience`: copy-side context must not leak into a render prompt,
         #   and the per-role allowlist exists to enforce exactly that (FR-261/109). Allowlisted for
         #   the four gpt-image-2 roles, so `direct` mode finally sees the art direction too.
-        # W2 topic-first pivot (v2.0.0, contracts item 2 — the five additions; the six removals
-        # named there happen at W3.5):
+        # Topic-first pivot (v2.0.0, contracts item 2 — final 25-name vocabulary; the six
+        # pre-pivot orphans left with the W3.5 excision):
         "branding_block",  # FR-292's second channel: accent colours, font letterforms, placement
         #   hint and the profile's `never:` lines, pre-rendered by prompts_engine._branding_block();
         #   empty when unbranded. The wordmark NEVER travels here — it is a TEXT-block entry (B1).

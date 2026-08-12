@@ -16,11 +16,9 @@ carries nothing but scraped competitor text. So this file pins, in order:
 * FR-260's pre-submission refusal, FR-183's fallback, FR-174's override folder, FR-184's
   attribution and FR-263's kind-derived validator — all unchanged, all re-anchored on live roles.
 
-**Transitional roles.** `style_brief_system.md`, `image_single_post.md` and `image_direct.md` are
-still on disk and still in the registries (ADDITIVE-THEN-SUBTRACTIVE; they leave at W3.5), but
-`build_context` no longer builds the values they name — the six legacy placeholder NAMES survive in
-`models.PLACEHOLDERS` while their builders do not. `LEGACY_ROLES` below is that fact, written once,
-and the tests that walk "every shipped role" exclude it deliberately rather than by accident.
+**Final post-pivot state (W3.5).** The three pre-pivot roles and the six orphan placeholder
+names left every surface with the excision wave; every shipped role is live and every
+vocabulary name is reachable.
 """
 
 from __future__ import annotations
@@ -41,16 +39,10 @@ from hypesocials.models import (
     TrendItem,
 )
 
-#: The three roles a post-pivot run can no longer assemble a context for. They still resolve as
-#: TEMPLATES (FR-183 keeps their built-ins) and still sit in the registries, so the parity suite
-#: still holds them to their files — but nothing selects them and `build_context` stopped emitting
-#: `style_brief_summary`, `inspiration_exemplars`, `brand_accent`, `engagement_numbers`,
-#: `reference_image_count` and `output_format`. W3.5 deletes all six names and all three files.
-LEGACY_ROLES = frozenset({"style_brief_system.md", "image_single_post.md", "image_direct.md"})
-
-#: The six placeholder names contracts item 2 keeps in the vocabulary until W3.5.
-LEGACY_PLACEHOLDERS = frozenset({"style_brief_summary", "inspiration_exemplars", "brand_accent",
-                                 "engagement_numbers", "reference_image_count", "output_format"})
+#: The six pre-pivot placeholder names the W3.5 excision removed from the vocabulary — asserted
+#: ABSENT so a legacy builder cannot quietly return.
+EXCISED_PLACEHOLDERS = frozenset({"style_brief_summary", "inspiration_exemplars", "brand_accent",
+                                  "engagement_numbers", "reference_image_count", "output_format"})
 
 RENDER_PROFILE = "gpt-image-2"
 
@@ -132,7 +124,7 @@ def live_roles() -> list[tuple[str, str]]:
     shipped = ([("", role) for role in GLOBAL_TEMPLATES]
                + [(profile, role) for profile, names in PROFILE_TEMPLATES.items()
                   for role in names])
-    return [(profile, role) for profile, role in shipped if role not in LEGACY_ROLES]
+    return list(shipped)  # every shipped role is live post-W3.5
 
 
 # ------------------------------------------------------------------ FR-102 delimiter integrity
@@ -218,7 +210,7 @@ def test_fr261_out_of_role_placeholder_is_unresolved_not_leaked(tmp_path) -> Non
     assert "brand_context" not in pe.allowlist("image_post.md")
 
 
-def test_the_allowlist_table_is_the_pinned_one_including_its_transitional_rows() -> None:
+def test_the_allowlist_table_is_the_pinned_final_one() -> None:
     """Contracts item 3, checked as a whole rather than role by role: the table IS the FR-261 gate,
     and a row added or widened by accident is how copy-side context reaches an image model."""
     assert pe.allowlist("topic_filter_system.md") == frozenset({"topic_items", "competitor_list"})
@@ -240,9 +232,9 @@ def test_the_allowlist_table_is_the_pinned_one_including_its_transitional_rows()
         "text_budgets", "platform_conventions", "brief_directives"})
     assert pe.allowlist("carousel_anchor_instruction.md") == frozenset()
     assert pe.allowlist("vision_check_question.md") == frozenset()
-    # The three transitional rows are still present and still unwidened (W3.5 deletes them).
-    assert LEGACY_ROLES <= set(pe._ALLOWLIST)
-    assert "brand_accent" in pe.allowlist("image_single_post.md")
+    # And the table holds exactly the eight shipped roles — the W3.5 excision left no
+    # transitional rows behind.
+    assert len(pe._ALLOWLIST) == 8
 
 
 def test_the_competitor_screens_two_slots_are_allowlisted_for_that_role_and_nowhere_else() -> None:
@@ -266,13 +258,12 @@ def test_branding_block_is_allowlisted_for_the_three_live_gpt_image_roles_only()
     assert "branding_block" not in pe.allowlist("copywriter_system.md")
 
 
-def test_the_six_legacy_placeholder_names_are_still_in_the_vocabulary_until_w3_5() -> None:
-    """Contracts item 2's removal TIMING, pinned so the excision wave has to come back here: the
-    names survive while their builders do not, which is what keeps the three transitional templates
-    loadable (FR-183) without keeping their values reachable."""
-    assert LEGACY_PLACEHOLDERS <= PLACEHOLDERS
+def test_the_six_excised_placeholder_names_are_gone_from_the_vocabulary() -> None:
+    """Contracts item 2's final state, set by the W3.5 excision: the six pre-pivot names left
+    `models.PLACEHOLDERS` with their builders, and no context ever carries them again."""
+    assert not (EXCISED_PLACEHOLDERS & PLACEHOLDERS)
     context = pe.build_context(trend=make_trend(), style=make_style())
-    assert not (LEGACY_PLACEHOLDERS & set(context)), \
+    assert not (EXCISED_PLACEHOLDERS & set(context)), \
         "a legacy builder came back; the pivot removed the values, not just the parameters"
 
 
@@ -306,8 +297,6 @@ def test_every_live_built_in_default_renders_from_a_normal_context(tmp_path) -> 
         competitor_strings=("Acme",), reference_roles=["Image 1 — style"])
     for key, text in pe._BUILT_INS.items():
         profile, _, role = key.rpartition("/")
-        if role in LEGACY_ROLES:
-            continue  # still a valid fallback; its VALUES are gone until the file dies at W3.5
         names = set(pe._names(text))
         assert names <= pe.allowlist(role), f"{key} uses an out-of-role placeholder"
         assert "{{" not in engine.render(role, context, profile=profile), f"{key} left a slot"
@@ -812,25 +801,18 @@ def test_trim_words_never_cuts_mid_word() -> None:
     assert pe.trim_words("short", 20) == ("short", False)
 
 
-# ---------------------------------------------- the legacy schema generator (dies at W3.5)
+# --------------------------------------------------- the strict-mode schema generator
 
 
-def test_the_json_schema_generator_still_backs_the_one_legacy_schema_it_serves() -> None:
-    """`json_schema_for` is the ONE strict-mode generator — `copywrite._selection_schema` and
-    `_free_text_schema` are built from it too (contracts item 10). `style_brief_schema()` is its
-    last PRE-PIVOT caller: FR-92 is withdrawn and the vision analysis is gone, but the builder is
-    untouched legacy that leaves with `StyleBrief` at W3.5, so it is held to its shape until then.
-    """
-    schema = pe.style_brief_schema()["schema"]
-    fields = set(schema["properties"])
+def test_the_json_schema_generator_serves_the_live_copy_schemas() -> None:
+    """`json_schema_for` is the ONE strict-mode generator (contracts item 10): `copywrite`'s
+    selection and free-text schemas are built from it. Its last pre-pivot caller
+    (`style_brief_schema`) died at W3.5 with the vision analysis; what remains is held to the
+    strict-mode shape OpenRouter demands (RESULTS.md §E)."""
+    from hypesocials.models import CopySelection
 
-    assert fields == {"layout_zones", "exclusions", "render_prompt", "palette", "typography",
-                      "text_placement", "image_treatment", "visual_pacing", "hook_pattern",
-                      "content_angle", "per_format_guidance"}
+    schema = pe.json_schema_for(CopySelection, exclude={"asset_id"})
+
+    assert "asset_id" not in schema["properties"]
     assert schema["required"] == list(schema["properties"])  # strict mode (RESULTS.md §E)
     assert schema["additionalProperties"] is False
-    block = pe.style_brief_format_block()
-    for name in fields:
-        assert name in block
-    # RenderParams.output_format is a provider knob and must never be what fills a prompt slot.
-    assert "mp4" not in block

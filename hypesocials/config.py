@@ -82,7 +82,6 @@ class RunConfig:
     platforms: list[str] = field(default_factory=lambda: ["linkedin", "instagram", "tiktok"])
     languages: dict[str, str] = field(
         default_factory=lambda: {"linkedin": "en", "instagram": "en", "tiktok": "en"})
-    generation_mode: Literal["analyzed", "direct", "both"] = "analyzed"
     notion_influence: Literal["off", "copy", "full"] = "off"
     vision_check: bool = False
     spend_cap_usd: float = 10.00
@@ -96,12 +95,9 @@ class RunConfig:
     carousel_anchor: bool = True
     reel_overlay_text: Literal["seed_frame", "in_model", "none"] = "seed_frame"
     reel_audio: bool = True
-    reel_video_reference: bool = True
-    reel_reference_max_s: int = 28  # the reference's seconds are BILLED — see RESULTS.md §C
     reel_duration_s: int = 5  # 4–30; out of range is CLAMPED at pre-flight, never rejected here
     reel_resolution: Literal["480p", "720p"] = "720p"
     nsfw_checker: bool = True  # provider knob, always sent (its own default is false)
-    require_reference_image: bool = True
     onimage_text_language: dict[str, str] = field(default_factory=dict)
     text_budgets: TextBudgets = field(default_factory=TextBudgets)
     # Soft ceiling, monotonic clock (FR-108/243). DEPENDS ON models.video_job_timeout_s: a reel
@@ -123,16 +119,6 @@ class SourcesConfig:
     # the kill switch — one topic per monitor, i.e. the pre-pivot cardinality; `0` would mean "this
     # monitor contributes nothing", which is a config error, not a setting (`_validate`).
     virlo_topics_per_monitor: int = 9
-    # Reference IMAGES per trend; the video ref is bounded separately. 18 = the reuse ceiling (6)
-    # x a job's set size (3), because FR-91's per-reuse rotation needs one DOWNLOADED group per
-    # reuse. At the old 6 a run could only ever download 2 groups, so six siblings rotated over
-    # two sets and three pairs rendered from identical pictures (measured 2026-08-11: 77 candidate
-    # sets qualified, 2 survived the budget). This is NOT the per-analysis-call image count —
-    # that stays at FR-93's ~6, enforced in `runner._analyze`.
-    media_download_cap: int = 18
-    reference_images_per_job: int = 3
-    inspiration_folders: list[str] = field(default_factory=list)  # flat global pool (D13)
-    inspiration_mix: Literal["off", "minority", "exclusive"] = "minority"
 
 
 @dataclass(slots=True)
@@ -223,7 +209,7 @@ class McpConfig:
 
 @dataclass(slots=True)
 class GalleryConfig:
-    """FR-134: `title` is the only gallery key — A/B pairing is automatic, driven by `pair_id`."""
+    """`title` is the only gallery key (FR-134 withdrawn with A/B mode, v2.0.0)."""
 
     title: str = "HypeSocials Run"
 
@@ -242,40 +228,19 @@ class OutputConfig:
 
 
 @dataclass(slots=True)
-class BrandConfig:
-    """`niche.brand:` — the render-side brand overlay, stated by the config instead of Notion (A11).
-
-    FR-109's `{{brand_accent}}` slot has always existed, always been allowlisted for the four
-    gpt-image-2 roles and always been BLANK, because its only source was Notion — which is `off`
-    in every shipped config and needs a `NOTION_TOKEN` this workstation does not carry. These two
-    keys give the operator the same slot without the integration. Notion still wins when it is
-    energised (`runner` reads the fetched value first and falls back to here), so turning Notion on
-    later changes nothing written down here.
-
-    Deliberately just these two: an accent colour to substitute inside the trend's own palette, and
-    product nouns the on-image text may use. No font, no layout, no template — a brand-templated
-    render has stopped being a mimicry render, and mimicry is the product.
-    """
-
-    accent: str = ""
-    product_nouns: list[str] = field(default_factory=list)
-
-
-@dataclass(slots=True)
 class NicheConfig:
     """The optional `niche:` descriptor (D27), injected into Analyze and Write (FR-147)."""
 
     audience: str = ""
     vibe: str = ""
     visual_world: str = ""
-    brand: BrandConfig = field(default_factory=BrandConfig)
 
     def as_text(self) -> str:
         """One compact line for the `{{niche_descriptor}}` placeholder; empty when unset.
 
         `brand` is deliberately absent. This text feeds `{{niche_descriptor}}`, which is a COPY-side
         placeholder (the analyst and the copywriter allowlist it, no render role does); the brand
-        accent is render-side and travels in `{{brand_accent}}`. Folding one into the other would
+        accent is render-side and travels in the branding block (FR-292). Folding one into the other would
         put brand text into copy prompts and drag the audience line into render prompts — exactly
         the leak the per-role allowlists exist to prevent (FR-261/109).
         """
@@ -646,7 +611,6 @@ _BOUNDS: dict[str, tuple[float, float, str]] = {
     "run.spend_cap_usd": (0.01, 1e6, "a positive number of dollars"),
     "run.trend_history_days": (0, 365, "a whole number of days, 0–365 (0 disables the window)"),
     "run.max_trend_reuses_per_run": (1, 50, "a whole number of creatives per trend, 1–50"),
-    "run.reel_reference_max_s": (1, 30, "a whole number of seconds, 1–30"),
     "run.run_deadline_min": (1, 720, "a whole number of minutes, 1–720"),
     "run.text_budgets.image_headline": (1, 400, "a character count, 1–400"),
     "run.text_budgets.image_subline": (1, 400, "a character count, 1–400"),
@@ -659,8 +623,6 @@ _BOUNDS: dict[str, tuple[float, float, str]] = {
     # "-1 is the kill switch you meant" line rather than a bare range message.
     "sources.virlo_topics_per_monitor": (
         -1, 50, "a whole number of topics per monitor, 1–50, or -1 (one topic per monitor)"),
-    "sources.media_download_cap": (1, 50, "a whole number of images per trend, 1–50"),
-    "sources.reference_images_per_job": (1, 16, "a whole number of references per job, 1–16"),
     "models.image_job_timeout_s": (5, 3600, "a whole number of seconds, 5–3600"),
     "models.video_job_timeout_s": (5, 3600, "a whole number of seconds, 5–3600"),
     "models.poll_interval_s": (1, 60, "a whole number of seconds, 1–60"),
@@ -703,7 +665,7 @@ def _default_of(spec: dataclasses.Field) -> Any:  # type: ignore[type-arg]
 
 
 def _merged(default: Any, provided: Any) -> Any:
-    """Key-by-key defaulting inside mappings — 30 §1: a variant lists only what it overrides."""
+    """Key-by-key defaulting inside mappings — 30 §1: an override lists only what it changes."""
     if isinstance(default, Mapping) and isinstance(provided, Mapping):
         out = dict(default)
         for key, value in provided.items():

@@ -408,10 +408,8 @@ def _reference_source(url: str) -> str:
     parts = urlsplit(url)
     name = PurePosixPath(parts.path).name or parts.path or "?"
     host = parts.netloc.lower()
-    if "virlo" in host:
-        origin = "Virlo CDN"  # a trend's own winning post, downloaded and referenced by url
-    elif "kie" in host or "redpanda" in host:
-        origin = "uploaded by this run"  # a brief image, an inspiration pick, a seed frame, a clip
+    if "kie" in host or "redpanda" in host:
+        origin = "uploaded by this run"  # a style reference, a brief image, a seed frame, a clip
     else:
         origin = host or "unknown host"
     return f"{origin}: {name}"

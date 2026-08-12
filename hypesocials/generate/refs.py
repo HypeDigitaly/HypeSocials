@@ -220,7 +220,7 @@ def _wanted(entry: PlanEntry, env: Env, style: MetaStyle | None) -> list[tuple[P
     Two channels feed the style half: the assigned style's own rotated window (`styles`, the
     authority) and any `style`-kinded entry the run pre-resolved into `env.local_refs`. Paths are
     de-duplicated, so a run that fills both channels attaches — and uploads — each file once. A
-    kind this vocabulary does not know is treated as a style reference: the pre-pivot `inspiration`
+    kind this vocabulary does not know is treated as a style reference: a pre-pivot kind label
     pool WAS a folder of house-style pictures, and it retires with W3.5 rather than vanishing here.
     """
     local = list(getattr(env, "local_refs", {}).get(entry.asset_id, ()))

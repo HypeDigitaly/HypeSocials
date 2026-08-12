@@ -229,14 +229,17 @@ def test_the_healthy_block_names_every_surviving_stage_and_reads_as_designed() -
 
 def test_the_media_rows_died_with_the_media_funnel() -> None:
     """D41: Virlo is a text feed, so the reference-set, motion-tier and CDN-download rows have no
-    subject. Their counters survive in the dataclass until the W3.5 excision — populating them
-    must not resurrect a row, or the operator reads a funnel describing a pipeline that never ran.
+    subject. W3.5 conductor re-base: the fields themselves were EXCISED from `Counters` (this
+    test used to populate them to prove they could not resurrect a row; a slots dataclass now
+    rejects them outright, which is the stronger guarantee), so it asserts absence structurally
+    AND that no media clause survives in the printed block.
     """
     tally = healthy()
-    tally.slideshow_sets, tally.frame_sets, tally.slideshows_thin = 74, 33, 26
-    tally.chosen_fresh, tally.motion_tiers = 3, {"fresh": 3}
-    tally.images_attempted, tally.images_downloaded, tally.images_dead = 18, 14, 4
-    tally.trends_text_only = 1
+    for dead_field in ("slideshow_sets", "frame_sets", "slideshows_thin", "chosen_fresh",
+                       "motion_tiers", "images_attempted", "images_downloaded", "images_dead",
+                       "trends_text_only", "trends_short", "rejection_reasons", "download_cap"):
+        assert not hasattr(tally, dead_field), \
+            f"withdrawn media counter survived the W3.5 excision: {dead_field!r}"
 
     block = runner._funnel_block(tally)
 

@@ -5,11 +5,11 @@ no build step and no restart of anything but the run. Spec: `prds/50-promptcraft
 
 **This file is documentation, not a template. The engine never loads it.**
 
-**Transitional state (topic-first pivot, v2.0.0).** Three templates below are
-marked *W3.5-doomed*: they still ship, are still registered and still have
-built-in defaults, but nothing selects them once the pivot's Wave 3.5 excision
-lands. They are listed so the allowlist table stays a complete description of
-what is on disk, not a description of what will be.
+**Final post-pivot state (topic-first pivot, v2.0.0/W3.5).** The three pre-pivot
+templates (the visual-analysis role and the two image roles the merged
+`image_post.md` replaced) left the disk, the registries and the built-in table
+with the Wave 3.5 excision — eight shipped roles remain, and this table is a
+complete description of them.
 
 ## Layout (FR-181)
 
@@ -19,14 +19,11 @@ prompts/
   copywriter_system.md           global — Luna copy-selection system prompt
   vision_check_question.md       global — the two objective defect questions
   topic_filter_system.md         global — the batched competitor screen
-  style_brief_system.md          global — visual-analysis system prompt   (W3.5-doomed)
   gpt-image-2/
     image_post.md                one single post creative
     carousel_slide.md            one carousel slide (style-DNA scaffold)
     carousel_anchor_instruction.md   block added when slide 1 is the PRIMARY reference
     reel_seed_frame.md           the still hook frame a reel is animated from
-    image_single_post.md         analyzed single image                    (W3.5-doomed)
-    image_direct.md              direct mode, no style brief              (W3.5-doomed)
   seedance-2-5/
     reel_director.md             nine-section reel director prompt
 ```
@@ -72,21 +69,15 @@ Two rules govern every row below, and the second is the one people forget:
 | `{{slide_index}}` | this slide's position in the deck | carousel_slide |
 | `{{seed_frame_ref}}` | one-line description of what the seed frame shows | reel_director |
 | `{{audio_cue}}` | the whole AUDIO body — either the bracketed cue set or the silent-clip line | reel_director |
-| `{{trend_texts}}` | the topic's hooks, panel texts, tactics and descriptions, fenced as data | copywriter_system, style_brief_system *(W3.5-doomed)* |
+| `{{trend_texts}}` | the topic's hooks, panel texts, tactics and descriptions, fenced as data | copywriter_system |
 | `{{source_hooks}}` | **the numbered candidate list** — every source string the engine is willing to render or caption, each with its `P<n>.<kind>[.<i>]` label. Re-purposed by the pivot: this used to be a few-shot exemplar block | copywriter_system |
 | `{{sibling_list}}` | every creative sharing this copy call | copywriter_system |
 | `{{platform_conventions}}` | tone/length/hashtag guidance per platform | copywriter_system |
 | `{{brand_context}}` | Notion brand context; empty when influence is off | copywriter_system |
-| `{{niche_descriptor}}` | audience / vibe / visual world; empty when unset | copywriter_system, style_brief_system *(W3.5-doomed)* |
+| `{{niche_descriptor}}` | audience / vibe / visual world; empty when unset | copywriter_system |
 | `{{niche_visual_world}}` | the niche's `visual_world` line **alone** — standing art direction, no audience and no copy context; empty when unset | image_post, carousel_slide, reel_seed_frame |
 | `{{topic_items}}` | the engine-numbered topic blocks for the competitor screen — ordinals 1..N in arrival order, never the topic's own key | topic_filter_system **only** |
 | `{{competitor_list}}` | `branding.competitors`, the deterministic blocklist, for the same call | topic_filter_system **only** |
-| `{{brand_accent}}` | the pre-pivot accent-colour + product-noun line | image_single_post, carousel_slide, image_direct, reel_seed_frame *(dies at W3.5, replaced by `branding_block`)* |
-| `{{style_brief_summary}}` | short form of the analysed brief for the copywriter | copywriter_system *(dies at W3.5)* |
-| `{{inspiration_exemplars}}` | pooled text of the `.txt` files beside the configured Inspiration images | copywriter_system *(dies at W3.5)* |
-| `{{reference_image_count}}` | how many references the analyst is looking at | style_brief_system *(dies at W3.5)* |
-| `{{engagement_numbers}}` | what actually won, and by how much | style_brief_system *(dies at W3.5)* |
-| `{{output_format}}` | the required style-brief JSON field list | style_brief_system *(dies at W3.5)* |
 
 ### Per-role allowlists, in full
 
@@ -103,9 +94,6 @@ actually enforces. A role's set is exact: not a minimum, not a suggestion.
 | `carousel_anchor_instruction.md` | *(none)* |
 | `reel_seed_frame.md` | `render_prompt`, `layout_zones`, `onimage_text`, `reference_roles`, `exclusions`, `text_budgets`, `brief_directives`, `niche_visual_world`, `branding_block` |
 | `reel_director.md` | `through_line`, `seed_frame_ref`, `onimage_text`, `audio_cue`, `exclusions`, `brief_directives`, `motion_beat`, `motion_profile` |
-| `style_brief_system.md` *(W3.5-doomed)* | `reference_image_count`, `trend_texts`, `engagement_numbers`, `output_format`, `niche_descriptor` |
-| `image_single_post.md` *(W3.5-doomed)* | `render_prompt`, `layout_zones`, `onimage_text`, `reference_roles`, `exclusions`, `text_budgets`, `brief_directives`, `brand_accent`, `niche_visual_world` |
-| `image_direct.md` *(W3.5-doomed)* | `content_sentence`, `render_prompt`, `onimage_text`, `reference_roles`, `text_budgets`, `brief_directives`, `brand_accent`, `niche_visual_world` |
 
 `reel_director.md` deliberately has **no** `branding_block`: the branding block
 is a gpt-image-2 instruction set (accent colours, letterforms, placement), and

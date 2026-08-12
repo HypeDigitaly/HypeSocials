@@ -14,10 +14,9 @@ deliberately NOT among them: it is a dead FR-135 remnant scheduled for deletion,
 it would freeze a corpse. `--mode` is already gone (A/B mode withdrawn, v2.0.0) and is asserted
 gone rather than exercised.
 
-A handful of keys below (`run.generation_mode`, `sources.inspiration_mix`,
-`sources.inspiration_folders`) are withdrawn CONCEPTS whose keys still load: the pivot's
-additive-then-subtractive migration removes them at Wave 3.5, at which point they become
-unknown-key warnings — the desired end state. Their tests assert what the loader does today and
+The withdrawn pre-pivot keys (`run.generation_mode`, `sources.inspiration_mix` and friends)
+left the schema at Wave 3.5 and now load as unknown-key WARNINGS — the desired end state the
+migration promised. Tests below assert what the loader does today and
 are expected to be deleted with the keys.
 """
 
@@ -75,7 +74,6 @@ def test_fr50_a_valid_file_loads_and_absent_keys_take_their_documented_defaults(
     assert cfg.run.spend_cap_usd == 3.5
     assert cfg.run.vision_check is True
     # untouched keys — the defaults 30 §2 documents
-    assert cfg.run.generation_mode == "analyzed"
     assert cfg.run.trend_history_days == 7
     assert cfg.run.run_deadline_min == 25
     assert cfg.sources.active == ["virlo"]
@@ -198,9 +196,10 @@ def test_fr69_a_wrong_typed_boolean_names_true_or_false(tmp_path: Path) -> None:
 
 
 def test_fr69_a_value_outside_a_closed_vocabulary_lists_the_options(tmp_path: Path) -> None:
-    line = refusal(tmp_path, "run:\n  generation_mode: creative\n")
-    assert "run.generation_mode" in line
-    assert "analyzed | direct | both" in line
+    # W3.5 re-base: `generation_mode` left the schema, so another Literal key carries the check.
+    line = refusal(tmp_path, "run:\n  reel_overlay_text: painted\n")
+    assert "run.reel_overlay_text" in line
+    assert "seed_frame | in_model | none" in line
 
 
 def test_fr69_a_scalar_where_a_block_belongs_says_so(tmp_path: Path) -> None:
@@ -353,10 +352,11 @@ def test_yaml11_off_as_a_boolean_is_given_back_to_a_text_enum(tmp_path: Path) ->
         assert "run.notion_influence" in line and "off | copy | full" in line
 
 
-def test_yaml11_giveback_applies_to_inspiration_mix_too(tmp_path: Path) -> None:
-    """`inspiration_mix: off` is a documented value of a text enum (D13), same trap."""
-    cfg = load(tmp_path, "sources:\n  inspiration_mix: off\n")
-    assert cfg.sources.inspiration_mix == "off"
+def test_yaml11_giveback_applies_to_notion_influence_too(tmp_path: Path) -> None:
+    """`notion_influence: off` is a documented value of a text enum, same trap (W3.5 re-base:
+    the pre-pivot example key left the schema; the YAML-1.1 giveback rule is what is tested)."""
+    cfg = load(tmp_path, "run:\n  notion_influence: off\n")
+    assert cfg.run.notion_influence == "off"
 
 
 def test_yaml11_giveback_leaves_a_genuine_boolean_key_alone(tmp_path: Path) -> None:

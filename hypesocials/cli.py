@@ -41,7 +41,6 @@ from hypesocials.budget import Estimate, TrimResult, estimate as estimate_plan, 
 from hypesocials.config import (  # `_BOUNDS` is THE bound table — a flag must never retype a bound
     CONFIGS_DIR, PLATFORMS, Config, _BOUNDS as _CONFIG_BOUNDS)
 from hypesocials.models import PlanEntry
-from hypesocials.sources import SOURCE_STATUS
 from hypesocials.util import wrapped
 
 PROG = "run.bat"  # what the operator actually launches; `python -m hypesocials` is the inner call
@@ -68,7 +67,6 @@ class Options:
     config_name: str | None = None
     counts: dict[str, int] = field(default_factory=dict)  # only the formats a flag named
     platforms: list[str] | None = None
-    sources: tuple[str, ...] = ()  # `--sources`, the CLI-only override of `sources.active`
     budget_usd: float | None = None
     notion: str | None = None
     vision_check: bool = False
@@ -104,7 +102,6 @@ def parse_args(argv: Sequence[str] | None = None) -> Options:
         config_name=ns.config,
         counts=counts,
         platforms=ns.platforms,  # already the checked, deduped list (`_platforms`)
-        sources=tuple(ns.sources or ()),
         budget_usd=ns.budget,
         notion=ns.notion,
         vision_check=bool(ns.vision_check),
@@ -139,8 +136,6 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--reels", type=int, metavar="N", help="override the reel count")
     parser.add_argument("--platforms", type=_platforms, metavar="LIST",
                         help="comma-separated platform list (FR-137)")
-    parser.add_argument("--sources", type=_sources, metavar="LIST",
-                        help="comma-separated source list, overrides sources.active (FR-135)")
     parser.add_argument("--budget", type=float, metavar="USD", help="override the spend cap")
     parser.add_argument("--notion", choices=_NOTION, help="Notion influence level (D7)")
     parser.add_argument("--vision-check", action="store_true", help="enable the vision check (D3)")
@@ -200,34 +195,10 @@ def _action(ns: argparse.Namespace) -> Action:
     return Action.RUN
 
 
-def _sources(value: str) -> tuple[str, ...]:
-    """`--sources virlo` → an override of `sources.active` for this run only.
-
-    Two refusals, both at the flag boundary so a typo costs $0: an unknown name lists the
-    vocabulary `SOURCE_STATUS` owns (FR-121), and a named-but-unbuilt adapter is refused outright
-    rather than accepted and silently skipped at Collect.
-
-    The menu twin this flag used to mirror is gone: FR-135's source picker was withdrawn in
-    v2.0.0 (Virlo is the only production source), so `sources.active` is otherwise a config-file
-    decision. The flag itself survives as the CLI-only escape hatch, and its removal is an open
-    question: 30 §5's flag table no longer lists it either.
-    """
-    names = list(dict.fromkeys(name.strip() for name in str(value).split(",") if name.strip()))
-    if not names or any(name not in SOURCE_STATUS for name in names):
-        raise argparse.ArgumentTypeError(
-            f"--sources {value!r} — expected a comma-separated list of: "
-            + " | ".join(SOURCE_STATUS))
-    if unbuilt := [name for name in names if not SOURCE_STATUS[name]]:
-        raise argparse.ArgumentTypeError(
-            f"--sources {value!r} — {', '.join(unbuilt)} is named for a future adapter and is not "
-            "built yet; pick virlo (FR-135)")
-    return tuple(names)
-
-
 def _platforms(value: str) -> list[str]:
     """`--platforms linkedin,tiktok` → the pick, checked against D6's fixed set (FR-51/69/137).
 
-    Checked HERE, at the boundary, exactly as `--sources` is: argparse exits 2 with one line
+    Checked HERE, at the boundary: argparse exits 2 with one line
     before any config load, so `linkedn` costs $0 instead of loading clean and spending the plan
     on its correctly-spelled siblings. `config._validate` is the file-side twin (same tuple),
     which is why `apply_overrides` can trust `opts.platforms` and never re-checks it.
@@ -262,9 +233,6 @@ def apply_overrides(config: Config, opts: Options) -> list[str]:
         for name in opts.platforms:
             config.run.languages.setdefault(name, "en")
         applied.append(f"run.platforms={','.join(opts.platforms)}")
-    if opts.sources:
-        config.sources.active = list(opts.sources)
-        applied.append(f"sources.active={','.join(opts.sources)}")
     if opts.budget_usd is not None:
         config.run.spend_cap_usd = float(opts.budget_usd)
         applied.append(f"run.spend_cap_usd={format_usd(config.run.spend_cap_usd)}")

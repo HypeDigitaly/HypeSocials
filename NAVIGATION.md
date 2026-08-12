@@ -131,10 +131,9 @@ All commands assume venv is activated or run via `run.bat`. No global Python cal
 | Virlo | MCP stdio (in-repo wrapper) + REST | Fetch trends, videos, slideshows | `mcp_servers.virlo` |
 | OpenRouter | REST (`/chat/completions`) | LLM calls (Luna, Sonnet, GPT Image 2 prompts) | `models.*` |
 | Kie.ai | REST (createTask/recordInfo) | Image + reel rendering, file upload | `render.provider` |
-| Notion | MCP stdio (package) | Brand context + influence (optional) | `mcp_servers.notion` |
-| yt-dlp | Subprocess | Download trend videos for reel references | Python subprocess |
+| Notion | MCP stdio (package) | Brand context + branding overrides (dormant future source) | `mcp_servers.notion` |
 
-**No external DB. No webhooks.**
+**No external DB. No webhooks.** (yt-dlp left the stack with the motion-reference chain, W3.5.)
 
 ---
 
@@ -204,12 +203,12 @@ All commands assume venv is activated or run via `run.bat`. No global Python cal
 
 **Authoritative:** See CLAUDE.md Glossary section (full definitions). Quick reference:
 
-- **Trend** — Ranked viral item from Virlo (video or slideshow) with winning images, text, engagement stats
-- **Style brief** — LLM analysis of trend's visual style (colors, layout, typography, hook pattern)
-- **Anchor chaining** — Carousel slide 1 renders first, becomes primary reference for slides 2–N
-- **Seed frame** — GPT Image 2 render with text baked in; used as reel reference + asset
-- **Viral-video motion reference** — Trend's winning video (yt-dlp download) passed to Seedance for motion mimicry
-- **Both-mode** — A/B generation: each creative rendered analyzed + direct, paired by `pair_id` in gallery
+- **Topic** — Ranked text-only item split from a Virlo monitor (FR-293): name, view-ranked `SourcePost` list, per-topic strength; the unit everything downstream quotes and ranks
+- **Meta-style** — One `prompts/styles.yaml` entry: the post-pivot visual authority (render_prompt, DNA fields, layout zones, its own local reference images), rotated deterministically per creative (FR-290/291)
+- **Verbatim copy** — Luna selects source strings by `P<n>.<kind>[.<i>]` reference; the engine resolves the bytes (§1.7/D42) — no retyping, no translation
+- **Branding block / wordmark** — FR-292's two channels: engine-rendered colour/letterform block + the TEXT-block wordmark entry; `brand_ratio` rotation on `entry.order`
+- **Anchor chaining** — Carousel slide 1 renders first, becomes primary reference for slides 2–N (wordmark on the anchor alone, M12)
+- **Seed frame** — GPT Image 2 render with text baked in; used as reel reference + asset (the reel's ONLY reference — the motion-reference chain died with the pivot)
 - **Wave-1 / Wave-2** — Render submission waves: W1 = anchor + seed frames (checked, referenced); W2 = remaining slides/animation
 - **Permit gate** — 2-tier priority semaphore preventing wave-2 starvation by queued wave-1 jobs
 - **Run deadline** — Soft elapsed-time ceiling (default 25 min, monotonic clock)
@@ -245,5 +244,7 @@ New glossary terms: `no_onimage_text`, `hook_pattern_generic`, `inspiration_exem
 
 Topic-first pivot W3 (Session D): `test_plan`/`test_ids`/`test_exit_codes`/`test_funnel_report`/`test_budget`/`test_preflight`/`test_state`/`test_config` rewritten onto the post-pivot contracts (T3.5 — incl. FR-7 post-granularity, `(post_id, url)` history pairs, FR-295 exit-2, the five-row funnel, `llm_starved == {COPY_DEGRADED}`), `test_console_inventory` (15 → 33 ids, the §1.10 assertions: stage-header grammar, non-increasing `strn`, P-ordinal receipts, silence-breaker heartbeats, funnel-once) + `test_menu` (30 → 40 ids, FR-300 derived counters, `NO STYLES` badge) rewritten (T3.6). T3.5's strict-xfail caught a real FR-286 funnel-header overflow at corpus scale; fixed in-wave (compact `available` + `·` joins + wrap fallback).
 
-**Last updated:** 2026-08-12 (topic-first pivot Wave 3, Session D conductor — §1/§3/§4/§9 re-based; 711 tests green)
+**Wave 3.5 (Session D, same day) — the excision:** `analyze.py`, `generate/video_ref.py`, `sources/inspiration.py`, `tests/test_video_ref.py` and the three pre-pivot templates DELETED; every legacy symbol out of `models.py` (StyleBrief/ReferenceSet/Variant/GenerationMode, pair_id/variant fields, the analysis + A21 + five motion-chain tags, the six orphan placeholders — final vocabulary 25) and `config.py` (generation_mode, the reel-reference and media/inspiration keys, `niche.brand`); virlo's media/digest-exemplar/CDN bodies and Counters media groups excised (1,798 → 1,351); prompts_engine's legacy builders + three dead built-ins out (2,162 → 1,861); the orphaned `--sources` flag deleted; Pillow AND yt-dlp out of `pyproject.toml`; `prompts/README.md` at the final 8-role spec; `test_template_parity` at SHIPPED == 8 with full placeholder reachability. **One disclosed barrier-grep exemption:** `styles.py`'s M9 leak-heuristic marker tuple is a functional literal §1.3 itself mandates.
+
+**Last updated:** 2026-08-12 (topic-first pivot Waves 3 + 3.5, Session D conductor — §1/§3/§4/§8/§9/§12 re-based; 697 tests green)
 **Updated at every wave barrier:** Mark affected sections (§1–§12) in session reports.

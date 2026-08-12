@@ -15,9 +15,9 @@ Public API
     KieOutOfCredits         402: a whole-run condition, never a job condition (FR-167)
 
 Wiring: `configure()` binds a module-level client + gate instead of threading both through
-`generate/`, `carousel.py`, `reel.py` and `video_ref.py` — the caller's mental model stays "render
-this", not "render this with that gate on that client". `RenderGate` still constructs standalone,
-so its starvation test needs no provider, key or network (W4 barrier item).
+`generate/`, `carousel.py` and `reel.py` — the caller's mental model stays "render this", not
+"render this with that gate on that client". `RenderGate` still constructs standalone, so its
+starvation test needs no provider, key or network (W4 barrier item).
 
 Invariants:
 - A permit is held across submit-and-poll ONLY and `run()` awaits no dependency while holding one

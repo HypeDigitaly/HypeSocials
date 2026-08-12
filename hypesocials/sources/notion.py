@@ -13,7 +13,7 @@ cut, never a summarization call; FR-37 is withdrawn).
 
 This module produces DATA and fills no template. `{{brand_context}}` is `.text`, the
 copywriter-only block. The render side changed with the pivot (v2.0.0/D43): `.accent` and
-`.product_nouns` no longer feed a `{{brand_accent}}` placeholder of their own — they are OVERRIDES
+`.product_nouns` no longer feed a dedicated accent placeholder — they are OVERRIDES
 into the configured `BrandingConfig` profile (`apply_brand_overrides`), and reach a prompt through
 the branding block like every other brand fact. Notion is the future override on that block, never
 a dependency of it: with no `NOTION_TOKEN` the config profile stands alone, which is how every run

@@ -271,7 +271,7 @@ def _say_confirm_ahead(io: Console, config: Config, steps: Sequence[str]) -> Non
     """The confirm step's purpose line (FR-284): duration, brand signature, output folder.
 
     The durations are re-derived for v2.0.0 (FR-300e). The old "8-10 minutes" counted a chain that
-    no longer exists — yt-dlp downloading the trend's winning video and uploading it to Kie as a
+    no longer exists — downloading the trend's winning video and uploading it to Kie as a
     motion reference. What is left is LLM calls (one batched topic filter, one copy call per
     topic) plus render jobs: still images and carousel slides come back in tens of seconds, while
     a reel is a seed-frame render followed by a Seedance generation whose own ceiling is
@@ -588,14 +588,14 @@ def _options_from(opts: cli.Options, config: Config,
                   briefs: tuple[tuple[str, int], ...]) -> cli.Options:
     """Every wizard answer in the shape the dispatcher already understands (`cli.Options`).
 
-    `sources` and `notion` are carried over from the resolved config rather than from a prompt:
-    neither is a wizard question any more (FR-300 withdrew the source picker with FR-135, and the
-    mode/Notion step with it), but both still have a flag, so the round-trip stays exact.
+    `notion` is carried over from the resolved config rather than from a prompt: it is not a
+    wizard question any more (FR-300 withdrew the mode/Notion step), but it still has a flag, so
+    the round-trip stays exact. The source list stopped travelling entirely at W3.5 — Virlo is
+    the only source and `sources.active` is a config-file fact with no flag twin left.
     """
     return replace(
         opts, action=cli.Action.RUN, config_name=config.name,
         counts={name: int(config.run.formats.get(name, 0)) for name in _FORMATS},
-        sources=tuple(config.sources.active),
         budget_usd=config.run.spend_cap_usd,
         notion=config.run.notion_influence, briefs=briefs, yes=False)
 

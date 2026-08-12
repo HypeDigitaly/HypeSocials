@@ -307,7 +307,7 @@ def _check_styles(config: Config, action: str, errors: list[str], warnings: list
 
     Grading is `styles.validate()`'s, not this module's (10 §FR-290's validation table): zero
     usable styles under the active brand or a requested format with no affine style are errors;
-    fewer than three usable styles, an over-long `render_prompt`, an unresolved "either/or" variant
+    fewer than three usable styles, an over-long `render_prompt`, an unresolved "either/or" choice
     and a missing reference image are warnings — the last of these degrades one style to text-only
     (`style_refs_missing`) and must never cost a batch.
 
@@ -381,10 +381,9 @@ def _check_node(config: Config, errors: list[str]) -> None:
     """FR-117/138: Node is checked ONLY for a server this run will actually launch.
 
     Nothing outside the MCP commands is checked here, and post-pivot nothing else could be: the
-    motion-reference chain that used to pull a winning video through `yt-dlp` is withdrawn
-    (v2.0.0/D41, D23 withdrawn with it), so the last non-MCP external binary this run might have
-    wanted is gone. A Node-free workstation is a perfectly healthy one unless a configured MCP
-    command literally invokes npx/node.
+    motion-reference download chain is withdrawn (v2.0.0/D41, D23 withdrawn with it), so the last
+    non-MCP external binary this run might have wanted is gone. A Node-free workstation is a
+    perfectly healthy one unless a configured MCP command literally invokes npx/node.
 
     A config that omits its `notion:` entry still launches Node: `sources/notion.py` falls back to
     its own default command. That command is checked too, so "not configured" never means

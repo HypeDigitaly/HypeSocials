@@ -10,7 +10,7 @@ each creative wears, and which pictures prove it:
     style = style_for(registry, entry.style_key)                  # at assembly
     refs = pick_reference_window(style, entry.trend_reuse_index, config.styles.refs_per_job)
 
-A style is authored once in `prompts/styles.yaml` and ASSIGNED, where the pre-pivot `StyleBrief`
+A style is authored once in `prompts/styles.yaml` and ASSIGNED, where the pre-pivot vision brief
 was re-derived per trend by an LLM from whatever pictures that trend happened to carry. That is
 the whole point of the pivot: the look is ours, the topic is theirs.
 
@@ -63,12 +63,15 @@ _BRANDS = ("hypedigitaly", "hypelead")
 #: usable styles the rotation stops being a rotation and every creative in a batch looks alike.
 _MAX_RENDER_WORDS = 120
 _MIN_USABLE_STYLES = 3
-#: M9 variant-leak heuristic, matched case-insensitively: an unresolved "teal or cobalt" reaches
+#: M9 either/or-leak heuristic, matched case-insensitively: an unresolved "teal or cobalt" reaches
 #: the image model as a choice it makes differently on every slide of one deck.
+# DISCLOSED W3.5 barrier-grep exemption (SESSION-D closeout): the middle marker is a FUNCTIONAL
+# literal — §1.3's leak heuristic must match the word itself in an author's render_prompt, so the
+# excision grep records this one line and ignores it rather than obfuscating the string.
 _VARIANT_MARKERS = (" or ", "variant ", "either ")
 
-# --- reference-image validation, ported from sources/inspiration.py:55-71 + :255-266 -----------
-# Ported rather than imported: inspiration.py is retired at W3.5 and this is the surviving reader
+# --- reference-image validation, ported from the retired local-pool module (W3.5) --------------
+# Ported rather than imported: the source module was retired at W3.5 and this is the surviving reader
 # of local reference bytes. Same rules, same reason — "validate" has to mean the bytes ARE an
 # image, not just that the name says so (a renamed .txt fails the Kie upload and costs the job a
 # reference for nothing).

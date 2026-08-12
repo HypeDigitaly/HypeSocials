@@ -19,11 +19,10 @@ fallback renders a different prompt from the one the run was configured with.
 Everything here is a pure read of `prompts/` and the module's own tables. No network, no run
 folder, no temp files.
 
-**W2 transitional state (v2.0.0).** The pivot's ADDITIVE-THEN-SUBTRACTIVE migration means the new
-`image_post.md` and `topic_filter_system.md` ship BESIDE the three templates they retire, so every
-count in this file is 11 rather than the final 8. `TRANSITIONAL_SHIPPED` and
-`TRANSITIONAL_ORPHANS` below are the two places that number lives, and both are written to fail
-loudly at W3.5 rather than to be quietly right.
+**Final post-pivot state (v2.0.0, W3.5).** The excision wave removed the three retired templates
+from every surface, so the shipped count is the final 8 (3 global + 4 gpt-image-2 + 1 seedance)
+and every name in `models.PLACEHOLDERS` must be reachable from some role — the W2 transitional
+carve-outs are gone.
 """
 
 from __future__ import annotations
@@ -41,13 +40,10 @@ SHIPPED: list[tuple[str, str]] = (
     [("", role) for role in GLOBAL_TEMPLATES]
     + [(profile, role) for profile, names in PROFILE_TEMPLATES.items() for role in names])
 
-#: The W2 TRANSITIONAL count (contracts item 4): 4 global — `style_brief_system.md`,
-#: `copywriter_system.md`, `vision_check_question.md` and the new `topic_filter_system.md` — plus
-#: 6 gpt-image-2 (the merged `image_post.md` shipping BESIDE the two files it replaces) plus 1
-#: seedance. **W3.5 deletes `style_brief_system.md`, `image_single_post.md` and `image_direct.md`
-#: from every surface and this number becomes 8** (3 global + 4 gpt-image-2 + 1 seedance); the
-#: excision wave updates it here, and this assertion is what makes it notice.
-TRANSITIONAL_SHIPPED = 11
+#: The FINAL count (contracts item 4, set by the W3.5 excision): 3 global —
+#: `copywriter_system.md`, `vision_check_question.md`, `topic_filter_system.md` — plus 4
+#: gpt-image-2 (the merged `image_post.md` and its three siblings) plus 1 seedance.
+SHIPPED_COUNT = 8
 
 
 def _built_in_key(profile: str, role: str) -> str:
@@ -64,10 +60,10 @@ def test_every_shipped_role_ships_both_a_file_and_a_built_in_default() -> None:
     A role with no file has nothing to compare; a role with no built-in has no FR-183 fallback at
     all and would raise `MissingTemplateError` on the day its file went unreadable.
     """
-    assert len(SHIPPED) == TRANSITIONAL_SHIPPED, \
+    assert len(SHIPPED) == SHIPPED_COUNT, \
         "the shipped role set changed — the parity checks below need it"
-    assert set(GLOBAL_TEMPLATES) == {"style_brief_system.md", "copywriter_system.md",
-                                     "vision_check_question.md", "topic_filter_system.md"}
+    assert set(GLOBAL_TEMPLATES) == {"copywriter_system.md", "vision_check_question.md",
+                                     "topic_filter_system.md"}
     assert "image_post.md" in PROFILE_TEMPLATES["gpt-image-2"]
     for profile, role in SHIPPED:
         assert _on_disk(profile, role).is_file(), f"{_built_in_key(profile, role)}: no file"
@@ -128,28 +124,15 @@ def test_the_allowlist_table_itself_names_nothing_outside_the_placeholder_vocabu
                                         f"{sorted(allowed - PLACEHOLDERS)}"
 
 
-#: The two names that are IN the vocabulary and reachable from no role during the W2->W3.5
-#: window. Both belong to withdrawn call paths — `style_brief_summary` described the vision
-#: analysis to the copywriter, `inspiration_exemplars` carried A16's pooled `.txt` captions — and
-#: contracts item 2 keeps the NAMES in `models.PLACEHOLDERS` until the W3.5 excision while T2.5's
-#: rewritten `copywriter_system.md` and T2.6's allowlist already stopped naming them. Anything
-#: else unreachable is a real defect: a slot built and wired that no template can ever show.
-TRANSITIONAL_ORPHANS = frozenset({"style_brief_summary", "inspiration_exemplars"})
-
-
-def test_no_placeholder_in_the_vocabulary_is_unreachable_except_the_two_transitional_orphans() -> None:
+def test_no_placeholder_in_the_vocabulary_is_unreachable() -> None:
     """A name in `models.PLACEHOLDERS` that no role may resolve is dead vocabulary.
 
     Not fatal, but it is how a slot gets built, documented and wired into `build_context` while no
     template can ever show it to a model — which is precisely the shape A15 found `niche_descriptor`
-    in for render roles. The two named exceptions are scheduled deletions, and the second assertion
-    is what makes W3.5 come back here: once they leave the vocabulary this list must shrink to
-    nothing rather than describe names that no longer exist.
+    in for render roles. Full reachability is required since the W3.5 excision dropped the two
+    W2 transitional orphans from the vocabulary itself.
     """
     reachable = set().union(*pe._ALLOWLIST.values())
     unreachable = PLACEHOLDERS - reachable
 
-    assert unreachable <= TRANSITIONAL_ORPHANS, \
-        f"placeholder(s) no role can resolve: {sorted(unreachable - TRANSITIONAL_ORPHANS)}"
-    assert TRANSITIONAL_ORPHANS <= PLACEHOLDERS, \
-        "the W3.5 excision landed — drop TRANSITIONAL_ORPHANS and require full reachability"
+    assert not unreachable, f"placeholder(s) no role can resolve: {sorted(unreachable)}"
