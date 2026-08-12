@@ -63,6 +63,7 @@ from hypesocials.runner import (
     _configure_llm,
     _funnel_block,
     _launch_summary,
+    _load_registry,
     _open,
     _post_roster,
     _record_style_forecast,
@@ -115,6 +116,12 @@ async def _preview(opts: cli.Options, control: runner.Control | None, *, deep: b
     with suppress(OSError):  # FR-253: run.log + events.jsonl, nothing else
         (session.run_dir / _REFS_DIR).rmdir()
     try:
+        # W5 live-verification fix (2026-08-12): the launch summary reads `session.registry`,
+        # which a PAID run fills at the top of `_pipeline` — before ITS summary prints. Previews
+        # printed first and loaded later (`--preview-sources` never loaded at all), so a healthy
+        # registry was announced as "unavailable — pre-flight will refuse" on every $0 preview.
+        # Same tolerant loader, same order as the paid run; `_registry()` reuses the result.
+        session.registry = _load_registry(session)
         session.say(_launch_summary(session, overrides))
         session.say(f"{action}: no render job, no video download, no upload. This folder\n"
                     "is log-only and never becomes output/latest.")
@@ -267,6 +274,8 @@ def _registry(session: runner._Session) -> styles.StyleRegistry:
     stages read it from (`_Session.registry`), and previews never runs `_pipeline`, which is where
     a paid run fills it in.
     """
+    if session.registry is not None:  # already loaded (and logged) before the launch summary
+        return session.registry
     config = session.config
     try:
         registry = styles.load_registry([config.prompts_dir, PROMPTS_DIR])
