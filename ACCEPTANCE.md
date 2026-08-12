@@ -15,18 +15,20 @@ FR-202 (prds/10-pipeline.md §6): **0** all delivered · **1** partial (honest s
 ## The 4 standard checks (apply to EVERY scenario)
 
 1. **Gallery correct** — open `output\latest\gallery.html`: every delivered asset has a card
-   (thumbnail/video, caption, platform+format badges, est. cost, source refs + hook, Virlo
-   link); skipped assets absent from cards but named in the run summary; A/B pairs side by side
-   with `pair_id` and the pair-integrity badge only when a side lost analysis.
+   (thumbnail/video, caption, platform+format badges, est. cost, the topic name, the assigned
+   style key, brand + whether this one was signed, the verbatim receipt naming the quoted post
+   and ref label — "Quotes P1.hook.2 verbatim…" — the source hook, and the Virlo link);
+   skipped assets absent from cards but named in the run summary.
 2. **meta.yaml honest** — every asset folder's `meta.yaml` is terminal (`delivered` / `skipped`,
    never `pending`), `degradations: []` lists only what actually happened, costs present,
    `render_not_reproducible: true` stated, `brief_influence_mode` present on brief assets.
 3. **Spend ≈ estimate** — run.log's spend summary: actual ≤ pre-flight worst-case estimate, and
-   in the expected ratio (reel actuals land well under the worst-case scalar by design).
-   Cross-check the Kie/OpenRouter dashboards if in doubt.
-4. **No orphan processes** — after exit: `tasklist | findstr /i "python node yt-dlp"` shows
+   in the expected ratio. Post-pivot the reel scalar IS the published no-reference per-second
+   rate, so reel actuals should match the estimate almost exactly — a large gap in either
+   direction is a finding. Cross-check the Kie/OpenRouter dashboards if in doubt.
+4. **No orphan processes** — after exit: `tasklist | findstr /i "python node"` shows
    nothing from the run (one hit for your own console's python is fine only while it's still
-   open); no stray `node.exe` (Notion MCP) or `yt-dlp` remain.
+   open); no stray `node.exe` (Notion MCP) remain.
 
 ---
 

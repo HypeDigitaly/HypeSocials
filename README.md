@@ -1,6 +1,6 @@
 # HypeSocials
 
-A single-operator Windows CLI tool that generates viral social media creatives (images, carousels, reels) from Virlo trends. Fetches winning posts, analyzes their visual style and copy structure via LLM, and renders new assets matching that style. Images and carousels finish in ~3 minutes; batches with reels take ~8–10 minutes. Costs under $1 per post.
+A single-operator Windows CLI tool that generates viral social media creatives (images, carousels, reels) from Virlo trends. Fetches trending topics with their top posts, applies a deterministic visual style from a local registry, selects verbatim copy from the posts' captions and hooks, and renders new assets. Images and carousels finish in ~3 minutes; batches with reels take ~8–10 minutes. Costs under $1 per post.
 
 ## First-Run Setup
 
@@ -20,7 +20,7 @@ A single-operator Windows CLI tool that generates viral social media creatives (
    - **`hypedigitaly-cs.yaml`** — Czech captions and on-image text
    - Or customize **`default.yaml`** — a neutral template you can edit to your own niche
 5. **If using Notion:** Open your Notion page or database in the browser and share it with the HypeSocials integration once (one-time setup). The integration cannot fetch private pages unless you share them explicitly.
-6. Optional: create an `Inspiration/` folder with reference images and list the path in the config's `sources.inspiration_folders`.
+6. **Meta-style registry setup:** The tool's visual language comes from a local style registry (`prompts/styles.yaml`) with eight predefined styles, each backed by its own local reference images (paths resolve from the repo root; the shipped set points into `Inspiration/` and `hypedigitaly branding/`). Styles are assigned to creatives by deterministic rotation — re-previewing the same topic set picks the same styles, and creatives sharing a topic get different styles. The registry has no fallback: if it is missing or invalid, the run refuses with exit code 2 before spending anything. You can customize it by editing the YAML and swapping reference images, treating it like version-controlled code.
 
 The tool **deliberately ships `default.yaml` with an empty monitor-ids list** — it is a neutral template, not a working config. The wizard will show it as `NOT RUNNABLE` until you add ids. The first time through, action **[4]** is the fastest path to a working setup.
 
@@ -30,7 +30,7 @@ The tool **deliberately ships `default.yaml` with an empty monitor-ids list** �
 ```
 run.bat
 ```
-Shows the action choice, then a 7-step wizard: config, sources, format counts, spend cap, generation mode, briefs (optional), and confirm. Cost estimate is shown before any money moves; decline to exit at $0.
+Shows the action choice, then a 5-step wizard: config, format counts, spend cap, briefs (optional), and confirm. Cost estimate is shown before any money moves; decline to exit at $0.
 
 **Quick run (skip the questions):**
 ```
@@ -44,27 +44,22 @@ run.bat --config hypedigitaly --images 2 --carousels 1 --budget 2 --yes
 ```
 Skips the menu entirely. The plan is estimated and checked against the cap automatically; if it exceeds the cap, the plan auto-trims to fit.
 
-**Preview modes (zero generation cost):**
-- `run.bat --preview-sources --config hypedigitaly` — Shows what trends Virlo returned and which the run would actually use. Virlo's trend digest still meters against your deposit (~$0.25 per digest fetch).
-- `run.bat --preview-analysis --config hypedigitaly --images 1` — Also shows AI's style analysis and copy drafts. LLM cost only, no image/reel rendering.
+**Preview modes (zero image/reel generation cost):**
+- `run.bat --preview-sources --config hypedigitaly` — Shows the topics Virlo returned, the deterministic brand-safety verdicts (keep/strip/skip), and which topics the run would use. Zero LLM cost (the verdicts are blocklist-only; the LLM screen runs in `--preview-analysis`). Virlo's trend digest still meters against your Virlo deposit (~$0.25 per fetch).
+- `run.bat --preview-analysis --config hypedigitaly --images 1` — Also runs the copy selector and shows assigned styles and verbatim copy quotes from the source posts. LLM cost only, no image/reel rendering.
 
-**New flags:**
-- `--quick` — Skips the menu's config/source/format questions, picks the first runnable config, then shows the cost estimate interactively. The confirm gate is always shown. Mutually exclusive with `--yes`.
+**Useful flags:**
+- `--verbose` / `-v` — Show per-topic and per-post detail on the console (all topics in the table, the full post roster, every filter verdict). Off by default; the standard console already shows stage headers, tables and heartbeats. The run.log and events.jsonl content policy is unchanged either way — verbosity moves only the console tier.
+- `--quick` — Skips the wizard's questions, picks the first runnable config, then shows the cost estimate interactively. The confirm gate is always shown. Mutually exclusive with `--yes`.
 - `--history-days N` — Overrides the recency exclusion window for this run only. `0` disables the window. Any value outside the allowed range (0 and above) is refused with one line before the config is loaded, never silently clamped.
 
-## Understanding the Menu (7 Steps)
+## Understanding the Menu (5 Steps)
 
 1. **Config** — Niche, language, and monitor set. Each row shows the language, monitor count, and format counts. A row marked `NOT RUNNABLE` has no monitor IDs yet — use action **[4]** to fetch them.
-2. **Sources** — Where trends come from. Virlo is the active choice (others are planned for future versions).
-3. **Formats & counts** — How many creatives to build: `images=4 carousels=2 reels=1`. A carousel deck is multiple slides (5 by default), so 2 carousels = 10 images. Reels are the priciest. Any count you leave out keeps its current value.
-4. **Spend cap** — The ceiling for this run. Shown as a limit, not a target; the run spends what it needs up to this cap.
-5. **Mode & Notion influence** — How much thinking to spend:
-   - `analyzed` = one extra LLM call per trend writes a style brief (default)
-   - `direct` = no analysis call (fastest/cheapest)
-   - `both` = both variants, ~2× the LLM calls (A/B testing)
-   - Notion influence: `off` = none · `copy` = brand voice shapes captions · `full` = also shapes visuals (requires `NOTION_TOKEN` in `.env`)
-6. **Briefs** (optional) — Your own visual directives or message overrides. Blank/Enter = none. A brief can skip trends entirely (`override` mode), so it runs even with zero monitor IDs.
-7. **Confirm** — The cost estimate and final yes/no. Nothing has been billed yet; declining costs nothing.
+2. **Formats & counts** — How many creatives to build: `images=4 carousels=2 reels=1`. A carousel deck is multiple slides (5 by default), so 2 carousels = 10 images. Reels are the priciest. Any count you leave out keeps its current value.
+3. **Spend cap** — The ceiling for this run. Shown as a limit, not a target; the run spends what it needs up to this cap.
+4. **Briefs** (optional) — Your own visual directives or message overrides. Blank/Enter = none. A brief can skip trends entirely (`override` mode), so it runs even with zero monitor IDs.
+5. **Confirm** — The cost estimate and final yes/no. Nothing has been billed yet; declining costs nothing. Notion influence (`off` / `copy` / `full`) is shown here from the config and edited only in the file (requires `NOTION_TOKEN` in `.env` for `full` mode).
 
 **At any prompt, press `?` to see help for that step.** The help explains what the step does and what a good value is. Pressing `?` re-asks the question — it does not advance.
 
@@ -74,9 +69,9 @@ The tool tracks which posts you've used over the last 7 days (configurable per r
 
 **No migration is needed.** The history file `logs/trend_history.json` now has an optional `posts` map for each trend. An entry without that map reads as "no posts tracked yet", so old history files work without any change.
 
-## Important: Reel Pricing
+## Important: Reel Pricing (Post-Pivot)
 
-Reels ship disabled by default (`formats.reel: 0`). When enabled, Kie bills Seedance at `unit_price × (reference_video_seconds + output_seconds)` — the motion reference's duration is billed too. **Measured live: a 5-second 720p reel with a 10-second motion reference costs $2.85** (see `spikes/RESULTS.md` for details). The config key `reel_reference_max_s` is a **price lever**: attaching a reference beats no-reference only when the reference is shorter than ~0.65 × the output duration. `configs/hypedigitaly.yaml` ships `reel_reference_max_s: 20` with worst-case-honest `price_per_unit.reel_second` scalars already derived from the measurement. Enable reels per run with `--reels N`. If you change `reel_reference_max_s`, `reel_duration_s`, or resolution, recompute the scalars per the formula commented in that config file.
+Reels ship disabled by default (`formats.reel: 0`). When enabled, Kie bills Seedance at `unit_price × output_seconds` only — the reel renders from a seed frame alone, no motion reference is attached, so nothing but the output is billed. At Kie's published no-reference rates (confirmed to the credit against a live measurement — see `spikes/RESULTS.md` §C) that is **$1.575 for a 5-second 720p reel ($0.315/s) and $0.70 at 480p ($0.140/s)**; the shipped `price_per_unit.reel_second` scalars are exactly those rates. Enable reels per run with `--reels N`. The scalars are per-second, so changing `reel_duration_s` needs no recomputation — only a Kie price change or a model-family swap does (the formula is commented in the config file).
 
 ## Interactive vs. `--yes` Behavior at Confirm
 
@@ -122,3 +117,5 @@ Every run gets its own timestamped folder under `output/<run_id>/`:
 ---
 
 **First updated:** 2026-08-10 (Wave 6, technical-writer pass — §1 setup via action [4] + readiness rows, §2 walkthrough, §3 trend history, §4 flags, all three configs named)
+
+**Re-based:** 2026-08-12 (T4.2 — Topic-First Pivot: local meta-style registry, verbatim copy from Virlo topics, no motion references, 5-step wizard, no generation mode picker)

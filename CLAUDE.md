@@ -2,7 +2,7 @@
 
 ## What This Is
 
-Project configuration and agent coordination guide for HypeSocials MVP (Phase 1). Single-operator Windows CLI tool that generates viral social creatives (images, carousels, reels) from Virlo trends via LLM analysis and Kie.ai renders. ~3 min (images/carousels only) or ~8–10 min (with reels); <$1 per post.
+Project configuration and agent coordination guide for HypeSocials MVP (Phase 1). Single-operator Windows CLI tool that generates viral social creatives (images, carousels, reels) from text-only Virlo topic trends: an LLM screens topics and selects copy verbatim from the topic's source posts, a local meta-style registry supplies the visual language, and Kie.ai renders. ~3 min (images/carousels only) or ~8–10 min (with reels); <$1 per post.
 
 ---
 
@@ -16,11 +16,11 @@ Project configuration and agent coordination guide for HypeSocials MVP (Phase 1)
 
 **MCP:** `mcp` (official Python SDK), both stdio servers (Virlo wrapper in-repo, Notion via package) and HTTP transports
 
-**Media & video:** `Pillow` (image downscale only per FR-93), `yt-dlp` (reel video-reference download)
-
 **System-level:** `pywin32` (Windows job objects for subprocess tree reaping, `win32job` module), `argparse` (CLI flags only, not menu)
 
-**External services:** OpenRouter REST (LLM), Kie.ai REST (renders), Virlo REST (via MCP wrapper), Notion MCP, yt-dlp
+**External services:** OpenRouter REST (LLM), Kie.ai REST (renders), Virlo REST (via MCP wrapper), Notion MCP
+
+**No media libraries.** The topic-first pivot (D41–D45, 2026-08-12) removed Pillow and yt-dlp: Virlo contributes text only, reels use no video references, and reference images are registry-declared local files uploaded as-is.
 
 **No database.** State is files: config YAML, trend_history.json, run logs, asset metadata (meta.yaml per creative).
 
@@ -34,13 +34,15 @@ Project configuration and agent coordination guide for HypeSocials MVP (Phase 1)
 
 **Windows event loop:** `asyncio.ProactorEventLoop()` (required for subprocess support on Windows; default on Windows in Python 3.8+ but stated explicitly in code). SIGINT handling: `signal.signal(signal.SIGINT, handler)` + `loop.call_soon_threadsafe()` to enqueue the stop — never `loop.add_signal_handler()` (unavailable on Windows).
 
-**Process reaping:** Subprocess trees (especially MCP stdio servers and `yt-dlp`) are fully terminated on every exit path (success, failure, timeout, abort) via Windows job objects (`win32job.CreateJobObject` + `win32job.SetInformationJobObject` with kill-on-close). Fallback: `taskkill /T` sweep on orderly exits only.
+**Process reaping:** Subprocess trees (especially MCP stdio servers) are fully terminated on every exit path (success, failure, timeout, abort) via Windows job objects (`win32job.CreateJobObject` + `win32job.SetInformationJobObject` with kill-on-close). Fallback: `taskkill /T` sweep on orderly exits only.
 
 **Junctions for directory symlinks:** `mklink /J` subprocess call (never `os.symlink`, which requires admin/DevMode). Used for `output/latest/` pointer.
 
 **MCP clients:** One shared async MCP client (`mcp_client.py`) with per-server launch/env/timeout config, bounded session pools (Virlo pool default 3 per PRD FR-246/FR-259), per-server environment dicts (only the keys each server needs), and Windows-safe `.cmd`/`.exe` shim resolution.
 
-**Reference images:** Virlo + Inspiration + briefs → downloaded/uploaded to Kie via file-upload API (host `kieai.redpandaai.co`, ~24 h retention) → URLs passed to render jobs. Local-file Inspiration and brief images are uploaded on-demand; Virlo CDN images are downloaded per-job for reference pooling.
+**Reference images:** All render references are LOCAL files — the assigned meta-style's registry-declared reference images (`styles.yaml`) plus any brief images. They are uploaded to Kie via the file-upload API (host `kieai.redpandaai.co`, ~24 h retention) and the resulting URLs passed to render jobs; an upload memo guarantees each distinct file uploads once per run, and URLs are never persisted across runs (they expire). Virlo contributes no images — the topic source is text-only, and no Virlo CDN host may appear in any render payload.
+
+**Style registry has NO fallback (FR-295):** a missing, unparseable, or invalid `styles.yaml` — including a registry left with zero styles usable under the active brand/format — is a pre-flight refusal: exit 2, $0 spent. There is no built-in default style set to fall back to.
 
 **Render provider seam (D34):** One small interface (submit → poll → result URLs → upload) with Kie.ai built-in. Each render model (gpt-image-2, seedance-2-5) carries a profile (param mapping, reference limits, template set). Unknown profile fails at pre-flight.
 
@@ -200,18 +202,19 @@ End every task with:
 
 ## Glossary (per PRD)
 
-- **Trend:** A ranked viral item from Virlo (video or slideshow) with metadata, reference images, and engagement stats.
-- **Style brief:** LLM-written analysis of a trend's visual style (colors, layout, typography, hook pattern).
-- **Hook pattern:** The structure/shape the copy follows (per trend), logged and tracked.
+- **Topic:** A themed, text-only cluster of viral posts from one Virlo monitor — topic name, strength, and view-ranked `SourcePost`s (captions, hooks, overlays, panel texts, engagement). No media, no reference images. Keyed `<monitor>::<topic_key>` in history.
+- **Meta-style:** One entry in the local style registry (`styles.yaml`): render prompt, palette, layout zones, typography, text budgets, and registry-declared local reference images. Assigned per creative by deterministic rotation; the registry has no fallback (missing/invalid → exit 2, $0).
+- **Topic filter:** Two layers between Collect and Select — a deterministic competitor blocklist (fail-closed) and one batched LLM screen returning `keep | strip | skip` verdicts with strip guards (fail-open, `filter_degraded` on failure).
+- **Verbatim copy:** The copy LLM returns *references* (`P1.hook.2`, …) into a topic's source posts; the engine resolves them to bytes. Never retyped, trimmed, or translated — source language kept; free text is allowed only where nothing becomes pixels (`through_line`, `narrative_arc`, `motion_beat`).
+- **Branding rotation:** `entry.branded` is set by the floor predicate `floor((order+1)·ratio) > floor(order·ratio)` at `branding.brand_ratio`; a full plan of N carries exactly `floor(N·ratio)` branded entries. The wordmark renders through the TEXT block (never the branding block); a carousel is signed on the anchor slide only.
 - **Anchor chaining:** Carousel slide 1 renders first, becomes primary reference for slides 2–N.
-- **Seed frame:** GPT Image 2 render of the hook text (baked-in), used as both an asset and a Seedance reference.
-- **Viral-video motion reference:** Trend's winning post video (yt-dlp download) uploaded to Kie, passed to Seedance for motion mimicry.
-- **Both-mode A/B:** Each creative rendered two ways (analyzed + direct variants) sharing one trend and copy, paired by `pair_id` in gallery.
-- **Brief / niche:** Small override file (message, visual directives) or config-file niche descriptor (audience, vibe, asset paths).
+- **Seed frame:** GPT Image 2 render of the selected on-image text (baked-in), used as both an asset and a Seedance reference.
+- **Motion beat:** One named physical action returned by the copy call, driving the reel's animation stage. Reels use no video references (no-reference billing; yt-dlp is gone).
+- **Brief / niche:** Small override file (message, visual directives) or config-file niche descriptor (audience, vibe).
 - **Wave-1 / Wave-2 renders:** Wave-1 = carousel anchor + reel seed frames (checked, referenced); Wave-2 = remaining slides/animation (submitted after wave-1 completes or pre-committed).
 - **Permit gate:** 2-tier priority semaphore ensuring wave-2 work isn't starved by queued wave-1 jobs.
 - **Run deadline:** Soft elapsed-time ceiling (default 25 min, monotonic clock).
 
 ---
 
-**Last updated:** 2026-08-09 (Wave 0, task T0.1)
+**Last updated:** 2026-08-12 (Topic-First Pivot Wave 4 — conductor merge: media libraries out, reference-image path re-based, registry no-fallback note, glossary re-based)
