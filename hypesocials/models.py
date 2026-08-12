@@ -38,6 +38,20 @@ class DegradationTag(str, Enum):
     # to the second was "the competitor's headline, rendered verbatim", which is why it needed
     # saying out loud rather than being folded into `copy_degraded`.
     NO_ONIMAGE_TEXT = "no_onimage_text"
+    # FR-100/101 (v2.0.0) — the verifier's polarity flip: post-pivot every on-image string must be
+    # a byte-substring of the quoted `SourcePost`, so this marks the one case where a rendered
+    # string drifted from its source. Audit signal only; it NEVER fails the creative — the
+    # creative is already made, and the operator needs to know which card to distrust, not to be
+    # handed fewer cards.
+    COPY_NOT_VERBATIM = "copy_not_verbatim"
+    # FR-294 — a competitor brand name was removed from this creative's text (blocklist or the
+    # filter's `strip` verdict). The copy is still sourced; it is simply no longer byte-identical,
+    # which is exactly what the verifier above would otherwise report as a deviation.
+    COMPETITOR_STRIPPED = "competitor_stripped"
+    # FR-295 — the assigned meta-style's `reference_images` were missing or failed the magic-byte
+    # check, so the style shipped as text-only (its prose still steers the render, its pictures do
+    # not). A warning at pre-flight, never an error: a style without its files is still a style.
+    STYLE_REFS_MISSING = "style_refs_missing"
     # A21 — `hook_pattern_used` came back generic twice (the value the copywriter template itself
     # calls a failed answer). Never fails the creative; it marks the audit trail as weak so a
     # reviewer knows the pattern line on this card was not earned.
@@ -115,16 +129,58 @@ class ReferenceSet:
 
 
 @dataclass(slots=True)
+class SourcePost:
+    """One winning post inside a topic item — the unit verbatim copy quotes (§1.6/FR-293).
+
+    Post-pivot the source posts ARE the asset: FR-99/100 number these fields as offerable
+    candidates, the copy model returns REFERENCES into that numbering (`CopySelection`), and the
+    engine resolves the reference back to these bytes. Everything here is therefore stored exactly
+    as Virlo returned it — never translated, never retyped, never trimmed outside a word boundary
+    — because a string that was edited on the way in can no longer be quoted verbatim on the way
+    out. `views` is what ranks the list, and the rank is what the `P<n>` ref labels count over.
+    """
+
+    post_id: str
+    url: str = ""  # permalink; goes to the roster line and to trend_history (FR-297b/FR-298)
+    author: str = ""
+    caption: str = ""
+    hooks: list[str] = field(default_factory=list)
+    text_overlays: list[str] = field(default_factory=list)  # absorbs `text_overlay_contents`
+    panel_texts: list[str] = field(default_factory=list)  # per-slide words, in panel order
+    description: str = ""
+    views: int = 0
+    # FR-297b's roster prints an age column and a type tag per post, and neither is derivable from
+    # the fields above. `is_slideshow` additionally re-derives `TrendItem.is_slideshow` as the
+    # majority over the topic's posts (§1.6), so format affinity stops being a per-monitor guess.
+    published_at: datetime | None = None
+    is_slideshow: bool = False
+
+
+@dataclass(slots=True)
 class TrendItem:
     """One normalized trend item, assembled per configured monitor id (20 §3 join rule):
     `get_monitor_analysis` gives theme/confidence/why_it_works/tactics, `get_top_videos` +
     `get_top_slideshows` give media/hooks/panel texts/engagement for that same monitor, and the
     global `get_trends` digest only enriches `cross_monitor_context` — it creates no items.
+
+    Post-pivot (v2.0.0) this is a TOPIC item: one topic per theme per monitor, carrying its own
+    view-ranked `posts` (FR-293). The name is kept to bound the blast radius, and the media-side
+    fields below stay until the W3.5 excision.
     """
 
     history_key: str  # dedupe + trend_history key: agent id, else normalized name slug
     monitor_id: str
     name: str
+    # --- topic-item identity (v2.0.0, FR-293) ---
+    # `topic_key` is the stable slug of the theme name and the second half of the post-pivot
+    # `history_key` (`"<monitor_id>::<topic_key>"`, §1.6): one monitor now yields several topics,
+    # so the monitor id alone can no longer key the repeat-prevention window.
+    topic_key: str = ""
+    # The topic's own winning posts, view-ranked. This list is the ONLY source of quotable text
+    # post-pivot (FR-99/100) and the provenance the history record, the FR-297b roster and the
+    # gallery receipt all read; the flat `hook_texts`/`panel_texts` lists further down are the
+    # pre-pivot, post-less shape and die at W3.5.
+    posts: list[SourcePost] = field(default_factory=list)
     source: str = "virlo"  # adapter id (20 FR-121)
     strength: float = 0.0  # 0–1, computed by the adapter — the one cross-source contract (FR-5)
     strength_components: dict[str, float] = field(default_factory=dict)  # logged verbatim (FR-5)
@@ -199,6 +255,16 @@ class PlanEntry:
     # one value: a both-mode A/B pair must compare like with like, and a carousel's slides must
     # come from one coherent set. 0 for override briefs, which attach no trend group at all.
     trend_reuse_index: int = 0
+    # --- style + branding assignment (v2.0.0, FR-290/291/292) ---
+    # Written by `styles.assign_styles` / `styles.assign_branding` right after `plan.assign`, both
+    # pure functions of `order` over the registry: the style this creative renders in, and whether
+    # it carries the wordmark. They live on the entry (not in a side table) because they are
+    # persisted to meta.yaml and because trimming must never re-assign a surviving creative.
+    style_key: str = ""
+    branded: bool = False
+    # The topic this entry quotes (§1.6). Sits beside `trend_key`, which stays the history key:
+    # one monitor yields many topics, so the history key alone no longer names the material.
+    topic_key: str = ""
     status: PlanEntryStatus = PlanEntryStatus.PENDING
     skip_reason: str | None = None  # one line, machine-readable cause (FR-74)
     estimated_cost_usd: float = 0.0  # logged with every trim decision (FR-106)
@@ -211,6 +277,55 @@ class LayoutZone:
     position: str  # e.g. "upper third", "left gutter"
     content: str  # headline, subline, focal subject, negative space, badge
     text_treatment: str  # case, weight, relative size, outline/shadow
+    # §1.3/FR-292: `role: "brand_slot"` marks the signature zone. Emitted into `{{layout_zones}}`
+    # only when the entry is branded — an unbranded creative gets the zone omitted plus one line
+    # saying the lower margin is empty, because a described-but-empty brand slot is the single
+    # biggest hallucination site the render models have (M11). Last field and defaulted, so every
+    # positional `LayoutZone(position, content, treatment)` construction still holds.
+    role: str = ""
+
+
+@dataclass(slots=True)
+class MetaStyle:
+    """One meta-style registry entry (§1.3) — the post-pivot visual authority.
+
+    Replaces the per-trend `StyleBrief` as the source of a creative's look: styles are authored
+    once in `prompts/styles.yaml` (FR-290, loaded through the FR-174 `prompts_dir` seam) and
+    ASSIGNED to entries by a deterministic order-indexed rotation (FR-291), instead of being
+    re-derived by an LLM from whatever pictures a trend happened to carry. That is why there is no
+    built-in fallback tier — an unusable registry is a pre-flight exit 2 (FR-295), not a degrade.
+
+    `render_prompt` is the executable instruction (a variant left unresolved here reaches the image
+    model as a choice it will make differently on every slide, so M9 forbids it); the five DNA
+    fields feed `style_dna` byte-identically across a deck; `exclusions` are LITERAL strings quoted
+    from the reference files, because a described wordmark is a string nothing downstream can block.
+    """
+
+    key: str
+    render_prompt: str = ""  # <=120 words, executable, no unresolved variants (M9)
+    subject_mode: str = "scene_open"  # "scene_fixed" | "scene_open" — is the subject the style's?
+    layout_zones: list[LayoutZone] = field(default_factory=list)
+    format_affinity: list[str] = field(default_factory=list)  # ⊆ {image, carousel, reel}, non-empty
+    brand_affinity: list[str] = field(default_factory=list)  # [] = brand-neutral
+    # "This style IS a brand": under its matching brand the branding block collapses to nothing
+    # extra, the wordmark alone remains. Data-driven on purpose — an override registry with its own
+    # keys must not silently lose the rule, which key-matching a name would do (B3).
+    brand_slot: bool = False
+    text_density: str = "minimal"  # minimal | moderate | high
+    max_onimage_chars: dict[str, int] = field(default_factory=dict)  # headline/subline/slide
+    motion_profile: str = "photographic"  # photographic | graphic (F24) — reel motion grammar
+    palette: list[str] = field(default_factory=list)  # --- the five DNA fields (FR-189) ---
+    typography: str = ""
+    text_placement: str = ""
+    image_treatment: str = ""
+    visual_pacing: str = ""
+    # Free prose under `carousel_cover` / `carousel_slide` (M9's variant-resolution home), plus the
+    # one marker key `carousel_role` with value "cover_only" or "slides_only": a slides-only style
+    # can never anchor a deck, and under anchor-chaining that means it never takes a carousel entry
+    # at all. `styles.fmt_affine` owns that reading — no caller re-implements it.
+    per_format_guidance: dict[str, str] = field(default_factory=dict)
+    exclusions: list[str] = field(default_factory=list)  # LITERAL strings from the refs (M8)
+    reference_images: list[str] = field(default_factory=list)  # REPO-ROOT-relative paths (§1.3)
 
 
 @dataclass(slots=True)
@@ -238,6 +353,32 @@ class StyleBrief:
     content_angle: str = ""
     per_format_guidance: dict[str, str] = field(default_factory=dict)  # image/carousel/reel
     raw: dict[str, Any] = field(default_factory=dict)  # exactly what the model returned, logged
+
+
+@dataclass(slots=True)
+class CopySelection:
+    """The copy call's per-creative answer under the §1.7 verbatim contract: references into the
+    engine-numbered candidate list where the text becomes pixels or caption, free text only where
+    nothing does. Feeds `json_schema_for(CopySelection, exclude={"asset_id"})`.
+
+    The split from `CopySet` is the whole point of FR-99/100: the model CHOOSES (a label), the
+    engine RESOLVES (the bytes). A model that answers with prose can drift, translate or invent;
+    a model that answers with `P1.hook.2` cannot, and the resolution step can never fail the
+    verbatim check because it copies from the source it is checked against. Ref-label grammar:
+    `P<n>.<kind>[.<i>]` — `n` = 1-based post ordinal in the topic's view-ranked `posts`, `kind` ∈
+    {hook, overlay, panel, caption, description}, `i` = 1-based index into that post's list field
+    (`caption`/`description` are scalars and carry none). E.g. `P1.hook.2`, `P3.panel.1`.
+    """
+
+    asset_id: str
+    headline_ref: str = ""  # ref label, or "" = nothing fits the budget (NO_ONIMAGE_TEXT path)
+    subline_ref: str = ""
+    overlay_ref: str = ""  # reel seed-frame hook
+    slide_refs: list[str] = field(default_factory=list)  # carousel, one label per slide
+    caption_ref: str = ""
+    through_line: str = ""  # free text — never pixels
+    narrative_arc: str = ""  # free text — carousel arc
+    motion_beat: str = ""  # free text — ONE named physical action, reel Stage 2 (F24)
 
 
 @dataclass(slots=True)

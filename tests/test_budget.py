@@ -639,3 +639,31 @@ def test_format_usd_rounds_half_up_to_cents() -> None:
     assert format_usd(0.005) == "$0.01"
     assert format_usd(0.125) == "$0.13"
     assert format_usd(1.0) == "$1.00"
+
+
+def test_the_retry_allowance_prices_the_cap_llm_will_actually_ask_for() -> None:
+    """`llm._widen` clamps the widened retry at `_output_ceiling` (16,384), which the estimate
+    ignored — over-stating every analysis allowance line by ~3,800 output tokens once
+    `max_tokens.analysis` rose to 12,000. Over-stating is the safe direction (D11), but a number
+    the operator reads should be the number the code will spend.
+
+    Re-homed verbatim from `test_reference_rotation.py` (deleted in the topic-first pivot's W1,
+    plan v2.2 blocker fix): the parity assertion below was that file's one test unrelated to
+    reference rotation, and `budget.py`'s constants comment names THIS file now.
+    """
+    from hypesocials.llm import (  # the source of truth these two constants mirror
+        _DEFAULT_MAX_OUTPUT_CEILING,
+        _TRUNCATION_BUMP_MAX,
+        RoleSettings,
+        _output_ceiling,
+        _widen,
+    )
+
+    assert budget._RETRY_TOKEN_BUMP == _TRUNCATION_BUMP_MAX
+    assert budget._RETRY_TOKEN_CEILING == _DEFAULT_MAX_OUTPUT_CEILING
+    for cap in (600, 2000, 12000, 20000):
+        settings = RoleSettings(model="m", max_tokens=cap)
+        ceiling = _output_ceiling(settings)
+        # `_widen` answers 0 when no wider ask is legal (FR-127 forbids an identical retry); the
+        # estimate still has to price FR-41's parse retry, which re-bills at the original cap.
+        assert budget._widened_cap(cap) == (_widen(cap, ceiling) or cap)

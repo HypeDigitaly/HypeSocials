@@ -39,6 +39,9 @@ LOGS_DIR = ROOT / "logs"
 DEFAULT_CONFIG_NAME = "default"
 
 _INTERPOLATION = re.compile(r"\$\{")
+#: FR-292: a brand profile's colours are quoted into render prompts verbatim, so a typo'd hex is a
+#: wrong colour in a paid render rather than a load error — unless it is caught here.
+_HEX = re.compile(r"^#[0-9A-Fa-f]{6}$")
 _SOURCES = ("virlo", "google_trends", "hacker_news")  # last two: named in the picker, not built
 _FORMATS = ("image", "carousel", "reel")
 _LANGUAGES = ("en", "cs")  # D6
@@ -114,6 +117,12 @@ class SourcesConfig:
     active: list[str] = field(default_factory=lambda: ["virlo"])
     virlo_monitor_ids: list[str] = field(default_factory=list)
     virlo_session_pool: int = 3  # bounded wrapper sessions; never one subprocess per monitor
+    # FR-293: one monitor's analysis yields several THEMES, and post-pivot each theme becomes its
+    # own topic with its own posts and its own strength. This caps how many a monitor may
+    # contribute, so one prolific monitor cannot flood the candidate pool it is ranked in. `-1` is
+    # the kill switch — one topic per monitor, i.e. the pre-pivot cardinality; `0` would mean "this
+    # monitor contributes nothing", which is a config error, not a setting (`_validate`).
+    virlo_topics_per_monitor: int = 9
     # Reference IMAGES per trend; the video ref is bounded separately. 18 = the reuse ceiling (6)
     # x a job's set size (3), because FR-91's per-reuse rotation needs one DOWNLOADED group per
     # reuse. At the old 6 a run could only ever download 2 groups, so six siblings rotated over
@@ -272,6 +281,106 @@ class NicheConfig:
 
 
 @dataclass(slots=True)
+class BrandProfile:
+    """One brand system (FR-292): everything a branded render may know about a brand.
+
+    Compiled defaults ship for both house brands (`_default_profiles`), and a config file
+    overrides any of it. Two `never:` lists rather than one, because they have different scopes
+    (M6): `never_always` are COLOUR guards — the other brand's hexes, the web-only orange — and go
+    into every branded prompt; `never_style` are MEDIUM guards ("no photography", "no serif") and
+    go in only when the assigned meta-style is brand-affine. Six of the seven neutral styles are
+    legitimately photographic or hand-drawn, so injecting the medium guards everywhere would
+    quietly ban most of the registry the moment a creative got a wordmark.
+    """
+
+    wordmark: str = ""  # rendered verbatim through the TEXT block only, never composited (B1)
+    colors: dict[str, Any] = field(default_factory=dict)  # hexes, and one gradient list
+    fonts: dict[str, str] = field(default_factory=dict)
+    font_character: str = ""  # what the typeface LOOKS like — a model cannot install a font (F21)
+    background_hint: str = ""  # `background_tint` mode only
+    never_always: list[str] = field(default_factory=list)  # colour guards — every branded prompt
+    never_style: list[str] = field(default_factory=list)  # medium guards — brand-affine styles only
+    # Product names the copy and on-image text may use. Doubles as a strip guard: the topic
+    # filter must never "remove a competitor brand" that is one of our own product nouns (M15).
+    product_nouns: list[str] = field(default_factory=list)
+
+
+def _default_profiles() -> dict[str, BrandProfile]:
+    """The two house brand systems, compiled from the v2 brand artifact (plan §1.4, FR-292).
+
+    Defaults rather than a shipped YAML block because they are facts about the business, not run
+    settings: a niche config that says nothing about branding still has to render a correct
+    wordmark. Orange `#F97316` is deliberately in NEITHER profile — it is a web-only accent, and
+    both profiles name it in `never_always` so a render cannot reintroduce it.
+    """
+    return {
+        "hypedigitaly": BrandProfile(
+            wordmark="HypeDigitaly",
+            colors={"indigo": "#34288B", "teal": "#00A59A",
+                    "gradient": ["#34288B", "#2B3F8E", "#0C8897", "#00A59A"]},
+            fonts={"brand": "Montserrat", "web": "Geist"},
+            font_character="Montserrat — geometric grotesque, near-circular bowls, medium "
+                           "x-height, uniform stroke",
+            background_hint="flat royal-indigo field, gradient arrow glyphs sweeping the right "
+                            "half, vast negative space",
+            never_always=["no teal pill highlights", "no dot-grid ground",
+                          "no orange #F97316 (web-only)"],
+            never_style=[],
+            product_nouns=["AI Audit", "HypeLead", "AI Chatbot", "AI Voicebot", "AI Agent",
+                           "AI Automatizace"]),
+        "hypelead": BrandProfile(
+            wordmark="HypeLead",
+            colors={"teal_bright": "#0FCFC4", "teal_mid": "#57E6DC", "teal_deep": "#0A7F78",
+                    "teal_light": "#8BF2E9", "dark": "#14130F", "offwhite": "#FAFAF7"},
+            fonts={"primary": "Geist", "mono": "Geist Mono"},
+            font_character="Geist — clean grotesque, tight tracking, even color",
+            background_hint="off-white ground with faint dot-grid and soft teal bloom, or "
+                            "charcoal-green dark mode with teal glow",
+            never_always=["no indigo or violet", "no orange #F97316"],
+            never_style=["no photography/stock/3D", "no serif or handwritten type",
+                         "teal is accent only, never full-bleed canvas"],
+            product_nouns=["HypeLead"]),
+    }
+
+
+@dataclass(slots=True)
+class BrandingConfig:
+    """`branding:` — which brand a run signs with, how often, and in what shape (FR-292).
+
+    `brand` is a SELECTOR, never a mix: one run is one brand, and it also filters the style
+    rotation (a `hypelead` style cannot be assigned under `hypedigitaly` — B3). `brand_ratio` is
+    the fraction of creatives that carry the wordmark, applied as the deterministic floor
+    predicate on `entry.order` (FR-291) so the count is `floor(N x ratio)` over the emitted plan
+    and a later trim never re-brands a surviving creative.
+
+    `competitors` is the filter's layer-1 blocklist and is deliberately deterministic and
+    fail-closed: it applies even when the LLM screen degrades, because "the model was unavailable"
+    must never be the reason a competitor's name ships in our pixels (FR-294).
+    """
+
+    brand: Literal["hypedigitaly", "hypelead"] = "hypedigitaly"
+    brand_ratio: float = 0.5  # 0..1 — fraction of creatives signed with the wordmark
+    mode: Literal["background_tint", "overlay", "both"] = "overlay"
+    placement: str = "bottom-center"  # wordmark placement hint
+    competitors: list[str] = field(default_factory=list)  # deterministic blocklist, fail-closed
+    profiles: dict[str, BrandProfile] = field(default_factory=_default_profiles)
+
+
+@dataclass(slots=True)
+class StylesConfig:
+    """`styles:` — run-side knobs for the meta-style registry (FR-290); the registry itself is a
+    prompt artifact (`prompts/styles.yaml`), never config.
+
+    One key so far: how many of a style's own reference images ride along with each render job.
+    The A17 window rotation picks WHICH ones (`styles.pick_reference_window`), so this is only how
+    wide that window is — and it is the multiplier on every job's upload and reference budget,
+    which is why it is a config key rather than a constant.
+    """
+
+    refs_per_job: int = 2
+
+
+@dataclass(slots=True)
 class Config:
     """One fully-resolved run configuration. Built only by `load_config`."""
 
@@ -284,6 +393,8 @@ class Config:
     models: ModelsConfig = field(default_factory=ModelsConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
     niche: NicheConfig = field(default_factory=NicheConfig)
+    branding: BrandingConfig = field(default_factory=BrandingConfig)  # FR-292
+    styles: StylesConfig = field(default_factory=StylesConfig)  # FR-290
     platforms: dict[str, PlatformConfig] = field(default_factory=dict)
     mcp_servers: McpConfig = field(default_factory=McpConfig)
     briefs_dir: str = "briefs"  # D26/D27; a niche config points this at its own folder
@@ -535,7 +646,13 @@ _BOUNDS: dict[str, tuple[float, float, str]] = {
     "run.text_budgets.image_subline": (1, 400, "a character count, 1–400"),
     "run.text_budgets.reel_seed_headline": (1, 400, "a character count, 1–400"),
     "run.text_budgets.retry_reduction_pct": (1, 90, "a percentage, 1–90"),
+    "branding.brand_ratio": (0.0, 1.0, "a ratio between 0 and 1"),
+    "styles.refs_per_job": (1, 16, "a whole number of references per job, 1–16"),
     "sources.virlo_session_pool": (1, 8, "a whole number of MCP sessions, 1–8"),
+    # 0 is inside these bounds and is rejected by `_validate` instead, so the operator gets the
+    # "-1 is the kill switch you meant" line rather than a bare range message.
+    "sources.virlo_topics_per_monitor": (
+        -1, 50, "a whole number of topics per monitor, 1–50, or -1 (one topic per monitor)"),
     "sources.media_download_cap": (1, 50, "a whole number of images per trend, 1–50"),
     "sources.reference_images_per_job": (1, 16, "a whole number of references per job, 1–16"),
     "models.image_job_timeout_s": (5, 3600, "a whole number of seconds, 5–3600"),
@@ -584,9 +701,30 @@ def _merged(default: Any, provided: Any) -> Any:
     if isinstance(default, Mapping) and isinstance(provided, Mapping):
         out = dict(default)
         for key, value in provided.items():
-            out[key] = _merged(default.get(key), value) if key in default else value
+            out[key] = _merged(_unpacked(default.get(key)), value) if key in default else value
         return out
     return provided
+
+
+def _unpacked(default: Any) -> Any:
+    """A dataclass INSTANCE standing as a mapping's default VALUE, seen as the mapping it is.
+
+    Only `branding.profiles` is shaped that way today (`dict[str, BrandProfile]` with compiled
+    entries, FR-292), and without this a file overriding one colour would drop the rest of that
+    profile — its wordmark, fonts and `never:` lines — to `BrandProfile()` blanks, because the
+    override mapping would replace the whole entry rather than merge into it. Plan §1.4 promises
+    the compiled profiles are "all overridable", one key at a time, exactly like every other
+    nested mapping in this schema.
+
+    Deliberately scoped to mapping VALUES rather than to `_merged`'s entry: a schema FIELD whose
+    default is a dataclass instance (`run:`, `sources:`, every section) must keep arriving at
+    `_build` as the file wrote it, because `_build` is what records the absent keys in
+    `defaults_applied` (FR-50/NFR-19). Unpacking there instead would hand `_build` a complete
+    mapping and the run log would stop naming a single defaulted key.
+    """
+    if dataclasses.is_dataclass(default) and not isinstance(default, type):
+        return dataclasses.asdict(default)
+    return default
 
 
 def _coerce(value: Any, tp: Any, key: str, ctx: _Ctx) -> Any:
@@ -604,6 +742,12 @@ def _coerce(value: Any, tp: Any, key: str, ctx: _Ctx) -> Any:
         inner = [a for a in get_args(tp) if a is not type(None)]
         return None if value is None else _coerce(value, inner[0], key, ctx)
     if dataclasses.is_dataclass(tp):
+        # A `dict[str, <dataclass>]` field whose default factory ships built entries (`branding.
+        # profiles`) reaches here with those entries intact: `_merged` replaces only the keys the
+        # file names, so every sibling arrives already built. It is a default this module made, not
+        # user input, so it is passed through rather than re-parsed as a mapping.
+        if isinstance(value, tp):
+            return value
         return _build(tp, value, f"{key}.", ctx)
     if origin is list or tp is list:
         if not isinstance(value, list):
@@ -719,6 +863,9 @@ def _validate(cfg: Config, ctx: _Ctx) -> None:
     for source in cfg.sources.active:
         if source not in _SOURCES:
             ctx.fail("sources.active", source, "one of: " + " | ".join(_SOURCES))
+    if cfg.sources.virlo_topics_per_monitor == 0:  # in range, but it means "collect nothing"
+        ctx.fail("sources.virlo_topics_per_monitor", 0,
+                 _BOUNDS["sources.virlo_topics_per_monitor"][2])
     languages = list(cfg.run.languages.items()) + list(cfg.run.onimage_text_language.items())
     for platform, language in languages:
         if language not in _LANGUAGES:
@@ -741,6 +888,8 @@ def _validate(cfg: Config, ctx: _Ctx) -> None:
             ctx.warn(  # SHOULD, not SHALL — Instagram's own ceiling (FR-257, 60 FR-221)
                 f"platforms.instagram.carousel_slides is {entry.carousel_slides}; Instagram "
                 "accepts 2–10, so a Phase 2 publish could drop slides")
+
+    _validate_branding(cfg, ctx)
 
     prices = cfg.models.price_per_unit
     tables: list[tuple[str, Mapping[str, float | None]]] = [
@@ -767,6 +916,29 @@ def _validate(cfg: Config, ctx: _Ctx) -> None:
             "the analyze/copy/image stages")
 
 
+def _validate_branding(cfg: Config, ctx: _Ctx) -> None:
+    """FR-292: the selected brand must exist, and every colour must be a real hex.
+
+    Both checks are here rather than in the annotations because neither is expressible there: the
+    valid values of `brand` are whatever `profiles` defines (a config may add a third brand), and
+    `colors` is `dict[str, Any]` precisely so one entry can be a gradient LIST. A wrong value in
+    either would otherwise surface as a wrong colour or a blank wordmark in a paid render.
+    """
+    branding = cfg.branding
+    for name, profile in branding.profiles.items():
+        for key, value in profile.colors.items():
+            is_list = isinstance(value, list)  # a gradient is a list of hexes; check element-wise
+            for index, item in enumerate(value if is_list else [value]):
+                if isinstance(item, str) and not _HEX.match(item):
+                    where = f"branding.profiles.{name}.colors.{key}"
+                    ctx.fail(f"{where}[{index}]" if is_list else where, item,
+                             "a hex colour like #34288B")
+    if branding.brand not in branding.profiles:
+        known = " | ".join(sorted(branding.profiles)) or "none — branding.profiles is empty"
+        ctx.fail("branding.brand", branding.brand,
+                 f"a brand defined under branding.profiles: {known}")
+
+
 def _clamp_token_limits(models: ModelsConfig, ctx: _Ctx) -> None:
     """NFR-111: a per-role cap below its floor is raised to the floor and the run is told."""
     for role, floor in models.max_tokens_floor.items():
@@ -783,9 +955,9 @@ def _clamp_token_limits(models: ModelsConfig, ctx: _Ctx) -> None:
 
 
 __all__ = [
-    "CONFIGS_DIR", "DEFAULT_CONFIG_NAME", "LOGS_DIR", "BrandConfig", "Config", "ConfigError",
-    "ConfigSummary",
+    "CONFIGS_DIR", "DEFAULT_CONFIG_NAME", "LOGS_DIR", "BrandConfig", "BrandProfile",
+    "BrandingConfig", "Config", "ConfigError", "ConfigSummary",
     "GalleryConfig", "McpConfig", "ModelsConfig", "NicheConfig", "OutputConfig", "PLATFORMS",
-    "PlatformConfig", "PriceTable", "RunConfig", "SourcesConfig", "TextBudgets", "list_configs",
-    "load_config",
+    "PlatformConfig", "PriceTable", "RunConfig", "SourcesConfig", "StylesConfig", "TextBudgets",
+    "list_configs", "load_config",
 ]

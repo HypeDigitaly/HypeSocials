@@ -59,7 +59,7 @@ _TIER_LONG_EDGE: dict[str, int] = {"1k": 1024, "2k": 2048, "4k": 4096}
 _REASONING_FRACTION: dict[str, float] = {"low": 0.0, "medium": 0.32, "high": 0.64}
 #: Mirrors `llm._TRUNCATION_BUMP_MAX` and `llm._DEFAULT_MAX_OUTPUT_CEILING` — see `_widened_cap`.
 #: `llm.py` owns the behaviour; these two numbers exist here only so the estimator can PRICE it
-#: without importing another module's internals, and `test_reference_rotation` asserts they match.
+#: without importing another module's internals, and `test_budget` asserts they match.
 _RETRY_TOKEN_BUMP = 8192  # a retried call's cap grows by min(cap, this) ...
 _RETRY_TOKEN_CEILING = 16384  # ... and is then clamped here, which the estimate must not ignore
 #: Which `price_per_unit.llm.<key>` block prices each role. Keyed by ROLE, not by model id: a rate

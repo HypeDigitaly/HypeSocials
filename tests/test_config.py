@@ -109,6 +109,31 @@ def test_nfr19_a_partial_mapping_merges_key_by_key_instead_of_replacing_it(
     assert "run.text_budgets.image_subline" in cfg.defaults_applied
 
 
+def test_fr292_a_partial_brand_profile_override_keeps_the_compiled_profile_around_it(
+    tmp_path: Path,
+) -> None:
+    """The same key-by-key promise as the test above, one level deeper (FR-292, plan §1.4: the
+    compiled profiles are "all overridable").
+
+    The default side of THIS merge is a dataclass instance sitting inside a mapping, not a mapping,
+    so a whole-entry replacement is the natural failure: overriding one colour would blank the
+    wordmark, the fonts and both `never:` lists. A branded render would then sign itself with an
+    empty string and lose the colour guards it renders under — silently, in paid output.
+    """
+    cfg = load(tmp_path, "branding:\n  brand: hypelead\n  profiles:\n"
+                         "    hypelead:\n      colors: { teal_bright: '#123456' }\n")
+
+    profile = cfg.branding.profiles["hypelead"]
+    assert profile.colors["teal_bright"] == "#123456"  # the override takes
+    assert profile.colors["teal_deep"] == "#0A7F78"  # its sibling colours survive
+    assert profile.wordmark == "HypeLead"  # and so does every field the file never mentioned
+    assert profile.fonts == {"primary": "Geist", "mono": "Geist Mono"}
+    assert profile.never_style == ["no photography/stock/3D", "no serif or handwritten type",
+                                   "teal is accent only, never full-bleed canvas"]
+    assert profile.never_always and profile.product_nouns == ["HypeLead"]
+    assert cfg.branding.profiles["hypedigitaly"].wordmark == "HypeDigitaly"  # untouched profile
+
+
 def test_fr132_platform_defaults_are_per_platform_not_shared(tmp_path: Path) -> None:
     """30 §2: image + carousel everywhere, reel allowlisted on TikTok only, 5 slides."""
     cfg = load(tmp_path, "run:\n  platforms: [linkedin, tiktok]\n")
