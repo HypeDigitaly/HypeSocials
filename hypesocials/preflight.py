@@ -4,8 +4,8 @@ Module contract
 ---------------
 Purpose: one pass, run before any MCP session and any billable call, that either clears the run
 or refuses it with plain lines an operator can act on (FR-45–47, FR-117, FR-135, FR-138, FR-255,
-FR-281, FR-263, FR-283, FR-103, 30 §8). Callers get a verdict object, never a scattering of
-booleans.
+FR-281, FR-263, FR-283, FR-292, FR-295, FR-103, 30 §8). Callers get a verdict object, never a
+scattering of booleans.
 
 Public API: `check()` · `Preflight` · `collect_secrets()` · `resolve_briefs()` ·
 `EXIT_PREFLIGHT`.
@@ -20,9 +20,14 @@ Invariants:
 - **The config is normalized here, in place, and says so**: the FR-103 clamp and FR-47's forced
   `notion_influence: off` are written onto the `Config` the rest of the run reads, so no later
   stage re-derives them.
-- **Profiles are checked through their owners** — `render.get_profile()` for FR-281 and
-  `prompts_engine.validate_template_set()` for FR-263. This module never re-derives a required
-  template name; a second registry is how they drift.
+- **Profiles and styles are checked through their owners** — `render.get_profile()` for FR-281,
+  `prompts_engine.validate_template_set()` for FR-263, `styles.load_registry()` +
+  `styles.validate()` for FR-295. This module never re-derives a required template name or a
+  registry rule; a second registry is how they drift. What it DOES own is the grading: an error
+  from any of those owners is a refusal here, a warning is printed and the run proceeds.
+- **The style registry has no fallback tier** (D41/FR-295, unlike every other prompt artifact):
+  missing, unreadable or unparseable is the same refusal as invalid, because the registry is the
+  run's visual authority and a built-in copy would be silent drift against the file being edited.
 - **Secrets are read, never returned to a prompt.** `collect_secrets()` hands the *values* to
   `LogWriter`'s redaction set and to nothing else (D30).
 
@@ -33,17 +38,18 @@ warning into an abort — a run that can still deliver something must be allowed
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from hypesocials import briefs
+from hypesocials import briefs, styles
 from hypesocials.config import Config
 from hypesocials.models import PlanEntry
 from hypesocials.plan import BriefRequest
-from hypesocials.prompts_engine import validate_template_set
+from hypesocials.prompts_engine import PROMPTS_DIR, validate_template_set
 from hypesocials.render import UnknownProfileError, get_profile
 from hypesocials.sources import SOURCE_STATUS
 
@@ -53,7 +59,9 @@ EXIT_PREFLIGHT = 2
 #: except through `collect_secrets()`, which feeds the logger's redaction set (D30).
 REQUIRED_SECRETS: dict[str, str] = {
     "VIRLO_API_KEY": "Virlo trend discovery",
-    "OPENROUTER_API_KEY": "Sonnet 5 analysis and GPT 5.6 Luna copy",
+    # `analysis` is the VISION CHECK's role post-pivot (D41): the style-brief call is gone, the
+    # Sonnet key is not — the check, the topic filter and the copy call all go through OpenRouter.
+    "OPENROUTER_API_KEY": "Sonnet 5 vision check and GPT 5.6 Luna copy",
     "KIE_API_KEY": "GPT Image 2 and Seedance 2.5 renders",
 }
 OPTIONAL_SECRETS: tuple[str, ...] = ("NOTION_TOKEN", "POSTIZ_API_KEY", "HANDLE_HASH_KEY")
@@ -82,6 +90,12 @@ _PROBE_FILE = ".hypesocials-disk-probe"
 #: because that default is private to its module; if it changes there, change it here (FR-117).
 _NOTION_SERVER = "notion"
 _NOTION_DEFAULT_COMMAND = "npx --no-install @notionhq/notion-mcp-server"
+#: Mirrors `config._HEX` — same reason as the two lines above: it is private to its module, and
+#: this is the backstop for a `Config` the loader never validated (`_check_branding`).
+_HEX = re.compile(r"^#[0-9A-Fa-f]{6}$")
+#: FR-292: `#F97316` is the WEB palette's orange and ships in neither brand profile. It is a
+#: warning rather than a refusal — a wrong-but-renderable colour, not a broken run.
+_WEB_ONLY_ORANGE = "#F97316"
 
 
 @dataclass(slots=True)
@@ -151,7 +165,9 @@ def check(
             4–30 (FR-103) and `run.notion_influence` is forced to `off` when `NOTION_TOKEN` is
             absent (FR-47) — both in place, both reported as warnings.
         action: `run` | `preview-analysis` | `preview-sources` | `list-monitors`; picks which
-            secrets are genuinely required (FR-46, FR-202's `--list-monitors` row).
+            secrets are genuinely required (FR-46, FR-202's `--list-monitors` row) and which
+            checks apply at all — the style registry (FR-295) and the branding block (FR-292) are
+            read only on the paths that actually assign a style.
         entries: the expanded plan — sizes FR-255's disk footprint and tells FR-283's supply
             check which creatives need a trend at all.
         briefs_errors: unresolved-brief lines from `resolve_briefs()`, folded in so a caller
@@ -172,10 +188,12 @@ def check(
     _check_sources(config, errors, warnings)
     _check_supply(config, action, entries, errors, warnings)
     _check_profiles(config, action, errors)
+    _check_styles(config, action, errors, warnings)
+    _check_branding(config, action, errors, warnings)
     _check_node(config, errors)
     _clamp_reel_duration(config, warnings)
     _check_prices(config, errors, warnings)
-    _check_language_hint(config, hints)
+    _check_language_hint(config, entries, hints)
     footprint = _check_disk(config, entries, errors)
 
     return Preflight(
@@ -269,11 +287,95 @@ def _check_profiles(config: Config, action: str, errors: list[str]) -> None:
                           f"{', '.join(missing)} (FR-263); add them under prompts/")
 
 
+def _check_styles(config: Config, action: str, errors: list[str], warnings: list[str]) -> None:
+    """FR-295: the meta-style registry must load and must be able to dress this run, or exit 2.
+
+    The registry is the post-pivot visual authority (D41), so this is the same posture FR-281 takes
+    with a render profile: a run that cannot dress a requested format has nothing to render, and
+    discovering it after the confirm gate would cost the operator money for nothing. There is no
+    built-in tier, so "no `styles.yaml` anywhere" is a refusal, not a degradation — `load_registry`
+    writes that whole line itself, naming every folder it looked in.
+
+    Grading is `styles.validate()`'s, not this module's (10 §FR-290's validation table): zero
+    usable styles under the active brand or a requested format with no affine style are errors;
+    fewer than three usable styles, an over-long `render_prompt`, an unresolved "either/or" variant
+    and a missing reference image are warnings — the last of these degrades one style to text-only
+    (`style_refs_missing`) and must never cost a batch.
+
+    Skipped where no style is ever assigned: `--list-monitors` prints monitor ids (FR-251) and
+    `--preview-sources` is the $0 blocklist preview (FR-139) — refusing either on a registry they
+    do not read would break the very commands an operator uses to fix a config.
+    """
+    if action in ("list-monitors", "preview-sources"):
+        return
+    try:
+        registry = styles.load_registry([config.prompts_dir, PROMPTS_DIR])
+    except styles.StyleRegistryError as exc:
+        errors.append(str(exc))
+        return
+    registry_errors, registry_warnings = styles.validate(registry, config)
+    errors.extend(registry_errors)
+    warnings.extend(registry_warnings)
+
+
+def _check_branding(config: Config, action: str, errors: list[str],
+                    warnings: list[str]) -> None:
+    """FR-292/FR-138: the brand selector resolves, its colours are colours, its ratio is a ratio.
+
+    Mostly a BACKSTOP, deliberately: `config._validate` already fails the LOAD on a `brand` with no
+    matching profile and on any malformed hex in any profile, and `_BOUNDS` rejects a `brand_ratio`
+    outside 0–1 when the file names the key. Every one of those paths raises `ConfigError` before
+    this module runs — for a config that came from a file. A `Config` built in code (a preview
+    harness, a future flag, the menu handing back an edited object) never met that validator, and
+    the first place a bad brand would otherwise surface is a paid render with the wrong colours or
+    a blank signature. So the same three invariants are re-asserted here, scoped to the ACTIVE
+    profile, and the operator gets the key to edit rather than a `KeyError` in the prompt engine.
+
+    Two findings are genuinely new here, because they are runtime facts the loader cannot judge:
+    a branded run whose profile carries no `wordmark` (nothing to sign with), and FR-292's
+    web-only orange — a warning, since it is a colour choice the operator typed, not a broken run.
+    `--list-monitors` is exempt for FR-251's reason: it is the cure for a broken config and must
+    never be refused by one.
+    """
+    if action == "list-monitors":
+        return
+    branding = config.branding
+    if branding.brand not in branding.profiles:
+        known = ", ".join(sorted(branding.profiles)) or "nothing — branding.profiles is empty"
+        errors.append(f"branding.brand is {branding.brand!r} but branding.profiles defines "
+                      f"{known} — the run cannot pick colours, a wordmark or a font for a brand "
+                      "that is not described (FR-292)")
+        return
+    if not 0.0 <= branding.brand_ratio <= 1.0:
+        errors.append(f"branding.brand_ratio is {branding.brand_ratio} — it is the FRACTION of "
+                      "creatives that carry the wordmark, so it must sit between 0 and 1 (FR-292)")
+    profile = branding.profiles[branding.brand]
+    for key, value in profile.colors.items():
+        listed = value if isinstance(value, list) else [value]
+        for index, item in enumerate(listed):
+            where = f"branding.profiles.{branding.brand}.colors.{key}"
+            if isinstance(item, str) and not _HEX.match(item):
+                errors.append(f"{where}{f'[{index}]' if isinstance(value, list) else ''} is "
+                              f"{item!r}, which is not a hex colour like #34288B — a render prompt "
+                              "quotes it verbatim, so this would be paid for and wrong (FR-292)")
+            elif isinstance(item, str) and item.upper() == _WEB_ONLY_ORANGE:
+                warnings.append(f"{where} is {item} — that orange is WEB-ONLY and belongs in no "
+                                "brand asset; renders carrying it will not match the brand kit "
+                                "(FR-292)")
+    if branding.brand_ratio > 0 and not profile.wordmark.strip():
+        warnings.append(f"branding.profiles.{branding.brand}.wordmark is empty but brand_ratio is "
+                        f"{branding.brand_ratio} — those creatives would be 'branded' with nothing "
+                        "to sign them; set the wordmark or set brand_ratio to 0 (FR-292)")
+
+
 def _check_node(config: Config, errors: list[str]) -> None:
     """FR-117/138: Node is checked ONLY for a server this run will actually launch.
 
-    `yt-dlp` never counts — it is a Python package in the venv (D23), so a Node-free workstation
-    is a perfectly healthy one unless a configured MCP command literally invokes npx/node.
+    Nothing outside the MCP commands is checked here, and post-pivot nothing else could be: the
+    motion-reference chain that used to pull a winning video through `yt-dlp` is withdrawn
+    (v2.0.0/D41, D23 withdrawn with it), so the last non-MCP external binary this run might have
+    wanted is gone. A Node-free workstation is a perfectly healthy one unless a configured MCP
+    command literally invokes npx/node.
 
     A config that omits its `notion:` entry still launches Node: `sources/notion.py` falls back to
     its own default command. That command is checked too, so "not configured" never means
@@ -317,16 +419,32 @@ def _check_prices(config: Config, errors: list[str], warnings: list[str]) -> Non
                         "(OQ-2)")
 
 
-def _check_language_hint(config: Config, hints: list[str]) -> None:
-    """30 §2's Czech hint: diacritics are where render models visibly fail, so recommend the check."""
+def _check_language_hint(config: Config, entries: Sequence[PlanEntry], hints: list[str]) -> None:
+    """30 §2's diacritics hint, re-based for verbatim copy (§1.7 F22): recommend the check when
+    this run may put accented glyphs on an image and nothing is looking at the result.
+
+    Pre-pivot the rendered language WAS config's, so `cs` in `run.languages` was the whole trigger.
+    Post-pivot on-image text is quoted verbatim from the source post, in the post's own language
+    and never translated (FR-294/D42) — so at pre-flight nobody knows which alphabet this run will
+    render, and an `en`-configured run that quotes a Czech post is the normal case, not an edge
+    one. `config.languages` still decides brief-override creatives and the degrade paths, so a
+    configured `cs` is a certainty where a verbatim creative is only a possibility: both earn the
+    same hint, worded for which one fired.
+    """
     if config.run.vision_check:
         return
     czech = sorted({p for p in config.run.platforms
                     if "cs" in (config.language_for(p), config.onimage_language_for(p))})
+    verbatim = any(entry.brief_influence != "override" for entry in entries)
     if czech:
         hints.append(f"{', '.join(czech)} render Czech text and vision_check is off — Czech "
                      "diacritics are where GPT Image 2 struggles most; consider --vision-check "
                      "(30 §2; a hint, never a gate)")
+    elif verbatim:
+        hints.append("on-image text is quoted verbatim from the source post, in that post's own "
+                     "language (FR-294), so this run may render accented glyphs whatever "
+                     "run.languages says — with vision_check off nothing will read them back; "
+                     "consider --vision-check (30 §2; a hint, never a gate)")
 
 
 def _check_disk(config: Config, entries: Sequence[object], errors: list[str]) -> int:

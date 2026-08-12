@@ -13,7 +13,14 @@ STYLE_DNA (identical on every slide of this deck — reproduce it exactly):
   it changes because the slide index changed. Only the SLIDE CONTENT below
   differs between slides.
 
-  BRAND INFLUENCE: {{brand_accent}}
+  BRANDING (ignore if empty): {{branding_block}}
+  These are accent colours, letterform character, a placement hint and colour
+  guards, ranked BELOW STYLE_DNA: substitute the accents inside the deck's own
+  palette structure. They never replace STYLE_DNA's palette, typography,
+  layout or medium, they never vary from slide to slide, and they never add a
+  word to the frame — a wordmark, on the one slide that carries one, is quoted
+  in the TEXT block like every other string.
+
   NICHE VISUAL WORLD (ignore if empty): {{niche_visual_world}}
   When present, that line is standing art direction ranked BELOW STYLE_DNA and
   the attached references: it biases palette, type character and motif
@@ -79,8 +86,13 @@ CONSTRAINTS:
   - A navigation or swipe prompt ("SWIPE LEFT", "SWIPE RIGHT", "READ MORE",
     "TAP", an arrow or a hand carrying words) appears only if it is quoted in
     the TEXT block above; it is never carried in from a reference. No brand
-    wordmark, logotype or signature line, a reference's or an invented one.
-  - Additional exclusions observed in these references — these are strings
+    wordmark, logotype or signature line other than one quoted in the TEXT
+    block above; when the TEXT block quotes none, this slide is unsigned. In a
+    deck the signature belongs to slide 1 alone: a later slide whose TEXT
+    block quotes no wordmark carries none, however clearly slide 1 shows one.
+  - The exclusions below concern the attached reference images. They never
+    restrict the TEXT block above, whose strings are always rendered.
+  - Additional exclusions for this house style — these are strings and marks
     forbidden in the frame, never strings to render: {{exclusions}}
   - All rendered text sits inside the central 80% of the frame, clear of every
     edge.

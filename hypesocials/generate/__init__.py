@@ -22,15 +22,14 @@ Invariants:
   one whole state (NFR-21). A failed creative keeps its paid caption (FR-74).
 - **Nothing new is ordered once `env.halted` is true**, and what is already in flight gets ONE
   ~30 s grace window before it is abandoned honestly, with its taskId in the ledger (FR-108/201).
-- **References are the FR-91 coherent set already built by `sources/virlo.py`** — one group, one
-  source, panels preferred, capped by `reference_images_per_job`. This module attaches them, it
-  does not re-select them; `sources.reference_group()` decides WHICH group by the entry's
-  `trend_reuse_index`, so siblings on one trend attach different winning posts. Local files
-  (Inspiration, brief images) go through `render.upload_file()` first (FR-200) and a failed
-  upload drops that one reference, never the job.
-- **A creative's style brief is looked up by its (trend, reference group) PAIR** — `env.brief_for`,
-  never `style_briefs[trend_key]` — so the forensic description always describes the pictures this
-  creative attaches (FR-9/12, amended 2026-08-11).
+- **References are the assigned meta-style's own images (FR-290/291, v2.0.0)** — `refs.attach()`
+  uploads the style's reference window through the run-scoped memo (one upload per file per run,
+  FR-200/244), style images first, a brief's own photos after; an `override` brief suppresses
+  the style channel entirely (M14). A failed upload drops that one reference, never the job.
+- **A creative's visual authority is its `entry.style_key`** — `refs.style_of(entry, env)`
+  resolves it against `env.styles` (the registry); the style's `render_prompt`/zones/DNA feed
+  `build_context(style=...)` and the branding channels ride beside it (`branding_block` +
+  the TEXT-block `wordmark`, FR-292 — never mixed, never both channels for one string).
 - **An unresolved placeholder fails the creative BEFORE submission** (FR-260) — nothing malformed
   is ever paid for.
 - **Kie's 402 is a whole-run condition** (FR-167): it is latched once and every remaining
@@ -55,7 +54,7 @@ from typing import Any
 
 from hypesocials import render, vision_check
 from hypesocials.budget import Budget, SpendCategory, job_projection
-from hypesocials.config import Config
+from hypesocials.config import BrandingConfig, Config
 from hypesocials.models import (
     AssetRecord,
     Brief,
@@ -69,31 +68,32 @@ from hypesocials.models import (
     RenderParams,
     RenderPriority,
     RenderRefs,
-    StyleBrief,
     TrendItem,
     VisionCheckResult,
 )
+from hypesocials.copywrite import CopyProvenance
 from hypesocials.outputs import AssetFolder, Ledger, LogWriter, PackagingError, write_gallery
 from hypesocials.prompts_engine import (
     MissingTemplateError,
     PromptEngine,
     UnresolvedPlaceholderError,
     build_context,
-    style_brief_line,
 )
-from hypesocials.sources import brief_key
 from hypesocials.util import Deadline
 
 # Both format modules back-import this package under TYPE_CHECKING only, so importing them here
 # is safe and keeps the dispatch a plain name lookup (which is also what makes it fakeable).
-from hypesocials.generate.refs import Reference, attach, role_lines
+from hypesocials.generate.refs import Reference, attach, branding_block, role_lines, style_of
+from hypesocials.generate.refs import wordmark as wordmark_of
 from hypesocials.generate.carousel import render_carousel
 from hypesocials.generate.reel import render_reel
 
-#: Which template role an image creative uses. `analyzed` without a style brief is FR-12's
-#: degrade: it runs the direct scaffold and carries `analysis_missing`.
-ROLE_ANALYZED = "image_single_post.md"
-ROLE_DIRECT = "image_direct.md"
+#: The one image role post-pivot (F16's merged template). The two legacy names stay importable
+#: until W3.5 — nothing here uses them; their templates/built-ins survive as FR-183 fallbacks
+#: for the transition only.
+ROLE_IMAGE = "image_post.md"
+ROLE_ANALYZED = "image_single_post.md"  # W3.5-doomed
+ROLE_DIRECT = "image_direct.md"  # W3.5-doomed
 
 #: FR-108's "one short grace poll (~30 s)": at the deadline — or at the first Ctrl+C (FR-201) —
 #: outstanding jobs get exactly this long to land, because work seconds from completing is work
@@ -127,40 +127,31 @@ class Env:
     log: LogWriter
     ledger: Ledger
     trends: Mapping[str, TrendItem] = field(default_factory=dict)
-    style_briefs: Mapping[str, StyleBrief] = field(default_factory=dict)
     copy: Mapping[str, CopySet] = field(default_factory=dict)
+    #: FR-298: `asset_id -> CopyProvenance(post_id, refs)` — which `SourcePost` each creative
+    #: quoted and which exact strings (`{slot: "P<n>.<kind>[.<i>]"}`); `_record` copies both onto
+    #: the AssetRecord. Empty for override briefs and degrade paths — there was nothing quoted.
+    copy_provenance: Mapping[str, CopyProvenance] = field(default_factory=dict)
     #: `CopyResult.tags` — `asset_id -> the DegradationTags the copy stage earned this creative`
     #: (FR-99's `copy_degraded`, FR-101's `text_trimmed`, A20's `no_onimage_text`, A21's
     #: `hook_pattern_generic`). ONE field rather than one frozenset per tag: the copy stage is
     #: free to grow a new degradation without a new field here and a new branch in `_record`.
     copy_tags: Mapping[str, Sequence[DegradationTag]] = field(default_factory=dict)
-    #: FR-200/191: `asset_id -> ((path, kind), …)`, kind in {"brief", "inspiration"} — the
-    #: provenance that picks each attachment's role line (`refs.py`).
+    #: FR-200/191: `asset_id -> ((path, kind), …)`, kind in {"style", "brief"} — the provenance
+    #: that picks each attachment's role line (`refs.py`, contracts item 11).
     local_refs: Mapping[str, Sequence[tuple[Path, str]]] = field(default_factory=dict)
     campaign_briefs: Mapping[str, Brief] = field(default_factory=dict)  # FR-144/145, by name
-    brand_accent: str = ""  # FR-109 `full` only: one accent colour inside the trend's own palette
-    brand_product_nouns: Sequence[str] = ()  # FR-109 `full` only: nouns for the on-image text
     niche_descriptor: str = ""  # copy-side (audience included): the analyst and copywriter only
-    niche_visual_world: str = ""  # A15: `niche.visual_world` alone — the four gpt-image-2 roles
+    niche_visual_world: str = ""  # A15: `niche.visual_world` alone — the render roles
     llm_call: Any = None  # metered `StructuredCall` for the FR-27 vision check; None = off
-    video_refs: Any = None  # `video_ref.Prefetch` for the D23 motion reference, or None
+    styles: Any = None  # `styles.StyleRegistry` — Any keeps generate free of a styles import;
+    #   `refs.style_of` is the one resolver (the lazy-import precedent, contracts item 11)
+    branding: BrandingConfig = field(default_factory=BrandingConfig)  # FR-292 brand selector +
+    #   profiles; prompts_engine renders it, refs/carousel/reel read entry.branded beside it
     stop: asyncio.Event | None = None  # Ctrl+C: stop ORDERING new work (FR-201)
     deadline: Deadline | None = None  # the run's soft monotonic ceiling (FR-108/243)
     credits_exhausted: bool = False  # FR-167, latched once
     disk_full: bool = False  # 10 §10, latched once: further downloads stop run-wide
-
-    def brief_for(self, entry: PlanEntry) -> StyleBrief | None:
-        """This creative's style brief, or None when its own pair has none (FR-9/12, amended today).
-
-        Briefs are keyed by the `(trend, reference group)` PAIR, because the brief must describe
-        the pictures the creative actually attaches — and `refs.attach()` rotates the group per
-        `trend_reuse_index`. Looking a brief up by trend key alone would hand the k-th sibling a
-        forensic description of group 0's images while it renders group k's: the analysed variant
-        would be steered *away* from its own references. None is FR-12's degrade signal, not an
-        error — the creative runs the direct scaffold and carries `analysis_missing`.
-        """
-        key = entry.trend_key or ""
-        return self.style_briefs.get(brief_key(key, self.trends.get(key), entry.trend_reuse_index))
 
     @property
     def halted(self) -> bool:
@@ -498,32 +489,30 @@ def _assemble(entry: PlanEntry, env: Env, attached: Sequence[Reference], *,
               copyset: CopySet | None = None, budget_scale: float = 1.0,
               extra: str = "") -> str | None:
     """The finished render prompt, or `None` when it cannot be filled (FR-17/94/96, FR-260)."""
-    brief = env.brief_for(entry) if entry.variant == "analyzed" else None
-    role = ROLE_ANALYZED if brief is not None else ROLE_DIRECT
+    role = ROLE_IMAGE  # F16: one merged image role; override briefs override INSIDE it (M14)
+    style = style_of(entry, env)  # None under an override brief or with no registry
     profile = render.get_profile(env.config.models.image_profile)
     context = build_context(
         trend=env.trends.get(entry.trend_key or ""),
-        style_brief=brief,
+        style=style,  # FR-290/291: the registry is the visual authority
         copy=copyset or env.copy.get(entry.asset_id),
         budget_scale=budget_scale,  # FR-105's −40% retry states the budget it actually carries
         # FR-144/145: `override` visual directives REPLACE render_prompt/layout_zones; `blend`
-        # states the precedence — trend wins visuals, brief wins message and CTA.
+        # states the precedence — style wins visuals, brief wins message and CTA.
         campaign_brief=env.campaign_briefs.get(entry.brief_name or ""),
         creative_format="image",
         niche_descriptor=env.niche_descriptor,
-        niche_visual_world=env.niche_visual_world,  # A15: render-side art direction, `direct` too
-        brand_accent=env.brand_accent,  # FR-109's only render-side brand influence, `full` only
-        brand_product_nouns=env.brand_product_nouns,
+        niche_visual_world=env.niche_visual_world,  # A15: render-side art direction
+        branding_block=branding_block(entry, env, style),  # FR-292 channel 2 (never the wordmark)
+        wordmark=wordmark_of(entry, env),  # FR-292 channel 1: TEXT-block only, branded only (B1)
+        # M6: the deterministic blocklist reaches every render prompt; the filter's LLM-proposed
+        # strips are applied at the CopySet by `copywrite._apply_strip` (W3 threads verdicts).
+        competitor_strings=tuple(env.branding.competitors),
         text_budgets=env.config.run.text_budgets,
         reference_roles=role_lines(attached),  # FR-191: one line per attachment, by provenance
-        reference_image_count=len(attached),
     )
-    if brief is not None and not attached:
-        # FR-18/96: a reference-free job keeps its written style description AND gains the
-        # deterministic content sentence — with no pixels, style alone renders nothing in
-        # particular. (`image_single_post.md` has no content_sentence slot; this is the same
-        # substitution `reel_seed_frame.md` makes, 50 §3.)
-        context["render_prompt"] = f"{context['content_sentence']} {context['render_prompt']}".strip()
+    # The old reference-free content-sentence splice is dead: `image_post.md` carries its own
+    # `{{content_sentence}}` slot beside `{{render_prompt}}` (F16), so no manual prepend.
     try:
         prompt = env.engine.render(role, context, profile=profile.name,
                                    max_chars=profile.limits.max_prompt_chars)  # 50 §7
@@ -542,14 +531,8 @@ def _record(entry: PlanEntry, env: Env) -> AssetRecord:
     """The `pending` meta.yaml this creative starts life with — FR-73 field for field."""
     trend = env.trends.get(entry.trend_key or "")
     copyset = env.copy.get(entry.asset_id)
-    brief = env.brief_for(entry)
-    degradations: list[DegradationTag] = []
-    if entry.variant == "analyzed" and brief is None:
-        # FR-12: renders direct-mode instead. Decided on the SAME (trend, group) pair `_assemble`
-        # renders with — a trend-level check would leave a creative whose own pair's call failed
-        # silently unmarked whenever any sibling group's call succeeded.
-        degradations.append(DegradationTag.ANALYSIS_MISSING)
-    degradations.extend(env.copy_tags.get(entry.asset_id, ()))
+    prov = env.copy_provenance.get(entry.asset_id)
+    degradations: list[DegradationTag] = list(env.copy_tags.get(entry.asset_id, ()))
     return AssetRecord(
         asset_id=entry.asset_id,
         source=entry.trend_key or (f"brief/{entry.brief_name}" if entry.brief_name else "none"),
@@ -561,7 +544,14 @@ def _record(entry: PlanEntry, env: Env) -> AssetRecord:
         generation_mode=entry.variant,
         hook_pattern_used=copyset.hook_pattern_used if copyset else "",
         source_hook=next((hook for hook in (trend.hook_texts if trend else ()) if hook), ""),
-        style_brief_summary=style_brief_line(brief),  # A24: what the brief asked for, in one line
+        # FR-73 (v2.0.0) identity quartet + the FR-298 verbatim receipt:
+        style_key=entry.style_key or ("brief_override" if entry.brief_influence == "override"
+                                      else ""),
+        brand=env.branding.brand,
+        branded=entry.branded,
+        topic_key=entry.topic_key or (trend.topic_key if trend else ""),
+        copy_source_post_id=prov.post_id if prov else "",
+        copy_source_refs=dict(prov.refs) if prov else {},
         ref_source=_ref_source(entry, env, trend),
         degradations=degradations,
         brief_name=entry.brief_name,
@@ -579,14 +569,12 @@ def _record(entry: PlanEntry, env: Env) -> AssetRecord:
 def _ref_source(entry: PlanEntry, env: Env, trend: TrendItem | None) -> str:
     """FR-73's honest provenance: what this job's references actually came FROM.
 
-    Under `inspiration_mix: exclusive` the trend keeps its metadata but `sources.apply_mix()` has
-    already emptied its reference groups, so "virlo" would be a lie — the pictures are the pool's.
+    Post-pivot vocabulary is `"style" | "brief"` (contracts item 8). Style refs come from the
+    REGISTRY, not `env.local_refs`, so the kind set alone cannot answer — `refs.style_of` is the
+    reliable test (None under an override brief, an unknown key, or no registry at all).
     """
-    kinds = {kind for _, kind in env.local_refs.get(entry.asset_id, ())}
-    if trend is not None and trend.reference_groups:
-        return "virlo"
-    if "inspiration" in kinds:
-        return "inspiration"
+    if style_of(entry, env) is not None:
+        return "style"
     return "brief" if entry.brief_name else ""
 
 
@@ -627,4 +615,5 @@ def _fail(entry: PlanEntry, env: Env, folder: AssetFolder, reason: str,
     return folder.skip(reason, tag, **extra)
 
 
-__all__ = ["Env", "GRACE_S", "Report", "ROLE_ANALYZED", "ROLE_DIRECT", "create", "ledger_hooks"]
+__all__ = ["Env", "GRACE_S", "Report", "ROLE_IMAGE", "ROLE_ANALYZED", "ROLE_DIRECT", "create",
+           "ledger_hooks"]

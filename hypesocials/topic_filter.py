@@ -30,6 +30,12 @@ Do not: call this before Confirm (it costs money — previews print the layer-1 
 labelled as such, FR-139); key verdicts on anything the source controls; import this module from
 `copywrite` in a way that closes a cycle — the edge is one-way, `copywrite` imports
 `apply_blocklist` from here and this module never imports `copywrite`.
+
+Import edges, both one-way and both deliberate: this module imports `prompts_engine` at module
+level (it renders its own system prompt through the one template door), and `prompts_engine`
+imports `apply_blocklist` from here LAZILY, inside its M6 strip pass, so the two never close a
+cycle at import time. `apply_blocklist` is the single implementation of the strip policy for the
+whole codebase — copy, render prompts and previews all resolve "was it stripped" the same way.
 """
 
 from __future__ import annotations
@@ -43,6 +49,7 @@ from typing import Any
 
 from .config import Config
 from .models import StructuredCall, TrendItem
+from .prompts_engine import PromptEngine, build_context
 
 logger = logging.getLogger(__name__)
 
@@ -226,23 +233,35 @@ def _system_prompt(topics: Sequence[TrendItem], cfg: Config) -> str:
     """The rendered `topic_filter_system.md`: the fenced, engine-numbered topic list plus the
     competitor list.
 
-    TODO(W2 T2.6/T2.7 — contracts items 1 and 3): wire to the engine, exactly
+    Wired at W2 exactly as the W1 stub described (contracts items 1 and 3): the engine assigns the
+    ordinals — this module never numbers the topics itself, so the integer in a `Verdict` and the
+    integer the model was shown come from one enumeration — and the two placeholders resolve for
+    this role and for no other.
 
+    The engine is built the way `runner._session` builds it, honouring the FR-174 `prompts_dir`
+    override so an operator editing the screen's prompt gets the same seam as every other template.
+    It is built per call rather than passed in because `screen()`'s signature is pinned to
+    `(topics, cfg, llm)` and templates are hot-loaded per run anyway (FR-181); a filter call
+    happens once a run.
+
+    Every failure here — a missing placeholder, a template that names an out-of-role slot, an
+    unreadable prompts directory — becomes `_FilterUnavailable`, which means the LLM layer degrades
+    fail-open and the deterministic blocklist still runs. A screen we could not render is never a
+    reason to lose the batch, and it is never a reason to send a half-built prompt to a metered
+    model either.
+    """
+    try:
+        engine = PromptEngine(override_dirs=[cfg.prompts_dir] if cfg.prompts_dir else [])
         context = build_context(topic_items=topics,
                                 competitor_strings=tuple(cfg.branding.competitors))
         return engine.render(_TEMPLATE, context)
-
-    with the engine built the way `runner._session` builds it
-    (`PromptEngine(override_dirs=[cfg.prompts_dir] if cfg.prompts_dir else [])`).
-
-    It CANNOT execute before that wave and is not faked here: two independent W1 guards reject the
-    render — `topic_items`/`competitor_list` are not yet in `models.PLACEHOLDERS`, and
-    `_ALLOWLIST` has no `topic_filter_system.md` key. Raising is the honest W1 behaviour: the LLM
-    layer degrades fail-open, the blocklist still runs, and no half-built prompt is ever sent to a
-    metered model. Ordinals, guards, merge and degrade are all exercisable through `screen()`
-    without it (contracts item 6, W1 SCOPE NOTE).
-    """
-    raise _FilterUnavailable("the topic-filter prompt is not wired yet (W2 T2.6/T2.7)")
+    except Exception as exc:  # noqa: BLE001 — assembly is fail-open by contract (§1.5)
+        # The message is carried through, unlike the provider-side catch in `screen()`: prompt
+        # assembly never touches a key, a header or an environment (FR-261 is structural), so the
+        # worst thing in here is a template path and a placeholder name — which is exactly what
+        # the operator needs to fix it. D30's redaction concern is about payloads, not paths.
+        raise _FilterUnavailable(
+            f"the filter prompt could not be assembled ({type(exc).__name__}: {exc})") from exc
 
 
 def _answer_schema() -> dict[str, Any]:

@@ -155,25 +155,26 @@ def test_fr107_carousel_anchor_failure_contingency(cfg: Config) -> None:
     assert lines(estimate(cfg, [entry(0, "carousel")]), "anchor_contingency_allowance") == []
 
 
-def test_fr107_vision_image_tokens_downscaled_for_analysis_native_for_checks(cfg: Config) -> None:
-    """"**vision image tokens** — analysis calls priced at the downscaled size of FR-93;
-    **vision-check calls priced at native render resolution**"."""
+def test_fr107_vision_check_image_tokens_are_priced_at_native_render_resolution(
+    cfg: Config,
+) -> None:
+    """"**vision image tokens** — **vision-check calls priced at native render resolution**"
+    (FR-107 as amended v2.0.0).
+
+    T2.4: the paired half of this test asserted that the STYLE-BRIEF analysis line stayed flat
+    across tiers because FR-93 downscaled its images. That line is gone with the vision stage
+    (D41), and FR-107's bullet now names the check only. Full rewrite of this suite: T3.5.
+    """
     cfg.run.vision_check = True
 
-    def at_tier(tier: str) -> tuple[float, float]:
+    def at_tier(tier: str) -> float:
         cfg.platforms["linkedin"] = SimpleNamespace(  # type: ignore[assignment]
             carousel_slides=5, image_resolution=tier)
-        est = estimate(cfg, [entry(0, variant="analyzed", trend_key="t1")])
-        analysis = one(est, "analysis_call").unit_price
-        check = one(est, "vision_check").unit_price
-        assert analysis is not None and check is not None
-        return analysis, check
+        check = one(estimate(cfg, [entry(0, trend_key="t1")]), "vision_check").unit_price
+        assert check is not None
+        return check
 
-    analysis_1k, check_1k = at_tier("1k")
-    analysis_2k, check_2k = at_tier("2k")
-
-    assert analysis_1k == analysis_2k  # analysis images are downscaled — the tier cannot move it
-    assert check_2k > check_1k  # check images are native — the tier moves it
+    assert at_tier("2k") > at_tier("1k")  # check images are native — the tier moves the price
 
 
 def test_fr107_reasoning_token_allowance_scales_with_effort(cfg: Config) -> None:
@@ -204,6 +205,48 @@ def test_fr107_split_per_creative_copy_calls(cfg: Config) -> None:
     split = one(est, "copy_split_allowance")
     assert split.allowance and split.quantity == 3  # worst case: one call per creative
     assert split.category is SpendCategory.LLM
+
+
+def test_fr107_topic_filter_screen_is_one_call_priced_at_the_worst_case_topic_bound(
+    cfg: Config,
+) -> None:
+    """FR-107 (v2.0.0), first bullet: "**Topic filter call** — one batched LLM screen of all
+    candidate topics at the worst-case bound `len(monitors) x virlo_topics_per_monitor x
+    per-topic-tokens` priced pre-Collect" (T2.4 — added with the line; T3.5 owns the full suite).
+    """
+    cfg.sources.virlo_monitor_ids = ["m1", "m2"]
+    plan = [entry(0, trend_key="t1")]
+
+    est = estimate(cfg, plan)
+    screen = one(est, "filter_call")
+    assert screen.category is SpendCategory.LLM and screen.unit == "call"
+    assert screen.quantity == 1  # ONE batched call, whatever the pool size
+    assert screen.assumed_model == cfg.models.copy  # role `copy` — Luna prices it (§1.5)
+    assert "18 topics" in screen.label  # 2 monitors x the default 9 topics per monitor
+    assert one(est, "filter_retry_allowance").allowance  # FR-127 + FR-41, worst case only
+
+    # The bound is the config's, not the plan's: more monitors is a bigger prompt, same one call.
+    cfg.sources.virlo_topics_per_monitor = 3
+    cheaper = one(estimate(cfg, plan), "filter_call")
+    assert cheaper.quantity == 1 and cheaper.unit_price is not None
+    assert screen.unit_price is not None and cheaper.unit_price < screen.unit_price
+
+    # -1 is the kill switch (one topic per monitor), never "no topics at all".
+    cfg.sources.virlo_topics_per_monitor = -1
+    assert "2 topics" in one(estimate(cfg, plan), "filter_call").label
+
+
+def test_no_monitors_and_brief_only_plans_are_never_charged_for_a_screen(cfg: Config) -> None:
+    """Nothing is screened when nothing is collected: an unconfigured Virlo (no monitor ids) and a
+    plan of `override` briefs both open no Virlo session at all (FR-144), so a filter line there
+    would be money the run cannot spend."""
+    trend_backed = [entry(0, trend_key="t1")]
+    assert lines(estimate(cfg, trend_backed), "filter_call") == []  # no monitor ids configured
+
+    cfg.sources.virlo_monitor_ids = ["m1"]
+    briefs_only = [entry(0, brief_name="ai-audit-cta", brief_influence="override")]
+    assert lines(estimate(cfg, briefs_only), "filter_call") == []
+    assert lines(estimate(cfg, trend_backed), "filter_call")  # the fixture is not failing
 
 
 def test_fr107_per_platform_resolution(cfg: Config) -> None:
@@ -287,83 +330,61 @@ def test_fr107_unpriced_non_reel_line_participates_at_zero_and_says_so(cfg: Conf
 # ------------------------------------------------- v1.6.5 estimator fidelity fix (M1 finding)
 
 
-def test_analysis_priced_per_distinct_assigned_trend(cfg: Config) -> None:
+def test_copy_priced_per_distinct_assigned_trend(cfg: Config) -> None:
     """v1.6.5 (00-overview amendment log): M1's actual $0.23 beat its $0.16 worst case partly
-    because "FR-107's analysis line priced one call while two distinct trends were assigned".
+    because a per-call line "priced one call while two distinct trends were assigned".
 
-    `plan.assign()` binds a trend per ATOMIC GROUP and prefers the least-used one, so two groups
-    can consume two distinct trends whatever `max_trend_reuses_per_run` says — the reuse ceiling
+    `plan.assign()` binds a topic per ATOMIC GROUP and prefers the least-used one, so two groups
+    can consume two distinct topics whatever `max_trend_reuses_per_run` says — the reuse ceiling
     only ever *reduces* the count when the pool is short. The pre-confirm estimate therefore
-    prices the honest worst case: one analysis call (FR-9) and one copy call (FR-99) per group.
+    prices the honest worst case: one copy call (FR-99) per group.
+
+    T2.4: the `analysis_call` half of this test went with the style-brief stage (D41); what it was
+    really guarding — provisional keys are DISTINCT per group, so the grouped-call count is not
+    understated — is what the copy assertion below carries. Full rewrite: T3.5.
     """
     from hypesocials.runner import _stamp_provisional  # the pre-Collect half of the same fix
 
     cfg.run.max_trend_reuses_per_run = 2  # the M1 setting that hid the second trend
-    plan = [entry(0, variant="analyzed"), entry(1, variant="analyzed")]
+    plan = [entry(0), entry(1)]
     _stamp_provisional(plan)
 
-    assert len({e.trend_key for e in plan}) == 2  # one distinct trend per atomic group
+    assert len({e.trend_key for e in plan}) == 2  # one distinct topic per atomic group
     est = estimate(cfg, plan)
-    assert one(est, "analysis_call").quantity == 2
     assert len(lines(est, "copy_call")) == 2  # FR-99 groups by (trend x language), same worst case
 
 
 def test_truncation_retry_allowance_in_worst_case_not_expected(cfg: Config) -> None:
     """The other half of the v1.6.5 fix: FR-127's retry re-sends a truncated call WIDER, which
-    roughly doubled M1's per-call analysis cost. It is carried as extra full-cost calls per LLM
-    call — in `worst_case_usd` only, because FR-106a's expected projection is never gated on a
-    contingency that mostly never happens.
+    roughly doubled M1's per-call cost. It is carried as extra full-cost calls per LLM call — in
+    `worst_case_usd` only, because FR-106a's expected projection is never gated on a contingency
+    that mostly never happens.
+
+    T2.4: re-based off the withdrawn `analysis_call` line (D41) onto the copy call, which is the
+    surviving grouped LLM call and carries the identical two-wide-calls shape. Full rewrite: T3.5.
     """
-    plan = [entry(0, variant="analyzed"), entry(1, variant="analyzed")]
+    plan = [entry(0), entry(1)]
     from hypesocials.runner import _stamp_provisional
 
     _stamp_provisional(plan)
     est = estimate(cfg, plan)
-    analysis, retry = one(est, "analysis_call"), one(est, "analysis_retry_allowance")
-    copy_retry = one(est, "copy_retry_allowance")
+    copy_call, copy_retry = lines(est, "copy_call")[0], one(est, "copy_retry_allowance")
 
-    assert retry.allowance and copy_retry.allowance and retry.category is SpendCategory.LLM
-    assert retry.quantity == 2 * analysis.quantity  # FR-127's retry AND FR-41's, per analysis call
-    assert retry.unit_price is not None and analysis.unit_price is not None
-    assert retry.unit_price > analysis.unit_price  # ... each at FR-127's widened token cap
-    assert copy_retry.quantity == 2 * len(lines(est, "copy_call"))
+    assert copy_retry.allowance and copy_retry.category is SpendCategory.LLM
+    assert copy_retry.quantity == 2 * len(lines(est, "copy_call"))  # FR-127's retry AND FR-41's
+    assert copy_retry.unit_price is not None and copy_call.unit_price is not None
+    assert copy_retry.unit_price > copy_call.unit_price  # ... each at FR-127's widened token cap
     # Worst case carries them; expected does not, and no entry's share is inflated by an allowance.
-    assert est.worst_case_usd - est.expected_usd >= retry.amount_usd + copy_retry.amount_usd
+    assert est.worst_case_usd - est.expected_usd >= copy_retry.amount_usd
     bare = round(sum(l.amount_usd for l in est.lines if not l.allowance), 6)
     assert est.expected_usd == pytest.approx(bare)
 
 
-def test_worst_case_covers_a_call_that_truncation_retries_and_parse_retries(cfg: Config) -> None:
-    """W6 live evidence (ACCEPTANCE.md): run `20260809_220436_wrfc` billed $0.72 against a $0.69
-    worst case and run `20260809_223503_ax10` billed $0.60 against $0.56 — both times because one
-    analysis call spent FR-127's truncation-widening retry AND FR-41's schema-parse retry, while
-    the estimate priced only the first. `llm._run_attempts` bumps `max_tokens` on the truncation
-    retry and FR-41's retry inherits that widened body, so the worst case now carries TWO calls at
-    the WIDE cap per LLM call — and the expected line is untouched.
-    """
-    from hypesocials.runner import _stamp_provisional
-
-    # ax10's shape: three analyzed creatives (2 images + one deck), built-in default prices.
-    plan = [entry(0, variant="analyzed"), entry(1, variant="analyzed"),
-            entry(2, "carousel", variant="analyzed")]
-    _stamp_provisional(plan)
-    est = estimate(cfg, plan)
-    call, allowance = one(est, "analysis_call"), one(est, "analysis_retry_allowance")
-    assert call.unit_price is not None and allowance.unit_price is not None
-
-    # One call billing three times (first + widened truncation retry + inherited parse retry) is
-    # inside the allowance for that call — that is the bound the two runs escaped.
-    compound = call.unit_price + 2 * allowance.unit_price
-    assert allowance.quantity * allowance.unit_price / call.quantity >= compound - call.unit_price
-    assert est.worst_case_usd >= 0.60  # ax10's actual, previously $0.56 of worst case
-    assert est.expected_usd == pytest.approx(
-        round(sum(l.amount_usd for l in est.lines if not l.allowance), 6))
-    # UPDATED 2026-08-11 (plan A5): was `< 0.60`. `max_tokens.analysis` rose 2000 -> 12000 because
-    # every style-brief call measured had truncated, so the EXPECTED analysis line legitimately
-    # prices 10,000 more output tokens per call. The assertion's point is unchanged — expected must
-    # stay well under worst case so the confirm prompt still says something — so it now tracks the
-    # worst case rather than a constant tied to the old cap.
-    assert est.expected_usd < est.worst_case_usd / 2
+# T2.4 DELETED `test_worst_case_covers_a_call_that_truncation_retries_and_parse_retries`: its whole
+# subject was the style-brief `analysis_call` line (W6 runs wrfc/ax10, `max_tokens.analysis` at
+# 12,000), which the pivot withdrew (D41). The compound-retry BOUND it pinned survives in
+# `test_truncation_retry_allowance_in_worst_case_not_expected` above and in the `_widened_cap`
+# parity test at the end of this file. A copy-role equivalent belongs to T3.5's rewrite.
 
 
 def test_job_projection_is_the_one_per_submission_price(cfg: Config) -> None:
@@ -401,14 +422,16 @@ def test_fr282_every_priced_line_carries_key_origin_and_assumed_model(cfg: Confi
     """FR-282: "The pre-flight cost summary SHALL print, for every priced line, which configured
     model that price is being assumed for"."""
     cfg.run.vision_check = True
-    est = estimate(cfg, [entry(0, variant="analyzed", trend_key="t1"),
-                         entry(1, "carousel", trend_key="t1")])
+    est = estimate(cfg, [entry(0, trend_key="t1"), entry(1, "carousel", trend_key="t1")])
     assert est.lines
     for line in est.lines:
         assert line.price_key and line.price_origin and line.assumed_model
         assert line.price_key.startswith("models.price_per_unit.")
     assert one(est, "image_render").assumed_model == cfg.models.image
-    assert one(est, "analysis_call").assumed_model == cfg.models.analysis
+    # T2.4: the `analysis_call` row went with the style-brief stage (D41); the `analysis` ROLE is
+    # still asserted here through the vision check, which is what it prices now (FR-27/FR-105).
+    assert all(check.assumed_model == cfg.models.analysis
+               for check in lines(est, "vision_check"))
     assert one(est, "copy_call").assumed_model == cfg.models.copy
 
 

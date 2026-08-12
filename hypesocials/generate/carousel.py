@@ -16,8 +16,11 @@ Invariants:
   renders too late. Its single re-render is discretionary (FR-106c); a declined or failed retry
   ships the flagged anchor and records `retried_failed`. The deck anchors to the FINAL slide 1.
 - **`{{style_dna}}` is built ONCE per deck and is byte-identical in every slide's context**
-  (FR-189) — a deck reads as one deck through templating, never through a consistency check
-  (FR-20 explicitly has none).
+  (FR-189/M9) — a deck reads as one deck through templating, never through a consistency check
+  (FR-20 explicitly has none). Cover-vs-body divergence lives in the assigned style's
+  `per_format_guidance` instead: slide 1 renders under its `carousel_cover` prose and slides 2–N
+  under `carousel_slide`, appended to `{{render_prompt}}` — the one block a deck is ALLOWED to
+  vary, because the anchor is a cover and the rest are pages.
 - **The anchor-failure fallback is PRE-COMMITTED work** (FR-95/FR-106b, plan §2 T4.3): all N
   slides re-render independently and none may be declined by the cap. Cap bookkeeping must never
   be the thing that splits a deck.
@@ -47,12 +50,13 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from hypesocials import render, vision_check
 from hypesocials.models import (
-    AssetRecord, CopySet, DegradationTag, PlanEntry, PlanEntryStatus, RenderFailCause,
-    RenderOutcome, RenderOutcomeKind, RenderParams, RenderPriority, RenderRefs, StyleBrief,
-    VisionCheckResult,
+    AssetRecord, CopySet, DegradationTag, MetaStyle, PlanEntry, PlanEntryStatus, RenderFailCause,
+    RenderOutcome, RenderOutcomeKind, RenderParams, RenderPriority, RenderRefs, VisionCheckResult,
 )
 from hypesocials.outputs import AssetFolder, PackagingError
-from hypesocials.generate.refs import Reference, attach, role_lines
+from hypesocials.generate.refs import (
+    Reference, attach, branding_block, role_lines, style_of, wordmark,
+)
 from hypesocials.prompts_engine import (
     MissingTemplateError, UnresolvedPlaceholderError, build_context, style_dna,
 )
@@ -64,6 +68,16 @@ if TYPE_CHECKING:  # a runtime import would be circular: generate/__init__.py im
 #: can be tuned without touching the slide scaffold (D24).
 ROLE_SLIDE = "carousel_slide.md"
 ROLE_ANCHOR = "carousel_anchor_instruction.md"
+
+#: `per_format_guidance` keys, by slide role (§1.3's reserved keys): slide 1 is the deck's cover,
+#: every other slide is a body page. M9 puts the cover/body divergence HERE precisely so
+#: `{{style_dna}}` can stay byte-identical across the deck.
+GUIDANCE_COVER = "carousel_cover"
+GUIDANCE_SLIDE = "carousel_slide"
+#: The role line the chained anchor carries until `carousel_anchor_instruction.md` replaces it
+#: (FR-190) — never rendered as-is in a live deck, but never a blank line either.
+_ANCHOR_ROLE = ("the finished slide 1 of this deck: reproduce its template, palette, typography "
+                "and margins exactly")
 
 ReserveKind = Literal["projected", "precommitted", "discretionary"]  # FR-106 a/b/c
 
@@ -113,8 +127,10 @@ class _Deck:
     submit: Submit
     texts: list[str] = field(default_factory=list)  # one line per slide, deck order (FR-13)
     dna: str = ""  # FR-189 — built once, reused byte for byte
-    brief: StyleBrief | None = None
-    trend_refs: list[Reference] = field(default_factory=list)  # FR-91's merged, role-labelled set
+    style: MetaStyle | None = None  # the assigned house style; None under an override brief (M14)
+    branding: str = ""  # FR-292's colour/letterform block, or "" when this deck is unsigned
+    wordmark: str = ""  # B1's TEXT-block brand name — slide 1's alone (M12), "" when unbranded
+    attached: list[Reference] = field(default_factory=list)  # style + brief, role-labelled
     anchored: bool = False
     anchor_url: str = ""
     outcomes: list[RenderOutcome] = field(default_factory=list)  # EVERY submission, failures too
@@ -126,7 +142,7 @@ class _Deck:
     abandoned: bool = False
 
     def __post_init__(self) -> None:
-        # FR-95/257: config is the ceiling AND the estimate basis; the trend's own pacing may only
+        # FR-95/257: config is the ceiling AND the estimate basis; the topic's own pacing may only
         # reduce it, so a surprisingly long source deck can never outrun the pre-flight estimate.
         copyset = self.copy
         ceiling = (self.entry.slide_count
@@ -136,19 +152,19 @@ class _Deck:
         count = max(1, min(ceiling, len(written) or ceiling))
         fallback = copyset.headline if copyset else ""
         self.texts = [written[i] if i < len(written) else fallback for i in range(count)]
-        # Pair-keyed (FR-9/12, amended 2026-08-11): the deck's style DNA must come from the brief
-        # for the group this deck ATTACHES, not from group 0. Under FR-91's rotation those differ
-        # for every sibling after the first, and `style_dna` is computed once and applied to every
-        # slide — so a trend-keyed lookup would propagate the wrong forensic description deck-wide.
-        self.brief = (self.env.brief_for(self.entry)
-                      if self.entry.variant == "analyzed" else None)
-        self.dna = style_dna(self.brief)  # FR-189: ONCE per deck
+        # The look is ASSIGNED now, not re-derived per trend (FR-290/291): one registry entry for
+        # the whole deck, so `style_dna` is a pure function of that entry and every slide of this
+        # deck carries the same bytes (FR-189/M9) without anyone caching anything.
+        self.style = style_of(self.entry, self.env)
+        self.dna = style_dna(self.style)  # FR-189: ONCE per deck
+        self.branding = branding_block(self.entry, self.env, self.style)
+        self.wordmark = wordmark(self.entry, self.env)
 
     # ------------------------------------------------------------------------------- ordering
 
     async def build(self) -> None:
         """Anchor, check, deck — or the independent-slide fallback when the anchor never lands."""
-        self.trend_refs = await attach(self.entry, self.env, self.folder)
+        self.attached = await attach(self.entry, self.env, self.folder)
         self.anchored = bool(self.env.config.run.carousel_anchor)
         if self.anchored:
             await self._slide(1, anchor=False, kind="projected", priority=RenderPriority.WAVE1)
@@ -161,7 +177,7 @@ class _Deck:
             self.env.log.warn(
                 "carousel_anchor_fallback",
                 f"{self.entry.asset_id}: slide 1 never landed; the deck falls back to independent "
-                "generation of all slides from the trend references (FR-95)",
+                "generation of all slides from the style references (FR-95)",
                 asset_id=self.entry.asset_id, slides=len(self.texts))
         # The FR-95 fallback and the `carousel_anchor: false` A/B control are the same shape, and
         # both are PRE-COMMITTED wave-2 work — never discretionary (FR-106b, plan §2 T4.3).
@@ -305,9 +321,9 @@ class _Deck:
     # --------------------------------------------------------------------------------- inputs
 
     def _refs(self, anchor: bool) -> list[Reference]:
-        """Slide 1 leads for slides 2–N (FR-95 PRIMARY), then the FR-91 set, then the hard cap."""
-        refs = ([Reference(self.anchor_url), *self.trend_refs]  # role replaced by ROLE_ANCHOR
-                if anchor and self.anchor_url else list(self.trend_refs))
+        """Slide 1 leads for slides 2–N (FR-95 PRIMARY), then the style set, then the hard cap."""
+        refs = ([Reference(self.anchor_url, _ANCHOR_ROLE), *self.attached]  # role -> ROLE_ANCHOR
+                if anchor and self.anchor_url else list(self.attached))
         return refs[:self._limit]
 
     def _prompt(
@@ -324,21 +340,29 @@ class _Deck:
                 roles[0] = env.engine.render(ROLE_ANCHOR, {},
                                              profile=env.config.models.image_profile)
             context = build_context(
-                trend=env.trends.get(self.entry.trend_key or ""), style_brief=self.brief,
+                trend=env.trends.get(self.entry.trend_key or ""), style=self.style,
                 copy=copyset, creative_format="carousel", niche_descriptor=env.niche_descriptor,
-                # FR-144/145 + FR-109 `full`, both allowlisted for `carousel_slide.md`; read
-                # through `getattr` like `local_refs` above (duck-typed Env surface).
+                # FR-144/145, allowlisted for `carousel_slide.md`; read through `getattr` because
+                # this module targets the duck-typed Env surface, not its dataclass.
                 campaign_brief=getattr(env, "campaign_briefs", {}).get(
                     self.entry.brief_name or ""),
-                brand_accent=getattr(env, "brand_accent", ""),
-                brand_product_nouns=getattr(env, "brand_product_nouns", ()),
                 niche_visual_world=getattr(env, "niche_visual_world", ""),  # A15, same seam
+                # M12: an anchored slide 2–N inherits the signature from the picture it reproduces,
+                # so the branding block rides the anchor alone; an independently generated deck
+                # (`carousel_anchor: false`, or the FR-95 fallback) needs it on every slide.
+                branding_block=self.branding if number == 1 or not anchor else "",
+                # M12, the strict half: the WORDMARK is slide 1's alone, whatever the deck's
+                # shape. A deck signed once reads as designed; signed N times it reads as a
+                # watermark, and `carousel_anchor_instruction.md` tells slides 2–N never to refill
+                # the signature zone.
+                wordmark=self.wordmark if number == 1 else "",
                 text_budgets=env.config.run.text_budgets,
                 budget_scale=plan.budget_scale if plan is not None else 1.0,
-                reference_roles=roles, reference_image_count=len(urls),
+                reference_roles=roles,
                 slide_index=f"{number} of {len(self.texts)}",  # 50 §6's fill convention
                 slide_text=plan.slide_text if plan is not None else self.texts[number - 1])
             context["style_dna"] = self.dna  # FR-189: the one block that never varies
+            context["render_prompt"] = self._guided(context["render_prompt"], number)
             prompt = env.engine.render(ROLE_SLIDE, context,
                                        profile=env.config.models.image_profile,
                                        max_chars=self._limits.max_prompt_chars)  # 50 §7
@@ -352,6 +376,22 @@ class _Deck:
                       verbose_only=True, asset_id=self.entry.asset_id, slide=number,
                       references=len(urls), retry=plan is not None, prompt=prompt)
         return prompt
+
+    def _guided(self, render_prompt: str, number: int) -> str:
+        """The style's instruction for THIS slide's role — cover for slide 1, body for the rest.
+
+        M9's home for cover-vs-body divergence: `style_dna` must be byte-identical across the deck,
+        so the one legitimate difference between a cover and a page lives in `per_format_guidance`
+        and is appended to the style's own `render_prompt`. Nothing is appended under an override
+        brief (`self.style` is then None and `render_prompt` is the brief's own directives, FR-144)
+        or for a style that declares no guidance for this role — a deck of one grammar is the
+        registry's stated intent, not an omission to paper over.
+        """
+        if self.style is None:
+            return render_prompt
+        key = GUIDANCE_COVER if number == 1 else GUIDANCE_SLIDE
+        guidance = self.style.per_format_guidance.get(key, "").strip()
+        return f"{render_prompt} {guidance}".strip() if guidance else render_prompt
 
     def _retry_plan(self, number: int) -> vision_check.RetryPlan:
         """FR-105's −40%: shorter text, one block, larger type — a different request, not a plea."""
@@ -417,8 +457,8 @@ class _Deck:
     def _limit(self) -> int:
         """The profile's declared reference ceiling — cap before spending, never after (FR-272).
 
-        The FR-91 set is already capped at `reference_images_per_job` by `refs.attach()`; this is
-        the provider's own hard ceiling, which the chained anchor may still occupy a slot in.
+        The style window is already capped at `styles.refs_per_job` by `refs.attach()`; this is the
+        provider's own hard ceiling, which the chained anchor may still occupy a slot in.
         """
         return self._limits.max_image_urls or 16
 
@@ -440,4 +480,5 @@ class _Deck:
         return False
 
 
-__all__ = ["ROLE_ANCHOR", "ROLE_SLIDE", "ReserveKind", "Submit", "render_carousel"]
+__all__ = ["GUIDANCE_COVER", "GUIDANCE_SLIDE", "ROLE_ANCHOR", "ROLE_SLIDE", "ReserveKind",
+           "Submit", "render_carousel"]

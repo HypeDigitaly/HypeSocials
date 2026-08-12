@@ -558,3 +558,55 @@ warns on UNKNOWN keys only and none is added):**
 **Deliberately NOT in W1:** `output.console_verbosity` (item 16 — W3/T3.3), `CopySet.motion_beat`
 (item 10 — W2 micro-pass), any TrendItem/config key REMOVAL, PLACEHOLDERS/PROFILE_TEMPLATES/
 GLOBAL_TEMPLATES/`_ALLOWLIST` edits (W2 micro-pass), AssetRecord fields (W2 micro-pass).
+
+---
+
+## W2 addendum — conductor decisions during Session C (binding for T2.6/T2.8 and the W3 waves)
+
+Written mid-Wave-2 after T2.3/T2.5 surfaced gaps this doc left open. All disclosed in
+plans/SESSION-C-CLOSEOUT.md; none silently resolved.
+
+1. **Item 1 gains ONE parameter: `wordmark: str = ""`.** The pinned signature had no channel for
+   "this creative is branded", yet item 1 requires the `_onimage_text` wordmark entry and M11's
+   conditional `role: brand_slot` zone to gate on it. Resolution: branded ⇔ `wordmark` non-empty.
+   The CALLER gates — it passes `profiles[branding.brand].wordmark` only when `entry.branded`
+   (and, for a carousel, only on the ANCHOR slide — M12; the reel passes it for both the seed
+   frame and the director's continuity — M13). `build_context` emits the
+   `wordmark (render verbatim): "<wordmark>"` + `_spell()` entry, emits `role: brand_slot`
+   layout zones, only when `wordmark` is non-empty; when a style declares a brand_slot zone and
+   `wordmark` is empty it appends the M11 line: "This frame carries no signature zone: the lower
+   margin is empty."
+2. **The branding-block renderer is PUBLIC:**
+   `prompts_engine.branding_block(branding: BrandingConfig, style: MetaStyle | None) -> str`
+   (M6 split: `never_always` always; `never_style` only when the style is brand-affine for
+   `branding.brand`; brand_slot styles collapse the block to ""). `generate/refs.branding_block`
+   already resolves it by exactly this public name and gates on `entry.branded` before calling.
+3. **Reel real-second beats (F24a) have NO placeholder of their own.** Resolution: item 1
+   gains a second optional parameter `reel_beats: str = ""`; when non-empty the engine emits
+   `context["motion_beat"] = "<reel_beats> Action: <copy.motion_beat>"` (plain
+   `copy.motion_beat` otherwise). prompts_engine exports the pure helper
+   `beats_for(duration_s: float) -> str` ("0.0-1.0s hold; 1.0-{d-1}s the action;
+   {d-1}-{d}s settle."); reel.py calls it (it owns the configured duration) and passes the
+   result — T2.3 route-back applied in-wave. T2.5's reel_director.md defers to "whatever
+   seconds this prompt states"; prompts/README.md documents the ride-along.
+4. **Candidate enumeration is single-source in `copywrite` (supersedes the first draft of
+   this item — T2.2's implementation decided it).** copywrite owns the `P<n>.<kind>[.<i>]`
+   numbering (`_offer_for`/`_numbered_fields`) AND the resolution back to bytes — one
+   implementation, zero drift — and OVERWRITES `context["source_hooks"]` after
+   `build_context(...)` returns. T2.6 therefore: keeps `source_hooks` in PLACEHOLDERS and in
+   `copywriter_system.md`'s allowlist; its own `_source_hooks` builder returns `""` for that
+   role (documented in code; symbol dies W3.5). Import direction stands: copywrite imports
+   prompts_engine, never the reverse.
+5. **`_ref_source` re-base shape (item 8):**
+   `"style" if refs.style_of(entry, env) is not None else ("brief" if entry.brief_name else "")`.
+6. **Item-2 clarification (T2.8's finding):** `wordmark` and `reel_beats` are `build_context`
+   PARAMETERS, not placeholders — item 2's 25-name vocabulary is correct without them (the
+   wordmark surfaces inside `{{onimage_text}}`; the beats ride `{{motion_beat}}`).
+7. **AssetRecord identity quartet (T2.8's finding, PRD-confirmed):** item 14 was short four
+   fields the amended FR-73 (40-outputs v2.0.0) lists — `style_key` (`"brief_override"` under an
+   override brief), `brand`, `branded`, `topic_key`. Added to `AssetRecord` + populated by
+   `generate._record` at the W2 wire-in; T3.2's gallery re-base reads them.
+8. **Transitional orphan placeholders (accepted known state until W3.5):** `style_brief_summary`
+   and `inspiration_exemplars` lose their last allowlist at W2 (item 3 removes both from the
+   copywriter role) while their PLACEHOLDERS removal is pinned to W3.5 (item 2) — the parity
+   test's unreachable-name check carves out exactly these two, named, with a W3.5 pointer.

@@ -185,15 +185,15 @@ class ModelsConfig:
     # and sending it under `provider.require_parameters` returns HTTP 404. The key survives for a
     # model that does support it; FR-129 as written needs a D15 amendment.
     temperature: dict[str, float] = field(default_factory=dict)
-    # `analysis` is 12000 (amended 2026-08-11, 30 §2): EVERY style-brief call this tool had ever
-    # made hit `llm_truncated` against the old 2000. Successful briefs serialize to 12,938–23,388
-    # characters ≈ 3,600–6,500 output tokens, and `reasoning_effort` is None for this role yet
-    # OpenRouter still bills 0–3,057 Sonnet-5 reasoning tokens INSIDE `completion_tokens`.
+    # `analysis` is the VISION-CHECK role's budget post-pivot (v2.0.0/D41 — the style-brief calls
+    # that originally sized it at 12000 are gone; FR-27 keeps the role for the check). The value
+    # stays: `reasoning_effort` is None for this role yet OpenRouter still bills 0–3,057 Sonnet-5
+    # reasoning tokens INSIDE `completion_tokens`, so even a short verdict needs real headroom.
     max_tokens: dict[str, int] = field(default_factory=lambda: {"analysis": 12000, "copy": 3000})
     # NFR-111 floors: below this a cap buys truncation retries as the normal path rather than
     # saving money, so a smaller value is clamped up and warned about. `copy` sits at a third of
-    # its default; `analysis` sits at half, because the floor has to clear a REALISTIC brief
-    # (6,500 output tokens plus unbidden reasoning), not merely clear zero.
+    # its default; `analysis` at half its cap, because the floor has to clear the unbidden
+    # reasoning tokens billed inside `completion_tokens`, not merely clear zero.
     max_tokens_floor: dict[str, int] = field(
         default_factory=lambda: {"analysis": 6000, "copy": 1000})
     price_per_unit: PriceTable = field(default_factory=PriceTable)

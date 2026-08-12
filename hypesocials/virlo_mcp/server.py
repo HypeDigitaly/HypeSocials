@@ -257,9 +257,15 @@ def _norm_exemplar(post: dict[str, Any]) -> dict[str, Any]:
 
 
 def _norm_theme(theme: dict[str, Any]) -> dict[str, Any]:
-    """One `analysis_data.themes[]` entry, kept to the five fields Analyze/Write actually use."""
+    """One `analysis_data.themes[]` entry, kept to the six fields the topic split consumes.
+
+    `evidence_video_ids` (W2 wire-in, FR-293): activates `virlo._allocate`'s evidence pre-pass —
+    posts Virlo itself filed under a theme are claimed by that topic before the stride deal
+    shares out the rest (measured on the fixture corpus: 12 of 154 ids resolve in one page).
+    """
     return {key: theme.get(key)
-            for key in ("name", "tactics", "why_it_works", "confidence", "video_count")}
+            for key in ("name", "tactics", "why_it_works", "confidence", "video_count",
+                        "evidence_video_ids")}
 
 
 def _norm_video(video: dict[str, Any]) -> dict[str, Any]:

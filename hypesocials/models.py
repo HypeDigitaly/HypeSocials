@@ -30,13 +30,13 @@ class DegradationTag(str, Enum):
 
     ANALYSIS_MISSING = "analysis_missing"  # FR-12
     COPY_DEGRADED = "copy_degraded"  # FR-99 (Notion absence is a warning, never a tag)
-    # A20 (2026-08-11, operator's "no plagiarism" mandate). COPY_DEGRADED says the copy call
-    # produced nothing usable; this says what the engine did about it — shipped the creative with
-    # NO on-image words at all. The two travel together on today's only fallback path and are
-    # still two facts: the first is an LLM outcome the run summary counts (FR-248's `llm_starved`
-    # set), the second is what the operator will actually see in the frame. Before A20 the answer
-    # to the second was "the competitor's headline, rendered verbatim", which is why it needed
-    # saying out loud rather than being folded into `copy_degraded`.
+    # KEPT, REDEFINED at W2 (v2.0.0, contracts item 7): "no source string fits this style's
+    # on-image budget — caption-only creative." Under the §1.7 verbatim contract an over-budget
+    # string is never offered, so an empty frame is a legitimate degrade, not a failure; the tag
+    # tells the operator WHY the frame is wordless. Still also set by `_fallback_copy` beside
+    # COPY_DEGRADED (a failed copy call ships the top post's caption verbatim + no on-image
+    # text): the first is an LLM outcome the run summary counts (FR-248's `llm_starved` set),
+    # the second is what the operator will actually see in the frame.
     NO_ONIMAGE_TEXT = "no_onimage_text"
     # FR-100/101 (v2.0.0) — the verifier's polarity flip: post-pivot every on-image string must be
     # a byte-substring of the quoted `SourcePost`, so this marks the one case where a rendered
@@ -400,6 +400,8 @@ class CopySet:
     narrative_arc: str = ""  # carousel: hook -> escalation -> payoff -> close
     overlay_text: str = ""  # reel: burned into the seed frame (FR-24)
     through_line: str = ""  # reel: one-line content through-line for the video prompt
+    motion_beat: str = ""  # reel: ONE named physical action for Stage 2 (F24) — resolved from
+    #   `CopySelection.motion_beat`; free text because it never becomes pixels (§1.7)
     hook_pattern_used: str = ""  # FR-100/146 — string, auditable, logged and written to meta
 
 
@@ -425,6 +427,20 @@ class AssetRecord:
     # after FR-12's degrade, which is itself the answer: there was no brief.
     style_brief_summary: str = ""
     ref_source: str = ""  # "virlo" | "brief" | "inspiration"
+    # FR-73 (v2.0.0) — post-pivot identity: the assigned meta-style, the brand system and the
+    # branding-rotation outcome, and the topic this creative came from (gallery + provenance
+    # block read all four; T3.2's gallery re-base is their first consumer).
+    style_key: str = ""  # registry key, or "brief_override" under an override brief (M14)
+    brand: str = ""  # active branding.brand at render time — never mixed (D43)
+    branded: bool = False  # FR-292 floor-predicate outcome for this entry
+    topic_key: str = ""  # stable slug of the topic name (FR-293)
+    # FR-298 (v2.3) — the verbatim receipt: WHICH post this creative quoted, and WHICH string.
+    # `copy_source_refs` maps CopySet slot -> ref label per the §1.7 grammar, e.g.
+    # {"headline": "P1.hook.2", "caption": "P1.caption"}; slot names are the CopySet field the
+    # ref resolved into (`headline`, `subline`, `overlay_text`, `slide_1`…`slide_N`, `caption`).
+    # Empty for override briefs and degrade paths — there was nothing quoted.
+    copy_source_post_id: str = ""
+    copy_source_refs: dict[str, str] = field(default_factory=dict)
     degradations: list[DegradationTag] = field(default_factory=list)
     brief_name: str | None = None  # --- brief overrides (D26) ---
     brief_influence_mode: InfluenceMode | None = None
@@ -627,7 +643,10 @@ class BriefLoader(Protocol):
 #: FR-181 two-level template layout, level 1: the three GLOBAL role templates sit FLAT in
 #: `prompts/`. They belong to the OpenRouter roles, not to any render profile, and exist once.
 GLOBAL_TEMPLATES: tuple[str, ...] = (
+    # W2 transition (v2.0.0): `topic_filter_system.md` joins here; `style_brief_system.md`
+    # leaves at W3.5 with the analyze stage (final global trio per contracts item 4).
     "style_brief_system.md", "copywriter_system.md", "vision_check_question.md",
+    "topic_filter_system.md",
 )
 
 #: Level 2: per-profile render sets under `prompts/<profile>/` (FR-181/262). A new profile ships
@@ -635,8 +654,10 @@ GLOBAL_TEMPLATES: tuple[str, ...] = (
 #: a new profile's set is validated at pre-flight instead (FR-263).
 PROFILE_TEMPLATES: dict[str, tuple[str, ...]] = {
     "gpt-image-2": (
+        # W2 transition (v2.0.0): the merged `image_post.md` (F16) ships beside the two files it
+        # merges; `image_single_post.md` + `image_direct.md` leave every surface at W3.5.
         "image_single_post.md", "carousel_slide.md", "carousel_anchor_instruction.md",
-        "image_direct.md", "reel_seed_frame.md",
+        "image_direct.md", "reel_seed_frame.md", "image_post.md",
     ),
     "seedance-2-5": ("reel_director.md",),
 }
@@ -680,5 +701,18 @@ PLACEHOLDERS: frozenset[str] = frozenset(
         #   which also carries `audience`: copy-side context must not leak into a render prompt,
         #   and the per-role allowlist exists to enforce exactly that (FR-261/109). Allowlisted for
         #   the four gpt-image-2 roles, so `direct` mode finally sees the art direction too.
+        # W2 topic-first pivot (v2.0.0, contracts item 2 — the five additions; the six removals
+        # named there happen at W3.5):
+        "branding_block",  # FR-292's second channel: accent colours, font letterforms, placement
+        #   hint and the profile's `never:` lines, pre-rendered by prompts_engine._branding_block();
+        #   empty when unbranded. The wordmark NEVER travels here — it is a TEXT-block entry (B1).
+        "topic_items",  # FR-294: the engine-numbered topic blocks for the filter call — ordinals
+        #   1..N assigned by _topic_items(), never raw topic_key (a crafted name must not spoof
+        #   another topic's verdict). Allowlisted for topic_filter_system.md ALONE.
+        "competitor_list",  # FR-294: branding.competitors for the same call, same single role.
+        "motion_profile",  # F24: the registry's photographic|graphic switch — selects the reel
+        #   director's LOOK/CAMERA paragraph. reel_director.md only.
+        "motion_beat",  # F24: CopySelection.motion_beat — ONE named physical action for the
+        #   reel's Stage 2. reel_director.md only; free text that never becomes pixels.
     }
 )

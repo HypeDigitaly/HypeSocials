@@ -4,17 +4,21 @@ Callers import `hypesocials.sources`, never this module. One call does everythin
 
     brand = await fetch_brand_context(cfg, log=run_log)   # once per run, at Collect (FR-36)
     ... copywrite.write_copy(..., brand_context=brand.text)                  # `copy` and `full`
-    ... build_context(brand_accent=brand.accent, brand_product_nouns=brand.product_nouns)  # `full`
+    ... apply_brand_overrides(brand, cfg.branding)        # `full` — into BrandingConfig (FR-292)
 
 Behind it: influence gating (FR-34 — `off` opens no session and reads no page), one stdio session
 on the pinned Notion MCP server, tool-name resolution across its 1.x/2.x vocabularies,
 per-context-type assembly (FR-35) and a plain character cut per `notion_char_budgets` (FR-124 — a
 cut, never a summarization call; FR-37 is withdrawn).
 
-This module produces the DATA for two prompt slots and fills no template: `{{brand_context}}` is
-`.text`, the copywriter-only block, and `{{brand_accent}}` is `.accent` + `.product_nouns` — the
-ONLY render-side brand influence there is (FR-109). Never a brand font, never a brand layout: a
-brand-templated render has stopped being a mimicry render, and mimicry is the product.
+This module produces DATA and fills no template. `{{brand_context}}` is `.text`, the
+copywriter-only block. The render side changed with the pivot (v2.0.0/D43): `.accent` and
+`.product_nouns` no longer feed a `{{brand_accent}}` placeholder of their own — they are OVERRIDES
+into the configured `BrandingConfig` profile (`apply_brand_overrides`), and reach a prompt through
+the branding block like every other brand fact. Notion is the future override on that block, never
+a dependency of it: with no `NOTION_TOKEN` the config profile stands alone, which is how every run
+works today. Still never a brand font and never a brand layout — the meta-style owns the look, and
+branding ranks below it (FR-109 as inverted in v2.0.0).
 
 Invariants: Notion is optional, so every failure path returns a `BrandContext` instead of raising
 — missing token, absent server, dead page, mid-run auth revocation, hung call (FR-47, 20 §10) —
@@ -23,7 +27,8 @@ per-server env dict `mcp_client` builds (D30/NFR-112); its value is never read, 
 
 Do not: open a session when influence is `off`; fetch twice per run (the returned object IS the
 run's cache, FR-36); summarize with a model; put anything but accent + product nouns on the render
-side; retry a page (the server owns its own transport retries).
+side; let a config value be REPLACED by a page that failed to load (every override is applied only
+when it carries something); retry a page (the server owns its own transport retries).
 """
 
 from __future__ import annotations
@@ -36,7 +41,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from hypesocials.config import Config
+from hypesocials.config import BrandingConfig, Config
 from hypesocials.mcp_client import MCPClientError, MCPError, ServerConfig, Session, open_session
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -81,8 +86,12 @@ class BrandContext:
     """
 
     text: str = ""  # `{{brand_context}}` — labelled block, copywriter only (FR-109)
-    accent: str = ""  # `{{brand_accent}}` half one: an accent colour, `full` influence only
-    product_nouns: list[str] = field(default_factory=list)  # half two: nouns for on-image text
+    #: The two `full`-influence render-side values, both OVERRIDE SLOTS on the active
+    #: `BrandingConfig` profile rather than placeholders of their own (D43): the accent colour
+    #: lands in `profile.colors["accent"]` and the nouns extend `profile.product_nouns`.
+    #: `apply_brand_overrides()` is the one place that mapping happens.
+    accent: str = ""
+    product_nouns: list[str] = field(default_factory=list)
     sections: dict[str, str] = field(default_factory=dict)  # per context type, already truncated
     influence: str = "off"  # what actually applied, which is not always what config asked for
     pages_read: int = 0
@@ -142,7 +151,7 @@ async def fetch_brand_context(cfg: Config, *, log: LogWriter | None = None) -> B
               f"Notion brand context unavailable ({type(exc).__name__}: {exc}) — the run continues "
               "without it", error=type(exc).__name__)
 
-    accent, nouns = _brand_marks(sections) if influence == "full" else ("", [])
+    accent, nouns = _brand_marks(sections) if influence == "full" else ("", [])  # D43 overrides
     brand = BrandContext(text=_assemble(sections), sections=sections, influence=influence,
                          pages_read=pages_read, accent=accent, product_nouns=nouns)
     _note(log, "notion_context", "info",
@@ -150,6 +159,44 @@ async def fetch_brand_context(cfg: Config, *, log: LogWriter | None = None) -> B
           + (f", accent {brand.accent}" if brand.accent else ""),
           context_types=sorted(sections), product_nouns=brand.product_nouns)
     return brand
+
+
+def apply_brand_overrides(brand: BrandContext, branding: BrandingConfig) -> list[str]:
+    """Fold a fetched brand snapshot into the ACTIVE `BrandingConfig` profile (D43/FR-292).
+
+    The pivot moved the render-side brand facts out of Notion's own prompt slot and into the
+    configured branding block, so this is the whole seam between the two: `.accent` becomes the
+    profile's `accent` colour hint and `.product_nouns` extend the profile's own nouns, after
+    which `prompts_engine._branding_block()` renders them like any configured value and the topic
+    filter's M15 guard sees them like any configured noun.
+
+    DORMANT until a `NOTION_TOKEN` exists: an empty `BrandContext` — which is what every degrade
+    and every `off`/absent-token run returns — changes nothing. Deliberately additive, never
+    destructive: an accent is written only if it is a real value, and nouns are appended rather
+    than substituted, because the config's product nouns are what the operator typed and a page
+    that lists two of six must not delete the other four.
+
+    Args:
+        brand: this run's `BrandContext` (`fetch_brand_context`'s return, already cached).
+        branding: `config.branding` — MUTATED in place, like pre-flight's own normalizations.
+
+    Returns:
+        The names of the fields actually overridden, so the caller can log the fact once. Empty
+        whenever nothing applied, which is the normal case today.
+    """
+    profile = branding.profiles.get(branding.brand)
+    if profile is None:  # pre-flight refuses this config (FR-292); never crash the brand channel
+        return []
+    applied: list[str] = []
+    if accent := brand.accent.strip():
+        profile.colors["accent"] = accent
+        applied.append("accent")
+    known = {noun.lower() for noun in profile.product_nouns}
+    if fresh := [noun for noun in brand.product_nouns if noun.strip()
+                 and noun.lower() not in known]:
+        profile.product_nouns.extend(fresh)
+        applied.append("product_nouns")
+    return applied
 
 
 # --------------------------------------------------------------------------- MCP fetching
@@ -268,4 +315,5 @@ def _note(log: LogWriter | None, event: str, level: str, message: str, **data: A
         log.event(event, message, level=level, **data)
 
 
-__all__ = ["CONTEXT_TYPES", "SERVER_NAME", "TOKEN_VAR", "BrandContext", "fetch_brand_context"]
+__all__ = ["CONTEXT_TYPES", "SERVER_NAME", "TOKEN_VAR", "BrandContext", "apply_brand_overrides",
+           "fetch_brand_context"]

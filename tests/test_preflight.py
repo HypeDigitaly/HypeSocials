@@ -271,6 +271,166 @@ def test_10pipeline_one_override_brief_is_what_flips_error_into_warning(tmp_path
     assert _supply_errors(mixed) == [] and len(_supply_warnings(mixed)) == 1
 
 
+# ------------------------------------------------- (e) FR-295 registry / FR-292 branding (T2.4)
+#
+# Added with the checks themselves; the FULL rewrite of this suite is T3.5's. Every registry here
+# is built inside `tmp_path` and reached through `config.prompts_dir` (the FR-174 override-first
+# seam), so these tests never depend on the shipped `prompts/styles.yaml` — and a broken shipped
+# registry would fail them for the right reason rather than by accident.
+
+_ONE_IMAGE_STYLE = """
+version: 1
+styles:
+  - key: only-image
+    render_prompt: A flat studio photograph, one product, one light.
+    format_affinity: [image]
+"""
+_BROKEN_REFERENCE = _ONE_IMAGE_STYLE + '    reference_images: ["Inspiration/does-not-exist.png"]\n'
+
+
+def _no_shipped_registry(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Point the built-in tier at an empty folder, so "missing" means missing.
+
+    `load_registry` searches `(config.prompts_dir, PROMPTS_DIR)` and the repo really does ship a
+    `prompts/styles.yaml` — without this the override-miss tests below would silently be testing
+    the shipped registry instead of the absence of one.
+    """
+    empty = tmp_path / "no-prompts-here"
+    empty.mkdir(exist_ok=True)
+    monkeypatch.setattr("hypesocials.preflight.PROMPTS_DIR", empty)
+
+
+def _registry(tmp_path: Path, text: str) -> str:
+    """Write a `styles.yaml` into its own folder and return that folder as a `prompts_dir`."""
+    folder = tmp_path / "prompts"
+    folder.mkdir(exist_ok=True)
+    (folder / "styles.yaml").write_text(text, encoding="utf-8")
+    return str(folder)
+
+
+def _styled_config(tmp_path: Path, registry: str | None = _ONE_IMAGE_STYLE, **kwargs: object):
+    """A runnable config (one monitor id, so FR-283 stays quiet) pointed at a private registry."""
+    config = _config(tmp_path, monitor_ids=["623203a9-1111-2222-3333-444455556666"], **kwargs)
+    config.prompts_dir = _registry(tmp_path, registry) if registry is not None else str(tmp_path)
+    return config
+
+
+def _style_errors(verdict: Preflight) -> list[str]:
+    return [line for line in verdict.errors if "styles.yaml" in line or "style" in line]
+
+
+def test_fr295_a_missing_registry_refuses_the_run_and_names_where_it_looked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FR-295: the registry has no built-in tier (D41), so "not found" is exit 2, not a default.
+
+    The line has to name the folders searched: an override `prompts_dir` that silently misses is
+    otherwise indistinguishable from a repo whose `prompts/styles.yaml` was never authored.
+    """
+    _no_shipped_registry(monkeypatch, tmp_path)
+    verdict = check(_styled_config(tmp_path, registry=None), action="run", entries=[_entry(0)])
+
+    assert verdict.ok is False
+    missing = [line for line in verdict.errors if "styles.yaml" in line]
+    assert len(missing) == 1, verdict.report
+    assert str(tmp_path) in missing[0] and "FR-290/295" in missing[0]
+    assert EXIT_PREFLIGHT == 2
+
+
+def test_fr295_a_requested_format_with_no_affine_style_refuses(tmp_path: Path) -> None:
+    """"every format with a requested count >0 has ≥1 affine style under the active brand" — a
+    registry that can only dress images cannot deliver the two carousels this config asks for."""
+    config = _styled_config(tmp_path)
+    config.run.formats = {"image": 4, "carousel": 2, "reel": 0}
+
+    verdict = check(config, action="run", entries=[_entry(0)])
+
+    carousel = [line for line in verdict.errors if "carousel" in line]
+    assert verdict.ok is False and len(carousel) == 1, verdict.report
+    assert "run.formats.carousel" in carousel[0]  # FR-69: name the line to edit
+
+    config.run.formats = {"image": 4, "carousel": 0, "reel": 0}  # ... and it is silent otherwise
+    assert _style_errors(check(config, action="run", entries=[_entry(0)])) == []
+
+
+def test_fr295_a_broken_reference_image_is_a_warning_and_the_run_proceeds(tmp_path: Path) -> None:
+    """"`reference_images` existence + magic-byte check (warning only — style degrades to
+    text-only, tag `style_refs_missing`)". Losing a picture must never cost the operator a batch.
+    """
+    config = _styled_config(tmp_path, registry=_BROKEN_REFERENCE)
+    config.run.formats = {"image": 2, "carousel": 0, "reel": 0}
+
+    verdict = check(config, action="run", entries=[_entry(0)])
+
+    assert _style_errors(verdict) == [], verdict.report
+    refs = [line for line in verdict.warnings if "does-not-exist" in line]
+    assert len(refs) == 1 and "style_refs_missing" in refs[0]
+
+
+def test_fr295_the_registry_is_not_read_where_no_style_is_ever_assigned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`--list-monitors` (FR-251) and `--preview-sources` ($0 blocklist preview, FR-139) assign no
+    style. Refusing them on a registry they never read would break the commands that fix a config.
+    """
+    _no_shipped_registry(monkeypatch, tmp_path)
+    config = _styled_config(tmp_path, registry=None)
+
+    for action in ("list-monitors", "preview-sources"):
+        assert [line for line in check(config, action=action).errors
+                if "styles.yaml" in line] == [], action
+    assert [line for line in check(config, action="preview-analysis").errors
+            if "styles.yaml" in line], "preview-analysis assigns styles and must still refuse"
+
+
+def test_fr292_a_brand_selector_with_no_profile_refuses(tmp_path: Path) -> None:
+    """FR-292: `brand` selects one of `profiles`. `config._validate` fails the LOAD on this, so the
+    check here is the backstop for a `Config` built in code — without it the first symptom is a
+    `KeyError` inside the prompt engine, after the money gate."""
+    config = _styled_config(tmp_path)
+    config.branding.brand = "hypemystery"
+
+    verdict = check(config, action="run", entries=[_entry(0)])
+
+    brand = [line for line in verdict.errors if "branding.brand" in line]
+    assert verdict.ok is False and len(brand) == 1, verdict.report
+    assert "hypedigitaly" in brand[0] and "hypelead" in brand[0]  # name what IS defined
+
+
+def test_fr292_branding_findings_that_only_warn(tmp_path: Path) -> None:
+    """Two runtime facts the config loader cannot judge: a branded run with nothing to sign with,
+    and FR-292's web-only orange in a brand profile. Both are wrong, neither is unrunnable."""
+    config = _styled_config(tmp_path)
+    config.run.formats = {"image": 2, "carousel": 0, "reel": 0}
+    profile = config.branding.profiles[config.branding.brand]
+    profile.wordmark = ""
+    profile.colors["accent"] = "#F97316"
+    config.branding.brand_ratio = 0.5
+
+    verdict = check(config, action="run", entries=[_entry(0)])
+
+    assert _style_errors(verdict) == [] and not [l for l in verdict.errors if "branding" in l]
+    assert len([line for line in verdict.warnings if "wordmark is empty" in line]) == 1
+    assert len([line for line in verdict.warnings if "WEB-ONLY" in line]) == 1
+
+
+def test_f22_the_diacritics_hint_follows_the_source_post_not_the_configured_language(
+    tmp_path: Path,
+) -> None:
+    """§1.7 F22: on-image text is quoted verbatim in the SOURCE post's language, so an `en` config
+    can still render accented glyphs. The hint therefore fires on a verbatim (trend-backed) plan,
+    and stays silent for an override-brief plan, whose language really is config's."""
+    config = _styled_config(tmp_path)
+    config.run.formats = {"image": 2, "carousel": 0, "reel": 0}
+    assert set(config.run.languages.values()) == {"en"} and not config.run.vision_check
+
+    verbatim = check(config, action="run", entries=[_entry(0)])
+    brief_only = check(config, action="run", entries=[_entry(0, brief="ai-audit-cta")])
+
+    assert len([hint for hint in verbatim.hints if "verbatim" in hint]) == 1, verbatim.report
+    assert [hint for hint in brief_only.hints if "verbatim" in hint] == []
+
+
 # --------------------------------------------------------------------------- refusal is free
 
 

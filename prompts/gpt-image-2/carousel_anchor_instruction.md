@@ -25,6 +25,14 @@ ANCHOR REFERENCE (Image 1 — PRIMARY, outranks every other reference):
   negative space) — never refilled with Image 1's own wording, an invented
   substitute, a wordmark or a swipe sticker.
 
+  THE SIGNATURE IS SLIDE 1'S ALONE. If Image 1 carries a wordmark, a logotype
+  or a signature line, that zone is structure like every other: this slide
+  reproduces its position, its rules and its clear space as empty margin or a
+  non-text graphic element, and leaves it wordless unless this slide's own
+  TEXT block quotes a signature. A deck is signed once. A deck signed on every
+  slide reads as a watermark, and copying slide 1's signature down the deck is
+  a failed render exactly like copying its headline.
+
   Where Image 1 and any other attached reference disagree, Image 1 wins. Where
   Image 1 and the STYLE_DNA block disagree, Image 1 wins — it is STYLE_DNA
   already rendered.

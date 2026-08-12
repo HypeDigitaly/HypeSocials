@@ -1,21 +1,25 @@
-"""A2 / A13 / A14 / A18 — the data channel from Virlo's wire to the prompt that spends money.
+"""A2 / A13 / A14 — the data channel from Virlo's wire to the prompt that spends money.
 
-Four claims are pinned here, in the order they change what gets rendered:
+Three claims are pinned here, in the order they change what gets rendered:
 
 1. **A2 — the sort reaches the wire.** The adapter asks for `order_by=views&sort=desc&limit=100`
    on both media tools and never sends `offset`. Unsorted, this tool drew every reference it has
    ever attached from the bottom of a 2,039-row pool: measured 2026-08-11, a median of 2,534 views
-   against 1,940,676 sorted. A regression is invisible in output — the run still succeeds, on
-   rubbish references — so it has to be visible here.
+   against 1,940,676 sorted. Post-pivot the stake is higher, not lower — post RANK now picks the
+   verbatim copy (§1.7's `P<n>` labels count over exactly this order) — and a regression is still
+   invisible in output, because the run succeeds on rubbish posts.
 2. **A13 — Virlo's own labels survive** wrapper → adapter → prompt, view-ranked, absent-safe, and
    read PER ROW: the corpus monitor reports `data_intelligence_enabled: false` while 70 of its 100
    rows carry a populated `intelligence` block.
 3. **A14 — the winning posts' real hashtags reach the copy prompt** as reference material, while
    the invented-from-slug fallback stays exactly what it was: the last resort, for its own case.
-4. **A18 — the metered digest's exemplars are a LAST-RESORT tier.** Below every monitor-sourced
-   set, rationed away by the download budget on a trend that has its own material, never a
-   slideshow, and logged `reference_source=digest_exemplar` so a cross-niche image in a creative
-   is traceable afterwards.
+
+**A18's digest-exemplar tier is gone (v2.0.0).** The digest used to hand five `top_exemplars` per
+trend to the adapter as a last-resort REFERENCE tier; post-pivot there is no reference tier at all
+(the visuals come from the style registry, FR-290) and those posts are global rather than this
+niche's, so offering their text would import off-niche copy into a topic that has its own. What
+survives here is the seam: `_digest` returns a 2-TUPLE, and the wrapper still normalizes the
+payload nothing reads.
 
 Everything is offline. **No test here calls `/trends/digest`** — it is Virlo's only metered
 endpoint ($0.25 a call), so the digest shapes are spelled out as literals and the sessions are
@@ -32,8 +36,6 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-import pytest
-
 from hypesocials import copywrite
 from hypesocials.config import Config
 from hypesocials.models import PlanEntry, TrendItem
@@ -47,8 +49,7 @@ FIXTURES = Path(__file__).parent / "fixtures" / "virlo"
 MONITOR = "9c96fddf-dc35-4be0-bbd9-12f4d22aea12"
 
 #: One digest group in Virlo's own raw shape. Written out rather than captured because
-#: `/trends/digest` bills — see `tests/fixtures/virlo/README.md`. Two exemplars on the first trend
-#: (enough for `_MIN_THUMBS`), one on the second (deliberately not enough).
+#: `/trends/digest` bills — see `tests/fixtures/virlo/README.md`.
 DIGEST_BODY: dict[str, Any] = {
     "data": [{
         "id": "group-1", "title": "Global", "region": "global", "local_date": "2026-08-11",
@@ -84,36 +85,25 @@ DIGEST_BODY: dict[str, Any] = {
     }],
 }
 
-#: What `DIGEST_BODY`'s first trend becomes: two stills, view-ranked, one group.
-EXEMPLAR_GROUP = ["https://cdn.virlo.test/digest-strong.jpg",
-                  "https://cdn.virlo.test/digest-weak.jpg"]
-
 
 # --------------------------------------------------------------------------- fixtures & doubles
 
 
-@pytest.fixture(autouse=True)
-def _isolated_reference_cache() -> Any:
-    """`virlo` keeps its download cache in module globals; no test may inherit or leak one."""
-    virlo._CACHE.clear()
-    virlo._CACHE_DIR, virlo._CACHE_DIR_OWNED = None, False
-    yield
-    virlo._CACHE.clear()
-    virlo._CACHE_DIR, virlo._CACHE_DIR_OWNED = None, False
-
-
 class _Log:
-    """The `LogWriter` surface the adapter touches, and nothing else (module-local, house style)."""
+    """The `LogWriter` surface the adapter touches, and nothing else (module-local, house style).
+
+    Positional-only, because the adapter passes `name=` as DATA on `virlo_payload`.
+    """
 
     def __init__(self) -> None:
         self.events: list[tuple[str, str, dict[str, Any]]] = []
         self.warnings: list[tuple[str, str, dict[str, Any]]] = []
 
-    def event(self, name: str, message: str, **data: Any) -> None:
-        self.events.append((name, message, data))
+    def event(self, event: str, message: str = "", /, **data: Any) -> None:
+        self.events.append((event, message, data))
 
-    def warn(self, name: str, message: str, **data: Any) -> None:
-        self.warnings.append((name, message, data))
+    def warn(self, event: str, message: str = "", /, **data: Any) -> None:
+        self.warnings.append((event, message, data))
 
     def named(self, name: str) -> list[dict[str, Any]]:
         return [data for event, _message, data in self.events if event == name]
@@ -161,21 +151,15 @@ def _analysis() -> dict[str, Any]:
                         "tactics": ["show the terminal"]}]}
 
 
-def _corpus_item(cfg: Config | None = None, log: _Log | None = None) -> TrendItem:
-    """One `TrendItem` assembled from the whole real sorted page — 100 videos + 100 slideshows."""
+def _corpus_topic(cfg: Config | None = None, log: _Log | None = None) -> TrendItem:
+    """ONE topic assembled from the whole real sorted page — 100 videos + 100 slideshows.
+
+    The analysis names a single theme, so the split yields exactly one topic and it owns every
+    deduped row: the data channel this file is about is the same whether a monitor becomes one
+    topic or nine, and one topic keeps the corpus arithmetic checkable by eye.
+    """
     videos, shows = _corpus()
-    return virlo._build_item(MONITOR, _analysis(), videos, shows, cfg or Config(), log=log)
-
-
-def _fake_downloads(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Substitute the per-image download unit so the real budget and pruning logic runs offline."""
-    async def _download(client: Any, url: str, target: Path, attempts: int,
-                        log: Any) -> Path | None:
-        path = Path(target) / url.rsplit("/", 1)[-1]
-        path.write_bytes(b"fixture-bytes")
-        return path
-
-    monkeypatch.setattr(virlo, "_download", _download)
+    return virlo._split_topics(MONITOR, _analysis(), videos, shows, cfg or Config(), log=log)[0]
 
 
 # ---------------------------------------------------------------- A2: the sort reaches the wire
@@ -221,27 +205,22 @@ def test_a2_the_adapters_arguments_are_exactly_what_the_wrapper_accepts() -> Non
     assert virlo._MEDIA_LIMIT == virlo_server._MAX_LIMIT == 100  # one page, the deepest allowed
 
 
-def test_a2_doubling_the_page_doubles_the_candidates_but_not_the_downloads() -> None:
-    """The one risk in raising `_MEDIA_LIMIT` 50 -> 100: per-row work now runs twice as often.
+def test_a2_the_sorted_page_lands_view_ranked_on_the_topic_the_copy_call_quotes() -> None:
+    """The sort's post-pivot consequence, on the real page: `TrendItem.posts` is view-ranked, so
+    `P1` really is the monitor's strongest post — and `P1` is what `_fallback_copy` quotes and what
+    FR-297b prints as the sort proof. Doubling the page (50 -> 100 rows) doubles the posts a topic
+    can offer and changes none of the caps that bound a prompt."""
+    topic = _corpus_topic()
+    views = [post.views for post in topic.posts]
 
-    Downloads are the only unbounded-looking consumer, and they are not: `_download_references`
-    spends `media_download_cap` down the group list in order, so 200 rows and ~90 qualifying sets
-    still queue at most the cap. Asserted on the real page, which is what a live run gets.
-    """
-    cfg = Config()
-    item = _corpus_item(cfg)
-    per_job = cfg.sources.reference_images_per_job
-
-    assert len(item.reference_groups) > 20  # the whole sorted page reaches the candidate pool
-    assert all(0 < len(group) <= per_job for group in item.reference_groups)
-    queued, budget = [], cfg.sources.media_download_cap
-    for group in item.reference_groups:  # `_download_references`' own arithmetic, spelled out
-        queued += group[:max(0, budget)]
-        budget -= len(group)
-    assert len(queued) <= cfg.sources.media_download_cap
-    # Every few-shot list stays capped too, so a doubled page cannot double a prompt.
-    assert len(item.hook_texts) <= virlo._MAX_EXEMPLARS
-    assert len(item.hashtags) <= virlo._MAX_HASHTAGS
+    assert len(topic.posts) > 100, "the whole sorted page reaches the topic"
+    assert views == sorted(views, reverse=True)
+    assert views[0] >= 1_000_000, "the corpus's top row is a real winner, not an insertion-order one"
+    # Every few-shot list stays capped, so a doubled page cannot double a prompt.
+    assert len(topic.hook_texts) <= virlo._MAX_EXEMPLARS
+    assert len(topic.hashtags) <= virlo._MAX_HASHTAGS
+    assert len(topic.panel_texts) == len(
+        next((post.panel_texts for post in topic.posts if post.panel_texts), []))
 
 
 # ------------------------------------------------------------- A13: Virlo's own labels, per row
@@ -249,15 +228,15 @@ def test_a2_doubling_the_page_doubles_the_candidates_but_not_the_downloads() -> 
 
 def test_a13_the_three_labels_survive_wrapper_adapter_and_prompt() -> None:
     """End to end on the real page: `intelligence.hook_type` -> `_norm_video` -> `TrendItem` ->
-    the one `{{trend_texts}}` row. FR-100 asks the copywriter to DERIVE a hook pattern that the
-    source already classified, so this row is the difference between a guess and a label."""
-    item = _corpus_item()
+    the one `{{trend_texts}}` row. The labels are the source's own vocabulary for what a post did,
+    which is what a copywriter selecting among that post's strings is being asked to judge."""
+    topic = _corpus_topic()
 
-    assert item.hook_types and item.visual_hook_types and item.emotional_tones
-    rendered = build_context(trend=item)["trend_texts"]
+    assert topic.hook_types and topic.visual_hook_types and topic.emotional_tones
+    rendered = build_context(trend=topic)["trend_texts"]
     row = next(line for line in rendered.splitlines() if line.startswith("Source's own labels:"))
-    assert item.hook_types[0] in row
-    assert item.visual_hook_types[0] in row and item.emotional_tones[0] in row
+    assert topic.hook_types[0] in row
+    assert topic.visual_hook_types[0] in row and topic.emotional_tones[0] in row
     assert "hook" in row and "visual hook" in row and "emotional tone" in row
     assert row.count("\n") == 0  # ONE row, per §2.2 — the vocabulary, not an essay
 
@@ -274,7 +253,7 @@ def test_a13_labels_are_read_per_row_never_gated_on_the_agent_level_flag() -> No
 
     assert agent["data_intelligence_enabled"] is False
     assert sum(1 for row in videos if row["hook_type"]) >= 30
-    assert _corpus_item().hook_types  # ...and the adapter still reads them
+    assert _corpus_topic().hook_types  # ...and the adapter still reads them
 
 
 def test_a13_a_row_that_classified_nothing_never_becomes_a_label() -> None:
@@ -296,13 +275,15 @@ def test_a13_labels_are_view_ranked_not_array_ranked() -> None:
     """`[*videos, *shows]` glues two independently sorted lists together, so array position says
     nothing about strength: a 400-view video would otherwise outrank a 4,000,000-view slideshow
     purely for being a video."""
-    videos = [{"views": 400, "hook_type": "weak_label", "hashtags": ["#weak"]}]
-    shows = [{"views": 4_000_000, "hook_type": "strong_label", "hashtags": ["#strong"]}]
+    videos = [{"id": "v1", "views": 400, "hook_type": "weak_label", "hashtags": ["#weak"]}]
+    shows = [{"id": "s1", "views": 4_000_000, "hook_type": "strong_label",
+              "hashtags": ["#strong"]}]
 
-    item = virlo._build_item(MONITOR, _analysis(), videos, shows, Config())
+    topic = virlo._split_topics(MONITOR, _analysis(), videos, shows, Config())[0]
 
-    assert item.hook_types == ["strong_label", "weak_label"]
-    assert item.hashtags == ["#strong", "#weak"]
+    assert topic.hook_types == ["strong_label", "weak_label"]
+    assert topic.hashtags == ["#strong", "#weak"]
+    assert [post.post_id for post in topic.posts] == ["s1", "v1"]
 
 
 # --------------------------------------------------------------------- A14: the real hashtags
@@ -313,16 +294,17 @@ def test_a14_real_hashtags_reach_the_copy_prompt_as_reference_material() -> None
     claim — a `TrendItem` field nothing renders is exactly the defect A14 exists to fix (the
     wrapper had extracted `hashtags` all along and nothing read them).
 
-    Labelled as reference, not as output: the model still chooses, and the tags must not be pasted
-    into a caption by the engine.
+    Labelled as reference, not as output: post-pivot the tags a creative ships are the assigned
+    post's own trailing run, peeled off its caption (§1.7.1), so these must not be pasted into a
+    caption by the engine either.
     """
-    item = _corpus_item()
-    context = build_context(trend=item, creative_format="image")
+    topic = _corpus_topic()
+    context = build_context(trend=topic, creative_format="image")
 
     prompt = PromptEngine().render("copywriter_system.md", context)
 
-    assert item.hashtags, "the real corpus carries hashtags on its winning posts"
-    assert all(tag in prompt for tag in item.hashtags)
+    assert topic.hashtags, "the real corpus carries hashtags on its winning posts"
+    assert all(tag in prompt for tag in topic.hashtags)
     label = next(line for line in prompt.splitlines() if line.startswith("Hashtags on the winning"))
     assert "reference, not a list to copy" in label
 
@@ -343,34 +325,55 @@ def test_a14_hashtags_are_deduped_across_both_spellings_and_capped_per_post() ->
 
 
 def test_a14_the_invented_slug_fallback_stays_the_last_resort_it_was() -> None:
-    """Real tags are better INPUT, never a bypass of the copywriter.
+    """Real tags are better INPUT, never a bypass of the copy call.
 
-    `_fallback_copy` runs only when there was no model answer at all; making it emit the source's
-    tags verbatim would turn reference material into a mandate and hand the model's one editorial
-    job to a list slice. So the slug path is unchanged, and it still answers for a trend that has
-    real hashtags sitting right there.
+    `_fallback_copy` runs only when there was no model answer at all, and post-pivot it quotes the
+    top post's caption — whose OWN trailing hashtags it peels off and ships (§1.7.1). The slug path
+    is what is left when there is no post to take anything from, and it is unchanged: it still
+    answers for a topic that carries real hashtags at topic level and no posts at all.
     """
-    trend = TrendItem(history_key="t", monitor_id=MONITOR, name="AI Trends Tracker",
+    topic = TrendItem(history_key="t", monitor_id=MONITOR, name="AI Trends Tracker",
                       hashtags=["#claudecode", "#buildinpublic"])
     entry = PlanEntry(order=0, asset_id="a1", creative_format="image", platform="instagram",
                       language="en", aspect_ratio="1:1", trend_key="t")
 
-    copyset = copywrite._fallback_copy(entry, trend)
+    copyset = copywrite._fallback_copy(entry, topic)
 
     assert copyset.hashtags == ["#trends", "#tracker"]  # slugified from the NAME, as before
-    assert not set(copyset.hashtags) & set(trend.hashtags)
+    assert not set(copyset.hashtags) & set(topic.hashtags)
     assert copywrite._hashtags("AI Trends Tracker") == copyset.hashtags
 
 
-# ------------------------------------------------------------ A18: the digest's last-resort tier
+# ------------------------------------------------------- the digest: two values, no exemplars
 
 
-async def test_a18_the_digest_stops_discarding_its_exemplars() -> None:
-    """`/trends/digest` is the only metered Virlo call and this normalizer used to throw its
-    exemplars away. Flattened into `_norm_video`'s vocabulary — one still per post, a permalink, a
-    view count and a handle — so no second shape for "a post" enters the codebase.
+async def test_the_digest_returns_cross_monitor_context_and_confidences_and_nothing_else() -> None:
+    """`_digest` is a 2-TUPLE post-pivot (v2.0.0). The third element was A18's exemplar pool, and
+    the tier it fed no longer exists: the visual authority is the local style registry (FR-290), so
+    a global post's thumbnail has nothing to reference and its TEXT belongs to another niche.
 
-    The digest is NOT called here: the recorder answers from a literal (README: it bills).
+    It remains THE ONLY METERED VIRLO CALL ($0.25), so the recorder answers from a literal.
+    """
+    groups = {"trends": [{"name": "AI agents", "ranking": 1, "confidence": 0.71,
+                          "momentum_status": "rising", "views_per_hour": 900,
+                          "top_exemplars": [{"post_id": "big", "views": 999,
+                                             "thumbnail_url": "https://cdn.virlo.test/big.jpg"}]}]}
+    session = _Session({"get_trends": {"groups": [groups]}})
+
+    result = await virlo._digest(_Pool(session), None)
+
+    assert len(result) == 2, "the exemplar payload is dropped"
+    context, confidences = result
+    assert "AI agents" in context and "rising" in context
+    assert confidences == {"ai-agents": 0.71}
+    assert "big" not in context, "no exemplar post reaches any caller"
+
+
+async def test_the_wrapper_still_normalizes_the_exemplars_the_adapter_now_ignores() -> None:
+    """The seam is unchanged on the wrapper side: `top_exemplars` is flattened into `_norm_video`'s
+    vocabulary, so no second shape for "a post" enters the codebase. Nothing consumes it after the
+    pivot — 20 §2's tool-table row goes with the media funnel at W3.5 — and it is asserted here so
+    the removal is a decision rather than a discovery.
     """
     class _Response:
         is_success, status_code, text = True, 200, ""
@@ -395,101 +398,3 @@ async def test_a18_the_digest_stops_discarding_its_exemplars() -> None:
                             "platform": "tiktok", "views": 4_000_000,
                             "thumbnail_url": "https://cdn.virlo.test/digest-strong.jpg",
                             "publish_date": "2026-08-09T09:00:00Z", "author": "@strong"}
-
-
-async def test_a18_the_adapter_pools_the_exemplars_view_ranked_per_digest_trend() -> None:
-    """`_digest`'s third return. One list per digest trend — a set stays ONE subject (FR-91) even
-    though it is not one creator — and thumbnail-less posts are dropped, since a reference tier
-    made of posts with no image is not a tier."""
-    groups = {"trends": [{"name": "AI agents", "top_exemplars": [
-        {"post_id": "small", "views": 1, "thumbnail_url": "https://cdn.virlo.test/small.jpg"},
-        {"post_id": "big", "views": 999, "thumbnail_url": "https://cdn.virlo.test/big.jpg"},
-        {"post_id": "imageless", "views": 500, "thumbnail_url": ""},
-    ]}]}
-    session = _Session({"get_trends": {"groups": [groups]}})
-
-    _context, _confidences, exemplars = await virlo._digest(_Pool(session), None)
-
-    assert [post["post_id"] for post in exemplars[0]] == ["big", "small"]
-    assert len(exemplars) == 1
-
-
-def test_a18_exemplars_are_offered_strictly_below_every_monitor_sourced_set() -> None:
-    """Position IS the safety property: this material is global, not this niche's, so it must never
-    outrank a monitor's own posts. Appended after `_pick_set` already chose, so it can neither
-    become the chosen set of a trend that had one nor displace a group in rotation order —
-    `reference_groups[k % len]` reaches it last, if ever."""
-    item = _thin_item()
-    monitor_groups = [list(group) for group in item.reference_groups]
-
-    offered = virlo._offer_digest_exemplars([item], _pool(), Config())
-
-    assert monitor_groups and item.reference_groups[:len(monitor_groups)] == monitor_groups
-    assert item.reference_groups[len(monitor_groups):] == [EXEMPLAR_GROUP]
-    assert offered == frozenset(EXEMPLAR_GROUP)
-    assert item.is_slideshow is True  # the CHOSEN set is still the monitor's own slideshow
-
-
-def test_a18_a_lone_exemplar_never_becomes_a_set_and_never_a_slideshow() -> None:
-    """An exemplar thumbnail is ONE still per post, exactly like a video's — so a set of them is a
-    `_MIN_THUMBS` frame family, and one of them is nothing at all. A single still masquerading as a
-    panel set would hand FR-90 a carousel affinity nobody earned and the deck would be invented."""
-    item = TrendItem(history_key="t", monitor_id=MONITOR, name="bare")
-    lonely = _pool()[1]  # the digest's second trend ships exactly one exemplar
-
-    virlo._offer_digest_exemplars([item], [lonely], Config())
-
-    assert item.reference_groups == []
-    assert virlo._MIN_THUMBS == 2 and len(lonely) == 1
-    assert item.is_slideshow is False
-
-
-async def test_a18_a_rich_trend_is_offered_nothing_while_a_bare_one_is_rescued_and_logged(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The tier's whole behaviour in one pass, because the two halves only mean something together.
-
-    A trend whose own sets already fill `media_download_cap` is offered nothing — it has material
-    to rotate through and cross-niche pictures would cost fidelity for no gain. A trend with NO
-    material keeps the exemplar group, ships images instead of `text_only`, and is logged
-    `reference_source=digest_exemplar` so a cross-niche image in a creative stays traceable without
-    re-running anything.
-
-    ⚠️ The eligibility test must be explicit, and this is the fixture that proves it: `_CACHE` is
-    shared across items, so the bare trend's download leaves both exemplar urls cached and a rich
-    trend holding the same group would sail through `_download_references`' liveness prune. The
-    download budget cannot be the gate here.
-    """
-    log = _Log()
-    _fake_downloads(monkeypatch)
-    rich, bare = _corpus_item(), TrendItem(history_key="bare", monitor_id=MONITOR, name="bare")
-
-    offered = virlo._offer_digest_exemplars([rich, bare], _pool(), Config())
-    await virlo._download_references([rich, bare], Config(), tmp_path, log)
-    virlo._log_digest_exemplars([rich, bare], offered, log)
-
-    assert all(url not in offered for group in rich.reference_groups for url in group)
-    assert bare.reference_groups == [EXEMPLAR_GROUP]
-    assert all(url in virlo._CACHE for url in EXEMPLAR_GROUP)  # cached, still not the rich one's
-    assert bare.text_only is False and bare.is_slideshow is False
-    attached = log.named("digest_exemplar_attached")
-    assert len(attached) == 1
-    assert attached[0]["reference_source"] == "digest_exemplar"
-    assert attached[0]["trend"] == "bare" and attached[0]["groups"] == [0]
-
-
-def _thin_item() -> TrendItem:
-    """A trend whose monitor gave it ONE small set — under the download cap, so the digest tier is
-    open to it, and with a monitor-sourced group present so "appended below" is checkable."""
-    shows = [{"id": "own-1", "url": "https://virlo.test/p/own", "views": 900,
-              "author_username": "@own", "panel_texts": ["OWN HOOK"],
-              "image_urls": [f"https://cdn.virlo.test/own-{n}.jpg" for n in (1, 2, 3)]}]
-    return virlo._build_item(MONITOR, _analysis(), [], shows, Config())
-
-
-def _pool() -> list[list[dict[str, Any]]]:
-    """The exemplar pool `_digest` would return for `DIGEST_BODY`, built through the real wrapper
-    normalizer so the test data cannot drift from the shape the wrapper actually emits."""
-    trends = DIGEST_BODY["data"][0]["trends"]
-    return [virlo._ranked([virlo_server._norm_exemplar(post) for post in row["top_exemplars"]])
-            for row in trends]

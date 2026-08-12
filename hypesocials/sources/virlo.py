@@ -1,33 +1,50 @@
-"""Virlo adapter — MCP tool calls in, ranked `TrendItem`s with coherent reference sets out.
+"""Virlo adapter — MCP tool calls in, ranked TEXT-ONLY topic items out (v2.0.0, FR-293).
 
 Callers import `hypesocials.sources`, never this module. Behind that facade:
 
-- **Join rule (20 §3, corrected by spikes/RESULTS.md §A):** one item per configured monitor id.
-  `get_monitor_analysis` gives name, `why_it_works`, themes/tactics, timing and connecting thread;
-  `get_top_videos`/`get_top_slideshows` give media, hooks, panel texts and engagement for that same
-  monitor, asked for as `views desc` so "top" means top; the global `get_trends` digest enriches
-  `cross_monitor_context`, may supply the LAST-RESORT reference tier (A18), and still creates no
-  items. §A swaps the PRD table's digest vs monitor-analysis ownership — shapes follow RESULTS.md,
-  behaviour follows the PRD.
-- **Strength (FR-5):** views .35, median views .15, velocity .30, confidence .20, each min-max
-  normalized inside the run's candidate pool. Hardcoded weights, by PRD decision.
-- **Coherent reference sets (FR-91):** every group is ONE source — a single slideshow's panels (in
-  `position` order) or one creator's thumbnails — built as `ReferenceSet` units, ALL of them.
-- **Post-level freshness (FR-7):** `used_posts` picks the freshest unused set and EVERY field the
-  creative is shaped by comes from that set; the same map picks the reel's motion reference (FR-24,
-  three tiers, best-effort — tier 3 repeats a source rather than lose a paid reel).
-- **Per-image download (FR-32/33/247):** independent per image; a dead URL drops that image only.
+- **Join rule (20 §3 / FR-293):** one configured monitor becomes up to
+  `sources.virlo_topics_per_monitor` TOPICS, one per theme. `get_monitor_analysis` gives the
+  monitor's name, `why_it_works`, timing, connecting thread and its `themes[]`;
+  `get_top_videos`/`get_top_slideshows` give the posts for that same monitor, asked for as
+  `views desc` so "top" means top; the global `get_trends` digest enriches `cross_monitor_context`
+  and still creates no items. §A of spikes/RESULTS.md swaps the PRD table's digest vs
+  monitor-analysis ownership — shapes follow RESULTS.md, behaviour follows the PRD.
+- **A topic owns its posts (FR-293).** The monitor's deduped rows are dealt out EXCLUSIVELY: a
+  theme's own `evidence_video_ids` first, then a stride deal of the remainder, so no post belongs
+  to two topics of one monitor. That exclusivity is the whole point — it is what makes two topics
+  from one monitor carry different post sets, different engagement and therefore different
+  strengths, instead of nine copies of one monitor-wide number.
+- **Text is the product (D42/FR-100/FR-293).** Every string a `SourcePost` carries is stored
+  exactly as Virlo returned it — never translated, never retyped, never trimmed — because the copy
+  call selects these strings BY REFERENCE and the engine resolves the reference back to these
+  bytes (10 §FR-99/FR-100). A string edited on the way in can no longer be quoted verbatim on the
+  way out. No media travels: no CDN download, no reference set, no motion reference. The visual
+  authority is the local meta-style registry (FR-290), not Virlo's pixels.
+- **Strength (FR-5, amended v2.0.0):** total views .35, median views .15, velocity .30,
+  engagement .20 — each computed from the TOPIC's own posts, then min-max normalized across the
+  run's FULL topic pool (every monitor's topics together) before weighting. Hardcoded weights, by
+  PRD decision.
 - **Funnel accountability (FR-155):** every stage above tallies into ONE run-wide `Counters` —
-  rows in, duplicates dropped, sets qualified or turned away, the freshness verdict, images
-  downloaded or dead — emitted once as the `collect_funnel` event and printed by the runner. A
-  loss that is not counted here is invisible to the operator, which is the NFR-5 failure this
-  object exists to close.
+  rows in, duplicates dropped, posts in and topics out, the Select verdict, the filter verdict —
+  emitted once as the `collect_funnel` event and printed by the runner. A loss that is not counted
+  here is invisible to the operator, which is the NFR-5 failure that object exists to close.
+- **Forensics (FR-298):** `topic_posts` names EVERY post of every topic in rank order (the "which
+  posts exactly" answer), `virlo_fields` is the per-monitor consumption ledger (which fields
+  arrived, which were read, which were ignored), and `topic_ranked` carries the ranking table's
+  rows with their RAW pre-normalization components beside the normalized ones.
 
 Invariants: no direct `api.virlo.ai` call (NFR-11); no retry on top of the wrapper's bounded retry
-(FR-120) — only CDN downloads retry here; the digest is the ONLY metered call ($0.25, §A), so
-`include_digest=False` keeps a preview at $0; `intelligence.*` is optional (~70% miss) and an item
-stays usable without it; reels are OFF in W2 — `winning_video_url` is data, and no yt-dlp activity
-happens here (that is W4's `video_ref.py`).
+(FR-120); the digest is the ONLY metered call ($0.25, §A), so `include_digest=False` keeps a
+preview at $0; `intelligence.*` is optional (~70% miss on unenriched rows) and a topic stays usable
+without it; `_themes()` never yields fewer items than the pre-pivot adapter did — a monitor with no
+themes synthesizes exactly one topic from its aggregate, which is the pre-pivot item shape.
+
+**Legacy, excised in Wave 3.5** (plan §3.5): everything under the "media (legacy)" banner —
+`_build_item`, `_reference_groups`, `_offer_digest_exemplars`, `_log_digest_exemplars`, `_set`,
+`_pick_set`, `_pick_motion`, `_frame_quality`, `_download_references`, `_download`, `_cache_dir`,
+`reference_paths`, `cleanup` and the download/set/choice counters — is no longer reachable from
+`fetch`. The bodies stay on disk for one more wave by migration discipline (ADDITIVE-THEN-
+SUBTRACTIVE), so nothing that still imports them breaks at a wave barrier.
 
 Do not: rank or filter for Select (it owns verdicts); mutate `models.py`; log an API key.
 """
@@ -51,7 +68,7 @@ import httpx
 
 from hypesocials.config import Config
 from hypesocials.mcp_client import MCPClientError, MCPError, ServerConfig, Session, SessionPool
-from hypesocials.models import ReferenceSet, TrendItem
+from hypesocials.models import ReferenceSet, SourcePost, TrendItem
 from hypesocials.util import slugify
 from hypesocials.virlo_mcp import VirloToolError, translate
 
@@ -80,12 +97,25 @@ _MAX_HASHTAGS, _MAX_HASHTAGS_PER_POST = 8, 3
 #: A13 — values Virlo writes into a classification field when it classified nothing. They are an
 #: absence wearing a label, and passing "hook type: none" to a copywriter is worse than silence.
 _NON_LABELS = frozenset({"none", "unknown", "n/a", "null", "other"})
-_MAX_TACTICS, _MAX_THEMES, _WHY_MAX_CHARS, _CONTEXT_MAX_CHARS = 12, 3, 1200, 600  # §A: 9 themes deep
+#: How many themes a monitor's aggregate text may quote is no longer a constant: `_MAX_THEMES = 3`
+#: capped BOTH the themes consumed and the FR-5 confidence mean's denominator, and post-pivot each
+#: consumed theme IS a topic — so the one number that governs is `sources.virlo_topics_per_monitor`
+#: (default 9, the depth §A measured; `-1` is the kill switch). `_topic_cap()` resolves it.
+_MAX_TACTICS, _WHY_MAX_CHARS, _CONTEXT_MAX_CHARS = 12, 1200, 600
 _DIGEST_ROWS, _DOWNLOAD_TIMEOUT_S, _MAX_PARALLEL, _BACKOFF_S = 8, 20.0, 8, 0.5
+#: The marker `topic_filter.screen()` writes into every `Verdict.reason` when its LLM layer
+#: degraded (fail-open, §1.5). `record_filter` reads it rather than importing the filter module.
+_FILTER_DEGRADED = "filter_degraded"
 _TEMP_PREFIX = "hypesocials-refs-"
 _SUFFIXES = (".webp", ".jpg", ".jpeg", ".png", ".gif")
 #: FR-5's weights — stated in the PRD so the operator signed off on them, never a config knob.
-_WEIGHTS = {"total_views": 0.35, "median_views": 0.15, "velocity": 0.30, "confidence": 0.20}
+#: v2.0.0 amendment: the 0.20 slot belongs to ENGAGEMENT, not to Virlo's theme `confidence`. The
+#: ranked unit is now a topic and each topic is one theme, so confidence stopped being a per-item
+#: discriminator (nine topics of one monitor would all carry one number, and RESULTS.md §A found
+#: the digest's own `global_confidence` null on every live trend). Engagement is per-post and
+#: therefore per-topic, which is exactly what the split needs it to be. `confidence` is still
+#: normalized, logged and passed to prompts — it just no longer weighs the rank.
+_WEIGHTS = {"total_views": 0.35, "median_views": 0.15, "velocity": 0.30, "engagement": 0.20}
 #: FR-91's frame screen. Unknown stays neutral: `intelligence.*` is absent unless
 #: `intelligence_status == "ready"`, and sinking ~70% of live media would be worse than not screening.
 _COMPLEXITY = {"low": 1.0, "simple": 1.0, "minimal": 1.0, "medium": 0.5, "moderate": 0.5,
@@ -116,9 +146,15 @@ class Counters:
     Accumulation is deliberately two-level. `_monitor_item` builds a private tally, hands it to
     the per-monitor work and `absorb()`s it into the run-wide object afterwards, so
     `virlo_payload`'s numbers are scoped to whatever produced them instead of repeating one
-    monitor-wide figure per theme — and a per-theme tally slots in underneath without moving a
-    call site. Every quantity is additive; the four fields in `_CARRIED_FIELDS` are the ask's
-    shape and are carried, never summed.
+    monitor-wide figure per topic — the discipline that keeps the split honest now that one
+    monitor really does produce nine items. Every quantity is additive; the four fields in
+    `_CARRIED_FIELDS` are the ask's shape and are carried, never summed.
+
+    The `sets`, `choice` and `images` groups belong to the withdrawn media funnel (FR-32/33/247)
+    and are excised in Wave 3.5; nothing on the live path writes them any more. The groups that
+    matter post-pivot are `input` -> `topics` -> `filter` -> Select's verdicts -> the render
+    forecast, and every one of them reconciles: posts in minus duplicates is what the split read,
+    topics out is what the filter judged, and what the filter kept is what Select ranked.
 
     **Zeros are the point.** `reference_shortfall`, `reference_image_dropped`, `trend_text_only`
     and `reference_free` fired in NONE of the archived runs, which leaves an operator unable to
@@ -147,6 +183,25 @@ class Counters:
     slideshows_raw: int = 0
     videos_kept: int = 0
     slideshows_kept: int = 0
+    #: An explicit field rather than the derived `raw - kept` view it used to be (contracts item
+    #: 15): the split makes this number the one honest place to read the dedupe from, and a field
+    #: is what `absorb` can fold and what a caller can state directly. `__post_init__` still
+    #: derives it for a tally built in ONE shot from raws and kepts, so both construction styles
+    #: agree instead of one of them silently reporting zero drops.
+    duplicates_dropped: int = 0
+
+    # --- topics: FR-293's split. Per MONITOR, never per topic — nine topics built from one
+    # monitor's 200 rows are 200 posts in, not 1,800; that is what the two-level `absorb` seam
+    # buys, and re-counting a monitor's rows once per topic is the exact defect it prevents.
+    posts_in: int = 0
+    topics_out: int = 0
+
+    # --- filter: FR-294's competitor screen. Recorded by the caller (`runner._screen_topics`),
+    # because the filter runs between Collect and Select and this adapter never sees a verdict.
+    filter_kept: int = 0
+    filter_stripped: int = 0
+    filter_skipped: int = 0
+    filter_degraded: bool = False  # the LLM layer failed open — every verdict defaulted to keep
 
     # --- sets: FR-91's coherent-candidate screen, and every row it turned away
     slideshow_sets: int = 0
@@ -193,6 +248,18 @@ class Counters:
 
     # ----------------------------------------------------------------- accumulation
 
+    def __post_init__(self) -> None:
+        """Derive `duplicates_dropped` when a one-shot tally stated raws and kepts but not the fold.
+
+        A tally is built two ways: incrementally through `add_input` (which maintains the field
+        row by row) or in one shot from known totals. The second way has no other moment to
+        compute the drop, and a zero there would read as "nothing was repeated" — the precise
+        false negative FR-155 exists to prevent. Never negative: kepts without raws is a caller
+        stating half the picture, not a discovery that rows were invented.
+        """
+        if not self.duplicates_dropped:
+            self.duplicates_dropped = max(0, self.posts_raw - self.posts_kept)
+
     def absorb(self, other: Counters) -> None:
         """Fold one tally (a monitor's, later a theme's) into this run-wide rollup.
 
@@ -220,7 +287,39 @@ class Counters:
         self.slideshows_raw += slideshows_raw
         self.videos_kept += videos_kept
         self.slideshows_kept += slideshows_kept
+        self.duplicates_dropped += (videos_raw + slideshows_raw) - (videos_kept + slideshows_kept)
         self.total_available += total_available
+
+    def add_topics(self, *, posts_in: int, topics_out: int) -> None:
+        """One monitor's split (FR-293): the posts it offered, and the topics they became.
+
+        Called once per monitor, with the monitor's post count — NOT once per topic, and never
+        with a topic's own share. `9 topics` beside `200 posts` is the sentence the operator needs
+        ("did the split lose material?"); nine rows of 200 would be the same lie the pre-FR-155
+        `virlo_payload` told about duplicates.
+        """
+        self.posts_in += posts_in
+        self.topics_out += topics_out
+
+    def record_filter(self, verdicts: Any) -> None:
+        """FR-294's verdicts, as `runner._screen_topics` received them.
+
+        Takes the `dict[ordinal, Verdict]` that `topic_filter.screen()` returns (or any iterable
+        of verdicts) and is duck-typed on `.verdict`/`.reason`, so the funnel never imports the
+        filter and the filter never imports the funnel. An unrecognised verdict counts as `keep`,
+        which is the module's own total-by-construction default (§1.5) rather than a silent drop.
+        """
+        rows = list(verdicts.values()) if isinstance(verdicts, Mapping) else list(verdicts or ())
+        for row in rows:
+            verdict = str(getattr(row, "verdict", "") or "keep").strip().lower()
+            if verdict == "skip":
+                self.filter_skipped += 1
+            elif verdict == "strip":
+                self.filter_stripped += 1
+            else:
+                self.filter_kept += 1
+            if str(getattr(row, "reason", "") or "").startswith(_FILTER_DEGRADED):
+                self.filter_degraded = True
 
     def reject(self, reason: str, count: int = 1) -> None:
         """Name one screen a row failed. The reason strings are the `rejection_reasons` map on
@@ -278,10 +377,6 @@ class Counters:
         return self.videos_kept + self.slideshows_kept
 
     @property
-    def duplicates_dropped(self) -> int:
-        return self.posts_raw - self.posts_kept
-
-    @property
     def sets_qualified(self) -> int:
         """FR-91 coherent sets. The last-resort loose group is NOT one and is counted apart."""
         return self.slideshow_sets + self.frame_sets
@@ -309,6 +404,10 @@ class Counters:
                       "videos": self.videos_kept, "slideshows": self.slideshows_kept,
                       "duplicates_dropped": self.duplicates_dropped,
                       "total_available": self.total_available},
+            "topics": {"posts_in": self.posts_in, "topics_out": self.topics_out,
+                       "returned": self.trends_returned},
+            "filter": {"kept": self.filter_kept, "stripped": self.filter_stripped,
+                       "skipped": self.filter_skipped, "degraded": self.filter_degraded},
             "sets": {"qualified": self.sets_qualified, "slideshow_sets": self.slideshow_sets,
                      "frame_sets": self.frame_sets, "last_resort": self.last_resort_sets,
                      "too_thin": self.sets_thin, "slideshows_thin": self.slideshows_thin,
@@ -329,10 +428,15 @@ class Counters:
 
     def summary_line(self) -> str:
         """One flat sentence for run.log's digest of `collect_funnel` — the nested record above
-        would render there as a truncated, unreadable single line."""
+        would render there as a truncated, unreadable single line.
+
+        Reads the post-pivot funnel end to end: what Virlo shipped, what the dedupe kept, what the
+        split made of it, and what reached Select.
+        """
         return (f"{self.posts_kept} post(s) after {self.duplicates_dropped} duplicate(s), "
-                f"{self.sets_qualified} coherent set(s), {self.trends_returned} trend(s), "
-                f"{self.images_downloaded} of {self.images_attempted} image(s) downloaded")
+                f"{self.topics_out} topic(s) from "
+                f"{max(0, self.monitors_asked - self.monitors_failed)} monitor(s), "
+                f"{self.trends_returned} returned")
 
 
 class TrendFeed(list):  # type: ignore[type-arg]  # a plain list of TrendItem, plus the funnel
@@ -353,22 +457,26 @@ class TrendFeed(list):  # type: ignore[type-arg]  # a plain list of TrendItem, p
 async def fetch(cfg: Config, *, cache_dir: Path | None = None, log: LogWriter | None = None,
                 include_digest: bool = True, used_posts: Collection[str] | None = None,
                 say: Callable[[str], None] | None = None) -> TrendFeed:
-    """Collect every configured monitor into ranked, reference-bearing trend items.
+    """Collect every configured monitor into ranked TOPIC items, strongest first (FR-293).
 
     Args:
-        cfg: the loaded run config (`sources.*` and `mcp_servers.virlo` are what matter).
-        cache_dir: where reference images land; a private temp folder when omitted. The caller
-            owns cleanup and calls `cleanup()` on every exit path (FR-249).
+        cfg: the loaded run config (`sources.*` and `mcp_servers.virlo` are what matter;
+            `sources.virlo_topics_per_monitor` sets how many topics one monitor may become).
+        cache_dir: **inert post-pivot** — no reference image is downloaded any more (FR-32/33
+            withdrawn), so nothing lands anywhere. The parameter stays for one wave because the
+            runner still passes it and `cleanup()` still exists; both go in Wave 3.5.
         log: the run's LogWriter, so every degrade lands in run.log/events.jsonl.
         include_digest: `False` skips `get_trends`, the one metered call, leaving
             `cross_monitor_context` empty — how a preview stays honestly at $0.
-        used_posts: post ids already used inside the `trend_history_days` window (FR-7) — a set,
-            or the `posts` mapping itself, since iterating it yields its keys. Omitted means
-            "nothing is used yet", which is also what a history without `posts` means.
+        used_posts: post ids already used inside the `trend_history_days` window (FR-7). Post-pivot
+            the adapter does NOT reorder on it: `TrendItem.posts` is view-ranked and nothing else,
+            because that ordering IS the sort proof the console prints (FR-297a/b) and the `P<n>`
+            labels the copy call quotes by (§1.7). Exclusion moved to Select, which owns verdicts
+            and reads the same window per `history_key`.
         say: the console seam, for the one refusal an operator must not have to find in run.log.
 
     Returns:
-        A `TrendFeed` — items strongest first, with this run's funnel `Counters` attached
+        A `TrendFeed` — topics strongest first, with this run's funnel `Counters` attached
         (FR-155). A failed monitor contributes nothing and is logged; an empty feed means Collect
         found nothing, and the caller decides whether that aborts the run.
     """
@@ -391,7 +499,7 @@ async def fetch(cfg: Config, *, cache_dir: Path | None = None, log: LogWriter | 
         results = await asyncio.gather(*jobs, return_exceptions=True)
 
     items: list[TrendItem] = []
-    context, confidences, exemplars = "", {}, []
+    context, confidences = "", {}
     # `strict=True` is the guard that the labels and the gathered jobs are the same list, so the
     # "digest" label only exists when the digest job does — without that condition, every
     # `include_digest=False` call (the documented $0-preview seam) died here on a ValueError.
@@ -404,21 +512,23 @@ async def fetch(cfg: Config, *, cache_dir: Path | None = None, log: LogWriter | 
                 counters.monitors_failed += 1
             _warn(log, "virlo_monitor_failed", f"monitor {label} returned no data: {result}",
                   monitor_id=label, error=type(result).__name__)
-        elif isinstance(result, TrendItem):
-            items.append(result)
+        elif isinstance(result, list):  # one monitor's topics (FR-293), zero of them if it failed
+            items.extend(result)
         elif isinstance(result, tuple):
-            context, confidences, exemplars = result
+            context, confidences = result
     for item in items:  # global digest first, then this monitor's own timing/thread context
         item.cross_monitor_context = " · ".join(
             part for part in (context, item.cross_monitor_context) if part)
-        if item.confidence is None:  # themes lead (FR-5 v1.6.4); the digest is the empty fallback
+        if item.confidence is None:  # the theme leads (FR-5); the digest is the empty fallback
             item.confidence = _match_confidence(item.name, confidences)
-    offered = _offer_digest_exemplars(items, exemplars, cfg)
-    await _download_references(items, cfg, cache_dir, log, counters=counters)
-    _log_digest_exemplars(items, offered, log)
+    # The raw components are what a human argues with ("why did THAT topic win?"), and `_score`
+    # overwrites them in place with their 0-1 normalizations — so they are copied out first and
+    # both halves travel together on `topic_ranked` (FR-298).
+    raw = {item.history_key: dict(item.strength_components) for item in items}
     _score(items)
     items.sort(key=lambda item: item.strength, reverse=True)
     counters.trends_returned = len(items)
+    _ranked_event(log, items, raw)
     _funnel_event(log, counters)
     return TrendFeed(items, counters)
 
@@ -483,18 +593,24 @@ def _server(cfg: Config) -> ServerConfig:
 async def _monitor_item(pool: SessionPool, monitor_id: str, cfg: Config,
                         log: LogWriter | None = None,
                         used: Collection[str] = frozenset(),
-                        *, counters: Counters | None = None) -> TrendItem:
-    """One monitor's three calls on one borrowed session (FR-115 serializes them anyway).
+                        *, counters: Counters | None = None) -> list[TrendItem]:
+    """One monitor's three calls on one borrowed session, split into TOPICS (FR-293).
 
     Both media calls ask for the monitor's WINNERS: `views desc`, one page of `_MEDIA_LIMIT`.
-    Unsorted, "top videos" was Virlo's insertion order and every reference this tool ever attached
-    came from the bottom of a 2,039-row pool.
+    Unsorted, "top videos" was Virlo's insertion order and every post this tool ever quoted came
+    from the bottom of a 2,039-row pool. (FR-115 serializes the three calls anyway.)
+
+    Returns a LIST — one item per theme, or exactly one synthesized item when the monitor named no
+    theme. The name is kept because the seam is the same; the cardinality is not, and every caller
+    of this function reads the list.
 
     The funnel is tallied on a PRIVATE `Counters` here and absorbed into the run-wide rollup
-    afterwards (FR-155). That is what makes `virlo_payload`'s numbers scoped to what produced
-    them: when a monitor stops meaning one trend, the per-theme work tallies underneath this same
-    seam and the rollup still reconciles, instead of one monitor-wide figure being repeated per
-    theme.
+    afterwards (FR-155). That is what makes the numbers scoped to what produced them: the topic
+    work tallies underneath this same seam, so one monitor's 200 rows are counted once and not
+    once per topic.
+
+    `used` is accepted and deliberately not consulted (see `fetch`): post-pivot the ordering of a
+    topic's posts is pure view rank, and history exclusion belongs to Select.
     """
     args = {"monitor_id": monitor_id, "limit": _MEDIA_LIMIT,
             "order_by": _MEDIA_ORDER_BY, "sort": _MEDIA_SORT}
@@ -507,32 +623,46 @@ async def _monitor_item(pool: SessionPool, monitor_id: str, cfg: Config,
     # Virlo reports how deep the pool it just answered from is; one sorted page of `_MEDIA_LIMIT`
     # is all the adapter takes, and `total_available` is what makes that choice legible later.
     tally.total_available = int(_num(videos.get("total")) + _num(shows.get("total")))
-    item = _build_item(monitor_id, analysis, clips, panels, cfg, used=used, log=log, counters=tally)
-    _payload_event(log, item, tally)
+    items = _split_topics(monitor_id, analysis, clips, panels, cfg, log=log, counters=tally)
+    for item in items:
+        _payload_event(log, item, tally)
+        _topic_posts_event(log, item)
+    _fields_event(log, monitor_id, analysis, clips, panels, items)
     if counters is not None:
         counters.absorb(tally)
-    return item
+    return items
 
 
 def _payload_event(log: LogWriter | None, item: TrendItem, tally: Counters) -> None:
-    """FR-77's per-trend Virlo payload summary, written once at join time: key, name, media counts
-    and the top engagement stats — enough to tell a thin trend from a strong one in run.log.
+    """FR-77's per-item Virlo payload summary, written once at join time: key, name, post counts
+    and the top engagement stats — enough to tell a thin topic from a strong one in run.log.
 
     The counts are the POST-DEDUPE ones (FR-155's event-shape amendment). Until 2026-08-11 this
     line reported `len(clips)`/`len(panels)` — what Virlo shipped, not what the pipeline read —
     and a real three-monitor run therefore over-reported its material by 11 rows. The raw figures
     are kept beside them as `videos_raw`/`slideshows_raw` so the drop is measurable rather than
     merely corrected.
+
+    A TOPIC reports its OWN posts, not the monitor's totals (FR-293): nine topics printing one
+    monitor-wide "100 videos, 100 slideshows" would be the same over-reporting defect the dedupe
+    fix closed, one level up. The monitor-wide figures stay in `data` beside them, because the
+    dedupe drop is a fact about the monitor and cannot be attributed to any one topic.
     """
     if log is None:
         return
     newest = item.newest_published_at.date().isoformat() if item.newest_published_at else "-"
     likes = int(item.engagement.get("likes", 0))
+    # An item with no `posts` is the pre-pivot shape (`_build_item`, legacy) — it has no post-level
+    # composition of its own, so the monitor-wide deduped counts are the honest answer for it.
+    videos, shows = ((sum(1 for post in item.posts if not post.is_slideshow),
+                      sum(1 for post in item.posts if post.is_slideshow))
+                     if item.posts else (tally.videos_kept, tally.slideshows_kept))
     log.event("virlo_payload",
-              f"{item.name}: after dedup {tally.videos_kept} videos, {tally.slideshows_kept} "
+              f"{item.name}: after dedup {videos} videos, {shows} "
               f"slideshows, {item.total_views:,} views, {likes:,} likes, newest {newest}",
-              trend=item.history_key, name=item.name,
-              videos=tally.videos_kept, slideshows=tally.slideshows_kept,
+              trend=item.history_key, name=item.name, topic=item.topic_key,
+              videos=videos, slideshows=shows, posts=len(item.posts),
+              monitor_videos_kept=tally.videos_kept, monitor_slideshows_kept=tally.slideshows_kept,
               videos_raw=tally.videos_raw, slideshows_raw=tally.slideshows_raw,
               duplicates_dropped=tally.duplicates_dropped,
               total_available=tally.total_available,
@@ -540,27 +670,28 @@ def _payload_event(log: LogWriter | None, item: TrendItem, tally: Counters) -> N
 
 
 async def _digest(pool: SessionPool,
-                  log: LogWriter | None) -> tuple[str, dict[str, float], list[list[Any]]]:
-    """Cross-monitor context, any confidence values the daily digest carries, and its exemplars.
+                  log: LogWriter | None) -> tuple[str, dict[str, float]]:
+    """Cross-monitor context and any confidence values the daily digest carries.
 
-    THE ONLY METERED VIRLO CALL ($0.25/run, RESULTS.md §A). It creates no trend items (20 §3) and
-    its failure is never fatal — the run simply carries no cross-monitor context.
+    THE ONLY METERED VIRLO CALL ($0.25/run, RESULTS.md §A). It creates no topics (20 §3) and its
+    failure is never fatal — the run simply carries no cross-monitor context.
 
-    The third return is what makes the $0.25 defensible (A18). Each digest trend ships up to five
-    `top_exemplars` — real posts with thumbnails — which this adapter discarded for the tool's whole
-    history while a spike flagged them as *"present and unclaimed"*. They come back grouped per
-    digest trend, one list per trend, ready to be offered as the LAST-RESORT reference tier: these
-    posts are global, not this niche's, so they must never outrank a monitor's own material.
+    **The exemplar payload is dropped (v2.0.0).** Each digest trend ships up to five
+    `top_exemplars`, and this adapter used to hand them on as a last-resort REFERENCE tier (A18).
+    Post-pivot there is no reference tier at all — the visuals come from the style registry — and
+    those posts are global rather than this niche's, so offering their TEXT would import
+    off-niche copy into a topic that has its own. The wrapper still normalizes them; nothing here
+    reads them, and 20 §2's tool-table row goes with the media funnel in Wave 3.5.
     """
     try:
         async with pool.acquire() as session:
             payload = await _call(session, "get_trends")
     except (MCPClientError, MCPError, VirloToolError, ValueError) as exc:
         _warn(log, "virlo_digest_failed", f"trend digest unavailable: {exc}", error=type(exc).__name__)
-        return "", {}, []
+        return "", {}
     rows = [row for group in payload.get("groups") or [] for row in group.get("trends") or []]
     rows.sort(key=lambda row: _num(row.get("ranking")) or 10_000)
-    lines, confidences, exemplars = [], {}, []
+    lines, confidences = [], {}
     for row in rows[:_DIGEST_ROWS]:
         name = str(row.get("name") or "").strip()
         if not name:
@@ -571,12 +702,7 @@ async def _digest(pool: SessionPool,
         lines.append(" ".join(parts))
         if row.get("confidence") is not None:
             confidences[slugify(name, 0)] = float(_num(row["confidence"]))
-        posts = [post for post in row.get("top_exemplars") or []
-                 if isinstance(post, Mapping) and str(post.get("thumbnail_url") or "").strip()]
-        if posts:
-            exemplars.append(_ranked(posts))
-    return (("Global trend digest today: " + "; ".join(lines) if lines else ""),
-            confidences, exemplars)
+    return ("Global trend digest today: " + "; ".join(lines) if lines else ""), confidences
 
 
 async def _call(session: Session, tool: str, args: dict[str, Any] | None = None) -> Mapping[str, Any]:
@@ -593,7 +719,463 @@ async def _call(session: Session, tool: str, args: dict[str, Any] | None = None)
     return payload if isinstance(payload, Mapping) else {}
 
 
-# --------------------------------------------------------------------------- normalization
+# ----------------------------------------------------------------- topic split (FR-293)
+
+@dataclass(slots=True, frozen=True)
+class _Theme:
+    """One `analysis_data.themes[]` block, normalized into the seed of exactly one topic.
+
+    An empty `key` marks the SYNTHESIZED seed: the monitor named no theme (or the kill switch is
+    on), so the one topic built from it is the monitor aggregate — the pre-pivot item shape,
+    `history_key` included.
+    """
+
+    key: str  # `slugify(name, 0)`, uncapped so two runs derive the identical key
+    name: str  # the topic's own name, verbatim from Virlo
+    why_it_works: str = ""
+    tactics: tuple[str, ...] = ()
+    confidence: float | None = None
+    #: Virlo's own `evidence_video_ids` for this theme — the only first-party theme->post link
+    #: that exists. Empty today; see `_allocate` for why, and what happens when it is not.
+    evidence: frozenset[str] = frozenset()
+
+
+@dataclass(slots=True, frozen=True)
+class _Row:
+    """One media row and the `SourcePost` built from it, carried as one unit.
+
+    Both halves are needed and neither subsumes the other: `post` is the quotable text (§1.7's
+    reference targets, the history record, the FR-297b roster), while `raw` still carries Virlo's
+    `intelligence` classification — `hook_type`, `emotional_tone`, `visual_hook_type` — which is
+    a judgement ABOUT a post rather than text FROM it, and therefore never became a `SourcePost`
+    field. Keeping them paired is what lets a topic's labels be drawn from its own posts.
+    """
+
+    post: SourcePost
+    raw: Mapping[str, Any]
+
+
+@dataclass(slots=True, frozen=True)
+class _MonitorFacts:
+    """What every topic of one monitor inherits from the monitor rather than from its own theme."""
+
+    monitor_id: str
+    name: str  # the monitor's own name — the synthesized topic's name
+    why_it_works: str = ""  # `analysis.why_it_works`, the monitor's own prose
+    tactics: tuple[str, ...] = ()  # `analysis.viral_tactics`, below the theme's own
+    context: str = ""  # timing, peak hours, connecting thread, key highlight (20 §3)
+    # The three `aggregate_*` fields are the SYNTHESIZED topic's only source — a monitor with no
+    # themes, or the `-1` kill switch. They span every consumed theme, which is what makes that
+    # one item the pre-pivot item shape rather than a topic that lost its theme.
+    aggregate_why: str = ""
+    aggregate_tactics: tuple[str, ...] = ()
+    aggregate_confidence: float | None = None
+
+
+def _topic_cap(cfg: Config) -> int:
+    """`sources.virlo_topics_per_monitor`, as the split reads it.
+
+    `-1` is the kill switch (one item per monitor — the pre-pivot behaviour, and the only way to
+    un-ship the split without a code change); `0` never reaches here because config validation
+    refuses it explicitly, a run that collects nothing while reporting success being the one
+    reading of "zero topics per monitor" nobody wants.
+    """
+    return int(cfg.sources.virlo_topics_per_monitor)
+
+
+def _themes(analysis: Mapping[str, Any], cap: int) -> list[_Theme]:
+    """This monitor's themes as topic seeds — the `_themes()` contract (plan §1.3, FR-293).
+
+    Three invariants, all structural rather than advisory:
+
+    - **Never fewer items than the pre-pivot adapter returned.** No themes, no named theme, or the
+      kill switch, and the answer is a single empty-keyed seed — one topic per monitor, exactly as
+      before. The list is never empty, so no caller branches on emptiness.
+    - **`cap` bounds consumption.** Themes past it are dropped here, which is also what bounds the
+      filter call's worst case (`len(monitors) x cap` topics, priced pre-Collect in `budget.py`).
+    - **The key is stable, and unique within the monitor.** `slugify(name, 0)` is uncapped, so the
+      same theme name yields the same key run after run — the whole point of a history key. A
+      collision inside one monitor takes a `#2` suffix, because `runner`/`previews` build
+      `{history_key: topic}` maps and a duplicate key would silently DROP a topic rather than
+      report one (the exact defect Increment B's review caught).
+    """
+    seeds: list[_Theme] = []
+    if cap > 0:
+        for row in (analysis.get("themes") or [])[:cap]:
+            if not isinstance(row, Mapping):
+                continue
+            name = str(row.get("name") or "").strip()
+            if not name:
+                continue
+            seeds.append(_Theme(
+                key=_unique_key(slugify(name, 0), {seed.key for seed in seeds}),
+                name=name,
+                why_it_works=str(row.get("why_it_works") or "").strip(),
+                tactics=tuple(str(value).strip() for value in row.get("tactics") or []
+                              if str(value).strip()),
+                confidence=_confidence(row.get("confidence")),
+                evidence=frozenset(str(value) for value in row.get("evidence_video_ids") or []
+                                   if str(value).strip())))
+    return seeds or [_Theme(key="", name="")]
+
+
+def _unique_key(key: str, taken: Collection[str]) -> str:
+    """`key`, or the first `key#N` free in `taken` — see `_themes` for why a collision cannot pass."""
+    if key not in taken:
+        return key
+    suffix = 2
+    while f"{key}#{suffix}" in taken:
+        suffix += 1
+    return f"{key}#{suffix}"
+
+
+def _confidence(value: Any) -> float | None:
+    """One theme's confidence as a number, or None. `bool` is an `int` in Python, so it is refused
+    explicitly — `True` would otherwise rank as a confidence of 1.00."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    return None
+
+
+def _split_topics(monitor_id: str, analysis: Mapping[str, Any], videos: list[Any], shows: list[Any],
+                 cfg: Config, *, log: LogWriter | None = None,
+                 counters: Counters | None = None) -> list[TrendItem]:
+    """Split one monitor's three tool returns into its topics (FR-293) — the post-pivot join.
+
+    The shape, in one line: dedupe the rows, rank them by views, seed one topic per theme, deal
+    the posts out exclusively, and build each topic from ITS OWN share. Nothing here downloads,
+    screens or scores across monitors — `_score` needs the whole run's pool and runs in `fetch`.
+
+    `counters` is the caller's tally (FR-155); omitted, a scratch one absorbs the numbers and is
+    discarded, so every direct caller keeps working and nothing branches on whether it was passed.
+    """
+    tally = counters if counters is not None else Counters()
+    raw_videos, raw_shows = len(videos), len(shows)
+    videos, shows = _dedupe(videos), _dedupe(shows)  # RESULTS.md §A: the live arrays repeat posts
+    tally.add_input(videos_raw=raw_videos, slideshows_raw=raw_shows,
+                    videos_kept=len(videos), slideshows_kept=len(shows))
+    cap = _topic_cap(cfg)
+    aggregate_why, aggregate_tactics, context, aggregate_confidence = _analysis_fields(
+        analysis, cap)
+    facts = _MonitorFacts(
+        monitor_id=str(monitor_id),
+        name=str(analysis.get("name") or "").strip() or f"monitor {monitor_id}",
+        why_it_works=str(analysis.get("why_it_works") or "").strip(),
+        tactics=tuple(str(value).strip() for value in analysis.get("viral_tactics") or []
+                      if str(value).strip()),
+        context=context,
+        aggregate_why=aggregate_why,
+        aggregate_tactics=tuple(aggregate_tactics),
+        aggregate_confidence=aggregate_confidence)
+    themes = _themes(analysis, cap)
+    rows = _source_rows(videos, shows, str(monitor_id))
+    if not rows:
+        # Not fatal and not silent: the topics still carry the analysis text, and Select decides
+        # (FR-6). Silent, this reads downstream as "the trend was weak" rather than "the monitor
+        # shipped nothing", which is a different fix entirely.
+        _warn(log, "virlo_monitor_empty",
+              f"{facts.name}: monitor returned no posts — its topic(s) carry the monitor's "
+              "analysis text and nothing quotable (FR-6)", monitor_id=str(monitor_id))
+    items = [_topic_item(theme, share, facts)
+             for theme, share in zip(themes, _allocate(rows, themes), strict=True)]
+    tally.add_topics(posts_in=len(rows), topics_out=len(items))
+    return items
+
+
+def _source_rows(videos: list[Any], shows: list[Any], monitor_id: str) -> list[_Row]:
+    """Every deduped row as a `SourcePost`, view-ranked descending across both media kinds.
+
+    The two arrays arrive independently sorted, so concatenating them says nothing about strength
+    — this is the one place that merged order becomes a real ranking, and that ranking is what the
+    `P<n>` reference labels count over (§1.7), what FR-297b prints as the sort proof, and what
+    `trend_reuse_index` rotates through when siblings pick different posts.
+
+    `index` runs across slideshows THEN videos exactly as `_post_id` documents, so the positional
+    fallback for a row carrying neither `id` nor `url` cannot collide across the two arrays.
+    """
+    pairs: list[tuple[Any, int, bool]] = [
+        (video, index, False) for index, video in enumerate(videos, start=len(shows))]
+    pairs += [(show, index, True) for index, show in enumerate(shows)]
+    built = [_Row(_source_post(raw, monitor_id, index, is_slideshow), raw)
+             for raw, index, is_slideshow in pairs if isinstance(raw, Mapping)]
+    # Stable, so rows tied on views keep video-then-slideshow order — the pre-pivot `_ranked`
+    # order, kept so a tie does not silently reshuffle between two runs of the same page.
+    return sorted(built, key=lambda row: row.post.views, reverse=True)
+
+
+def _source_post(raw: Mapping[str, Any], monitor_id: str, index: int,
+                 is_slideshow: bool) -> SourcePost:
+    """One Virlo row as the quotable unit (§1.6/FR-293) — a field MAP, never a rewrite.
+
+    Stated as a table because §1.7 resolves the copy call's references straight back into these
+    fields, so which Virlo field lands where is a content decision, not plumbing:
+
+    | `SourcePost`    | Virlo row            | what it actually is                              |
+    |-----------------|----------------------|--------------------------------------------------|
+    | `caption`       | `description`        | the creator's own caption — the verbatim material |
+    | `hooks`         | `hook_text`          | the opening line Virlo lifted off the post        |
+    | `text_overlays` | `text_overlay_content` | words burned into the frame (videos only)       |
+    | `panel_texts`   | `panel_texts`        | per-slide words in panel order (slideshows only)  |
+    | `description`   | `summary`            | **Virlo's** summary of the post, not the creator's |
+    | `views/author/url/published_at` | same names | identity and rank                         |
+
+    ⚠️ `description` is the one field that is not the creator's words: Virlo's `intelligence`
+    block writes it, so it is legitimate CONTEXT (and legitimately verbatim *from Virlo*, per
+    FR-293's wording) but a poor thing to burn into a frame as a quote. The candidate pre-filter
+    that decides what may become pixels lives in `copywrite` (§1.7), which is where that
+    distinction has to be enforced; it is named here so it cannot be discovered by surprise.
+
+    Whitespace is stripped at the edges and nowhere else: a string is otherwise stored exactly as
+    it arrived, diacritics, emoji, line breaks and all, because a string edited on the way in can
+    no longer be quoted verbatim on the way out (D42).
+    """
+    hook = str(raw.get("hook_text") or "").strip()
+    overlay = str(raw.get("text_overlay_content") or "").strip()
+    return SourcePost(
+        post_id=_post_id(raw, monitor_id, index),
+        url=str(raw.get("url") or ""),
+        author=str(raw.get("author_username") or ""),
+        caption=str(raw.get("description") or "").strip(),
+        hooks=[hook] if hook else [],
+        text_overlays=[overlay] if overlay else [],
+        panel_texts=[str(text) for text in raw.get("panel_texts") or [] if str(text).strip()],
+        description=str(raw.get("summary") or "").strip(),
+        views=int(_num(raw.get("views"))),
+        published_at=_when(raw),
+        is_slideshow=is_slideshow)
+
+
+def _allocate(rows: Sequence[_Row], themes: Sequence[_Theme]) -> list[list[_Row]]:
+    """Deal one monitor's posts across its topics — EXCLUSIVELY (FR-293; Increment-B §4.2).
+
+    Two passes, in order:
+
+    1. **Evidence.** A theme claims the rows its own `evidence_video_ids` name, strongest theme
+       first, and a claimed row leaves the pool. Measured live (spikes §1.5): one `views desc`
+       page recovers ~8% of a theme's evidence and evidence names a slideshow in 0 of 287 cases,
+       so this is a weak signal and never a partition key on its own. **Today it recovers nothing
+       at all** — the MCP wrapper's `_norm_theme` keeps five fields and `evidence_video_ids` is
+       not among them — so the pass is inert until that field is passed through. It is written
+       absent-safe deliberately: the day the wrapper forwards it, allocation gets sharper and no
+       other line moves.
+    2. **Stride.** Everything left is dealt `rest[i::len(themes)]` to theme *i*. Over a view-ranked
+       list a stride deal is deterministic, exhaustive and non-overlapping, and it avoids
+       round-robin's pathology where theme #1 eats every strong post. Exclusivity is the property
+       that matters: it is what makes two topics of one monitor carry different posts, different
+       engagement and therefore different strengths (§1.6), rather than nine copies of one number.
+
+    A single seed — one theme, or the synthesized aggregate — takes every row: there is nothing to
+    divide, and "all of this monitor's posts" is precisely the pre-pivot item shape.
+    """
+    if len(themes) <= 1:
+        return [list(rows)]
+    shares: list[list[_Row]] = [[] for _ in themes]
+    claimed: set[str] = set()
+    for index, theme in enumerate(themes):
+        if not theme.evidence:
+            continue
+        for row in rows:
+            if row.post.post_id in theme.evidence and row.post.post_id not in claimed:
+                shares[index].append(row)
+                claimed.add(row.post.post_id)
+    rest = [row for row in rows if row.post.post_id not in claimed]
+    for index in range(len(themes)):
+        shares[index].extend(rest[index::len(themes)])
+    # Re-ranked per share: an evidence claim can pull a weaker row ahead of a stronger strided one,
+    # and `TrendItem.posts` is view-ranked by contract — the `P<n>` labels count over that order.
+    return [sorted(share, key=lambda row: row.post.views, reverse=True) for share in shares]
+
+
+def _topic_item(theme: _Theme, rows: Sequence[_Row], facts: _MonitorFacts) -> TrendItem:
+    """One topic, built from ITS OWN posts and nothing else (FR-293).
+
+    Every quantity below — views, median, velocity, engagement, the label lists, the hashtags, the
+    slideshow majority — is measured over `rows`, this topic's exclusive share. That is the whole
+    point of the split: a monitor-wide figure repeated across nine topics would rank them all
+    identically and make the ranking table a decoration.
+
+    `is_slideshow` is a strict majority over those same posts (FR-90's carousel affinity): a topic
+    whose winners really are photo decks is a deck to mimic, and a tie reads as video, because the
+    burden of proof sits on the rarer, more expensive-to-imitate format.
+
+    The raw strength components are STAGED here and replaced by their normalized 0-1 values in
+    `_score` — min-max needs the run's whole topic pool, which no single monitor can see.
+    """
+    posts = [row.post for row in rows]
+    raws = [row.raw for row in rows]
+    views = [float(post.views) for post in posts]
+    engagement = {key: int(sum(_num(raw.get(key)) for raw in raws))
+                  for key in ("likes", "shares", "comments", "bookmarks")}
+    aggregate = not theme.key  # the synthesized monitor-wide topic (no themes, or kill switch)
+    item = TrendItem(
+        # `<mid>::<topic_key>` (§1.6) — the monitor id LEADS because Virlo's theme keys collide
+        # across monitors (measured on all three live agents). The aggregate keeps the bare
+        # monitor id, which is the pre-pivot key exactly.
+        history_key=facts.monitor_id if aggregate else f"{facts.monitor_id}::{theme.key}",
+        monitor_id=facts.monitor_id,
+        name=facts.name if aggregate else theme.name,
+        topic_key=theme.key,
+        posts=posts,
+        confidence=facts.aggregate_confidence if aggregate else theme.confidence,
+        why_it_works=facts.aggregate_why if aggregate else _topic_why(theme, facts),
+        tactics=(list(facts.aggregate_tactics[:_MAX_TACTICS]) if aggregate
+                 else _topic_tactics(theme, facts)),
+        cross_monitor_context=facts.context,  # `fetch` prefixes the global digest onto this
+        hook_texts=_texts(raws, "hook_text"),
+        text_overlay_contents=_texts(raws, "text_overlay_content"),
+        # ONE post's panels, never several concatenated: `panel_texts` is a per-slide rhythm, and
+        # slides from two different decks stitched together describe a deck that never existed.
+        panel_texts=list(next((post.panel_texts for post in posts if post.panel_texts), [])),
+        video_descriptions=_texts(raws, "description"),
+        # Virlo's OWN classification of the winning posts (A13). FR-100 asks the copywriter to
+        # derive a hook pattern in prose that the source already labels — `story_tease`,
+        # `tutorial_promise`, `text_hook` — so these replace guesswork with the source's own
+        # vocabulary. Read per row and absent-safe: the agent-level `data_intelligence_enabled`
+        # flag gates NEW enrichment only, and a monitor reporting `false` still carries populated
+        # `intelligence` on rows enriched earlier (34/50 measured on exactly such a monitor).
+        hook_types=_labels(raws, "hook_type"),
+        visual_hook_types=_labels(raws, "visual_hook_type"),  # videos only; slideshows omit it
+        emotional_tones=_labels(raws, "emotional_tone"),
+        hashtags=_tags(raws),  # A14 — reference material for the copy call, never a mandate
+        is_slideshow=sum(1 for post in posts if post.is_slideshow) * 2 > len(posts),
+        virlo_url=next((post.url for post in posts if post.url), None),
+        total_views=int(sum(views)),
+        median_views=int(statistics.median(views)) if views else 0,
+        newest_published_at=max((post.published_at for post in posts if post.published_at),
+                                default=None),
+        engagement=engagement,
+    )
+    item.strength_components = {"total_views": float(item.total_views),
+                                "median_views": float(item.median_views),
+                                "velocity": _velocity(raws),
+                                "engagement": float(sum(engagement.values()))}
+    return item
+
+
+def _topic_why(theme: _Theme, facts: _MonitorFacts) -> str:
+    """This topic's `why_it_works`: the monitor's own reading, then the theme's own — bounded,
+    because it reaches prompts."""
+    theme_part = f"{theme.name}: {theme.why_it_works}" if theme.why_it_works else ""
+    return " · ".join(part for part in (facts.why_it_works, theme_part) if part)[:_WHY_MAX_CHARS]
+
+
+def _topic_tactics(theme: _Theme, facts: _MonitorFacts) -> list[str]:
+    """The theme's own tactics first, the monitor's general ones after, deduped and capped — a
+    topic is judged on its own material before the monitor's."""
+    tactics: list[str] = []
+    for value in (*theme.tactics, *facts.tactics):
+        if value and value not in tactics:
+            tactics.append(value)
+    return tactics[:_MAX_TACTICS]
+
+
+# ------------------------------------------------------- forensic events (FR-298)
+
+#: The consumption ledger's other half: every field this adapter READS, per payload shape. Kept
+#: beside nothing else on purpose — a field added to `_topic_item` and forgotten here shows up in
+#: `virlo_fields.ignored`, which is the cheapest possible reminder and the point of the event.
+_CONSUMED_ANALYSIS = frozenset({
+    "name", "why_it_works", "themes", "viral_tactics", "key_highlight", "connecting_thread",
+    "timing_pattern", "peak_hours"})
+_CONSUMED_THEME = frozenset({"name", "why_it_works", "confidence", "tactics", "evidence_video_ids"})
+_CONSUMED_POST = frozenset({
+    "id", "url", "author_username", "description", "summary", "views", "likes", "shares",
+    "comments", "bookmarks", "hashtags", "hook_text", "text_overlay_content", "panel_texts",
+    "hook_type", "visual_hook_type", "emotional_tone", "publish_date"})
+
+
+def _topic_posts_event(log: LogWriter | None, item: TrendItem) -> None:
+    """FR-298's `topic_posts`: EVERY post of this topic, in rank order, as
+    `{post_id, url, author, views}` — the "which posts exactly" answer, in one record.
+
+    Post-level view counts reach no other machine surface (the `views desc` sort is applied
+    silently and `mcp_call` logs no arguments), and post rank now picks the verbatim copy: the
+    `P<n>` ordinals here ARE §1.7's reference labels, so this record is what makes a rendered
+    caption traceable to a real post afterwards without re-running anything.
+
+    `verbose_only` keeps run.log readable — events.jsonl always receives it, which is where a
+    forensic question is answered, and FR-297b prints the head of this same list to the console.
+    """
+    if log is None or not item.posts:
+        return
+    log.event("topic_posts",
+              f"{item.name}: {len(item.posts)} post(s), P1 at {item.posts[0].views:,} views "
+              f"down to {item.posts[-1].views:,}",
+              verbose_only=True, trend=item.history_key, topic=item.topic_key,
+              posts=[{"post_id": post.post_id, "url": post.url, "author": post.author,
+                      "views": post.views} for post in item.posts])
+
+
+def _fields_event(log: LogWriter | None, monitor_id: str, analysis: Mapping[str, Any],
+                  videos: Sequence[Any], shows: Sequence[Any],
+                  items: Sequence[TrendItem]) -> None:
+    """FR-298's `virlo_fields` — the per-monitor consumption ledger.
+
+    Three questions nobody could answer without a debugger: what did Virlo actually send for this
+    monitor, which of those fields did the adapter read, and which did it ignore. The third is the
+    interesting one — a field that appears under `ignored` on every run is either a gap here or
+    dead weight in the wrapper, and until this event existed the two looked identical from outside
+    (`evidence_video_ids`, dropped by the wrapper's `_norm_theme`, is exactly that case).
+    """
+    if log is None:
+        return
+    ledger = {"analysis": _field_ledger([analysis], _CONSUMED_ANALYSIS),
+              "theme": _field_ledger(analysis.get("themes") or [], _CONSUMED_THEME),
+              "video": _field_ledger(videos, _CONSUMED_POST),
+              "slideshow": _field_ledger(shows, _CONSUMED_POST)}
+    ignored = sorted({name for entry in ledger.values() for name in entry["ignored"]})
+    log.event("virlo_fields",
+              f"monitor {monitor_id}: {len(videos)} video(s) + {len(shows)} slideshow(s) -> "
+              f"{len(items)} topic(s); ignored {', '.join(ignored) or 'nothing'}",
+              verbose_only=True, monitor_id=str(monitor_id), topics=len(items),
+              fields=ledger, ignored=ignored)
+
+
+def _field_ledger(rows: Sequence[Any], consumed: Collection[str]) -> dict[str, list[str]]:
+    """One payload shape's `present` / `consumed` / `ignored` key lists.
+
+    `present` is the UNION across rows, not the first row's keys: `intelligence.*` is absent until
+    a row is enriched, so a first-row sample would report the adapter ignoring nothing while it
+    ignored a field on the other ninety-nine.
+    """
+    present = sorted({str(key) for row in rows if isinstance(row, Mapping) for key in row})
+    return {"present": present,
+            "consumed": sorted(name for name in consumed if name in present),
+            "ignored": sorted(name for name in present if name not in consumed)}
+
+
+def _ranked_event(log: LogWriter | None, items: Sequence[TrendItem],
+                  raw: Mapping[str, Mapping[str, float]]) -> None:
+    """FR-298's `topic_ranked`: the ranking table's rows, with RAW components beside normalized.
+
+    Both halves, because min-max is lossy in exactly the way that matters to the question being
+    asked: `total_views: 1.0` says a topic led the pool, never whether it led by 3% or by 300x.
+    FR-5 requires the full ranked list with each component in the run log, so unlike the other two
+    forensic events this one is NOT `verbose_only`.
+    """
+    if log is None or not items:
+        return
+    rows = [{"rank": rank, "topic_key": item.topic_key, "history_key": item.history_key,
+             "name": item.name, "monitor_id": item.monitor_id, "posts": len(item.posts),
+             "views": item.total_views, "median_views": item.median_views,
+             "engagement": int(sum(item.engagement.values())),
+             "confidence": item.confidence, "is_slideshow": item.is_slideshow,
+             "strength": item.strength, "components": dict(item.strength_components),
+             "components_raw": {name: round(value, 4)
+                                for name, value in raw.get(item.history_key, {}).items()}}
+            for rank, item in enumerate(items, start=1)]
+    log.event("topic_ranked",
+              f"{len(rows)} topic(s) ranked; strongest {items[0].name} at {items[0].strength:.4f}",
+              topics=rows)
+
+
+# ------------------------------------------------------------------- media (legacy, W3.5)
+#
+# Nothing below is reachable from `fetch` any more: the pivot made Virlo a text-only source, so
+# reference sets, motion references, digest exemplars and CDN downloads have no consumer. The
+# bodies stay for one wave by migration discipline (ADDITIVE-THEN-SUBTRACTIVE) — `_build_item` in
+# particular is still the pre-pivot item builder that the funnel-reconciliation suite drives
+# directly — and are deleted in Wave 3.5 together with `ReferenceSet` and the media counters.
 
 def _build_item(monitor_id: str, analysis: Mapping[str, Any], videos: list[Any], shows: list[Any],
                 cfg: Config, *, used: Collection[str] = frozenset(),
@@ -629,7 +1211,7 @@ def _build_item(monitor_id: str, analysis: Mapping[str, Any], videos: list[Any],
     views = [_num(entry.get("views")) for entry in media]
     motion = _pick_motion([(row, _post_id(row, monitor_id, index))
                            for index, row in enumerate(videos, start=len(shows))], chosen, used)
-    why, tactics, context, confidence = _analysis_fields(analysis)
+    why, tactics, context, confidence = _analysis_fields(analysis, _topic_cap(cfg))
     item = TrendItem(
         history_key=str(monitor_id) or slugify(name, 0),  # agent id, else the name slug (20 §3)
         monitor_id=str(monitor_id),
@@ -906,16 +1488,27 @@ def _pick_motion(videos: Sequence[tuple[Any, str]], chosen: ReferenceSet,
     return None
 
 
-def _analysis_fields(analysis: Mapping[str, Any]) -> tuple[str, list[str], str, float | None]:
-    """`why_it_works`, tactics, this monitor's own context and its confidence, from `analysis_data`.
+def _analysis_fields(analysis: Mapping[str, Any],
+                     cap: int) -> tuple[str, list[str], str, float | None]:
+    """The monitor AGGREGATE: `why_it_works`, tactics, this monitor's own context, its confidence.
 
     RESULTS.md §A puts all four on the monitor, not on the digest 20 §3 credits — so this is where
-    FR-9/FR-14's tactics and timing inputs come from, and (FR-5 v1.6.4) where the 0.20 confidence
-    component is sourced: the MEAN over the consumed themes, since the digest's `global_confidence`
-    is null on every live trend. Absent-safe, and bounded: these reach prompts.
+    FR-9/FR-14's tactics and timing inputs come from, and where the aggregate confidence is
+    sourced: the MEAN over the consumed themes, since the digest's `global_confidence` is null on
+    every live trend. Absent-safe, and bounded: these reach prompts.
+
+    `cap` is `sources.virlo_topics_per_monitor` — it replaced the old `_MAX_THEMES = 3` in BOTH of
+    that constant's roles, because post-pivot a consumed theme IS a topic and the two numbers can
+    no longer differ without the aggregate text describing themes that produced no topic (or
+    missing themes that did). Under the `-1` kill switch every theme is consumed: there is exactly
+    one item, so its text and its confidence mean have to span the whole monitor.
+
+    Post-pivot this whole aggregate reaches only ONE item — the synthesized topic of a monitor
+    with no themes, or the kill switch's single item. A theme-backed topic reads its own theme
+    (`_topic_why`, `_topic_tactics`, `_Theme.confidence`).
     """
     themes = analysis.get("themes") or []
-    consumed = themes[:_MAX_THEMES]
+    consumed = themes if cap < 0 else themes[:cap]
     scored = [float(t["confidence"]) for t in consumed
               if isinstance(t.get("confidence"), (int, float)) and not isinstance(t["confidence"], bool)]
     why = " · ".join(part for part in [
@@ -1045,17 +1638,18 @@ def _num(value: Any) -> float:
 # --------------------------------------------------------------------------- ranking (FR-5)
 
 def _score(items: list[TrendItem]) -> None:
-    """Strength in place: min-max each component across the run's candidate pool, then weight.
+    """Strength in place: min-max each component across the run's FULL topic pool, then weight.
 
-    Weights are renormalized over the components that actually exist, so a missing confidence
-    (RESULTS.md §A: `global_confidence` is null for every live trend) drags nobody toward zero —
-    it just leaves 0.20 of weight to be shared by the components that arrived.
+    The pool is every topic of every monitor, deliberately: a topic's own numbers are computed
+    from its own posts (`_topic_item`), and normalizing them against the whole run is what makes
+    "strongest first" mean something across monitors instead of nine separate rankings.
+
+    Weights are renormalized over the components that actually exist, so a component the whole
+    pool lacks drags nobody toward zero — it just leaves its share of weight to the components
+    that arrived.
     """
     if not items:
         return
-    for item in items:
-        if item.confidence is not None:
-            item.strength_components["confidence"] = float(item.confidence)
     columns = {name: _minmax([item.strength_components.get(name) for item in items])
                for name in _WEIGHTS if any(name in item.strength_components for item in items)}
     for index, item in enumerate(items):

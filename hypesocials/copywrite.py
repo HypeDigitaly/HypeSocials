@@ -1,56 +1,75 @@
-"""Copywriting — one Luna call per (trend × language), split on failure (FR-99–101, 13–16, 146).
+"""Copywriting — the model SELECTS, the engine RESOLVES (§1.7 verbatim contract, FR-99–101, 146).
 
 Module contract
 ---------------
-Purpose: turn plan entries into `CopySet`s. One grouped call writes every sibling's copy at
-once; a failed group splits into per-creative calls; a creative whose own call also failed ships
-with a caption in OUR words and NO on-image text at all. On-image text comes back inside its
-character budget, trimmed at a word boundary if the model overshot.
+Purpose: turn plan entries into `CopySet`s. One grouped call per (topic × language) writes every
+creative's copy at once; a failed group splits into per-creative calls; a creative whose own call
+also failed ships with the top post's caption verbatim and NO on-image text.
+
+Post-pivot (v2.0.0) the words on a creative are **the source's own words, byte for byte**. That is
+the exact opposite of the pre-pivot A20 mandate, and the reversal is deliberate (operator decision
+2026-08-12): what we are reusing is a winning post's phrasing in its own language, not a
+competitor's brand. The mechanism is what makes it safe, and it is structural rather than
+prompt-level:
+
+1. **The engine numbers offerable candidates.** Every string on the creative's assigned
+   `SourcePost` that this engine is *willing to render* is labelled `P<n>.<kind>[.<i>]` and shown
+   to the model with the slots it fits. On-image candidates are pre-filtered against the style's
+   own `max_onimage_chars` (intersected with the config budgets) and must be emoji-free,
+   @handle-free, URL-free and hashtag-free; caption candidates keep emoji and inline hashtags, and
+   their TRAILING hashtag run is extracted into `hashtags[]` instead of being offered as pixels.
+2. **The model returns REFERENCES** (`CopySelection`: `headline_ref`, `subline_ref`,
+   `overlay_ref`, `slide_refs`, `caption_ref`) plus free text only where nothing becomes pixels —
+   `through_line`, `narrative_arc`, `motion_beat`.
+3. **The engine resolves references to bytes.** Verbatim cannot fail: nothing is retyped, no
+   language is detected, no accent is lost and nothing is trimmed, because an over-budget string
+   was never offered. `_apply_budgets` is BYPASSED for every ref-resolved field — trimming a
+   quoted string is precisely how byte identity dies.
 
 Public API:
-    await write_copy(entries, trends=..., call=..., engine=...) -> CopyResult
-    CopyResult(copy, tags) — `.degraded` / `.trimmed` are views over `tags`
+    await write_copy(entries, trends=..., styles=..., call=..., engine=...) -> CopyResult
+    CopyResult(copy, tags, provenance) — `.degraded` / `.trimmed` are views over `tags`
+    CopyProvenance(post_id, refs) — FR-298's `copy_source_post_id` / `copy_source_refs`
     COPY_ROLE
 
 Invariants:
-- **The source's own words never become our on-image text (A20, 2026-08-11).** No path from
-  `TrendItem.hook_texts`, `.text_overlay_contents` or `.panel_texts` reaches `headline`,
-  `subline`, `overlay_text`, `slide_texts` or `caption`. Those three fields are exemplar
-  material: they enter the PROMPT (`{{source_hooks}}`, `{{trend_texts}}`) as a pattern to
-  abstract, and the model is what turns a pattern into a sentence. When the model produced
-  nothing, the answer is a creative with no words — never the competitor's headline.
-- **One sibling line per `pair_id`, never per asset (FR-16/22/8).** A `both`-mode pair is ONE
-  logical creative rendered two ways: it gets one line in the copy call and the resulting
-  `CopySet` is cloned to the sibling's `asset_id`. Listing both variants would ask the model for
-  two distinct angles for one creative, which breaks the A/B comparison (identical copy is the
-  whole point) and inflates the sibling list.
+- **Selection is structural, never a promise.** No path exists from a model's free text to
+  `headline`, `subline`, `overlay_text`, `slide_texts` or `caption` on a verbatim creative: those
+  five are assigned from the candidate table or left empty. A ref naming a string we did not
+  offer (wrong post, wrong slot, unknown label) is logged and dropped, never approximated.
+- **Sibling divergence is the ENGINE's decision (§1.6/§1.7.6).** Creative *k* on a topic quotes
+  `posts[trend_reuse_index % len(posts)]` and is offered that post's strings ALONE, so two
+  creatives on one topic can never ship the same caption. The model chooses which string of that
+  post to use, never which post.
+- **Degrade has two distinct shapes.** No candidate fits the style's budget → `no_onimage_text`
+  and a caption-only creative (the call succeeded; there was simply nothing short enough). The
+  copy call failing outright → `_fallback_copy`: the top post's caption verbatim, no on-image
+  text, `copy_degraded` AND `no_onimage_text`, and `copy_degraded` still counts as an FR-248
+  `llm_starved` loss.
 - **Grouping never widens the blast radius (FR-99, 10 §10).** Group call fails → one call per
-  creative, one attempt each, concurrent. Per-creative call fails → the deterministic no-text
-  tier (assembled caption, empty on-image fields, no model call), tagged `copy_degraded` AND
-  `no_onimage_text` so the two facts stay separable in the log, meta.yaml and the gallery.
-- **A weak audit trail never fails a creative (A21).** `hook_pattern_used` is validated against
-  the bar `prompts/copywriter_system.md` states to the model; a generic answer costs that
-  creative ONE re-ask, and a second generic answer is logged and tagged
-  `hook_pattern_generic` while the copy itself ships unchanged.
-- **FR-101 is two-layered.** The budget is stated in the prompt (layer one, via
-  `{{text_budgets}}`); anything still over budget is trimmed here at the last word boundary —
-  never mid-word, never with an ellipsis — and the asset id lands in `trimmed` for the caller's
-  `text_trimmed` tag.
-- **Override briefs group by (brief × language)** because they consume no trend (FR-144/146).
-- Structural mimicry (FR-100) and the brief-driven relaxation (FR-146) live in the template and
-  the `{{brief_directives}}` slot; `hook_pattern_used` is carried through verbatim once it has
-  cleared A21's bar, so what is logged and written to meta.yaml is the model's own sentence.
+  creative, one attempt each, concurrent. Per-creative call fails → the deterministic tier above.
+- **Strips are fail-closed and asymmetric (§1.5, M15).** `branding.competitors` (layer 1) is
+  applied UNGUARDED — a configured competitor that happens to be the topic's own name is still
+  removed. The filter's LLM-proposed `brands_to_strip` reach this module already screened by
+  `topic_filter.screen`'s M15 guards. Stripping happens at candidate-build time, so the bytes we
+  offer are the bytes we ship, and the creative is tagged `competitor_stripped`.
+- **The verifier is an audit, not a gate (A20 polarity flip).** Every shipped string is checked as
+  a byte-substring of its post's (stripped) fields and against the blocklist; a deviation logs and
+  tags `copy_not_verbatim` and the creative ships anyway. The creative is already paid for; the
+  operator needs to know which card to distrust, not to be handed fewer cards.
+- **Free text survives exactly where there is nothing to quote (§1.7.5).** Override briefs and
+  post-less topics take the legacy free-text schema, `config.languages` applies to them, and
+  FR-101's word-boundary trim applies to them — they are the only creatives `_apply_budgets`
+  still touches.
 
-Do not: call the LLM directly, write per-creative copy calls as the happy path, cut text
-mid-word, invent prompt text outside the template, or copy ANY string that came from a source
-post into a `CopySet` field — the Inspiration exemplars A16 threads to this call
-(`{{inspiration_exemplars}}`) are under the same rule as the trend's own hooks.
+Do not: call the LLM directly, retype a source string anywhere in this module, trim a ref-resolved
+field, invent hashtags on the verbatim path, let a creative quote a post it was not assigned, or
+re-implement the blocklist mechanics that `topic_filter.apply_blocklist` owns.
 """
 
 from __future__ import annotations
 
 import asyncio
-import dataclasses
 import logging
 import re
 from collections.abc import Mapping, Sequence
@@ -60,11 +79,13 @@ from typing import Any
 from hypesocials.config import TextBudgets
 from hypesocials.models import (
     Brief,
+    CopySelection,
     CopySet,
     DegradationTag,
+    MetaStyle,
     PlanEntry,
+    SourcePost,
     StructuredCall,
-    StyleBrief,
     TrendItem,
 )
 from hypesocials.prompts_engine import (
@@ -73,72 +94,119 @@ from hypesocials.prompts_engine import (
     json_schema_for,
     trim_words,
 )
+from hypesocials.topic_filter import apply_blocklist
 from hypesocials.util import slugify
 
 logger = logging.getLogger(__name__)
 
 #: `models.copy` / `max_tokens.copy` / `reasoning_effort` — the role name config already uses.
 COPY_ROLE = "copy"
-_CARRIER_TURN = "Write the copy JSON for the siblings listed above now."
+_CARRIER_TURN = "Return the selection JSON for the creatives listed above now."
+
+#: Which slots a format actually renders — a reel has no subline, an image has no slides. Offering
+#: a candidate for a slot this creative cannot render wastes prompt space and invites a ref that
+#: resolves into a field nothing reads.
+_FORMAT_SLOTS: dict[str, tuple[str, ...]] = {
+    "image": ("headline", "subline"),
+    "carousel": ("headline", "slide"),
+    "reel": ("overlay",),
+}
+_ALL_SLOTS = ("headline", "subline", "slide", "overlay")
+
+#: Ref-label grammar (contracts item 10), pinned: `P<n>.<kind>[.<i>]`, 1-based everywhere.
+#: `caption` and `description` are scalar fields and carry no index.
+_REF = re.compile(r"^\s*[`\"']?\s*P(\d+)\.(hook|overlay|panel|caption|description)"
+                  r"(?:\.(\d+))?\s*[`\"']?\s*$", re.IGNORECASE)
+#: `kind` -> the `SourcePost` attribute it numbers. Scalar kinds map to a str, list kinds to a
+#: list, and nothing outside this table is quotable — the grammar and the model are one contract.
+_KIND_FIELDS = {"hook": "hooks", "overlay": "text_overlays", "panel": "panel_texts",
+                "caption": "caption", "description": "description"}
+#: The two kinds a caption may be quoted from. Hooks and panel texts are on-image material: they
+#: are written to be read in one glance, and a three-word hook makes a poor caption.
+_CAPTION_KINDS = ("caption", "description")
+#: Kinds that may never become pixels, however short and however clean they are.
+#:
+#: `description` is `SourcePost`'s one field that is NOT the creator's words: it is Virlo's
+#: `summary`, written by its `intelligence` block (`sources/virlo.py::_source_post`'s field table
+#: says so, and names THIS module as the place the distinction has to be enforced). That makes it
+#: legitimate context and legitimately verbatim *from Virlo*, so it stays a caption candidate —
+#: but burning an AI paraphrase into a frame as though a human wrote it is the one quote this
+#: engine must not make, and the length filter alone would happily allow a short one.
+_NEVER_ON_IMAGE = ("description",)
 
 # ---------------------------------------------------------------------------------------------
-# A21 — the `hook_pattern_used` bar.
-#
-# ⚠️ THESE FOUR CONSTANTS AND `prompts/copywriter_system.md` ARE ONE CONTRACT, IN BOTH
-# DIRECTIONS. The template promises the model, in these words: "At least 30 characters, and at
-# least four distinct content words" and "These values are rejected outright: 'curiosity hook',
-# 'engaging hook', 'attention grabber', 'hook' on its own, 'pattern interrupt' on its own."
-# Tighten the code and the prompt advertises a bar the code refuses; loosen it and the prompt
-# lies about what is checked. Either way the model is being told something untrue about how its
-# answer is judged, which is the one thing a prompt must never do. Edit the two together.
-#
-# Calibrated against a real passing value measured on a live run — "Curiosity-and-reveal claim,
-# second person, direct address with a withheld subject" (81 characters, 8 distinct content
-# words) — so the bar is real but has better than 2x headroom on a good answer.
+# On-image pre-filters (§1.7.1, F23). A string that fails any of these can never be an on-image
+# candidate, whatever its length: emoji and @handles render as garbage or as an accidental
+# mention, URLs invite a hallucinated hyperlink, and a hashtag in the frame is a caption artefact
+# that has no business inside the artwork. Captions keep all four.
 # ---------------------------------------------------------------------------------------------
 
-_HOOK_PATTERN_MIN_CHARS = 30
-_HOOK_PATTERN_MIN_CONTENT_WORDS = 4
-_GENERIC_HOOK_PATTERNS: frozenset[str] = frozenset({
-    "curiosity hook", "engaging hook", "attention grabber", "hook", "pattern interrupt",
-})
-#: Every word appearing in a blocklisted phrase — derived from the blocklist rather than listed
-#: again, so the two can never disagree about what counts as "naming the genre".
-_GENERIC_VOCABULARY: frozenset[str] = frozenset(
-    word for phrase in _GENERIC_HOOK_PATTERNS for word in phrase.split())
-#: Words that describe nothing about a hook's shape, so they do not count toward the four.
-#: Deliberately short and English-only: a Czech or German pattern line contains none of them,
-#: which makes the bar EASIER to clear in those languages. The failure mode worth avoiding is a
-#: validator that rejects a good non-English answer, not one that accepts a wordy English one.
-_HOOK_PATTERN_STOPWORDS: frozenset[str] = frozenset({
-    "a", "an", "and", "as", "at", "be", "but", "by", "for", "from", "in", "into", "is", "it",
-    "its", "of", "on", "or", "that", "the", "then", "this", "to", "who", "with",
-})
-_WORDS = re.compile(r"[^\W\d_]+", re.UNICODE)  # letters only: "second-person" -> second, person
+#: Pictographs (1F000–1FAFF), dingbats/misc symbols (2600–27BF), the arrow-and-symbol block
+#: (2B00–2BFF), the emoji variation selector and the zero-width joiner. Written as escapes rather
+#: than as literal glyphs so an editor cannot normalise one away by accident, and deliberately NOT
+#: covering `—`, `…` or `·`: those are ordinary punctuation in a Czech or German hook and must
+#: stay quotable.
+_EMOJI = re.compile(
+    "[\U0001f000-\U0001faff\u2600-\u27bf\u2b00-\u2bff\ufe0f\u200d\u2122]")
+_HANDLE = re.compile(r"(?<!\w)@[\w.]")
+_HASHTAG = re.compile(r"(?<!\w)#\w")
+_URL = re.compile(
+    r"(?i)(?:https?://|www\.)\S+"
+    r"|(?<![\w@])[\w-]+\.(?:com|net|org|io|ai|app|co|cz|sk|de|eu|me|tv)(?:/\S*)?(?!\w)")
+#: One trailing `#tag` at the very end of a caption, with the whitespace before it. Applied
+#: repeatedly, this peels the whole trailing run off and leaves the caption body untouched.
+_TRAILING_TAG = re.compile(r"(?:\s|^)(#[^\s#]+)\s*$")
+
+#: How much of a candidate is shown in the prompt. The model only needs enough to CHOOSE; the
+#: engine ships the original bytes from `SourcePost`, so a display truncation costs nothing.
+_DISPLAY_CHARS = 400
+
+
+@dataclass(slots=True)
+class CopyProvenance:
+    """FR-298 — WHICH post and WHICH string every field of a creative's copy came from.
+
+    `refs` is `{slot: ref-label}` keyed by the `CopySet` field the label resolved into —
+    `headline`, `subline`, `overlay_text`, `slide_1`…`slide_N`, `caption` — so meta.yaml records
+    the string, not merely the post. Empty on a free-text creative (an override brief quotes
+    nothing), and caption-only on the `_fallback_copy` path.
+    """
+
+    post_id: str = ""
+    refs: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
 class CopyResult:
-    """Every creative's copy, plus the degradations the caller must tag (FR-73).
+    """Every creative's copy, the degradations the caller must tag (FR-73), and its provenance.
 
-    `tags` is the ONE carrier — `asset_id -> the tags this creative earned in the copy stage` —
-    so a new copy-side degradation needs no new field here, no new field on `generate.Env` and no
-    new branch in the meta writer. `degraded` and `trimmed` are read-only VIEWS over it rather
-    than parallel state: FR-99 and FR-101 are the questions callers actually ask, and answering
-    them from the same dictionary is what stops the two spellings drifting apart.
+    `tags` is the ONE degradation carrier — `asset_id -> the tags this creative earned in the copy
+    stage` — so a new copy-side degradation needs no new field here, no new field on
+    `generate.Env` and no new branch in the meta writer. `degraded` and `trimmed` are read-only
+    VIEWS over it rather than parallel state: FR-99 and FR-101 are the questions callers actually
+    ask, and answering them from the same dictionary is what stops the two spellings drifting.
+
+    `provenance` is the second carrier, added by FR-298: `asset_id -> CopyProvenance`. It is a
+    separate mapping rather than fields on `CopySet` because `CopySet` is the RESOLVED-BYTES shape
+    that render prompts read, and a label like `P1.hook.2` must never be able to reach a prompt.
     """
 
     copy: dict[str, CopySet] = field(default_factory=dict)
     tags: dict[str, tuple[DegradationTag, ...]] = field(default_factory=dict)
+    provenance: dict[str, CopyProvenance] = field(default_factory=dict)
 
     @property
     def degraded(self) -> frozenset[str]:
-        """FR-99 — asset ids whose copy fell back to the no-text tier (`copy_degraded`)."""
+        """FR-99 — asset ids whose copy fell back to the no-call tier (`copy_degraded`)."""
         return self._tagged(DegradationTag.COPY_DEGRADED)
 
     @property
     def trimmed(self) -> frozenset[str]:
-        """FR-101 — asset ids whose on-image text was cut to budget (`text_trimmed`)."""
+        """FR-101 — asset ids whose FREE-TEXT copy was cut to budget (`text_trimmed`).
+
+        Never a verbatim creative: a quoted string that did not fit was never offered, so there is
+        nothing left to trim by the time the bytes exist.
+        """
         return self._tagged(DegradationTag.TEXT_TRIMMED)
 
     def _tagged(self, tag: DegradationTag) -> frozenset[str]:
@@ -149,7 +217,7 @@ async def write_copy(
     entries: Sequence[PlanEntry],
     *,
     trends: Mapping[str, TrendItem] | None = None,
-    style_briefs: Mapping[str, StyleBrief] | None = None,
+    styles: Mapping[str, MetaStyle] | None = None,
     campaign_briefs: Mapping[str, Brief] | None = None,
     call: StructuredCall,
     engine: PromptEngine,
@@ -158,47 +226,55 @@ async def write_copy(
     onimage_languages: Mapping[str, str] | None = None,
     niche_descriptor: str = "",
     brand_context: str = "",
-    copy_exemplars: Sequence[str] = (),
+    competitors: Sequence[str] = (),
+    strip_brands: Mapping[str, Sequence[str]] | None = None,
     log: Any = None,
 ) -> CopyResult:
-    """Copy for every entry, one grouped call per (trend × language), all groups concurrent.
+    """Copy for every entry, one grouped call per (topic × language), all groups concurrent.
 
     Args:
         entries: the plan entries needing copy (trimmed/skipped ones excluded by the caller).
-        trends: `trend_key -> TrendItem`, the material FR-14 feeds the prompt.
-        style_briefs: `trend_key -> StyleBrief` from `analyze`; absent = direct mode or FR-12.
+        trends: `trend_key -> TrendItem`. Post-pivot these are TOPIC items and their `posts` are
+            the only quotable material (§1.6); a topic with no posts falls to the free-text path.
+        styles: `style_key -> MetaStyle`, the registry view. Supplies `max_onimage_chars`, which
+            is what decides whether a source string is offerable at all. A missing style leaves
+            the config budgets in force on their own.
         campaign_briefs: `brief_name -> Brief` for FR-146's directive-driven copy.
         call: `llm.structured_call` (`models.StructuredCall`).
         engine: the run's `PromptEngine`; supplies `copywriter_system.md`.
-        text_budgets: FR-101 ceilings; defaults to the shipped values.
+        text_budgets: FR-101 ceilings, intersected with each style's own (the tighter wins).
         conventions: `platform -> {tone/length/hashtags}` from config (FR-15, guidance only).
-        onimage_languages: `asset_id -> language` when on-image text differs from the caption.
+        onimage_languages: `asset_id -> language`, FREE-TEXT creatives only. A verbatim creative's
+            language follows the string it quotes and is never chosen by us (§1.7.5).
         brand_context: Notion brand text; reaches the copywriter only (FR-109).
-        copy_exemplars: `InspirationPool.exemplar_texts` (A16) — proven, human-written posts from
-            the operator's own Inspiration folders, rendered into `{{inspiration_exemplars}}`.
-            FORM material for this call and this call alone; no render role can resolve the slot.
+        competitors: `config.branding.competitors` — layer 1 of §1.5, deterministic and
+            FAIL-CLOSED. Applied to every candidate UNGUARDED by M15 (a competitor that is the
+            topic's own name is still stripped) and re-checked by the verifier afterwards.
+        strip_brands: `trend_key -> brands_to_strip`, the topic filter's `strip` verdicts. These
+            have ALREADY passed `topic_filter.screen`'s M15 guards; this module applies them, it
+            never re-judges them.
 
     Returns:
-        `CopyResult`. Every entry has a `CopySet`, but a creative whose call failed gets one with
-        NO on-image words rather than the source's own (A20) — a text-free image on a proven
-        layout is a usable creative, someone else's headline is not. `tags` (and its `degraded` /
-        `trimmed` views) is how every loss stays visible on the asset and in the gallery.
+        `CopyResult`. Every entry has a `CopySet`; `tags` (with its `degraded`/`trimmed` views)
+        carries every loss, and `provenance` carries FR-298's per-slot ref labels for meta.yaml.
     """
     run = _Run(call=call, engine=engine, budgets=text_budgets or TextBudgets(),
-               conventions=conventions or {}, onimage_languages=onimage_languages or {},
-               niche_descriptor=niche_descriptor, brand_context=brand_context,
-               copy_exemplars=tuple(copy_exemplars), log=log)
-    groups = _build_groups(entries, trends or {}, style_briefs or {}, campaign_briefs or {})
+               styles=styles or {}, conventions=conventions or {},
+               onimage_languages=onimage_languages or {}, niche_descriptor=niche_descriptor,
+               brand_context=brand_context, competitors=tuple(competitors),
+               strip_brands=strip_brands or {}, log=log)
+    groups = _build_groups(entries, trends or {}, campaign_briefs or {})
     outcomes = await asyncio.gather(*(_write_group(group, run) for group in groups))
     result = CopyResult()
-    for copies, tags in outcomes:
+    for copies, tags, provenance in outcomes:
         result.copy.update(copies)
         result.tags.update(tags)
+        result.provenance.update(provenance)
     return result
 
 
 # --------------------------------------------------------------------------------------------
-# Grouping — (trend × language), one line per pair_id
+# Grouping — (topic × language), one line per creative
 # --------------------------------------------------------------------------------------------
 
 
@@ -209,54 +285,239 @@ class _Run:
     call: StructuredCall
     engine: PromptEngine
     budgets: TextBudgets
+    styles: Mapping[str, MetaStyle]
     conventions: Mapping[str, Mapping[str, str]]
     onimage_languages: Mapping[str, str]
     niche_descriptor: str
     brand_context: str
-    copy_exemplars: tuple[str, ...]  # A16 — pooled Inspiration `.txt` captions, copy call only
+    competitors: tuple[str, ...]  # §1.5 layer 1 — deterministic, fail-closed, unguarded
+    strip_brands: Mapping[str, Sequence[str]]  # trend_key -> the filter's post-guard survivors
     log: Any
 
 
 @dataclass(slots=True)
 class _Group:
-    """One copy call's scope: the siblings of one trend (or one override brief) in one language."""
+    """One copy call's scope: the creatives of one topic (or one override brief) in one language.
+
+    A/B pairing is dead (v2.0.0), so there is one line per ENTRY here — no pair representative and
+    no cloning of one `CopySet` across siblings. Two creatives on one topic are two different
+    quotes of two different posts, which is the whole point of `trend_reuse_index` post-pivot.
+    """
 
     trend: TrendItem | None
-    style_brief: StyleBrief | None
     campaign_brief: Brief | None
-    reps: list[PlanEntry] = field(default_factory=list)  # ONE per pair_id (FR-16/22)
-    siblings: dict[str, list[str]] = field(default_factory=dict)  # rep asset id -> asset ids
+    entries: list[PlanEntry] = field(default_factory=list)
 
 
 def _build_groups(
     entries: Sequence[PlanEntry],
     trends: Mapping[str, TrendItem],
-    style_briefs: Mapping[str, StyleBrief],
     campaign_briefs: Mapping[str, Brief],
 ) -> list[_Group]:
-    """FR-99 grouping. Override briefs have no trend, so they group by brief × language."""
+    """FR-99 grouping. Override briefs have no topic, so they group by brief × language."""
     groups: dict[tuple[str, str], _Group] = {}
-    pair_rep: dict[tuple[str, str, str], str] = {}
     for entry in sorted(entries, key=lambda e: e.order):
         subject = entry.trend_key or (
             f"brief/{entry.brief_name}" if entry.brief_name else entry.asset_id)
         key = (subject, entry.language)
         group = groups.get(key)
         if group is None:
-            group = _Group(
-                trend=trends.get(entry.trend_key or ""),
-                style_brief=style_briefs.get(entry.trend_key or ""),
-                campaign_brief=campaign_briefs.get(entry.brief_name or ""))
+            group = _Group(trend=trends.get(entry.trend_key or ""),
+                           campaign_brief=campaign_briefs.get(entry.brief_name or ""))
             groups[key] = group
-        pair_key = (*key, entry.pair_id or entry.asset_id)
-        rep = pair_rep.get(pair_key)
-        if rep is None:  # first variant of this creative — it speaks for the pair
-            pair_rep[pair_key] = entry.asset_id
-            group.reps.append(entry)
-            group.siblings[entry.asset_id] = [entry.asset_id]
-        else:
-            group.siblings[rep].append(entry.asset_id)
+        group.entries.append(entry)
     return list(groups.values())
+
+
+# --------------------------------------------------------------------------------------------
+# Candidates — the offerable strings, numbered (§1.7.1)
+# --------------------------------------------------------------------------------------------
+
+
+@dataclass(slots=True, frozen=True)
+class _Candidate:
+    """One offerable source string: its label, the bytes we would ship, and where they may go."""
+
+    label: str  # `P<n>.<kind>[.<i>]` — the FR-298 provenance label, 1-based over ranked posts
+    text: str  # POST-strip bytes: exactly what lands in the `CopySet`, never re-derived later
+    kind: str
+    stripped: bool  # a competitor name was removed on the way here (`competitor_stripped`)
+    slots: tuple[str, ...] = ()  # on-image slots whose budget this text fits, ordered
+    hashtags: tuple[str, ...] = ()  # the caption's trailing run, extracted (§1.7.1)
+
+
+@dataclass(slots=True)
+class _Offer:
+    """The candidate table for ONE creative — its assigned post and nothing else (§1.7.6)."""
+
+    post: SourcePost | None = None
+    post_ordinal: int = 0  # 1-based, as it appears in the ref labels
+    onimage: list[_Candidate] = field(default_factory=list)
+    captions: list[_Candidate] = field(default_factory=list)
+    budgets: dict[str, int] = field(default_factory=dict)  # slot -> characters, style ∩ config
+    haystack: tuple[str, ...] = ()  # every stripped source field — the verifier's substring pool
+
+    @property
+    def by_label(self) -> dict[str, _Candidate]:
+        """Label -> the ON-IMAGE candidate. Captions are looked up separately and on purpose.
+
+        One source string can appear in both tables under one label — a short, clean caption is
+        offerable as a headline AND as the caption — but with DIFFERENT bytes: the caption entry
+        has had its trailing hashtag run peeled off. Merging the two here would let a headline
+        resolve to the caption's shortened body (or worse, to a candidate carrying no slots at
+        all, which reads as "over budget"), so the two tables never mix.
+        """
+        return {c.label: c for c in self.onimage}
+
+
+def _offer_for(entry: PlanEntry, group: _Group, run: _Run) -> _Offer:
+    """Number this creative's offerable strings — its assigned post's, pre-filtered per slot.
+
+    The assignment is `posts[trend_reuse_index % len(posts)]` and it is the ENGINE's (§1.7.6):
+    offering the whole topic would let two creatives pick the same caption, which is exactly the
+    cloned-copy failure the reuse index exists to prevent. Labels stay TOPIC-global (`P3.hook.1`
+    means the third-ranked post of the topic, whichever creative is looking at it), so FR-298's
+    provenance and the FR-297b console roster read the same alphabet.
+
+    Two tables come out of one pass, and a field can land in either, both or neither: `_NEVER_ON_IMAGE`
+    keeps Virlo's own summary out of the pixels table while leaving it quotable as a caption, and
+    `_fitting_slots` decides the rest on the F23 rules plus this creative's own budgets.
+    """
+    posts = list(group.trend.posts) if group.trend else []
+    if not posts:
+        return _Offer()
+    index = entry.trend_reuse_index % len(posts)
+    post = posts[index]
+    style = run.styles.get(entry.style_key)
+    budgets = _slot_budgets(style, run.budgets)
+    slots = _FORMAT_SLOTS.get(str(entry.creative_format), _ALL_SLOTS)
+    brands = _strip_terms(entry, run)
+    offer = _Offer(post=post, post_ordinal=index + 1,
+                   budgets={slot: budgets[slot] for slot in slots if slot in budgets})
+    haystack: list[str] = []
+    for kind, raw, ordinal in _numbered_fields(post):
+        text, stripped = _apply_strip(raw, brands)
+        if not text.strip():
+            continue  # the whole string WAS the brand — there is nothing left to quote
+        haystack.append(text)
+        label = f"P{offer.post_ordinal}.{kind}" + (f".{ordinal}" if ordinal else "")
+        fits = () if kind in _NEVER_ON_IMAGE else _fitting_slots(text, slots, offer.budgets)
+        body, tags = _split_trailing_hashtags(text) if kind in _CAPTION_KINDS else (text, ())
+        if fits:
+            offer.onimage.append(_Candidate(label, text, kind, stripped, slots=fits))
+        if kind in _CAPTION_KINDS and body.strip():
+            offer.captions.append(_Candidate(label, body, kind, stripped, hashtags=tags))
+    offer.haystack = tuple(haystack)
+    return offer
+
+
+def _numbered_fields(post: SourcePost) -> list[tuple[str, str, int]]:
+    """`(kind, raw text, 1-based index or 0)` for every field the ref grammar can name.
+
+    Order is the grammar's own — hooks, then overlays, then panels, then the two scalars — so the
+    numbered block reads the same way every run and a diff of two runs' prompts is meaningful.
+    """
+    out: list[tuple[str, str, int]] = []
+    for kind in ("hook", "overlay", "panel"):
+        values = getattr(post, _KIND_FIELDS[kind], None) or []
+        out.extend((kind, str(value), index)
+                   for index, value in enumerate(values, start=1) if str(value).strip())
+    for kind in _CAPTION_KINDS:
+        value = str(getattr(post, _KIND_FIELDS[kind], "") or "")
+        if value.strip():
+            out.append((kind, value, 0))
+    return out
+
+
+def _slot_budgets(style: MetaStyle | None, budgets: TextBudgets) -> dict[str, int]:
+    """The character ceiling actually in force per slot — the TIGHTER of style and config.
+
+    FR-101's config budgets are the run's ceiling; a meta-style's `max_onimage_chars` is what that
+    particular layout can hold without the text colliding with its own artwork (§1.3). Neither
+    outranks the other, so both apply and the smaller wins — the same `min()` `build_context`
+    puts into `{{text_budgets}}` (contracts item 1), stated here in characters because this is
+    where it is ENFORCED rather than described.
+
+    A reel's seed-frame hook has no dedicated style key in the registry vocabulary
+    (`headline`/`subline`/`slide`), so it borrows `headline`'s if the style names one.
+    """
+    style_caps = dict(style.max_onimage_chars) if style else {}
+
+    def cap(config_value: int, *keys: str) -> int:
+        limits = [config_value]
+        limits += [int(style_caps[key]) for key in keys
+                   if isinstance(style_caps.get(key), (int, float)) and int(style_caps[key]) > 0]
+        return max(1, min(limits))
+
+    return {
+        "headline": cap(budgets.image_headline, "headline"),
+        "subline": cap(budgets.image_subline, "subline"),
+        # A carousel slide's text is a headline in its own frame; FR-101 has always priced it that
+        # way and the registry names it `slide`.
+        "slide": cap(budgets.image_headline, "slide"),
+        "overlay": cap(budgets.reel_seed_headline, "overlay", "headline"),
+    }
+
+
+def _fitting_slots(text: str, slots: Sequence[str], budgets: Mapping[str, int]) -> tuple[str, ...]:
+    """Which of this creative's slots `text` may fill — length plus the four F23 exclusions.
+
+    Everything here is a REJECTION rule: a string that fails is simply never offered, which is
+    what makes the resolution step incapable of trimming, re-spelling or apologising later.
+    """
+    if _EMOJI.search(text) or _HANDLE.search(text) or _HASHTAG.search(text) or _URL.search(text):
+        return ()
+    if "\n" in text.strip():
+        return ()  # a multi-line string is a caption, not a headline; the frame would break it
+    # Measured on the bytes that SHIP, whitespace included — the alternative is to measure a
+    # stripped string and then render a longer one, which is how an "in budget" headline overflows
+    # its zone. Trimming the whitespace instead is not an option: nothing here edits a quote.
+    length = len(text)
+    return tuple(slot for slot in slots if length <= budgets.get(slot, 0))
+
+
+def _split_trailing_hashtags(text: str) -> tuple[str, tuple[str, ...]]:
+    """`"Body text #a #b"` -> `("Body text", ("#a", "#b"))` — §1.7.1's caption rule.
+
+    Only the TRAILING run moves: a hashtag written mid-sentence is part of the caption's voice and
+    stays where its author put it. Both halves remain the source's own bytes, so `caption.txt` and
+    the hashtag list are still verbatim and the verifier's substring check holds for each.
+    """
+    body, tags = text.rstrip(), []
+    while (match := _TRAILING_TAG.search(body)):
+        tags.append(match.group(1))
+        body = body[:match.start()].rstrip()
+    return body, tuple(reversed(tags))
+
+
+def _strip_terms(entry: PlanEntry, run: _Run) -> tuple[str, ...]:
+    """Every brand name to remove from this creative's candidates, both §1.5 layers.
+
+    **The asymmetry is deliberate and pinned (conductor decision, Session-B closeout obligation
+    3).** Layer 1 — `branding.competitors` — is applied UNGUARDED: a configured competitor that
+    happens to BE the topic's name is still stripped, because "the LLM was unavailable" or "the
+    name is the subject" must never be the reason a competitor's name ships in our pixels. Layer 2
+    — the filter's `brands_to_strip` — arrives having already passed `topic_filter.screen`'s M15
+    guards (subject-of-the-sentence, stopwords, product nouns, the <15-char floor), and this
+    module applies them as given; re-judging them here would put the guard in two places and let
+    the two drift.
+    """
+    verdict = run.strip_brands.get(entry.trend_key or "", ())
+    return (*run.competitors, *(str(brand) for brand in verdict if str(brand).strip()))
+
+
+def _apply_strip(text: str, brands: Sequence[str]) -> tuple[str, bool]:
+    """`(text with every brand removed, whether anything was removed)` — word-boundary, pure.
+
+    The mechanics are `topic_filter.apply_blocklist`'s and are NOT re-implemented here: one
+    word-boundary matcher, one whitespace-collapse rule, one case policy. A text that matched
+    nothing comes back byte-identical, which is what keeps the verbatim contract intact for the
+    overwhelming majority of strings that mention no competitor at all.
+    """
+    if not text or not brands:
+        return text, False
+    out = apply_blocklist(text, brands)
+    return out, out != text
 
 
 # --------------------------------------------------------------------------------------------
@@ -264,110 +525,93 @@ def _build_groups(
 # --------------------------------------------------------------------------------------------
 
 
+@dataclass(slots=True)
+class _Written:
+    """One creative's finished copy plus everything the caller needs to judge it.
+
+    `quoted` is the pool the verifier checks membership against — the stripped fields of the post
+    this creative actually quoted. It is deliberately NOT `offer.haystack` at the call site,
+    because the two disagree on the one path that matters: `_fallback_copy` quotes the TOP post
+    (`P1`), not the creative's assigned post, so verifying it against the assigned post's fields
+    would report our own successful fallback as a verbatim deviation. Empty means "this creative
+    quotes nothing" — a free-text brief — and only the blocklist half of the audit applies.
+    """
+
+    copyset: CopySet
+    source: CopyProvenance
+    tags: list[DegradationTag] = field(default_factory=list)
+    quoted: tuple[str, ...] = ()
+
+
 async def _write_group(
     group: _Group, run: _Run
-) -> tuple[dict[str, CopySet], dict[str, tuple[DegradationTag, ...]]]:
-    """One group: grouped call → per-creative split → A21 re-ask → no-text tier (FR-99, 10 §10)."""
-    payloads = await _call_copy(group, group.reps, run)
-    if missing := [entry for entry in group.reps if entry.asset_id not in payloads]:
+) -> tuple[dict[str, CopySet], dict[str, tuple[DegradationTag, ...]], dict[str, CopyProvenance]]:
+    """One group: grouped call → per-creative split → resolution → fallback tier (FR-99, 10 §10).
+
+    Two call shapes, chosen by whether there is anything to quote:
+
+    - **Verbatim** (the normal post-pivot path): `CopySelection` refs into the numbered candidate
+      table, resolved to bytes here.
+    - **Free text** (override briefs, and the degenerate topic that arrived with no posts): the
+      legacy `CopySet` shape, `config.languages` in force, FR-101's trim applied. §1.7.5 keeps
+      exactly these two cases on the configured language; everything else follows its source.
+    """
+    offers = {entry.asset_id: _offer_for(entry, group, run) for entry in group.entries}
+    verbatim = any(offer.post is not None for offer in offers.values())
+    payloads = await _call_copy(group, group.entries, run, offers, verbatim)
+    if missing := [entry for entry in group.entries if entry.asset_id not in payloads]:
         _warn(run.log, "copy_group_split",
-              f"grouped copy call missed {len(missing)} of {len(group.reps)} creatives; "
+              f"grouped copy call missed {len(missing)} of {len(group.entries)} creatives; "
               "splitting into one call each (FR-99)",
               asset_ids=[entry.asset_id for entry in missing])
         for split in await asyncio.gather(*(
-                _call_copy(group, [entry], run) for entry in missing)):
+                _call_copy(group, [entry], run, offers, verbatim) for entry in missing)):
             payloads.update(split)
-    generic = await _reask_generic_patterns(group, payloads, run)
 
     copies: dict[str, CopySet] = {}
-    tags: dict[str, list[DegradationTag]] = {}
-
-    def tag(entry: PlanEntry, *marks: DegradationTag) -> None:
-        for asset_id in group.siblings[entry.asset_id]:  # FR-16: a pair degrades as one creative
-            earned = tags.setdefault(asset_id, [])
-            earned.extend(mark for mark in marks if mark not in earned)
-
-    for entry in group.reps:
+    tags: dict[str, tuple[DegradationTag, ...]] = {}
+    provenance: dict[str, CopyProvenance] = {}
+    for entry in group.entries:
         payload = payloads.get(entry.asset_id)
+        offer = offers[entry.asset_id]
         if payload is None:
-            copyset = _fallback_copy(entry, group.trend, run.niche_descriptor)
-            tag(entry, DegradationTag.COPY_DEGRADED, DegradationTag.NO_ONIMAGE_TEXT)
-            _warn(run.log, "copy_degraded",
-                  f"{entry.asset_id}: copy call failed; shipping a caption in our own words and "
-                  "NO on-image text — the source's hook is never reused verbatim (A20)",
-                  asset_id=entry.asset_id, reason="no_onimage_text")
+            written = _fallback(entry, group.trend, run)
+        elif verbatim and offer.post is not None:
+            written = _resolve(entry, payload, offer, group, run)
         else:
-            copyset = _to_copyset(payload, entry)
-            if entry.asset_id in generic:
-                tag(entry, DegradationTag.HOOK_PATTERN_GENERIC)
-        if _apply_budgets(copyset, entry, run.budgets, run.log):
-            tag(entry, DegradationTag.TEXT_TRIMMED)
-        for asset_id in group.siblings[entry.asset_id]:  # FR-16: variants share the copy
-            copies[asset_id] = dataclasses.replace(copyset, asset_id=asset_id)
-    return copies, {asset_id: tuple(marks) for asset_id, marks in tags.items() if marks}
-
-
-async def _reask_generic_patterns(
-    group: _Group, payloads: dict[str, dict[str, Any]], run: _Run
-) -> set[str]:
-    """A21 — one re-ask per creative whose `hook_pattern_used` came back generic. Mutates
-    `payloads` in place with any answer that cleared the bar; returns the ids that never did.
-
-    `prompts/copywriter_system.md` tells the model this value "is checked before your answer is
-    accepted" and names the bar. Until A21 it was stored, logged, written to meta.yaml, shown in
-    the gallery — and never read by anything, so the audit trail FR-100 promises could be the
-    word "hook" and nobody would know.
-
-    Three deliberate limits:
-    - **One re-ask, never a loop.** A model that answered "curiosity hook" twice will answer it a
-      third time, and a copy call is metered.
-    - **A weak pattern never fails a creative.** The copy itself may be excellent; the audit note
-      about it is what is thin. Failing the creative would trade a shipped post for a bookkeeping
-      complaint, so a second failure is logged and tagged, and the copy ships unchanged.
-    - **The re-ask keeps the better answer.** A retry that comes back generic too (or does not
-      come back at all) leaves the original in place, so this can only improve an answer.
-    """
-    suspect = [entry for entry in group.reps
-               if _hook_pattern_generic(payloads.get(entry.asset_id))]
-    if not suspect:
-        return set()
-    _warn(run.log, "hook_pattern_reask",
-          f"{len(suspect)} of {len(group.reps)} creative(s) answered with a generic "
-          "hook_pattern_used; asking each once more (A21 — the copywriter template calls a "
-          "generic value a failed answer)",
-          asset_ids=[entry.asset_id for entry in suspect])
-    retries = await asyncio.gather(*(_call_copy(group, [entry], run) for entry in suspect))
-    for entry, retry in zip(suspect, retries):
-        answer = retry.get(entry.asset_id)
-        if answer is not None and not _hook_pattern_generic(answer):
-            payloads[entry.asset_id] = answer
-    still = {entry.asset_id for entry in suspect
-             if _hook_pattern_generic(payloads.get(entry.asset_id))}
-    for asset_id in sorted(still):
-        _warn(run.log, "hook_pattern_generic",
-              f"{asset_id}: hook_pattern_used is still generic after one re-ask "
-              f"({str(payloads[asset_id].get('hook_pattern_used') or '')!r}) — the copy ships "
-              "unchanged and the asset is tagged; a thin audit note never fails a creative (A21)",
-              asset_id=asset_id, hook_pattern_used=payloads[asset_id].get("hook_pattern_used"))
-    return still
+            written = _free_text(entry, payload, group, run)
+        earned = [*written.tags, *_verify(written, entry, run)]
+        copies[entry.asset_id] = written.copyset
+        provenance[entry.asset_id] = written.source
+        if earned:
+            tags[entry.asset_id] = tuple(dict.fromkeys(earned))
+    return copies, tags, provenance
 
 
 async def _call_copy(
-    group: _Group, reps: Sequence[PlanEntry], run: _Run
+    group: _Group, entries: Sequence[PlanEntry], run: _Run,
+    offers: Mapping[str, _Offer], verbatim: bool,
 ) -> dict[str, dict[str, Any]]:
-    """One Luna call covering `reps`. Returns `{asset_id: payload}` for whatever came back."""
+    """One Luna call covering `entries`. Returns `{asset_id: payload}` for whatever came back."""
+    style = _single_style(entries, run)
     context = build_context(
         trend=group.trend,
-        style_brief=group.style_brief,
+        style=style,
         campaign_brief=group.campaign_brief,
-        creative_format=reps[0].creative_format if len(reps) == 1 else "",
+        creative_format=entries[0].creative_format if len(entries) == 1 else "",
         niche_descriptor=run.niche_descriptor,
         brand_context=run.brand_context,
-        copy_exemplars=run.copy_exemplars,  # A16: `{{inspiration_exemplars}}`, this role only
-        platform_conventions=_relevant(run.conventions, reps),
+        competitor_strings=_strip_terms(entries[0], run),  # M6: one strip pass over the fenced
+        platform_conventions=_relevant(run.conventions, entries),  # trend texts as well
         text_budgets=run.budgets,
-        sibling_list=_sibling_list(reps, run.onimage_languages),
+        sibling_list=_sibling_list(entries, run, offers, verbatim),
     )
+    # `{{source_hooks}}` is RE-PURPOSED post-pivot (contracts item 2): the slot that used to carry
+    # five exemplar hooks to abstract from now carries the numbered candidate table to CHOOSE
+    # from. The numbering is written here rather than in `build_context` on purpose — this module
+    # resolves the refs back to bytes, and a second implementation of the same numbering in
+    # `prompts_engine` is a divergence waiting to ship the wrong string.
+    context["source_hooks"] = _candidate_block(entries, offers) if verbatim else ""
     try:
         system = run.engine.render("copywriter_system.md", context)
     except (ValueError, LookupError) as exc:  # unresolved placeholder / missing template
@@ -376,12 +620,12 @@ async def _call_copy(
     result = await run.call(
         COPY_ROLE,
         [{"role": "system", "content": system}, {"role": "user", "content": _CARRIER_TURN}],
-        _copy_schema(),
+        _selection_schema() if verbatim else _free_text_schema(),
         None,
     )
     if result.degraded or not isinstance(result.parsed, Mapping):
         return {}
-    wanted = {entry.asset_id for entry in reps}
+    wanted = {entry.asset_id for entry in entries}
     payloads = {}
     for item in result.parsed.get("creatives") or []:
         if isinstance(item, Mapping) and str(item.get("asset_id")) in wanted:
@@ -389,32 +633,149 @@ async def _call_copy(
     return payloads
 
 
-def _sibling_list(reps: Sequence[PlanEntry], onimage_languages: Mapping[str, str]) -> str:
-    """One line per pair_id (FR-16/22) — asset id, platform, format and both languages."""
+def _candidate_block(entries: Sequence[PlanEntry], offers: Mapping[str, _Offer]) -> str:
+    """The `{{source_hooks}}` table: one section per creative, its OWN post's strings only.
+
+    Sectioning by creative rather than by post is what makes §1.7.6 enforceable in the prompt as
+    well as in the engine — the model is never shown a string it is not allowed to pick, so the
+    common failure ("both creatives quoted the best post") cannot be expressed. Labels stay
+    topic-global so two sections quoting the same post agree on its number.
+
+    Long candidates are shown truncated and multi-line ones are shown folded, because the model
+    only needs enough to CHOOSE: the engine ships the original bytes from `SourcePost`, line
+    breaks and all, and says so here so the model does not "fix" what it sees.
+    """
+    blocks: list[str] = []
+    for entry in entries:
+        offer = offers.get(entry.asset_id)
+        if offer is None or offer.post is None:
+            continue
+        budget_line = ", ".join(f"{slot} <= {limit} characters"
+                                for slot, limit in offer.budgets.items())
+        lines = [f"{entry.asset_id} · {entry.creative_format} · "
+                 f"quote ONLY from post P{offer.post_ordinal}"]
+        lines.append(f"  on-image candidates ({budget_line}):")
+        if offer.onimage:
+            lines.extend(f"    {c.label} [fits {', '.join(c.slots)}] {_display(c.text)}"
+                         for c in offer.onimage)
+        else:
+            lines.append("    NONE — no string on this post fits this style's on-image budget. "
+                         "Leave headline_ref, subline_ref, overlay_ref and slide_refs empty; "
+                         "this creative ships caption-only.")
+        lines.append("  caption candidates:")
+        lines.extend(f"    {c.label} {_display(c.text)}" for c in offer.captions)
+        if not offer.captions:
+            lines.append("    NONE — leave caption_ref empty.")
+        blocks.append("\n".join(lines))
+    if not blocks:
+        return ""
+    header = ("Each candidate below is shown on one line and may be shown truncated; the engine "
+              "renders the ORIGINAL bytes of the string you name, line breaks and all. Choose by "
+              "label only.")
+    return f"{header}\n\n" + "\n\n".join(blocks)
+
+
+def _display(text: str) -> str:
+    """One-line, length-capped, quoted rendering of a candidate — display only, never shipped."""
+    folded = " ".join(text.split())
+    if len(folded) > _DISPLAY_CHARS:
+        folded = folded[:_DISPLAY_CHARS].rstrip() + " …[truncated for display]"
+    return f'"{folded}"'
+
+
+def _sibling_list(entries: Sequence[PlanEntry], run: _Run, offers: Mapping[str, _Offer],
+                  verbatim: bool) -> str:
+    """One line per creative — asset id, platform, format, and the LANGUAGE RULE in force.
+
+    §1.7.5, F22: a verbatim creative's language is a property of the string it quotes, so the line
+    says so instead of naming a language we would then be asking the model to translate into.
+    `config.languages` still governs the free-text creatives (override briefs and the post-less
+    degrade path), and those lines keep the pre-pivot caption/on-image tokens.
+
+    The closing note on a free-text call is load-bearing and is written HERE rather than in the
+    template on purpose. `copywriter_system.md` is a reference-selection mandate end to end — "a
+    brief never turns this into a writing task", "there is no slot in your answer where invented
+    lettering can go" — and for a group with nothing to quote that instruction is exactly wrong.
+    `sibling_list` is the one slot this module owns inside that prompt, so the correction rides
+    there, and the JSON schema sent alongside it (`_free_text_schema`) already agrees with the
+    note. **Conductor: this is a real seam between T2.2 and T2.5** — the clean fix is either a
+    brief-candidate section in the template (its `override` paragraph already anticipates one) or
+    an explicit ruling that trendless briefs ship caption-only.
+    """
     lines = []
-    for entry in reps:
-        onimage = onimage_languages.get(entry.asset_id, entry.language)
-        line = (f"- {entry.asset_id} · {entry.platform} · {entry.creative_format} · "
-                f"caption {entry.language} · on-image {onimage}")
+    for entry in entries:
+        offer = offers.get(entry.asset_id)
+        line = f"- {entry.asset_id} · {entry.platform} · {entry.creative_format}"
         if entry.creative_format == "carousel" and entry.slide_count:
             line += f" · {entry.slide_count} slides"
+        if verbatim and offer is not None and offer.post is not None:
+            line += (f" · quote post P{offer.post_ordinal}"
+                     " · caption language: as-selected (source language, never translated)")
+        else:
+            onimage = run.onimage_languages.get(entry.asset_id, entry.language)
+            line += f" · caption {entry.language} · on-image {onimage}"
         lines.append(line)
+    if not verbatim:
+        lines.append(
+            "NOTE FOR THIS CALL ONLY: these creatives quote no source post. The candidate block "
+            "above is empty and there are no labels to choose, so the answer shape for this call "
+            "is the copy fields themselves — caption, hashtags, headline, subline, slide_texts, "
+            "overlay_text, through_line, narrative_arc, motion_beat — written in the language "
+            "named on each line. The JSON schema sent with this call is that shape; follow it.")
     return "\n".join(lines)
 
 
+def _single_style(entries: Sequence[PlanEntry], run: _Run) -> MetaStyle | None:
+    """The group's style when every creative shares one, else `None`.
+
+    `{{text_budgets}}` is the only style-derived slot the copywriter role allowlists, and a group
+    whose creatives carry two different styles has two different ceilings — printing either would
+    be a lie. It costs nothing: enforcement is the candidate filter's, per creative, and the
+    numbered table already states each creative's own budget.
+    """
+    keys = {entry.style_key for entry in entries}
+    if len(keys) != 1:
+        return None
+    return run.styles.get(next(iter(keys)))
+
+
 def _relevant(
-    conventions: Mapping[str, Mapping[str, str]] | None, reps: Sequence[PlanEntry]
+    conventions: Mapping[str, Mapping[str, str]] | None, entries: Sequence[PlanEntry]
 ) -> dict[str, Mapping[str, str]]:
     """Only the platforms in this call — a LinkedIn rule in a TikTok-only call is noise."""
     if not conventions:
         return {}
-    platforms = {entry.platform for entry in reps}
+    platforms = {entry.platform for entry in entries}
     return {name: entry for name, entry in conventions.items() if name in platforms}
 
 
-def _copy_schema() -> dict[str, Any]:
-    """Generated from `CopySet`'s own fields, so the template and the schema cannot drift."""
-    creative = json_schema_for(CopySet, exclude={"language", "trend_key"})
+def _selection_schema() -> dict[str, Any]:
+    """The verbatim call's schema, generated from `CopySelection` (contracts item 10).
+
+    `asset_id` is excluded from the dataclass projection and re-added first by the engine, exactly
+    as the pinned contract writes it: the ANSWER fields belong to `CopySelection` and identity
+    belongs to the envelope, so a future field on the dataclass reaches the schema automatically
+    while the key the engine matches on cannot be renamed by accident.
+    """
+    fields = json_schema_for(CopySelection, exclude={"asset_id"})["properties"]
+    creative = {"type": "object", "properties": {"asset_id": {"type": "string"}, **fields},
+                "required": ["asset_id", *fields], "additionalProperties": False}
+    return {
+        "name": "copy_selection",
+        "schema": {"type": "object", "properties": {"creatives": {"type": "array",
+                                                                  "items": creative}},
+                   "required": ["creatives"], "additionalProperties": False},
+    }
+
+
+def _free_text_schema() -> dict[str, Any]:
+    """The override-brief / post-less shape: `CopySet` minus what the engine owns.
+
+    `hook_pattern_used` is excluded because A21 is dead (§1.7.2): nothing validates it, nothing
+    reads it, and asking for a field we discard is asking the model to spend tokens on nothing.
+    The field itself survives on `CopySet` until the W3.5 excision and stays at its default.
+    """
+    creative = json_schema_for(CopySet, exclude={"language", "trend_key", "hook_pattern_used"})
     return {
         "name": "social_copy",
         "schema": {"type": "object", "properties": {"creatives": {"type": "array",
@@ -424,12 +785,192 @@ def _copy_schema() -> dict[str, Any]:
 
 
 # --------------------------------------------------------------------------------------------
-# Results — mapping, fallback, FR-101 enforcement
+# Resolution — refs to bytes (§1.7.3)
 # --------------------------------------------------------------------------------------------
 
 
-def _to_copyset(payload: Mapping[str, Any], entry: PlanEntry) -> CopySet:
-    return CopySet(
+def _resolve(entry: PlanEntry, payload: Mapping[str, Any], offer: _Offer, group: _Group,
+             run: _Run) -> _Written:
+    """Turn one `CopySelection` answer into resolved bytes plus its FR-298 provenance.
+
+    Nothing here retypes, translates, re-cases or trims: every rendered string is a `_Candidate`'s
+    `text` field, and that field was built once from the `SourcePost` (minus a logged strip). The
+    only decisions left are *which* candidate and *what to do when the label is unusable*, and
+    both are answered by dropping the field rather than approximating it.
+    """
+    refs: dict[str, str] = {}
+    tags: list[DegradationTag] = []
+    #: Strings this creative ships that are OURS rather than the post's. They join the verifier's
+    #: pool so our own successful fallback is not reported as someone else's words gone missing.
+    own_words: list[str] = []
+    stripped = False
+
+    def pick(raw: Any, slot: str, field_name: str) -> str:
+        nonlocal stripped
+        candidate = _lookup(raw, slot, offer, entry, run)
+        if candidate is None:
+            return ""
+        refs[field_name] = candidate.label
+        stripped = stripped or candidate.stripped
+        return candidate.text
+
+    headline = pick(payload.get("headline_ref"), "headline", "headline")
+    subline = pick(payload.get("subline_ref"), "subline", "subline")
+    overlay = pick(payload.get("overlay_ref"), "overlay", "overlay_text")
+    slides: list[str] = []
+    for raw in _strings(payload.get("slide_refs")):
+        # The provenance key is the slide's FINAL position, not the ref's position in the answer:
+        # a dropped ref closes the gap in `slide_texts`, and `slide_3` in meta.yaml has to mean
+        # the third slide that shipped, not the third label the model happened to write.
+        candidate = _lookup(raw, "slide", offer, entry, run)
+        if candidate is None:
+            continue
+        slides.append(candidate.text)
+        refs[f"slide_{len(slides)}"] = candidate.label
+        stripped = stripped or candidate.stripped
+    caption_candidate = _caption_for(payload.get("caption_ref"), offer, entry, run)
+    caption, hashtags = "", []
+    if caption_candidate is not None:
+        refs["caption"] = caption_candidate.label
+        stripped = stripped or caption_candidate.stripped
+        caption, hashtags = caption_candidate.text, list(caption_candidate.hashtags)
+    else:
+        # The assigned post carries no quotable caption at all (rare: a video post with an empty
+        # caption and an empty description). Our own words are the honest answer — the topic name
+        # plus the standing niche line — and they are ours, so no verbatim claim is made about
+        # them and no provenance label is recorded.
+        caption = _fallback_caption(_subject_name(entry, group), run.niche_descriptor)
+        own_words.append(caption)
+        _warn(run.log, "copy_caption_unavailable",
+              f"{entry.asset_id}: post P{offer.post_ordinal} offers no quotable caption; shipping "
+              "the topic name and the standing niche line instead", asset_id=entry.asset_id)
+
+    copyset = CopySet(
+        asset_id=entry.asset_id,
+        language=entry.language,
+        trend_key=entry.trend_key,
+        caption=caption,
+        hashtags=hashtags,
+        headline=headline,
+        subline=subline,
+        slide_texts=slides,
+        narrative_arc=str(payload.get("narrative_arc") or ""),
+        overlay_text=overlay,
+        through_line=str(payload.get("through_line") or "") or _subject_name(entry, group),
+        motion_beat=str(payload.get("motion_beat") or ""),
+    )
+    if not (headline or subline or overlay or slides):
+        tags.append(DegradationTag.NO_ONIMAGE_TEXT)
+        _warn(run.log, "no_onimage_text",
+              f"{entry.asset_id}: no string on post P{offer.post_ordinal} fits this style's "
+              "on-image budget; shipping a caption-only creative (§1.7.4)",
+              asset_id=entry.asset_id, budgets=dict(offer.budgets),
+              offered=len(offer.onimage))
+    if stripped:
+        tags.append(DegradationTag.COMPETITOR_STRIPPED)
+        _warn(run.log, "competitor_stripped",
+              f"{entry.asset_id}: a competitor name was removed from this creative's text before "
+              "it was offered (§1.5); the copy is still sourced, no longer byte-identical",
+              asset_id=entry.asset_id, refs=dict(refs))
+    return _Written(
+        copyset=copyset,
+        source=CopyProvenance(post_id=offer.post.post_id if offer.post else "", refs=refs),
+        tags=tags,
+        quoted=(*offer.haystack, *own_words))
+
+
+def _lookup(raw: Any, slot: str, offer: _Offer, entry: PlanEntry, run: _Run) -> _Candidate | None:
+    """One ref → the candidate it names, or `None` with a reason in the log.
+
+    Three ways a ref can be unusable, and all three end the same way — the field ships empty:
+
+    - **unparseable or unknown** — the model invented a label. Nothing to resolve.
+    - **another post's** — §1.7.6 assigned this creative one post. The label is re-pointed at the
+      assigned post when the same kind and index exist there (the model's editorial choice
+      survives, the divergence rule holds); otherwise it is dropped.
+    - **over budget for this slot** — the string was offered for a different slot, or for none.
+      It is NOT trimmed: trimming a quoted string is how byte identity dies (§1.7.3).
+    """
+    label = str(raw or "").strip()
+    if not label:
+        return None
+    match = _REF.match(label)
+    if match is None:
+        _warn(run.log, "copy_ref_unparseable",
+              f"{entry.asset_id}: {label!r} is not a candidate label (P<n>.<kind>[.<i>]); "
+              f"the {slot} ships empty", asset_id=entry.asset_id, ref=label, slot=slot)
+        return None
+    ordinal, kind, index = int(match.group(1)), match.group(2).lower(), match.group(3)
+    canonical = f"P{ordinal}.{kind}" + (f".{int(index)}" if index else "")
+    table = offer.by_label
+    candidate = table.get(canonical)
+    if candidate is None and ordinal != offer.post_ordinal:
+        canonical = f"P{offer.post_ordinal}.{kind}" + (f".{int(index)}" if index else "")
+        candidate = table.get(canonical)
+        _warn(run.log, "copy_ref_out_of_scope",
+              f"{entry.asset_id}: {label!r} names post P{ordinal}, which this creative was not "
+              f"assigned (§1.7.6 gave it P{offer.post_ordinal}); "
+              + (f"re-pointed to {canonical}" if candidate else f"the {slot} ships empty"),
+              asset_id=entry.asset_id, ref=label, slot=slot,
+              assigned_post=offer.post_ordinal)
+    if candidate is None:
+        _warn(run.log, "copy_ref_unknown",
+              f"{entry.asset_id}: {label!r} was never offered for this creative; the {slot} "
+              "ships empty", asset_id=entry.asset_id, ref=label, slot=slot)
+        return None
+    if slot not in candidate.slots:
+        _warn(run.log, "copy_ref_over_budget",
+              f"{entry.asset_id}: {canonical} does not fit the {slot} budget "
+              f"({offer.budgets.get(slot, 0)} characters) and is never trimmed; the {slot} ships "
+              "empty (§1.7.3)", asset_id=entry.asset_id, ref=canonical, slot=slot,
+              length=len(candidate.text))
+        return None
+    return candidate
+
+
+def _caption_for(raw: Any, offer: _Offer, entry: PlanEntry, run: _Run) -> _Candidate | None:
+    """The caption candidate a ref names, else the assigned post's best one.
+
+    A caption is the one field every creative needs — `caption.txt` ships verbatim to the
+    publisher (FR-230) — so an unusable `caption_ref` falls back to the first caption candidate of
+    the assigned post rather than shipping nothing. That fallback is still a quote of the same
+    post, so provenance and the verifier stay honest.
+    """
+    label = str(raw or "").strip()
+    table = {c.label: c for c in offer.captions}
+    if label:
+        match = _REF.match(label)
+        kind = "" if match is None else match.group(2).lower()
+        canonical = f"P{offer.post_ordinal}.{kind}" if kind else ""
+        if canonical in table:
+            if match is not None and int(match.group(1)) != offer.post_ordinal:
+                _warn(run.log, "copy_ref_out_of_scope",
+                      f"{entry.asset_id}: caption ref {label!r} names a post this creative was "
+                      f"not assigned (§1.7.6 gave it P{offer.post_ordinal}); re-pointed to "
+                      f"{canonical}", asset_id=entry.asset_id, ref=label, slot="caption",
+                      assigned_post=offer.post_ordinal)
+            return table[canonical]
+        _warn(run.log, "copy_ref_unknown",
+              f"{entry.asset_id}: caption ref {label!r} is not one of this creative's caption "
+              "candidates; falling back to its assigned post's own caption",
+              asset_id=entry.asset_id, ref=label, slot="caption")
+    return offer.captions[0] if offer.captions else None
+
+
+# --------------------------------------------------------------------------------------------
+# Free text and the fallback tier
+# --------------------------------------------------------------------------------------------
+
+
+def _free_text(entry: PlanEntry, payload: Mapping[str, Any], group: _Group,
+               run: _Run) -> _Written:
+    """§1.7.5's free-text creatives: an override brief, or a topic that arrived with no posts.
+
+    These quote nothing, so there is nothing to be verbatim ABOUT: the model writes the words, the
+    configured language applies, and FR-101's word-boundary trim applies with it. This is the only
+    path `_apply_budgets` still touches.
+    """
+    copyset = CopySet(
         asset_id=entry.asset_id,
         language=entry.language,
         trend_key=entry.trend_key,
@@ -441,142 +982,215 @@ def _to_copyset(payload: Mapping[str, Any], entry: PlanEntry) -> CopySet:
         slide_texts=_strings(payload.get("slide_texts")),
         narrative_arc=str(payload.get("narrative_arc") or ""),
         overlay_text=str(payload.get("overlay_text") or ""),
-        through_line=str(payload.get("through_line") or ""),
-        hook_pattern_used=str(payload.get("hook_pattern_used") or ""),
+        through_line=str(payload.get("through_line") or "") or _subject_name(entry, group),
+        motion_beat=str(payload.get("motion_beat") or ""),
     )
+    tags: list[DegradationTag] = []
+    if _apply_budgets(copyset, entry, run):
+        tags.append(DegradationTag.TEXT_TRIMMED)
+    return _Written(copyset=copyset, source=CopyProvenance(), tags=tags)
 
 
-def _fallback_copy(entry: PlanEntry, trend: TrendItem | None,
-                   niche_descriptor: str = "") -> CopySet:
-    """FR-99's last resort, A20 shape: a caption in OUR words and NO on-image text. No model call.
+def _fallback(entry: PlanEntry, trend: TrendItem | None, run: _Run) -> _Written:
+    """FR-99's last resort — the copy call produced nothing for this creative.
 
-    **What this used to do, and why it stopped (operator mandate, 2026-08-11).** Until A20 this
-    function set `headline` to the competitor's exact `hook_text`, `slide_texts` to the source
-    deck's panel copy slide for slide, and `overlay_text` to the same hook for a reel. Those
-    strings flow into `prompts_engine._onimage_text`, which emits them as
-    `headline (render verbatim): "…"` plus a letter-by-letter spelling aid, inside the block every
-    render template calls *the ONLY source of renderable words*. A carousel reproduced the source
-    deck panel by panel; a reel burnt the source hook into the seed frame and then locked it as a
-    fixed graphic layer for the whole clip. The docstring here justified it as *"a creative with
-    borrowed words beats a creative with none"*. **That reasoning is overturned.** It is the one
-    place in this pipeline that reproduced a competitor's literal words into a shipped asset, and
-    no amount of prompt-level anti-plagiarism discipline elsewhere survives an engine that does
-    it deterministically on a failure path.
+    `copy_degraded` AND `no_onimage_text` travel together here and stay two facts: the first is an
+    LLM outcome FR-248 counts as `llm_starved` (exit 1 — a failed copy call is a loss to surface
+    even though the content it falls back to is now legitimate), the second is what the operator
+    will actually see in the frame.
+    """
+    copyset = _fallback_copy(entry, trend, run.niche_descriptor, run.competitors)
+    top = _top_post(trend)
+    # This tier quotes P1, NOT the creative's assigned post — there is no answer to honour a
+    # divergence rule with, and the top post is the one the operator would have picked. Provenance
+    # is recorded only when the caption really did come from it (an empty caption falls through to
+    # our own standing line, which claims nothing and is verified against itself).
+    sources = tuple(text for text, _ in (_apply_strip(raw, run.competitors)
+                                         for _, raw, _ in _numbered_fields(top))
+                    if text.strip()) if top is not None else ()
+    quoted = any(copyset.caption in source for source in sources)
+    refs = {"caption": "P1.caption"} if quoted else {}
+    _warn(run.log, "copy_degraded",
+          f"{entry.asset_id}: copy call failed; shipping "
+          + ("the top post's caption verbatim" if quoted else "our own standing caption")
+          + " and NO on-image text (FR-99)",
+          asset_id=entry.asset_id, reason="no_onimage_text",
+          copy_source_post_id=top.post_id if top and quoted else "")
+    return _Written(
+        copyset=copyset,
+        source=CopyProvenance(post_id=top.post_id if top and quoted else "", refs=refs),
+        tags=[DegradationTag.COPY_DEGRADED, DegradationTag.NO_ONIMAGE_TEXT],
+        quoted=sources if quoted else (copyset.caption, *copyset.hashtags))
 
-    So every on-image field is empty here. The render side already copes: `_onimage_text` returns
-    `""` when there is no copy and every image role instructs the model to ignore an empty
-    labelled line, so what ships is a text-free creative on a proven layout — usable, and honest
-    about being wordless via `no_onimage_text`.
 
-    The caption is assembled from what is OURS: the trend's own name (the monitor's theme label,
-    not any post's copy) and the niche descriptor from config. `hook_line` and `through_line`
-    stay clear of the source too — `through_line` reaches `reel_director.md` as a description of
-    what the clip is about, so it carries the theme name and nothing scraped.
+def _fallback_copy(entry: PlanEntry, trend: TrendItem | None, niche_descriptor: str = "",
+                   competitors: Sequence[str] = ()) -> CopySet:
+    """The no-call tier's `CopySet`: the top post's caption verbatim, and NO on-image text.
+
+    **What changed, twice, and why (§1.7.4).** Until A20 this function put the competitor's exact
+    hook into `headline` and the source deck's panel copy into `slide_texts`, which reproduced a
+    competitor's words into a shipped asset on a failure path. A20 emptied every field and wrote a
+    caption in our own words. The topic-first pivot reverses the premise — the source's caption in
+    its own language IS the product now — but not the on-image half: this path runs when the model
+    told us nothing, so we do not know WHICH of the post's strings belonged in the frame, and
+    guessing is what A20 was right about. The caption is the top post's, verbatim (minus the
+    blocklist); the frame stays wordless and says so via `no_onimage_text`.
+
+    With no posts at all — an override brief, or a topic that arrived empty — the caption falls
+    back to what is ours: the topic's own name (the monitor's theme label) plus the niche
+    descriptor from config, and `through_line` carries the theme name so `reel_director.md` still
+    knows what the clip is about.
     """
     name = trend.name if trend else (entry.brief_name or entry.asset_id)
+    post = _top_post(trend)
+    caption, hashtags = "", []
+    if post is not None:
+        text, _ = _apply_strip(post.caption, competitors)
+        caption, tags = _split_trailing_hashtags(text)
+        hashtags = list(tags)
+    if not caption.strip():
+        caption, hashtags = _fallback_caption(name, niche_descriptor), _hashtags(name)
     return CopySet(
         asset_id=entry.asset_id,
         language=entry.language,
         trend_key=entry.trend_key,
-        caption=_fallback_caption(name, niche_descriptor),
-        hashtags=_hashtags(name),
+        caption=caption,
+        hashtags=hashtags,
         hook_line="",
         headline="",
         subline="",
         slide_texts=[],
         overlay_text="",
         through_line=name,
-        hook_pattern_used="copy_degraded — no pattern was written; this creative ships with no "
-                          "on-image text rather than the source's own words (A20)",
     )
 
 
-def _fallback_caption(name: str, niche_descriptor: str) -> str:
-    """The no-text tier's caption: the trend's theme name plus our own standing niche line.
+def _top_post(trend: TrendItem | None) -> SourcePost | None:
+    """`P1` — the topic's highest-ranked post. `posts` arrives view-ranked from the adapter."""
+    return trend.posts[0] if trend and trend.posts else None
 
-    Both halves are ours — `NicheConfig.as_text()` is operator-authored config and the trend name
-    is the monitor's theme label — so nothing scraped can reach `caption.txt`, which FR-230 ships
-    verbatim to the publisher. The niche line runs to a few hundred characters in real configs,
-    so it is cut at a word boundary: a caption is a caption, not a config dump.
+
+def _subject_name(entry: PlanEntry, group: _Group) -> str:
+    """What this creative is ABOUT in one label — the topic's name, else the brief's."""
+    if group.trend is not None:
+        return group.trend.name
+    return entry.brief_name or entry.asset_id
+
+
+def _fallback_caption(name: str, niche_descriptor: str) -> str:
+    """Our own caption: the topic's theme name plus our own standing niche line.
+
+    Both halves are ours — `NicheConfig.as_text()` is operator-authored config and the topic name
+    is the monitor's theme label — so this string makes no verbatim claim and needs none. The
+    niche line runs to a few hundred characters in real configs, so it is cut at a word boundary:
+    a caption is a caption, not a config dump.
     """
     standing = trim_words(" ".join((niche_descriptor or "").split()), 180)[0]
     return f"{name} — {standing}" if standing else name
 
 
-def _hook_pattern_generic(payload: Mapping[str, Any] | None) -> bool:
-    """A21 — True when `hook_pattern_used` is the kind of answer the template calls a failure.
-
-    Three cheap, explainable rules rather than a judgement call, in the order they were cheapest
-    to state to the model (see `_GENERIC_HOOK_PATTERNS` for the contract with the template):
-
-    1. under `_HOOK_PATTERN_MIN_CHARS` — nothing that short describes a shape;
-    2. the whole value, normalized, is one of the five phrases the template rejects by name;
-    3. every content word it does carry comes from that same generic vocabulary, which catches
-       "attention grabber pattern interrupt hook" — long enough for rule 1, still a genre label.
-
-    `None` means the copy call produced no answer at all for this creative; that is the FR-99
-    fallback's business, not this check's, so it is not "generic".
-    """
-    if payload is None:
-        return False
-    value = str(payload.get("hook_pattern_used") or "")
-    if len(" ".join(value.split())) < _HOOK_PATTERN_MIN_CHARS:
-        return True
-    words = [match.group(0).casefold() for match in _WORDS.finditer(value)]
-    if " ".join(words) in _GENERIC_HOOK_PATTERNS:
-        return True
-    content = {word for word in words if word not in _HOOK_PATTERN_STOPWORDS}
-    if content and content <= _GENERIC_VOCABULARY:
-        return True
-    return len(content) < _HOOK_PATTERN_MIN_CONTENT_WORDS
-
-
 def _hashtags(name: str, want: int = 3) -> list[str]:
-    """The platform's hashtag convention applied to the trend name — string assembly (FR-96).
+    """Hashtags assembled from the topic-name slug — reachable from `_fallback_copy` alone.
 
-    Deliberately still invented from the trend-name slug, and deliberately still only reachable
-    from `_fallback_copy`. The winning posts' REAL hashtags now travel to the copy call as
-    reference material (`TrendItem.hashtags`, rendered inside `{{trend_texts}}`), where the model
-    chooses among them the way it chooses everything else. Emitting them verbatim from here would
-    turn reference material into a mandate and hand the model's one editorial job to a slice —
-    and this function runs only when there was no model answer at all.
+    On every other path the hashtags are the source post's own trailing run, extracted verbatim
+    (§1.7.1). This function runs only when there is no post to take them from, which is also why
+    inventing them here costs nothing: there is no provenance claim to break.
     """
     words = [word for word in slugify(name, 0).split("-") if len(word) > 2]
     return [f"#{word}" for word in words[:want]]
 
 
-def _apply_budgets(copyset: CopySet, entry: PlanEntry, budgets: TextBudgets, log: Any) -> bool:
+def _apply_budgets(copyset: CopySet, entry: PlanEntry, run: _Run) -> bool:
     """FR-101 layer two — word-boundary trim of every on-image string. True if anything was cut.
 
-    FR-105's −40% vision-check retry re-runs the render, not the copy call: it rebuilds the
-    prompt through `build_context(budget_scale=...)` and re-trims with `trim_words`, so no
-    reduced-budget branch belongs here.
+    **BYPASSED for ref-resolved fields (§1.7.3).** A quoted string is either under its slot's
+    budget or it was never offered, so on the verbatim path there is nothing here to do and doing
+    it anyway would silently break byte identity. What remains is the free-text path: an override
+    brief's copy is the model's own prose and can overshoot exactly as it always could.
+
+    FR-105's −40% vision-check retry re-runs the RENDER, not the copy call: it rebuilds the prompt
+    through `build_context(budget_scale=...)`, so no reduced-budget branch belongs here.
     """
-    headline_limit = budgets.image_headline
-    subline_limit = budgets.image_subline
-    seed_limit = budgets.reel_seed_headline
+    style = run.styles.get(entry.style_key)
+    limits = _slot_budgets(style, run.budgets)
     trimmed = False
-    for name, limit in (("headline", headline_limit), ("subline", subline_limit),
-                        ("overlay_text", seed_limit)):
+    for name, slot in (("headline", "headline"), ("subline", "subline"),
+                       ("overlay_text", "overlay")):
         before = getattr(copyset, name)
-        after, cut = trim_words(before, limit)
+        after, cut = trim_words(before, limits[slot])
         if cut:
             setattr(copyset, name, after)
             trimmed = True
-            _warn(log, "text_trimmed",
-                  f"{entry.asset_id}: {name} exceeded {limit} characters and was cut at the last "
-                  "word boundary", asset_id=entry.asset_id, field=name, before=before, after=after)
+            _warn(run.log, "text_trimmed",
+                  f"{entry.asset_id}: {name} exceeded {limits[slot]} characters and was cut at "
+                  "the last word boundary", asset_id=entry.asset_id, field=name, before=before,
+                  after=after)
     slides = []
     for index, text in enumerate(copyset.slide_texts, start=1):
-        after, cut = trim_words(text, headline_limit)
+        after, cut = trim_words(text, limits["slide"])
         if cut:
             trimmed = True
-            _warn(log, "text_trimmed",
-                  f"{entry.asset_id}: slide {index} exceeded {headline_limit} characters",
+            _warn(run.log, "text_trimmed",
+                  f"{entry.asset_id}: slide {index} exceeded {limits['slide']} characters",
                   asset_id=entry.asset_id, field=f"slide_texts[{index}]", before=text, after=after)
         slides.append(after)
     copyset.slide_texts = slides
     return trimmed
+
+
+# --------------------------------------------------------------------------------------------
+# The verifier — A20's polarity, flipped (§1.7)
+# --------------------------------------------------------------------------------------------
+
+
+def _verify(written: _Written, entry: PlanEntry, run: _Run) -> list[DegradationTag]:
+    """Audit every shipped string. Deviation tags `copy_not_verbatim`; it NEVER fails a creative.
+
+    Two questions, asked of the finished `CopySet` rather than of the plan that produced it — the
+    point of a verifier is to catch the day the plan and the product disagree:
+
+    1. **Is it the source's?** Every rendered string must be a byte-substring of one of the strings
+       this creative was entitled to quote (`_Written.quoted`), AFTER the logged strip. Ref
+       resolution makes this true by construction today; the check is what notices the day someone
+       adds a "helpful" normalisation between the candidate table and the `CopySet`. It is skipped
+       for free-text creatives, which quote nothing and claim nothing.
+    2. **Is it clean?** No blocklisted competitor may appear in ANY shipped string, on any path,
+       verbatim or free text. This half is the fail-closed one and it re-checks §1.5 layer 1 at
+       the very last moment before the bytes leave this module — the same asymmetry `_strip_terms`
+       documents: the blocklist is absolute, the filter's own proposals are not re-judged here.
+
+    The counterpart pass at the assembled render prompt is `build_context`'s `_strip_brands` (M6);
+    this one is at `CopySet` level and they are deliberately independent — a string can only reach
+    a render prompt through one of the two.
+    """
+    copyset = written.copyset
+    shipped = [("caption", copyset.caption), ("headline", copyset.headline),
+               ("subline", copyset.subline), ("overlay_text", copyset.overlay_text)]
+    shipped += [(f"slide_{index}", text)
+                for index, text in enumerate(copyset.slide_texts, start=1)]
+    shipped += [(f"hashtag_{index}", tag)
+                for index, tag in enumerate(copyset.hashtags, start=1)]
+    deviations: list[str] = []
+    for name, text in shipped:
+        if not str(text).strip():
+            continue
+        if apply_blocklist(text, run.competitors) != text:
+            deviations.append(f"{name}: carries a blocklisted competitor name")
+        elif written.quoted and not any(str(text) in source for source in written.quoted):
+            deviations.append(f"{name}: is not a byte-substring of the source it was taken from")
+    if not deviations:
+        return []
+    _warn(run.log, "copy_not_verbatim",
+          f"{entry.asset_id}: {len(deviations)} shipped string(s) failed the verbatim audit — "
+          + "; ".join(deviations)
+          + ". The creative ships and is tagged; an audit never costs the operator a card",
+          asset_id=entry.asset_id, deviations=deviations)
+    return [DegradationTag.COPY_NOT_VERBATIM]
+
+
+# --------------------------------------------------------------------------------------------
+# Small helpers
+# --------------------------------------------------------------------------------------------
 
 
 def _strings(value: Any) -> list[str]:
@@ -593,4 +1207,4 @@ def _warn(log: Any, event_type: str, message: str, **data: Any) -> None:
         log.warn(event_type, message, **data)
 
 
-__all__ = ["COPY_ROLE", "CopyResult", "write_copy"]
+__all__ = ["COPY_ROLE", "CopyProvenance", "CopyResult", "write_copy"]

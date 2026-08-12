@@ -19,8 +19,8 @@ Invariants:
 - **Reserve-then-submit, never check-then-submit** (FR-106c), and **spend tallies on submission**:
   a reservation whose job reached the provider counts even if the job then fails; only a
   submission that never happened is `release()`d (20 §8).
-- **Trimming removes whole atomic groups from the END of the plan** (FR-106) — a carousel or a
-  both-mode pair is one unit and is never split.
+- **Trimming removes whole atomic groups from the END of the plan** (FR-106) — a carousel is one
+  unit and is never split (the A/B pair was the other such unit; A/B mode is withdrawn, v2.0.0).
 
 Do not: invent a missing price, call a provider, or re-derive a per-unit price elsewhere. `trim()`
 is the only function here that mutates plan entries, and its docstring says so.
@@ -39,15 +39,21 @@ from typing import Literal
 from hypesocials.config import Config
 from hypesocials.models import PlanEntry, PlanEntryStatus
 
-# Token-model constants: how the ENGINE uses the models (FR-93/105/128 sizes, shipped template
-# shapes), not operator knobs — the cost levers are `max_tokens.*` and `reasoning_effort` (30 §2).
+# Token-model constants: how the ENGINE uses the models (FR-105 sizes, shipped template shapes),
+# not operator knobs — the cost levers are `max_tokens.*` and `reasoning_effort` (30 §2).
 _CHARS_PER_TOKEN = 4  # Notion brand context is char-budgeted (FR-124)
-_ANALYSIS_PROMPT_TOKENS = 900  # style_brief_system.md + one trend's data block (50 §5)
-_ANALYSIS_IMAGE_CAP = 6  # FR-128: ~6 images per analysis call
-_ANALYSIS_IMAGE_PX = 1024  # FR-93/128 downscale, long edge
-_ANALYSIS_IMAGE_ASPECT = "4:5"  # Virlo panels measured 1122x1402 (RESULTS.md §A)
+#: Long edge assumed when `platforms.<name>.image_resolution` names a tier the price table has no
+#: entry for. 1024 is `render/profiles.py`'s own default tier, so the image-token arithmetic below
+#: an unpriced line still describes the picture the engine would actually have sent.
+_DEFAULT_LONG_EDGE_PX = 1024
 _COPY_PROMPT_TOKENS = 600  # copywriter_system.md + trend context (50 §5)
 _COPY_TOKENS_PER_SIBLING = 120  # FR-99's per-sibling brief inside the grouped call
+#: FR-294's batched topic screen (one call for the whole candidate pool, role `copy`/Luna).
+#: `topic_filter_system.md`'s fence + instruction block, then one numbered block per topic (name,
+#: hooks, panel texts) and one verdict object back ({ordinal, verdict, brands_to_strip, reason}).
+_FILTER_PROMPT_TOKENS = 400
+_FILTER_TOKENS_PER_TOPIC = 120
+_FILTER_VERDICT_TOKENS = 60
 _VISION_CHECK_PROMPT_TOKENS = 250  # vision_check_question.md — one narrow question (FR-27)
 _VISION_CHECK_COMPLETION_TOKENS = 200  # per-slide verdicts, not prose (FR-105)
 _VISION_CHECK_MIN_PX = 1536  # FR-105: check inputs are NEVER downscaled below this
@@ -74,7 +80,8 @@ ReservationKind = Literal["projected", "precommitted", "discretionary"]  # FR-10
 
 
 class SpendCategory(str, Enum):
-    """FR-84's grand-total split. Vision checks and copy are LLM; every Kie job is RENDER."""
+    """FR-84's grand-total split. Vision checks, the topic screen and copy are LLM; every Kie job
+    is RENDER."""
 
     LLM = "llm"
     RENDER = "render"
@@ -196,7 +203,7 @@ def _image_price(config: Config, platform: str) -> tuple[Priced, int]:
     key = f"models.price_per_unit.image.{tier}"
     priced = (config.models.price_per_unit.image.get(tier), key, _origin(config, key),
               config.models.image)
-    return priced, _TIER_LONG_EDGE.get(tier, _ANALYSIS_IMAGE_PX)
+    return priced, _TIER_LONG_EDGE.get(tier, _DEFAULT_LONG_EDGE_PX)
 
 
 def _llm_call_price(config: Config, role: str, prompt: int, completion: int, reasoning: int) -> Priced:
@@ -247,13 +254,15 @@ def _line(code: str, label: str, category: SpendCategory, unit: str, quantity: f
 def estimate(config: Config, entries: Sequence[PlanEntry]) -> Estimate:
     """Price a whole plan locally, enumerating every FR-107 conditional contributor.
 
-    Covered bullet by bullet (10 §9): vision-check calls — one multi-image call per deck carrying
-    every slide's image tokens, plus a second call for the anchor check; seed-frame renders and
-    their checks; the compound moderation-retry + vision-re-render allowance; the carousel
-    anchor-failure N+1 contingency; analysis image tokens at FR-93's downscaled size vs check
-    tokens at native render resolution; a reasoning allowance on every Luna copy call plus FR-99's
-    split per-creative calls; per-platform resolution; carousel slides at the configured ceiling;
-    reels at `reel_second` x the configured duration, at the configured resolution.
+    Covered bullet by bullet (10 §9, FR-107 as amended v2.0.0): the batched topic-filter screen at
+    its worst-case topic bound; vision-check calls — one multi-image call per deck carrying every
+    slide's image tokens, plus a second call for the anchor check; seed-frame renders and their
+    checks; the compound moderation-retry + vision-re-render allowance; the carousel anchor-failure
+    N+1 contingency; check image tokens at native render resolution; a reasoning allowance on every
+    Luna call plus FR-99's split per-creative calls; the FR-127 + FR-41 retry allowance on every
+    LLM call; per-platform resolution; carousel slides at the configured ceiling; reels at
+    `reel_second` x the configured duration, at the configured resolution and with **no**
+    motion-reference seconds (the motion-reference chain is withdrawn, v2.0.0/D41).
 
     Args:
         config: the loaded run config — the only price source (FR-282); no network (NFR-18).
@@ -389,56 +398,77 @@ def job_projection(config: Config, entry: PlanEntry, job: str) -> float:
     return round(price or 0.0, 6)
 
 
+def _filter_topics(config: Config) -> int:
+    """FR-294's worst-case topic count: `len(monitors) x virlo_topics_per_monitor`.
+
+    Deliberately a config bound rather than a real count: the screen is priced BEFORE Collect, so
+    the only honest number is the most Virlo could hand back — every configured monitor returning
+    a full set of themes. A monitor that answers with three topics simply costs less than the line
+    said, which is the safe direction (D11); understating is the one unacceptable estimator error.
+    `-1` is the kill switch (one topic per monitor, 30 §2), so it prices as one, not as none.
+    """
+    if "virlo" not in config.sources.active:
+        return 0
+    monitors = sum(1 for monitor_id in config.sources.virlo_monitor_ids if str(monitor_id).strip())
+    per_monitor = config.sources.virlo_topics_per_monitor
+    return monitors * (1 if per_monitor < 1 else per_monitor)
+
+
+def _filter_lines(config: Config, planned: Sequence[PlanEntry], effort: float,
+                  lines: list[EstimateLine]) -> None:
+    """FR-294's one batched competitor screen, priced pre-Collect (FR-107's first bullet).
+
+    ONE call for the whole candidate pool, whatever the pool size — that batching is the reason
+    the filter exists as its own stage instead of riding inside the copy call (§1.5), and it is
+    why the quantity here is 1 while the token count carries the topics. Its answer is one small
+    verdict object per topic, so the completion side is bounded by the topic count and by the copy
+    role's own `max_tokens` ceiling, whichever is lower.
+
+    Skipped entirely when the run screens nothing: no Virlo, no configured monitors, or a plan
+    whose every creative is an `override` brief (FR-144 — such a run opens no Virlo session at all).
+    """
+    topics = _filter_topics(config)
+    screened = [entry for entry in planned if entry.brief_influence != "override"]
+    if not topics or not screened:
+        return
+    prompt = _FILTER_PROMPT_TOKENS + topics * _FILTER_TOKENS_PER_TOPIC
+    completion = min(config.max_tokens_for("copy"), topics * _FILTER_VERDICT_TOKENS)
+    orders = [entry.order for entry in screened]
+    lines.append(_line("filter_call",
+                       f"topic filter screen (1 batched call, {topics} topics worst case)",
+                       SpendCategory.LLM, "call", 1,
+                       _llm_call_price(config, "copy", prompt, completion, round(completion * effort)),
+                       orders))
+    # FR-107's per-call retry allowance applies to EVERY role, and the filter is no exception:
+    # FR-127's widened truncation retry and FR-41's parse retry are independent, each capped at 1,
+    # and one call can spend both (`llm._run_attempts`). Allowance only — FR-106a's gate never
+    # prices a contingency. The filter's own failure path is fail-open (§1.5: a degraded screen
+    # keeps every topic), so this covers the retries the LLM layer makes, not a re-screen.
+    wide_out = _widened_cap(completion)
+    wide = _llm_call_price(config, "copy", prompt, wide_out, round(wide_out * effort))
+    lines.append(_line("filter_retry_allowance",
+                       "topic filter truncation + parse retry allowance (2)",
+                       SpendCategory.LLM, "retry", 2, wide, orders, allowance=True))
+
+
 def _llm_lines(config: Config, entries: Sequence[PlanEntry], lines: list[EstimateLine]) -> None:
-    """Analysis calls (one per analyzed PAIR) and copy calls (one per FR-99 group) + allowances.
+    """The topic-filter screen (one batched call) and the copy calls (one per FR-99 group).
 
-    The copy line is counted per distinct `trend_key`, which is what FR-99 bills. The analysis
-    line is counted per distinct **(`trend_key`, `trend_reuse_index`) pair** (FR-107 as amended
-    2026-08-11, following FR-9): reference groups rotate per reuse, each rotated group gets its
-    own style brief, so six creatives sharing one trend now make six analysis calls, not one.
+    The copy line is counted per distinct `trend_key`, which is what FR-99 bills. Before Collect no
+    topic is assigned yet, so `runner._stamp_provisional` supplies the worst-case-honest keys — one
+    distinct topic per atomic group, because that is the most `plan.assign()` can produce (v1.6.5
+    estimator fidelity fix). Over-stating is the safe direction; under-stating is the one
+    unacceptable estimator error (D11).
 
-    Before Collect no trend is assigned yet, so `runner._stamp_provisional` supplies the
-    worst-case-honest keys — one distinct trend per atomic group, because that is the most
-    `plan.assign()` can produce (v1.6.5 estimator fidelity fix; understating is the one
-    unacceptable estimator error). That stamping already priced one analysis call per atomic
-    group, which is exactly A4's worst case, so the **pre-Confirm estimate is unchanged** by the
-    pair keying: every provisional key is distinct, and a distinct key stays one call whatever
-    its reuse index is. What the pair keying fixes is the POST-assignment re-price, where real
-    keys repeat across siblings and the trend-keyed count under-stated the real spend.
-
-    The RAW reuse index is the key, not the group it rotates onto: `estimate()` is handed config
-    and plan entries, never `TrendItem`s, so it cannot know a trend's group count. A trend with
-    fewer groups than reuses therefore prices more calls than `analyze` will make (the rotation
-    wraps and those pairs collapse). That is deliberate — over-stating is the safe direction and
-    under-stating is the one unacceptable estimator error (D11).
+    The style-brief analysis line that used to live here is gone (v2.0.0/D41): the visual authority
+    is the local meta-style registry, so no LLM is asked what a trend looks like. The `analysis`
+    ROLE survives as the vision check's role and is priced in `_entry_lines` via `_check_price`
+    (FR-27/FR-105) — the model, the key and the max-tokens budget all keep working.
     """
     planned = [e for e in entries
                if not (e.creative_format == "reel" and not config.reels_plannable)]
-
-    analyzed: dict[tuple[str, int], list[int]] = {}
-    for entry in planned:
-        if entry.variant == "analyzed" and entry.trend_key:
-            analyzed.setdefault((entry.trend_key, entry.trend_reuse_index), []).append(entry.order)
-    if analyzed:  # FR-93/128: analysis images are the DOWNSCALED ones; check images are not
-        images = min(config.sources.media_download_cap, _ANALYSIS_IMAGE_CAP)
-        prompt = _ANALYSIS_PROMPT_TOKENS + images * _image_tokens(_ANALYSIS_IMAGE_PX,
-                                                                 _ANALYSIS_IMAGE_ASPECT)
-        out = config.max_tokens_for("analysis")
-        priced = _llm_call_price(config, "analysis", prompt, out, 0)
-        orders = [order for orders in analyzed.values() for order in orders]
-        lines.append(_line("analysis_call", f"style-brief analysis calls ({len(analyzed)})",
-                           SpendCategory.LLM, "call", len(analyzed), priced, orders))
-        # FR-127 and FR-41 are INDEPENDENT retries, each capped at 1, and ONE call can spend BOTH
-        # (llm._run_attempts) — W6 measured it: run 20260809_220436_wrfc billed $0.72 against a
-        # $0.69 worst case, run 20260809_223503_ax10 $0.60 against $0.56. So the worst case carries
-        # TWO extra calls per analysis call, each at the cap FR-127 widens to and FR-41's retry
-        # then inherits. Allowance only: FR-106a's expected projection stays ungated by a
-        # contingency that mostly never happens (v1.6.5 fidelity fix, padded 2026-08-10).
-        wide = _llm_call_price(config, "analysis", prompt, _widened_cap(out), 0)
-        lines.append(_line("analysis_retry_allowance",
-                           f"analysis truncation + parse retry allowance ({2 * len(analyzed)})",
-                           SpendCategory.LLM, "retry", 2 * len(analyzed), wide, orders,
-                           allowance=True))
+    effort = _REASONING_FRACTION.get(config.models.reasoning_effort, 0.0)
+    _filter_lines(config, planned, effort, lines)
 
     groups: dict[tuple[str, str], list[PlanEntry]] = {}
     for entry in planned:  # FR-99: one call per (trend x language); briefs by (brief x language)
@@ -448,13 +478,18 @@ def _llm_lines(config: Config, entries: Sequence[PlanEntry], lines: list[Estimat
     if not groups:
         return
     completion = config.max_tokens_for("copy")
-    effort = _REASONING_FRACTION.get(config.models.reasoning_effort, 0.0)
     reasoning = round(completion * effort)
     brand = (sum(config.notion_char_budgets.values()) // _CHARS_PER_TOKEN
              if config.run.notion_influence != "off" else 0)
     def siblings_of(members: Sequence[PlanEntry]) -> int:
-        """One sibling line per pair_id, not per asset — a both-mode pair shares one CopySet."""
-        return len({e.pair_id or e.asset_id for e in members})
+        """One sibling line per CREATIVE — post-pivot every asset gets its own CopySet.
+
+        It used to be one line per `pair_id`, because a both-mode pair was two renders of one
+        CopySet. A/B mode is withdrawn (v2.0.0/D42), so the distinct asset ids ARE the siblings —
+        and reading `pair_id` here would raise `AttributeError` on every `estimate()` the moment
+        the field is excised, which is the one thing this module may never do to a run.
+        """
+        return len({e.asset_id for e in members})
 
     for (subject, language), members in groups.items():
         tokens = _COPY_PROMPT_TOKENS + brand + siblings_of(members) * _COPY_TOKENS_PER_SIBLING
@@ -517,10 +552,10 @@ def trim(config: Config, entries: Sequence[PlanEntry], cap_usd: float | None = N
     """Reduce a plan to fit the cap by removing entries from the END, in reverse plan order.
 
     That single rule is sufficient because expansion emits brief creatives FIRST and makes a
-    carousel and a both-mode pair one entry each (FR-106); `atomic_group` does the rest — entries
-    sharing a group leave together and are never split. Deterministic: two identical over-budget
-    runs trim identically. The estimate is recomputed after every removal, because the grouped
-    analysis/copy calls of FR-12/FR-99 are shared and do not scale per entry.
+    carousel one entry (FR-106); `atomic_group` does the rest — entries sharing a group leave
+    together and are never split. Deterministic: two identical over-budget runs trim identically.
+    The estimate is recomputed after every removal, because the batched topic screen of FR-294 and
+    the grouped copy calls of FR-99 are shared and do not scale per entry.
 
     Mutates the trimmed entries — `status = SKIPPED_BUDGET` plus a one-line `skip_reason` — so
     they stay in the plan and get reported instead of vanishing (FR-4).

@@ -1,29 +1,52 @@
 """Wave-engine tests — format dispatch, the one money door, and honest abandonment.
 
-No network and no money: `render.run` is monkeypatched, the packager's download is faked, and the
-budget/ledger are the real ones so every assertion is against what actually lands on disk. The
-carousel and reel modules are faked where only the *dispatch* is under test — their own chains have
-their own suites (`test_carousel.py`, `test_reel.py`).
+Post-pivot (v2.0.0) `generate.Env` carries the run's STYLE REGISTRY and its BRANDING CONFIG, and
+no longer carries a style-brief book, a brand accent, brand product nouns or a video-reference
+prefetch (contracts item 11). Every `Env` here is built on the post-pivot field set — including
+the four fields the conductor deletes at this wave's wire-in, which are simply never passed, so
+this suite reads the same before and after that commit.
+
+What did NOT change is the reason this file exists: ONE money door, the FR-106 a/b/c reservation
+kinds, the two-wave permit priorities (wave-1 = image and carousel anchor and reel seed frame;
+wave-2 = slides 2–N and the Seedance clip), one FR-203 ledger line per submission, and FR-108's
+single grace window.
+
+No network and no money: `render.run` is monkeypatched, `render.upload_file` is faked, the
+packager's download is faked, and the budget/ledger are the REAL ones so every assertion is
+against what actually lands on disk in `tmp_path`. The carousel and reel modules are faked where
+only the *dispatch* is under test — their own chains have their own suites.
+
+**Mid-wave note (W2, T2.8 — delete this paragraph at the wire-in).** This suite is written
+against the post-wire-in `generate/__init__.py` and every test that reaches `_assemble`,
+`_record` or the `Env` field set is RED until the conductor lands contracts item 11: the four
+dying `Env` fields plus `brief_for()`, `_assemble`'s call updated to the post-pivot
+`build_context` signature, and `_ref_source` re-based to
+`"style" if refs.style_of(entry, env) is not None else ("brief" if entry.brief_name else "")`.
+Nothing else in this file is expected to fail; `test_carousel.py` and `test_reel.py`, which
+cover the same wave engine's two chained formats, are already green because their modules were
+rewritten in-wave by T2.3.
 """
 
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
-from hypesocials import generate, render
-from hypesocials.analyze import BriefBook
+from hypesocials import generate, render, styles
 from hypesocials.budget import Budget
-from hypesocials.config import Config
+from hypesocials.config import BrandingConfig, Config
+from hypesocials.generate import refs as refs_module
 from hypesocials.models import (
     AssetStatus,
     CopySet,
     DegradationTag,
     LayoutZone,
+    MetaStyle,
     ParsedResult,
     PlanEntry,
     PlanEntryStatus,
@@ -31,15 +54,20 @@ from hypesocials.models import (
     RenderOutcome,
     RenderOutcomeKind,
     RenderPriority,
-    StyleBrief,
     TrendItem,
     VisionCheckResult,
 )
 from hypesocials.outputs import Ledger, packager, read_meta
 from hypesocials.prompts_engine import PromptEngine
 
-TREND_REFS = ["https://auth.virlo.ai/p1.webp", "https://auth.virlo.ai/p2.webp"]
+REPO = Path(__file__).resolve().parents[1]
+PNG = b"\x89PNG\r\n\x1a\n"
+STYLE_KEY = "platform-showcase-card"
 RESULT_URL = "https://tempfile.aiquickdraw.com/result.jpg"
+#: contracts item 11 — the four `Env` fields the W2 wire-in deletes, plus the method that dies
+#: with `style_briefs`. Named once so the "post-pivot shape" assertion reads as a list, not a
+#: sequence of `hasattr` calls whose intent has to be reconstructed.
+DEAD_ENV_FIELDS = ("style_briefs", "brand_accent", "brand_product_nouns", "video_refs")
 
 
 # --------------------------------------------------------------------------------- doubles
@@ -129,11 +157,55 @@ def downloads(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     return control
 
 
+@pytest.fixture(autouse=True)
+def uploads(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+    """`render.upload_file`, faked — plus a CLEARED upload memo around every test (FR-200/244)."""
+    control = SimpleNamespace(paths=[])
+    refs_module.reset_uploads()
+
+    async def _upload(path: Path) -> str:
+        control.paths.append(Path(path))
+        return f"https://kie.test/upload/{Path(path).name}"
+
+    monkeypatch.setattr(render, "upload_file", _upload)
+    yield control
+    refs_module.reset_uploads()
+
+
+def repo_relative(path: Path) -> str:
+    try:
+        return Path(os.path.relpath(path, REPO)).as_posix()
+    except ValueError:  # pragma: no cover - different drive; an absolute path joins the same way
+        return path.as_posix()
+
+
+def make_registry(tmp_path: Path) -> styles.StyleRegistry:
+    """A one-entry registry with a REAL reference file, so `refs.attach` uploads and attaches for
+    real — the post-pivot replacement for the trend's CDN images."""
+    folder = tmp_path / "style-refs"
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"{STYLE_KEY}-01.png"
+    path.write_bytes(PNG + b"\x00" * 64)
+    style = MetaStyle(
+        key=STYLE_KEY,
+        render_prompt="Flat product card on a soft gradient ground, one hard shadow.",
+        layout_zones=[LayoutZone("upper third", "headline", "bold, sentence case")],
+        format_affinity=["image", "carousel", "reel"], text_density="high",
+        max_onimage_chars={"headline": 100, "subline": 60, "slide": 100},
+        palette=["#1B1F3B"], typography="bold condensed sans",
+        text_placement="headline upper third", image_treatment="flat graphic",
+        visual_pacing="one idea per panel", exclusions=["platform UI"],
+        reference_images=[repo_relative(path)])
+    return styles.StyleRegistry(version=1, styles=[style],
+                                origin=str(REPO / "prompts" / "styles.yaml"),
+                                content_hash="0123456789ab")
+
+
 def make_entry(order: int = 0, fmt: str = "image", **overrides: Any) -> PlanEntry:
     entry = PlanEntry(order=order, asset_id=f"{order:04d}_{fmt}_linkedin", creative_format=fmt,
                       platform="linkedin" if fmt != "reel" else "tiktok", language="en",
-                      aspect_ratio="1:1" if fmt != "reel" else "9:16", variant="analyzed",
-                      trend_key="t1", estimated_cost_usd=0.10)
+                      aspect_ratio="1:1" if fmt != "reel" else "9:16",
+                      trend_key="t1", style_key=STYLE_KEY, estimated_cost_usd=0.10)
     for key, value in overrides.items():
         setattr(entry, key, value)
     return entry
@@ -142,28 +214,24 @@ def make_entry(order: int = 0, fmt: str = "image", **overrides: Any) -> PlanEntr
 def make_env(tmp_path: Path, entries: list[PlanEntry], *, cap_usd: float = 5.0,
              **overrides: Any) -> generate.Env:
     trend = TrendItem(history_key="t1", monitor_id="m1", name="AI tool stacks",
-                      why_it_works="numbers in the first line",
+                      topic_key="ai-tool-stacks", why_it_works="numbers in the first line",
                       hook_texts=["Nobody tells you this about AI tools"],
                       video_descriptions=["a creator lists seven tools"],
-                      panel_texts=["panel one", "panel two"],
-                      reference_groups=[list(TREND_REFS)])
-    style = StyleBrief(trend_key="t1", render_prompt="Flat graphic card, centred subject.",
-                       palette=["#1B1F3B"], typography="bold condensed sans",
-                       layout_zones=[LayoutZone("upper third", "headline", "bold, sentence case")],
-                       exclusions=["usernames"], text_placement="headline upper third",
-                       image_treatment="flat graphic", visual_pacing="one idea per panel",
-                       hook_pattern="negative-outcome claim")
+                      panel_texts=["panel one", "panel two"])
     env = generate.Env(
         config=Config(), run_dir=tmp_path, engine=PromptEngine(), budget=Budget(cap_usd),
         log=Log(), ledger=Ledger(tmp_path), trends={"t1": trend},
-        # 2026-08-11 (A4): style briefs are keyed by the (trend, reference group) PAIR — the shape
-        # `analyze.style_briefs()` now returns. `Env.brief_for()` resolves an entry to its own pair.
-        style_briefs=BriefBook({"t1#0": style}),
+        # The post-pivot pair (contracts item 11): the assigned-style authority and the brand
+        # selector. `style_briefs`, `brand_accent`, `brand_product_nouns` and `video_refs` are
+        # deliberately NOT passed — they leave the dataclass at this wave's wire-in.
+        styles=make_registry(tmp_path),
+        branding=BrandingConfig(brand="hypelead"),
         copy={entry.asset_id: CopySet(asset_id=entry.asset_id, language="en", trend_key="t1",
                                       caption="Most people wire this backwards.", hashtags=["#ai"],
                                       headline="Wired backwards", subline="Here is the fix",
                                       overlay_text="Wired backwards",
                                       through_line="a fast reveal of the tool stack",
+                                      motion_beat="the hand sweeps the cards off the table",
                                       slide_texts=["One", "Two", "Three", "Four", "Five"])
               for entry in entries},
         stop=asyncio.Event(), niche_descriptor="Audience: founders · Vibe: blunt")
@@ -176,6 +244,42 @@ def ledger_lines(tmp_path: Path) -> list[str]:
     return (tmp_path / "LEDGER.txt").read_text(encoding="utf-8").strip().splitlines()
 
 
+# --------------------------------------------------------------------- the post-pivot Env shape
+
+
+def test_the_env_is_the_post_pivot_field_set(tmp_path: Path) -> None:
+    """Contracts item 11, asserted rather than assumed: the run's constants are now the style
+    REGISTRY and the branding config, and the four style-brief/motion-reference fields — plus
+    `brief_for()`, which cannot outlive `style_briefs` — are gone.
+
+    An `Env` that still carried them would let a caller keep resolving a per-trend style brief
+    for two more waves, which is precisely the drift the additive-then-subtractive migration
+    exists to end.
+    """
+    env = make_env(tmp_path, [make_entry()])
+
+    assert env.styles is not None and env.styles.styles[0].key == STYLE_KEY
+    assert env.branding.brand == "hypelead"
+    fields = set(generate.Env.__dataclass_fields__)
+    assert not fields & set(DEAD_ENV_FIELDS), \
+        f"still on the Env: {sorted(fields & set(DEAD_ENV_FIELDS))}"
+    assert not hasattr(generate.Env, "brief_for"), "the pair-keyed brief lookup dies with the book"
+
+
+def test_ref_source_names_the_house_style_a_creative_actually_wore(tmp_path: Path) -> None:
+    """Contracts item 8/the W2 addendum: FR-73's provenance vocabulary is `style | brief` now.
+    "virlo" cannot be the answer any more — no Virlo pixel reaches a render job — and the honest
+    answer is the meta-style the creative wore, or the brief that suppressed it (M14)."""
+    entry = make_entry()
+    env = make_env(tmp_path, [entry])
+
+    assert generate._record(entry, env).ref_source == "style"
+
+    unassigned = make_entry(1, style_key="")
+    env.copy[unassigned.asset_id] = env.copy[entry.asset_id]
+    assert generate._record(unassigned, env).ref_source == ""
+
+
 # --------------------------------------------------------------------------- dispatch by format
 
 
@@ -183,8 +287,8 @@ async def test_dispatch_reaches_each_format_module_with_the_right_submit_kinds(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """`_one` dispatches by format and every module spends through the SAME injected `submit` —
-    one money path, not two (plan §2 T4.3). Kinds are FR-106's: wave-1 work is `projected`, the
-    deck's slides and the Seedance clip are `precommitted`."""
+    one money path, not two. Kinds are FR-106's: wave-1 work is `projected`, the deck's slides and
+    the Seedance clip are `precommitted`."""
     entries = [make_entry(0, "image"), make_entry(1, "carousel"), make_entry(2, "reel")]
     env = make_env(tmp_path, entries)
     seen: list[tuple[str, str, RenderPriority]] = []
@@ -230,13 +334,14 @@ async def test_dispatch_reaches_each_format_module_with_the_right_submit_kinds(
 async def test_real_carousel_and_reel_chains_land_through_the_wave_engine(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The M2 shape without a network: the REAL `render_carousel` and `render_reel` run behind the
-    injected `submit`, so the deck's anchor goes out as wave-1 and its slides plus the clip as
-    wave-2 (FR-25/95/24), and every file lands in its own folder."""
-    deck, reel = make_entry(0, "carousel"), make_entry(1, "reel")
-    env = make_env(tmp_path, [deck, reel])
+    """The two-wave shape without a network: the REAL `render_carousel` and `render_reel` run
+    behind the injected `submit`, so the deck's anchor and the reel's seed frame go out as wave-1
+    and the deck's remaining slides plus the clip as wave-2 (FR-25/95/24), and every file lands in
+    its own folder. Nothing anywhere carries a video reference (v2.0.0)."""
+    deck, clip = make_entry(0, "carousel"), make_entry(1, "reel")
+    env = make_env(tmp_path, [deck, clip])
 
-    def result(self: Renders) -> RenderOutcome:  # the clip comes back as an mp4, everything else jpg
+    def result(self: Renders) -> RenderOutcome:  # the clip comes back mp4, everything else jpg
         video = self.calls[-1]["profile"] == env.config.models.video_profile
         return ok("https://tempfile.aiquickdraw.com/clip.mp4" if video else RESULT_URL,
                   task=f"kie_{len(self.calls)}")
@@ -244,20 +349,39 @@ async def test_real_carousel_and_reel_chains_land_through_the_wave_engine(
     renders = Renders(rule=result)
     monkeypatch.setattr(render, "run", renders)
 
-    report = await generate.create([deck, reel], env)
+    report = await generate.create([deck, clip], env)
 
     slides = env.config.platform("linkedin").carousel_slides
-    assert deck.status is PlanEntryStatus.SUCCESS and reel.status is PlanEntryStatus.SUCCESS
+    assert deck.status is PlanEntryStatus.SUCCESS and clip.status is PlanEntryStatus.SUCCESS
     assert (tmp_path / deck.asset_id / "slide_01.jpg").is_file()
-    assert (tmp_path / reel.asset_id / "seed_frame.jpg").is_file()
-    assert (tmp_path / reel.asset_id / "reel.mp4").is_file()
+    assert (tmp_path / clip.asset_id / "seed_frame.jpg").is_file()
+    assert (tmp_path / clip.asset_id / "reel.mp4").is_file()
     assert report.records[deck.asset_id].slide_count == slides
     # Anchor first and alone (WAVE1), then the rest of the deck and the clip as wave-2 work.
     deck_calls = [call for call in renders.calls if call["params"].aspect_ratio == "1:1"]
     assert deck_calls[0]["priority"] is RenderPriority.WAVE1
     assert {call["priority"] for call in deck_calls[1:]} == {RenderPriority.WAVE2}
     assert renders.profiles.count(env.config.models.video_profile) == 1  # one clip, one profile
+    assert all(call["refs"].video_urls == [] for call in renders.calls)
     assert len(ledger_lines(tmp_path)) == len(renders.calls)  # one terminal line per submission
+
+
+async def test_the_style_window_is_uploaded_once_for_the_whole_batch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, uploads: SimpleNamespace,
+) -> None:
+    """FR-200/244: the upload memo is run-scoped, so three creatives sharing one assigned style
+    upload its reference window ONCE — and every job still attaches it."""
+    entries = [make_entry(0, "image"), make_entry(1, "image"), make_entry(2, "image")]
+    env = make_env(tmp_path, entries)
+    renders = Renders(rule=lambda _self: ok())
+    monkeypatch.setattr(render, "run", renders)
+
+    await generate.create(entries, env)
+
+    assert len(uploads.paths) == 1, "one file, one upload, three creatives"
+    assert len(renders.calls) == 3
+    assert all(call["refs"].image_urls == [f"https://kie.test/upload/{STYLE_KEY}-01.png"]
+               for call in renders.calls)
 
 
 async def test_every_submission_is_billed_and_gets_one_terminal_ledger_line(
@@ -296,20 +420,6 @@ async def test_moderation_retry_declined_by_the_cap_is_a_skipped_budget_failure(
     assert len(ledger_lines(tmp_path)) == 1  # only the refused job was ever submitted
 
 
-async def test_both_mode_pair_fields_reach_meta_for_every_format(tmp_path: Path) -> None:
-    """FR-3/22: pairing is decided in plan/copywrite and shown by the gallery; `generate` only has
-    to carry `pair_id` and `variant` onto the record — for carousels and reels as much as images."""
-    entries = [make_entry(0, "carousel", pair_id="p1", variant="analyzed"),
-               make_entry(1, "reel", pair_id="p1", variant="direct")]
-    env = make_env(tmp_path, entries)
-
-    records = [generate._record(entry, env) for entry in entries]
-
-    assert [r.pair_id for r in records] == ["p1", "p1"]
-    assert [r.variant for r in records] == ["analyzed", "direct"]
-    assert [r.generation_mode for r in records] == ["analyzed", "direct"]
-
-
 # --------------------------------------------------------------------------- FR-27 / FR-105
 
 
@@ -337,8 +447,9 @@ async def test_standalone_image_is_vision_checked_re_rendered_once_and_re_checke
     assert (tmp_path / entry.asset_id / "image.jpg").is_file()  # the re-render REPLACED the file
 
 
-async def test_vision_check_off_leaves_a_standalone_image_not_checked(tmp_path: Path,
-                                                                     monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_vision_check_off_leaves_a_standalone_image_not_checked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """D3: the check is off by default — one render, one verdict of `not_checked`, no LLM call."""
     entry = make_entry()
     env = make_env(tmp_path, [entry])

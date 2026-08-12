@@ -1,4 +1,4 @@
-"""Reels — the seed-frame chain, the motion reference, and one Seedance clip (FR-23/24/141/142).
+"""Reels — the seed-frame chain and one Seedance clip (FR-23/24/141).
 
 Module contract
 ---------------
@@ -7,12 +7,18 @@ Purpose: turn one approved reel plan entry into a packaged `reel.mp4`, plus the 
 order, its checks and its degrades. It owns no money, no profile choice and no ledger line: the
 injected `submit` does all three (FR-106 a/b/c, FR-203).
 
+**No motion reference (v2.0.0, topic-first pivot).** A reel is the seed frame plus Seedance and
+nothing else: Virlo is a text-only topic feed now, so there is no winning video to download, no
+yt-dlp chain to wait on, and every clip is billed at the provider's no-reference rate. The clip's
+movement comes from the assigned style's `motion_profile` and the copy's one named `motion_beat`
+(F24), both of which travel through the prompt rather than through a downloaded file.
+
 Public API: `await render_reel(entry, env, folder, submit=...) -> AssetRecord`.
 
 Invariants enforced here, once:
 - **A seed frame that never rendered costs legibility, not a clip (FR-24).**
-  `seed_frame_render_failed` degrades to `in_model` overlay text, KEEPS the motion reference, and
-  still counts as delivered. Its sibling `seed_frame_url_unreachable` — the frame rendered, then
+  `seed_frame_render_failed` degrades to `in_model` overlay text — the clip is still ordered, on
+  the same style and the same copy — and still counts as delivered. Its sibling `seed_frame_url_unreachable` — the frame rendered, then
   Seedance rejected the reference — is detected, tagged and logged, but the clip that already
   failed is **not re-bought** (operator decision 2026-08-10): a heuristic message match may not
   order a second ~$4.75 render, so that reel ends as an honest render failure keeping every paid
@@ -23,8 +29,6 @@ Invariants enforced here, once:
   re-check" — so FR-27's `retried_passed` is genuinely reachable; a declined or failed re-render
   is `retried_failed` and is never re-checked. The finished CLIP is never checked at all: frame
   extraction would mean ffmpeg, which this project does not carry (D10).
-- **The motion reference is an upgrade, never a dependency (FR-142).** Any chain failure marks its
-  own tag and the clip goes out seed-frame-only.
 - **A content-security audit failure is not a moderation refusal (FR-141, v1.6.6).** Its remedy is
   silencing the clip, never stripping references — one retry with `generate_audio: false` plus the
   explicit silent-clip clause, same references, the failed attempt billed $0 (RESULTS.md §C).
@@ -35,7 +39,7 @@ Invariants enforced here, once:
   (FR-21), and the clip passes 9:16 explicitly — the provider's `adaptive` is never used.
 
 Do not: call `render.run`, price anything, touch `env.budget` / `env.ledger`, vision-check the
-finished clip, trim a reference video, or re-upload the Kie-hosted seed frame (D18: it is a URL
+finished clip, attach a video reference, or re-upload the Kie-hosted seed frame (D18: it is a URL
 already, so the chain has no upload step and no local file handling).
 """
 
@@ -50,8 +54,11 @@ from hypesocials.models import (
     AssetRecord, CopySet, DegradationTag, PlanEntry, PlanEntryStatus, RenderFailCause,
     RenderOutcome, RenderOutcomeKind, RenderParams, RenderPriority, RenderRefs, VisionCheckResult,
 )
-from hypesocials.outputs import AssetFolder, PackagingError, save_reference
-from hypesocials.generate.refs import Reference, attach, role_lines
+from hypesocials import prompts_engine
+from hypesocials.outputs import AssetFolder, PackagingError
+from hypesocials.generate.refs import (
+    Reference, attach, branding_block, role_lines, style_of, wordmark,
+)
 from hypesocials.prompts_engine import (
     MissingTemplateError, UnresolvedPlaceholderError, build_context,
 )
@@ -63,10 +70,6 @@ SEED_TEMPLATE = "reel_seed_frame.md"
 CLIP_TEMPLATE = "reel_director.md"
 #: FR-21 — the ratio belongs to the FORMAT, so the seed frame inherits it too.
 ASPECT_9_16 = "9:16"
-#: FR-142's "short bounded wait": the chain started at Analyze and the seed frame has since been
-#: rendered and checked, so anything still unfinished is slow, not merely late — and waiting longer
-#: would put the reel's own critical path behind an upgrade it is allowed to ship without.
-VIDEO_REF_WAIT_S = 20.0
 #: RESULTS.md §C, verbatim: the clause that turned a content-audit failure into a $2.85 success.
 SILENT_CLIP_CLAUSE = (
     "Silent clip — no music, no song, no melody, no vocals, no soundtrack of any kind."
@@ -120,8 +123,8 @@ async def render_reel(
     """Generate one reel end to end and return its terminal record. Never raises.
 
     `entry` is an approved reel plan entry and `folder` its already-created asset folder (pending
-    meta and caption written). `env` supplies config, prompt engine, log, trend material, plus the
-    optional `llm_call` (vision check) and `video_refs` (the D23 prefetch). `submit` is the wave
+    meta and caption written). `env` supplies config, prompt engine, log, the style registry and
+    topic material, plus the optional `llm_call` for the vision check. `submit` is the wave
     engine's money-owning submitter: it picks the profile from `job`, reserves and reconciles,
     writes the FR-203 ledger lines, and returns `None` only when the cap declined a discretionary
     submission.
@@ -142,7 +145,7 @@ async def render_reel(
 async def _chain(
     entry: PlanEntry, env: Env, folder: AssetFolder, submit: Any, spend: _Spend
 ) -> AssetRecord:
-    """Seed frame → check → motion reference → clip, with each degrade scoped to its own step."""
+    """Seed frame → check → clip, with each degrade scoped to its own step."""
     run = env.config.run
     copyset = env.copy.get(entry.asset_id)
     seed_url: str | None = None
@@ -153,10 +156,9 @@ async def _chain(
         mode = "seed_frame" if seed_url else "in_model"  # FR-24's degrade, either failure shape
     seed_rendered = seed_url is not None  # paid for, so it stays in `model_ids` even if dropped
 
-    video_url = await _motion_reference(entry, env, folder)
     audio_on = bool(run.reel_audio)
     outcome = await _submit_clip(entry, env, submit, spend, copyset, seed_url=seed_url,
-                                 video_url=video_url, audio_on=audio_on, mode=mode)
+                                 audio_on=audio_on, mode=mode)
 
     if outcome is not None and outcome.fail_cause is RenderFailCause.CONTENT_AUDIT and audio_on:
         # FR-141 v1.6.6: silence the clip, KEEP every reference — the failed attempt cost $0.
@@ -167,8 +169,7 @@ async def _chain(
         audio_on = False
         folder.mark(DegradationTag.AUDIO_DROPPED_CONTENT_AUDIT)
         outcome = await _submit_clip(entry, env, submit, spend, copyset, seed_url=seed_url,
-                                     video_url=video_url, audio_on=False, mode=mode,
-                                     extra=SILENT_CLIP_CLAUSE)
+                                     audio_on=False, mode=mode, extra=SILENT_CLIP_CLAUSE)
 
     if outcome is not None and seed_url and _seed_url_rejected(outcome):
         # FR-24's second failure: the frame rendered and was paid for; the handoff is what broke.
@@ -188,8 +189,7 @@ async def _chain(
         entry.status = PlanEntryStatus.ABANDONED
         return _skip(entry, folder, spend, "interrupted before the video job was ordered — "
                      "everything already paid for is packaged (FR-201/108)",
-                     DegradationTag.ABANDONED, reel_audio=audio_on, vision_check_result=verdict,
-                     reel_video_reference_url=video_url)
+                     DegradationTag.ABANDONED, reel_audio=audio_on, vision_check_result=verdict)
     if outcome.kind is not RenderOutcomeKind.SUCCESS or not outcome.result_urls:
         cause = outcome.fail_cause.value if outcome.fail_cause else outcome.kind.value
         env.log.error("render_failed",
@@ -198,13 +198,13 @@ async def _chain(
         return _skip(entry, folder, spend,
                      f"{cause}: {outcome.fail_message or 'no usable result'} "
                      f"(job {outcome.task_id or 'unknown'})", reel_audio=audio_on,
-                     vision_check_result=verdict, reel_video_reference_url=video_url)
+                     vision_check_result=verdict)
     try:
         await folder.store_render(outcome.result_urls[0])  # -> reel.mp4 (FR-72)
     except PackagingError as exc:
         _latch_disk_full(env, exc)
         return _skip(entry, folder, spend, f"{exc.reason}: {exc}", reel_audio=audio_on,
-                     vision_check_result=verdict, reel_video_reference_url=video_url)
+                     vision_check_result=verdict)
 
     entry.status = PlanEntryStatus.SUCCESS
     models = env.config.models
@@ -214,11 +214,10 @@ async def _chain(
         native_size_rendered=ASPECT_9_16,  # FR-98: shipped exactly as it came back
         vision_check_result=verdict,
         reel_audio=audio_on,  # the FINAL truth, after any content-audit degrade
-        reel_video_reference_url=video_url,
         event_id=env.log.event("creative_delivered", f"{entry.asset_id} reel rendered",
                                asset_id=entry.asset_id, task_id=outcome.task_id,
                                cost_usd=round(spend.cost, 6), reel_audio=audio_on,
-                               video_reference=bool(video_url)),
+                               seed_frame=seed_rendered),
         **spend.meta())
 
 
@@ -232,8 +231,9 @@ async def _seed_frame(
     """Render the hook frame, keep its bytes, and check it before anything references it (FR-24)."""
     if env.halted:
         return None, VisionCheckResult.NOT_CHECKED  # the clip step packages the honest abandon
-    # FR-200/FR-244: the brief's own product photos and the Inspiration pick are uploaded here
-    # too — under `inspiration_mix: exclusive` they are the ONLY references this frame gets.
+    # FR-200/FR-244: the assigned style's reference window and a brief's own product photos are
+    # uploaded here, once per run — the seed frame is where a reel's look is decided, so it is the
+    # one job in this chain that carries pictures at all.
     refs = await attach(entry, env, folder)
     prompt = _seed_prompt(entry, env, copyset, refs)
     if prompt is None:
@@ -316,7 +316,7 @@ async def _verdict(entry: PlanEntry, env: Env, image: Path | str) -> vision_chec
 def _seed_failed(
     entry: PlanEntry, env: Env, folder: AssetFolder, reason: str
 ) -> tuple[None, VisionCheckResult]:
-    """FR-24: the reel keeps going with in-model text — and keeps its motion reference."""
+    """FR-24: the reel keeps going, with the hook rendered by the video model instead."""
     folder.mark(DegradationTag.SEED_FRAME_RENDER_FAILED)
     env.log.warn("seed_frame_render_failed",
                  f"{entry.asset_id}: seed frame not produced ({reason}); the reel is generated "
@@ -344,42 +344,12 @@ async def _store_seed(
         return None
 
 
-# --------------------------------------------------------------------------- motion reference
-
-
-async def _motion_reference(entry: PlanEntry, env: Env, folder: AssetFolder) -> str | None:
-    """The D23 upgrade, awaited under a short bounded wait — never a dependency (FR-142)."""
-    if not env.config.run.reel_video_reference or env.video_refs is None or not entry.trend_key:
-        return None
-    outcome = await env.video_refs.get(entry.trend_key, timeout_s=VIDEO_REF_WAIT_S)
-    if outcome.ref is None:
-        if outcome.degradation is not None:
-            folder.mark(outcome.degradation)
-        env.log.warn("video_reference_degraded",
-                     f"{entry.asset_id}: {outcome.reason}; the reel is generated from its seed "
-                     "frame and image references only (FR-142)", asset_id=entry.asset_id,
-                     degradation=outcome.degradation.value if outcome.degradation else "",
-                     reason=outcome.reason)
-        return None
-    if outcome.ref.local_path is not None:
-        # Keep a copy in the run's `refs/` so the gallery can show what the clip mimicked (FR-150);
-        # scratch is transient and a missed copy is cosmetic, so this never costs the reference.
-        try:
-            save_reference(env.run_dir, entry.trend_key,
-                           Path(outcome.ref.local_path).read_bytes(), index=1, kind="video")
-        except (OSError, PackagingError) as exc:
-            env.log.warn("video_reference_not_kept",
-                         f"{entry.asset_id}: motion reference not copied into refs/ ({exc})",
-                         asset_id=entry.asset_id)
-    return outcome.ref.url
-
-
 # --------------------------------------------------------------------------- clip submission
 
 
 async def _submit_clip(
     entry: PlanEntry, env: Env, submit: Any, spend: _Spend, copyset: CopySet | None, *,
-    seed_url: str | None, video_url: str | None, audio_on: bool, mode: str, extra: str = "",
+    seed_url: str | None, audio_on: bool, mode: str, extra: str = "",
 ) -> RenderOutcome | None:
     """One Seedance submission (FR-23). `None` means nothing was ordered — halt or a bad prompt."""
     if env.halted:  # FR-201/108: stop ORDERING; whatever is already paid for is packaged
@@ -397,8 +367,9 @@ async def _submit_clip(
         output_format="mp4",
         moderation_enabled=env.config.run.nsfw_checker,  # forwarded uninterpreted (FR-166)
     )
-    refs = RenderRefs(image_urls=[seed_url] if seed_url else [],  # FR-24: @Image1 leads
-                      video_urls=[video_url] if video_url else [])
+    # FR-24: the seed frame is @Image1 and the ONLY reference a clip carries — no video reference
+    # exists any more, so every clip is billed at the provider's no-reference rate.
+    refs = RenderRefs(image_urls=[seed_url] if seed_url else [])
     return spend.add(await submit(entry, params, refs, job="clip", priority=RenderPriority.WAVE2,
                                   kind="precommitted",  # FR-106b: every clip this chain orders
                                   label=f"reel clip · {entry.asset_id}"))
@@ -426,12 +397,12 @@ def _seed_prompt(
     budget_scale: float = 1.0, extra: str = "",
 ) -> str | None:
     """`reel_seed_frame.md` filled — the hook text burnt in, FR-94's clauses inside the template."""
-    context = _context(
-        entry, env, copyset, budget_scale=budget_scale, reference_image_count=len(refs),
-        reference_roles=role_lines(refs))
-    # FR-19/96: with no style brief the subject is the deterministic content sentence — the same
-    # substitution `image_direct.md` makes for images, done here because the seed frame has one
-    # scaffold for both modes.
+    context = _context(entry, env, copyset, budget_scale=budget_scale,
+                       reference_roles=role_lines(refs))
+    # FR-19/96: with no style instruction — an unassigned entry, or a registry that could not be
+    # loaded — the subject is the deterministic content sentence, so the frame is still ABOUT
+    # something. The seed frame has one scaffold for every case, which is why the substitution
+    # lives here rather than in a second template.
     context["render_prompt"] = context["render_prompt"] or context["content_sentence"]
     return _render(entry, env, SEED_TEMPLATE, env.config.models.image_profile, context, extra)
 
@@ -440,39 +411,63 @@ def _clip_prompt(
     entry: PlanEntry, env: Env, copyset: CopySet | None, *, audio_on: bool, mode: str,
     has_seed: bool, extra: str = "",
 ) -> str | None:
-    """`reel_director.md` filled — nine sections, `@Image1`/`@Video1` roles, audio cue (FR-194).
+    """`reel_director.md` filled — its sections, the `@Image1` role, the audio cue (FR-194).
 
     `mode` is the overlay mode IN FORCE for this submission, which is not always the configured
     one: a lost seed frame degrades `seed_frame` to `in_model` (FR-24), and `none` clears the
     protected-text block entirely so the model is not asked to preserve text nobody rendered.
+
+    M13's continuity: on a branded reel the seed frame already carries the wordmark, and the
+    director must be told to KEEP it — so the clip is built from the same copy, the same style and
+    the same `wordmark` string the frame was built from, and it travels in `{{onimage_text}}`
+    exactly as it did there. It never travels in `{{branding_block}}`, which this role does not
+    allowlist at all (§1.4: that block is for gpt-image-2 render roles).
+
+    F24's staging is this role's alone: `reel_beats` turns the CONFIGURED clip duration — the one
+    number this chain also bills and times out on — into the director's real-second beats, so the
+    prompt can never stage four seconds of action inside a five-second clip. The seed frame is a
+    still and is deliberately given none.
     """
     clean = mode == "none"
     if clean and copyset is not None:
         copyset = replace(copyset, overlay_text="", headline="", subline="")
     context = _context(
-        entry, env, copyset,
+        entry, env, copyset, signed=not clean,
         seed_frame_ref=(_SEED_REF_LINE if has_seed else
                         _CLEAN_CLIP_REF_LINE if clean else _IN_MODEL_REF_LINE),
+        reel_beats=prompts_engine.beats_for(env.config.run.reel_duration_s),
         audio_cue=_AUDIO_CUE if audio_on else SILENT_CLIP_CLAUSE)
     return _render(entry, env, CLIP_TEMPLATE, env.config.models.video_profile, context, extra)
 
 
-def _context(entry: PlanEntry, env: Env, copyset: CopySet | None, **slots: Any) -> dict[str, str]:
-    """The shared, secret-free reel context (FR-261); each role adds its own slots on top."""
+def _context(entry: PlanEntry, env: Env, copyset: CopySet | None, *, signed: bool = True,
+             **slots: Any) -> dict[str, str]:
+    """The shared, secret-free reel context (FR-261); each role adds its own slots on top.
+
+    `style` carries the whole look now: `render_prompt`, `exclusions` and the on-image budgets for
+    the seed frame, and F24's `{{motion_profile}}` for the director — one assigned registry entry
+    instead of a per-trend analysis, so the frame and the clip cannot describe two different looks.
+    `signed` is False only for a clip that carries no on-screen text at all: a frame with no
+    lettering must not be handed a signature to preserve — neither the colour block nor the
+    wordmark, since M13's continuity rule ("a wordmark already present in @Image1 persists") has
+    nothing to persist when the frame was never signed.
+    """
+    style = style_of(entry, env)
     return build_context(
         trend=env.trends.get(entry.trend_key or ""),
-        # None in direct mode and after FR-12's degrade — the scaffold then runs on FR-96's sentence.
-        # Pair-keyed (FR-9/12, amended 2026-08-11): the seed frame references the group this reel
-        # attaches, so its brief must describe that same group.
-        style_brief=(env.brief_for(entry) if entry.variant == "analyzed" else None),
+        style=style,
+        # B1: the wordmark is a TEXT-block string, so both roles get the SAME one — the frame burns
+        # it in, the director is told it is already there (M13).
+        wordmark=wordmark(entry, env) if signed else "",
         copy=copyset, creative_format="reel", niche_descriptor=env.niche_descriptor,
-        # FR-144/145 + FR-109 `full` (only the seed-frame role allowlists `brand_accent`), read
-        # through `getattr`: this module targets the duck-typed Env surface, not its dataclass.
+        # FR-144/145, read through `getattr`: this module targets the duck-typed Env surface, not
+        # its dataclass.
         campaign_brief=getattr(env, "campaign_briefs", {}).get(entry.brief_name or ""),
-        brand_accent=getattr(env, "brand_accent", ""),
-        brand_product_nouns=getattr(env, "brand_product_nouns", ()),
+        # FR-292's colour/letterform channel — allowlisted for `reel_seed_frame.md` and dropped by
+        # the director role as an out-of-role name (§1.4/M13).
+        branding_block=branding_block(entry, env, style) if signed else "",
         # A15, same seam and same narrowness: only `reel_seed_frame.md` allowlists it, so the
-        # director role drops it as an out-of-role name exactly as it drops `brand_accent`.
+        # director role drops it exactly as it drops the branding block.
         niche_visual_world=getattr(env, "niche_visual_world", ""),
         text_budgets=env.config.run.text_budgets, **slots)
 
@@ -516,4 +511,4 @@ def _skip(
     return folder.skip(reason, tag, **spend.meta(), **extra)
 
 
-__all__ = ["ASPECT_9_16", "SILENT_CLIP_CLAUSE", "VIDEO_REF_WAIT_S", "render_reel"]
+__all__ = ["ASPECT_9_16", "SILENT_CLIP_CLAUSE", "render_reel"]

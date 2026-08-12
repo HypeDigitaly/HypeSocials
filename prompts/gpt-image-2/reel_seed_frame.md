@@ -24,6 +24,10 @@ TEXT (locked asset — the hook, burnt into the frame):
   area, at the largest size the character count allows, with enough weight and
   contrast (or a solid backing plate) to stay readable on a phone in
   daylight. Keep it clear of the subject and clear of every frame edge.
+  If the block above also quotes a wordmark, that is the frame's only other
+  lettering: set it small, in one weight and one colour, at the placement the
+  BRANDING line names, well clear of the hook and of the subject, flat against
+  the frame like the hook itself. It is a signature, never a second headline.
 
   TEXT PRECEDENCE — this block is the ONLY source of renderable words. Any
   string quoted or named anywhere else in this instruction — in SUBJECT AND
@@ -32,7 +36,8 @@ TEXT (locked asset — the hook, burnt into the frame):
   to render: do not letter it, echo it or translate it. A described zone that
   holds words (a kicker, a label, a badge, a sticker, a wordmark) supplies its
   position, size, typeface, weight, colour and alignment only; here every such
-  zone stays wordless, because the hook above is the frame's only text.
+  zone stays wordless, because the block above is the frame's only source of
+  words.
 
 LAYOUT AND STYLE:
   {{layout_zones}}
@@ -42,7 +47,16 @@ LAYOUT AND STYLE:
   fill is rendered as picture, shape or negative space, never as reference
   wording.
 
-  BRAND INFLUENCE: {{brand_accent}}
+  BRANDING (ignore if empty): {{branding_block}}
+  These are accent colours, letterform character, a placement hint and colour
+  guards, ranked BELOW the zones above and below the animation rules that
+  follow: substitute the accents inside the style's own palette structure.
+  They never replace the style's palette, typography, layout or medium, and
+  they never add a word to the frame — a wordmark, when this frame carries
+  one, is quoted in the TEXT block like every other string and is set as part
+  of the same flat graphic layer as the hook, so the video model can hold it
+  still.
+
   NICHE VISUAL WORLD (ignore if empty): {{niche_visual_world}}
   When present, that line is standing art direction ranked BELOW the zones
   above, the attached references and the animation rules underneath: it biases
@@ -75,9 +89,12 @@ CONSTRAINTS:
     — any legible string in a reference, whether or not it reads as design.
   - This is the first frame of one clip: no navigation or swipe prompt
     ("SWIPE LEFT", "SWIPE RIGHT", "READ MORE", "TAP", an arrow or a hand
-    carrying words), no brand wordmark, logotype or signature line — neither a
-    reference's nor an invented one.
-  - Additional exclusions observed in these references — these are strings
+    carrying words), and no brand wordmark, logotype or signature line other
+    than one quoted in the TEXT block above; when the TEXT block quotes none,
+    this frame is unsigned.
+  - The exclusions below concern the attached reference images. They never
+    restrict the TEXT block above, whose strings are always rendered.
+  - Additional exclusions for this house style — these are strings and marks
     forbidden in the frame, never strings to render: {{exclusions}}
   - Reference roles, in the order attached:
     {{reference_roles}}
