@@ -149,6 +149,12 @@ class Env:
     #: with `branding.competitors` into every prompt's `competitor_strings` — LLM-discovered
     #: brands must reach the RENDER prompt, not only the CopySet (Session-C obligation 2).
     strip_brands: Mapping[str, Sequence[str]] = field(default_factory=dict)
+    #: FR-306 (D46): `post_id -> slide_intel.SlideIntel` for every bound carousel source post.
+    #: `Any`-typed like `styles` above — generate stays free of a sources import; carousel reads
+    #: it duck-typed for per-slide `visual_brief` lines (FR-308), and T3.3's `_record` merges it
+    #: into `panel_map`/`source_post` on meta.yaml. Empty = no intelligence ran (previews, tests,
+    #: vision off) and every consumer degrades to the pre-D46 shape.
+    slide_intel: Mapping[str, Any] = field(default_factory=dict)
     stop: asyncio.Event | None = None  # Ctrl+C: stop ORDERING new work (FR-201)
     deadline: Deadline | None = None  # the run's soft monotonic ceiling (FR-108/243)
     credits_exhausted: bool = False  # FR-167, latched once

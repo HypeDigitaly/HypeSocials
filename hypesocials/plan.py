@@ -1,11 +1,12 @@
-"""Select + Expand — the deterministic middle of a run (FR-1–8, FR-90, FR-143–145).
+"""Select + Expand — the deterministic middle of a run (FR-1–8, FR-90, FR-143–145, FR-304/307).
 
 Module contract
 ---------------
 Purpose: turn *config + requested briefs* into an ordered plan of creatives, and *collected
 topics + history* into a ranked shortlist with a verdict per topic, then bind the two together.
 Public API: `select()` · `build_plan()` · `assign()` and their result objects
-(`Selection`/`TrendVerdict`, `Plan`/`BriefRequest`, `Assignment`/`AssignmentDecision`).
+(`Selection`/`TrendVerdict`, `Plan`/`BriefRequest`, `Assignment`/`AssignmentDecision`), plus the
+two source-deck rules a carousel is bound by — `fresh_source_post()` and `deck_length()`.
 
 Invariants:
 - **Pure and instant** (NFR-2): no file, network or clock I/O and no logging — every decision
@@ -24,6 +25,12 @@ Invariants:
   that make FR-106's single "trim from the END, in reverse plan order" rule sufficient.
 - **Nothing leaves the plan** (FR-4): a creative with no topic left keeps a terminal status and a
   reason instead of vanishing from the accounting.
+- **A carousel binds ONE specific fresh source post at ASSIGN, and its deck length is fixed there**
+  (FR-304/FR-95/§0.4′, v2.1.0). The post id lands on `PlanEntry.source_post_id`, the deck length on
+  `PlanEntry.slide_count` — before the Confirm gate, so the estimate the operator approves is
+  computed from the deck the run will actually render (rule 7). A carousel that finds no unused
+  slideshow post skips with `no_fresh_post_available` rather than being bound to whatever is left:
+  post ids are stable, and a repeat is the exact defect D46 exists to end.
 
 Do not: price anything (`budget.py` owns cost and trimming), read files, or assume reels are
 enabled — an unpriced reel is not planned at all (FR-131).
@@ -31,7 +38,7 @@ enabled — an unpriced reel is not planned at all (FR-131).
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from itertools import count
 from typing import Any, Literal
@@ -46,6 +53,14 @@ from hypesocials.util import slugify
 FORMAT_ORDER: tuple[CreativeFormat, ...] = ("image", "carousel", "reel")
 #: Slug standing in for the trend inside an `asset_id` until `assign()` binds one (FR-71).
 PENDING_TREND_SLUG = "unassigned"
+#: The clamp's lower bound and the deck-eligibility bar in ONE number (FR-257/FR-304, §0.4′/§0.14a):
+#: two panels is the shortest thing that still reads as a deck, so a source post with fewer usable
+#: panel slots than this is not a carousel source at all, and a bound deck is never shorter.
+MIN_DECK_SLIDES = 2
+#: The machine-readable cause a starved carousel carries (FR-307/§0.10). It is a SKIP, not a
+#: fallback: binding the entry to a post whose text already shipped is the repeat D46 forbids, and
+#: binding it to a video topic is the silent rank-fallback FR-90 forbids.
+NO_FRESH_POST_AVAILABLE = "no_fresh_post_available"
 
 _FORMAT_ABBR: dict[str, str] = {"image": "img", "carousel": "car", "reel": "reel"}
 _PLATFORM_ABBR: dict[str, str] = {"linkedin": "Li", "instagram": "Ig", "tiktok": "Tk"}
@@ -93,9 +108,14 @@ class TrendVerdict:
 
 @dataclass(slots=True)
 class Selection:
-    """The ranked shortlist plus the full verdict feed it was distilled from."""
+    """The ranked shortlist, the full verdict feed it was distilled from, and the burnt post ids."""
 
     verdicts: list[TrendVerdict] = field(default_factory=list)  # ranked order, every input trend
+    #: Every post id whose text already shipped inside `run.trend_history_days` — the flat union
+    #: `select()` already computed to reach its FR-7 verdicts, carried forward so `assign()` can
+    #: enforce the SECOND half of §0.10's post-level guard (bind only a fresh post) without a
+    #: second history read. Empty when the window is off, which is what disables the guard.
+    burnt_posts: frozenset[str] = frozenset()
 
     def _of(self, verdict: Verdict) -> list[TrendVerdict]:
         return [v for v in self.verdicts if v.verdict == verdict]
@@ -139,7 +159,8 @@ def select(trends: Sequence[TrendItem], config: Config,
     topic-level `last_used` stamp is the only recency signal there is.
 
     Returns every input topic as a verdict, with `Selection.eligible` as the ranked shortlist
-    `assign()` consumes.
+    `assign()` consumes and `Selection.burnt_posts` as the union of used post ids that same
+    `assign()` binds around (FR-307's pick-time guard reads the set this call already built).
     """
     known = dict(history or {})
     window = max(int(config.run.trend_history_days or 0), 0)
@@ -160,7 +181,7 @@ def select(trends: Sequence[TrendItem], config: Config,
                 last_used=str(entry.get("last_used") or "").strip() or None))
             continue
         verdicts.append(TrendVerdict(trend, "eligible"))
-    return Selection(verdicts=verdicts)
+    return Selection(verdicts=verdicts, burnt_posts=frozenset(burnt))
 
 
 def _unusable_reason(trend: TrendItem) -> str:
@@ -322,6 +343,10 @@ def _emit(entries: list[PlanEntry], config: Config, fmt: CreativeFormat, platfor
         creative_format=fmt, platform=platform, language=config.language_for(platform),
         aspect_ratio=_aspect_ratio(config, platform, fmt),
         atomic_group=f"c{next(creatives):02d}",
+        # The config ceiling stands in until `assign()` replaces it with the bound source post's
+        # own panel count (FR-304/§0.4′). It is the honest number until then — the pre-Collect
+        # estimate (`runner._stamp_provisional`) is quoted before any post exists, and an override
+        # brief binds no post at all (§0.14d), so the ceiling stays its deck length for good.
         slide_count=config.platform(platform).carousel_slides if fmt == "carousel" else None,
         brief_name=brief.name if brief else None,
         brief_influence=brief.influence if brief else None))
@@ -371,10 +396,13 @@ class AssignmentDecision:
     asset_ids: list[str]
     creative_format: CreativeFormat
     trend_key: str | None
-    #: affinity | rank_fallback | reuse | brief_override | dropped
+    #: affinity | rank_fallback | reuse | brief_override | dropped | no_fresh_post_available
     reason: str
     use_index: int = 0  # 1 = this topic's first use in the run
     detail: str = ""
+    #: The slideshow post a carousel was bound to (FR-304). Empty for every other format and for
+    #: override briefs, which bind nothing (§0.14d).
+    source_post_id: str = ""
 
 
 @dataclass(slots=True)
@@ -391,6 +419,14 @@ class Assignment:
     usable_trends: int = 0
     trends_needed: int = 0
     batch_ceiling: int = 0  # usable_trends x max_trend_reuses_per_run — the real batch limit
+    # --- FR-307/§0.10 supply accounting, all plan-side COUNTS. The console wording lives in
+    # `runner._famine_message` (that stage owns what the operator reads); what this stage owns is
+    # the arithmetic behind it, so the message can state supply instead of guessing at it.
+    #: Distinct unused slideshow posts that carousels could reach across the eligible pool, counted
+    #: BEFORE any binding — the numerator of "how many decks could this run have made".
+    carousel_posts_available: int = 0
+    carousel_posts_bound: int = 0  # how many of them this plan actually took
+    no_fresh_post_skips: int = 0  # creative groups skipped with `no_fresh_post_available`
 
     @property
     def summary_line(self) -> str:
@@ -398,6 +434,20 @@ class Assignment:
         return (f"this plan needs {self.trends_needed} distinct topic(s); "
                 f"{self.usable_trends} are available after filtering "
                 f"(batch ceiling {self.batch_ceiling} creatives)")
+
+    @property
+    def fresh_post_line(self) -> str:
+        """FR-307's supply arithmetic for the famine message, or `""` when no carousel starved.
+
+        The remedy is not the one FR-8's ceiling suggests: a starved carousel is not short of
+        TOPICS, it is short of unused source slideshows, and widening `--history-days` makes that
+        strictly worse. Whoever prints this line says so; this property only supplies the counts.
+        """
+        if not self.no_fresh_post_skips:
+            return ""
+        return (f"{self.no_fresh_post_skips} carousel(s) found no unused source slideshow: "
+                f"{self.carousel_posts_available} fresh post(s) were bindable across the eligible "
+                f"topics and {self.carousel_posts_bound} of them were bound")
 
 
 def assign(entries: Sequence[PlanEntry], selection: Selection, config: Config) -> Assignment:
@@ -409,22 +459,43 @@ def assign(entries: Sequence[PlanEntry], selection: Selection, config: Config) -
     the reuse budget or history. When the pool has no capacity left the surplus group is kept in
     the plan with a terminal `skipped` status and a reason (FR-4/8).
 
+    **A carousel is bound to a POST, not merely to a topic** (FR-304/FR-307, v2.1.0). For every
+    non-override carousel group this call picks one specific slideshow post — fresh (its id is in
+    neither the history window nor this run's own bindings), at least `MIN_DECK_SLIDES` panels
+    long, and carrying usable text prospects (§0.14a) — preferring the topic's view rank, which is
+    the order `TrendItem.posts` already arrives in. Format affinity is a HARD constraint there:
+    only a slideshow-majority topic can source a panel-mapped deck, so a carousel with no such
+    topic left skips with `no_fresh_post_available` instead of rank-falling back onto video
+    material (FR-90 as amended). Images and reels keep affinity as the soft tie-break it always
+    was — under `sources.include_videos: false` they are refused at pre-flight anyway (§0.14e), so
+    hard-constraining them would only turn a clear config refusal into a silent famine.
+
     Mutates each assigned entry in place:
 
     - `trend_key` (the topic's `history_key`) and `topic_key` name the bound topic — the second
       is what meta.yaml, the gallery and post-level recency read (FR-73/FR-153);
+    - `source_post_id` names the bound source post (carousels only, FR-304). It is what
+      `copywrite` quotes panel by panel, what `sources.slide_intel` reads after the Confirm gate,
+      and what the gallery joins its provenance card on;
+    - `slide_count` is the deck length, fixed HERE from that post's panel count clamped to
+      `platforms.<name>.carousel_slides` (§0.4′). Fixing it before the estimate is what keeps the
+      Confirm gate honest — vision intelligence runs later and may never change a deck's length;
     - `trend_reuse_index` records this creative's 0-based position among the creatives sharing
       that topic. Post-pivot that index is the **sibling-divergence key**: `copywrite` quotes
       `posts[index % len(posts)]` (§1.6/§1.7.6), so two creatives on one topic quote two different
       source posts instead of shipping the same caption twice, and `styles.pick_reference_window`
       turns the same index into which slice of the assigned style's reference images this job
-      attaches (A17's window rotation, re-homed);
+      attaches (A17's window rotation, re-homed). **Deprecated as the post-pick key (§0.10):** the
+      bound `source_post_id` above says WHICH post a creative quotes, exactly and per creative, and
+      the modulo walk it replaces could hand a sibling a post the window had already burnt. The
+      index survives only until its two remaining consumers (`generate/refs.py`'s reference-window
+      rotation, `copywrite`'s fallback) are re-based in Wave 3, and nothing new may read it;
     - `asset_id` is rewritten with the topic's slug (FR-71).
 
     Entries already terminal — budget-trimmed, say — are left alone, and an `override` brief entry
     keeps the default index 0 because it attaches no topic at all. Returns one decision per group
-    (FR-90's audit trail), the dropped entries, and the counts the console restatement of FR-8
-    needs.
+    (FR-90's audit trail), the dropped entries, and the counts the console restatement of FR-8 and
+    10 §10's famine message need.
     """
     max_reuses = max(int(config.run.max_trend_reuses_per_run or 1), 1)
     # No pre-filter here any more. The old "prefer topics that arrived with pictures" gate and the
@@ -435,26 +506,35 @@ def assign(entries: Sequence[PlanEntry], selection: Selection, config: Config) -
     pool = list(selection.eligible)
     rank = {trend.history_key: index for index, trend in enumerate(pool)}
     uses: dict[str, int] = {}
-    result = Assignment(usable_trends=len(pool), batch_ceiling=len(pool) * max_reuses)
+    # The window's burnt ids PLUS everything this run binds as it goes: a post is a one-shot
+    # resource inside a run exactly as it is across runs (§0.10), so two carousels on one topic
+    # take its first and second unused post rather than quoting the same slides twice.
+    burnt: set[str] = set(selection.burnt_posts)
+    result = Assignment(usable_trends=len(pool), batch_ceiling=len(pool) * max_reuses,
+                        carousel_posts_available=_carousel_supply(pool, config, burnt))
 
     for group, members in _groups(entries).items():
         ids = [entry.asset_id for entry in members]
         fmt = members[0].creative_format
-        if members[0].brief_influence == "override":  # FR-144: consumes no topic
+        if members[0].brief_influence == "override":  # FR-144/§0.14d: consumes no topic, no post
             result.decisions.append(AssignmentDecision(
                 group, ids, fmt, None, "brief_override",
                 detail=f"brief {members[0].brief_name} owns this creative outright"))
             continue
         result.trends_needed += 1
-        trend, reason = _pick(pool, rank, uses, fmt, max_reuses)
+        # A carousel binds a post, so its picker is post-aware (and affinity-constrained); every
+        # other format still picks a topic alone and quotes it through `trend_reuse_index`.
+        binder = ((lambda trend: fresh_source_post(trend, config, burnt))
+                  if fmt == "carousel" else None)
+        trend, post, reason = _pick(pool, rank, uses, fmt, max_reuses, binder=binder)
         if trend is None:
             for entry in members:
                 entry.status = PlanEntryStatus.SKIPPED
-                entry.skip_reason = (
-                    f"no_trend_available: {len(pool)} usable topic(s) x {max_reuses} reuse(s) "
-                    "exhausted (FR-8)")
+                entry.skip_reason = _skip_reason(reason, len(pool), max_reuses, config)
             result.dropped.extend(members)
-            result.decisions.append(AssignmentDecision(group, ids, fmt, None, "dropped",
+            if reason == NO_FRESH_POST_AVAILABLE:
+                result.no_fresh_post_skips += 1
+            result.decisions.append(AssignmentDecision(group, ids, fmt, None, reason,
                                                       detail=members[0].skip_reason or ""))
             continue
         uses[trend.history_key] = use_index = uses.get(trend.history_key, 0) + 1
@@ -463,15 +543,40 @@ def assign(entries: Sequence[PlanEntry], selection: Selection, config: Config) -
             entry.topic_key = trend.topic_key
             # 0-based, so the FIRST creative on a topic is index 0 and quotes `posts[0]` — the
             # top-viewed post. Every member of an atomic group shares one value: a deck's slides
-            # must be written from one coherent source (D31).
+            # must be written from one coherent source (D31). Deprecated as the post-pick key —
+            # see this function's docstring; `source_post_id` below is what names the material now.
             entry.trend_reuse_index = use_index - 1
+            if post is not None:  # FR-304/§0.4′ — the deck is decided here, not at render time
+                entry.source_post_id = post.post_id
+                entry.slide_count = deck_length(post, config, entry.platform)
             entry.asset_id = _asset_id(entry, trend.name)
+        if post is not None:
+            burnt.add(post.post_id)  # spent for the rest of this run, as well as for the window
+            result.carousel_posts_bound += 1
         result.decisions.append(AssignmentDecision(
             group, [entry.asset_id for entry in members], fmt, trend.history_key, reason,
-            use_index=use_index,
+            use_index=use_index, source_post_id=post.post_id if post else "",
             detail=f"{trend.name} · strength {trend.strength:.3f} · "
-                   f"{'slideshow' if trend.is_slideshow else 'video'} source · use #{use_index}"))
+                   f"{'slideshow' if trend.is_slideshow else 'video'} source · use #{use_index}"
+                   + (f" · post {post.post_id} · {members[0].slide_count} slide(s) of "
+                      f"{source_panel_count(post)} source panel(s)" if post else "")))
     return result
+
+
+def _skip_reason(reason: str, pool_size: int, max_reuses: int, config: Config) -> str:
+    """The one-line, machine-readable cause a skipped group carries (FR-4/FR-8/FR-307).
+
+    Two distinct famines, and the operator needs the difference in words because the remedies point
+    opposite ways: an exhausted topic pool is FR-8's arithmetic (fewer creatives, or more monitors),
+    while an exhausted supply of unused slideshows is FR-307's cadence problem — running less often
+    fixes it and widening the history window makes it strictly worse.
+    """
+    if reason == NO_FRESH_POST_AVAILABLE:
+        return (f"{NO_FRESH_POST_AVAILABLE}: no eligible slideshow topic still offers an unused "
+                f"source post with {MIN_DECK_SLIDES}+ usable panel(s) inside the "
+                f"{config.run.trend_history_days}-day no-repeat window (FR-304/FR-307)")
+    return (f"no_trend_available: {pool_size} usable topic(s) x {max_reuses} reuse(s) "
+            "exhausted (FR-8)")
 
 
 def _groups(entries: Sequence[PlanEntry]) -> dict[str, list[PlanEntry]]:
@@ -494,13 +599,112 @@ def _affinity(trend: TrendItem, fmt: CreativeFormat) -> bool:
     `is_slideshow` is re-derived per topic post-pivot — the majority type across the topic's own
     view-ranked posts (§1.6) — so affinity now follows the composition of the posts a creative
     will actually quote instead of one label carried by a whole monitor.
+
+    For a CAROUSEL this is a constraint rather than a preference (FR-90/FR-304 as amended v2.1.0):
+    our slide *i* renders their panel *i*, so a topic with no slideshow post has nothing a deck
+    could be mapped from. For images and reels it stays the tie-break it always was.
     """
     return trend.is_slideshow == (fmt == "carousel")
 
 
+def source_panel_count(post: SourcePost) -> int:
+    """How many slides the SOURCE deck has — the raw number §0.4′ clamps into a deck length.
+
+    Widest-evidence rule, mirroring `sources.slide_intel._skeleton` so that the deck this stage
+    prices and the deck the vision pass later reads can never disagree: Virlo's own `panel_count`,
+    the panel texts it shipped, or the slide images it listed, whichever is largest. A post that
+    declares 8 panels and lists 8 images but carries 3 non-empty texts still has 8 slides; the
+    empty slots are gaps to fill (§0.14a), never evidence of a shorter deck.
+    """
+    return max(int(post.panel_count or 0), len(post.panel_texts), len(post.image_urls))
+
+
+def usable_panel_slots(post: SourcePost, config: Config) -> int:
+    """§0.14a's usable-slot count, as far as ASSIGN can honestly know it (FR-304).
+
+    A slot is usable iff it carries words after the merge of Virlo's `panel_texts` with the vision
+    transcription — but the transcription is post-Confirm spend that has not happened yet, so at
+    binding time the answer has to be a PROSPECT: a slot counts when Virlo already gave it words,
+    or when `sources.vision_transcribe` is on and the slot has a slide image for the vision pass
+    to read. With vision off (the operator's own switch, §0.6) only Virlo's words count, which is
+    why turning it off narrows the pool of bindable posts as well as the run's spend.
+    """
+    slots = source_panel_count(post)
+    vision = bool(config.sources.vision_transcribe)
+    texts, images = post.panel_texts, post.image_urls
+    return sum(1 for index in range(slots)
+               if (index < len(texts) and str(texts[index]).strip())
+               or (vision and index < len(images) and str(images[index]).strip()))
+
+
+def fresh_source_post(trend: TrendItem, config: Config,
+                      burnt: Collection[str] = frozenset()) -> SourcePost | None:
+    """This topic's best unused slideshow post for a panel-mapped deck, or None (FR-304/FR-307).
+
+    "Best" is simply the first one in `trend.posts`, because that list arrives view-ranked and the
+    view rank is the whole reason to quote a post at all (§1.6). Eligibility is D46's own predicate:
+    an id that is not burnt (neither in the history window nor already bound in this run), at least
+    `MIN_DECK_SLIDES` source panels, and at least that many usable panel slots (§0.14a).
+
+    Returns the `SourcePost` itself rather than its id: the caller needs the panel count to fix the
+    deck length in the same step, and re-finding the post by id afterwards is how those two numbers
+    drift apart.
+    """
+    used = set(burnt)
+    for post in trend.posts:
+        post_id = str(post.post_id or "").strip()
+        if not post_id or post_id in used:
+            continue
+        if source_panel_count(post) < MIN_DECK_SLIDES:
+            continue
+        if usable_panel_slots(post, config) < MIN_DECK_SLIDES:
+            continue
+        return post
+    return None
+
+
+def deck_length(post: SourcePost, config: Config, platform: str) -> int:
+    """§0.4′/FR-95/FR-257: the source's panel count clamped into `[2, carousel_slides]`.
+
+    Free arithmetic over data Virlo already handed us, which is exactly why the deck length is
+    fixed here and not after the vision pass: the Confirm gate prices the deck it will render
+    (rule 7), and vision intelligence is additive content that may never change a length.
+
+    A source deck longer than the ceiling is TRUNCATED to its first N panels with the indices
+    preserved — `generate/carousel.py` tags that cut `panels_truncated` by comparing this length
+    back against `source_panel_count()`. The ceiling itself is floored at `MIN_DECK_SLIDES` so a
+    misconfigured `carousel_slides: 1` cannot produce a one-slide "carousel".
+    """
+    ceiling = max(int(config.platform(platform).carousel_slides or 0), MIN_DECK_SLIDES)
+    return max(MIN_DECK_SLIDES, min(source_panel_count(post), ceiling))
+
+
+def _carousel_supply(pool: Sequence[TrendItem], config: Config, burnt: Collection[str]) -> int:
+    """Distinct unused source posts the run's carousels could reach — FR-307's supply numerator.
+
+    Counted over the SLIDESHOW half of the pool only, because affinity is a hard constraint for
+    carousels: a bindable post sitting inside a video-majority topic is supply no deck can spend,
+    and reporting it would make a famine message argue against the skip that produced it.
+    """
+    used = set(burnt)
+    available: set[str] = set()
+    for trend in pool:
+        if not trend.is_slideshow:
+            continue
+        for post in trend.posts:
+            post_id = str(post.post_id or "").strip()
+            if (post_id and post_id not in used and post_id not in available
+                    and source_panel_count(post) >= MIN_DECK_SLIDES
+                    and usable_panel_slots(post, config) >= MIN_DECK_SLIDES):
+                available.add(post_id)
+    return len(available)
+
+
 def _pick(pool: Sequence[TrendItem], rank: Mapping[str, int], uses: Mapping[str, int],
-          fmt: CreativeFormat, max_reuses: int) -> tuple[TrendItem | None, str]:
-    """The strongest topic that still has reuse capacity, affinity first (FR-8/90).
+          fmt: CreativeFormat, max_reuses: int,
+          *, binder: Callable[[TrendItem], SourcePost | None] | None = None,
+          ) -> tuple[TrendItem | None, SourcePost | None, str]:
+    """The strongest topic that still has reuse capacity, plus the post a carousel binds (FR-8/90).
 
     Sort key, in order: fewest uses, so a second creative prefers a fresh topic over a repeat;
     then affinity; then plain rank.
@@ -510,18 +714,34 @@ def _pick(pool: Sequence[TrendItem], rank: Mapping[str, int], uses: Mapping[str,
     a text feed and the visuals come from the style registry — so a last-resort bucket that every
     single candidate falls into is not a tie-break; it is a no-op that reads like one, and the
     decision reason it produced would have labelled every assignment in every run.
+
+    `binder` (carousels only, FR-304) turns a topic into the fresh source post it would bind, or
+    None when it has none left. With a binder the sort loses its affinity term — affinity and
+    bindability are both filters then, so every survivor is an affinity match — and the two ways to
+    come back empty stay distinguishable: `dropped` means the reuse budget is spent, while
+    `no_fresh_post_available` means topics remain but their slideshows do not (FR-307).
     """
     candidates = [t for t in pool if uses.get(t.history_key, 0) < max_reuses]
     if not candidates:
-        return None, "dropped"
-    best = min(candidates, key=lambda t: (uses.get(t.history_key, 0), not _affinity(t, fmt),
-                                          rank[t.history_key]))
-    if uses.get(best.history_key, 0):
-        return best, "reuse"
-    return best, "affinity" if _affinity(best, fmt) else "rank_fallback"
+        return None, None, "dropped"
+    if binder is None:
+        best = min(candidates, key=lambda t: (uses.get(t.history_key, 0), not _affinity(t, fmt),
+                                              rank[t.history_key]))
+        if uses.get(best.history_key, 0):
+            return best, None, "reuse"
+        return best, None, "affinity" if _affinity(best, fmt) else "rank_fallback"
+    bindable = [(trend, post) for trend in candidates if _affinity(trend, fmt)
+                and (post := binder(trend)) is not None]
+    if not bindable:
+        return None, None, NO_FRESH_POST_AVAILABLE
+    trend, post = min(bindable, key=lambda pair: (uses.get(pair[0].history_key, 0),
+                                                  rank[pair[0].history_key]))
+    return trend, post, "reuse" if uses.get(trend.history_key, 0) else "affinity"
 
 
 __all__ = [
-    "Assignment", "AssignmentDecision", "BriefRequest", "FORMAT_ORDER", "PENDING_TREND_SLUG",
-    "Plan", "Selection", "TrendVerdict", "assign", "build_plan", "select",
+    "Assignment", "AssignmentDecision", "BriefRequest", "FORMAT_ORDER", "MIN_DECK_SLIDES",
+    "NO_FRESH_POST_AVAILABLE", "PENDING_TREND_SLUG", "Plan", "Selection", "TrendVerdict", "assign",
+    "build_plan", "deck_length", "fresh_source_post", "select", "source_panel_count",
+    "usable_panel_slots",
 ]

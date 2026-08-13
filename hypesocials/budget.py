@@ -57,6 +57,16 @@ _FILTER_VERDICT_TOKENS = 60
 _VISION_CHECK_PROMPT_TOKENS = 250  # vision_check_question.md — one narrow question (FR-27)
 _VISION_CHECK_COMPLETION_TOKENS = 200  # per-slide verdicts, not prose (FR-105)
 _VISION_CHECK_MIN_PX = 1536  # FR-105: check inputs are NEVER downscaled below this
+#: FR-306's slide-intelligence pass (D46 §0.11), role `analysis`: `slide_intel_question.md` plus
+#: the fixed carrier turn the slide images ride on, then one answer object per slide
+#: (`onimage_text` verbatim + an English `visual_brief` + `brand_marks`).
+_SLIDE_INTEL_PROMPT_TOKENS = 400
+_SLIDE_INTEL_COMPLETION_PER_SLIDE = 220
+#: Source slides arrive at whatever size the poster published them at — we do not render them, so
+#: there is no configured tier to read. They are therefore priced at the provider's own token
+#: ceiling in the squarest shape, which is the MOST one attached image can cost: over-stating is
+#: the safe direction (D11), and understating is the one unacceptable estimator error.
+_SOURCE_SLIDE_RATIO = "1:1"
 _IMAGE_TOKEN_DIVISOR = 750  # provider px -> vision-token rule
 _IMAGE_TOKEN_MAX_PX = 1568  # providers resize above this, so token cost stops growing
 _TIER_LONG_EDGE: dict[str, int] = {"1k": 1024, "2k": 2048, "4k": 4096}
@@ -80,8 +90,8 @@ ReservationKind = Literal["projected", "precommitted", "discretionary"]  # FR-10
 
 
 class SpendCategory(str, Enum):
-    """FR-84's grand-total split. Vision checks, the topic screen and copy are LLM; every Kie job
-    is RENDER."""
+    """FR-84's grand-total split. Vision checks, the topic screen, slide intelligence and copy are
+    LLM; every Kie job is RENDER."""
 
     LLM = "llm"
     RENDER = "render"
@@ -254,15 +264,18 @@ def _line(code: str, label: str, category: SpendCategory, unit: str, quantity: f
 def estimate(config: Config, entries: Sequence[PlanEntry]) -> Estimate:
     """Price a whole plan locally, enumerating every FR-107 conditional contributor.
 
-    Covered bullet by bullet (10 §9, FR-107 as amended v2.0.0): the batched topic-filter screen at
-    its worst-case topic bound; vision-check calls — one multi-image call per deck carrying every
-    slide's image tokens, plus a second call for the anchor check; seed-frame renders and their
-    checks; the compound moderation-retry + vision-re-render allowance; the carousel anchor-failure
-    N+1 contingency; check image tokens at native render resolution; a reasoning allowance on every
-    Luna call plus FR-99's split per-creative calls; the FR-127 + FR-41 retry allowance on every
-    LLM call; per-platform resolution; carousel slides at the configured ceiling; reels at
-    `reel_second` x the configured duration, at the configured resolution and with **no**
-    motion-reference seconds (the motion-reference chain is withdrawn, v2.0.0/D41).
+    Covered bullet by bullet (10 §9, FR-107 as amended v2.1.0): the batched topic-filter screen at
+    its worst-case topic bound; **one slide-intelligence call per bound carousel source post**
+    (FR-306/§0.11 — post-Confirm spend, quoted before the gate); vision-check calls — one
+    multi-image call per deck carrying every slide's image tokens, plus a second call for the
+    anchor check; seed-frame renders and their checks; the compound moderation-retry +
+    vision-re-render allowance; the carousel anchor-failure N+1 contingency; check image tokens at
+    native render resolution; a reasoning allowance on every Luna call plus FR-99's split
+    per-creative calls; the FR-127 + FR-41 retry allowance on every LLM call; per-platform
+    resolution; **carousel slides at each entry's own ASSIGN-fixed deck length** (§0.4′: the bound
+    post's `panel_count`, clamped to the platform ceiling — the ceiling alone is what an unbound
+    plan is priced at); reels at `reel_second` x the configured duration, at the configured
+    resolution and with **no** motion-reference seconds (withdrawn, v2.0.0/D41).
 
     Args:
         config: the loaded run config — the only price source (FR-282); no network (NFR-18).
@@ -296,6 +309,20 @@ def estimate(config: Config, entries: Sequence[PlanEntry]) -> Estimate:
         worst_case_usd=round(sum(l.amount_usd for l in lines), 6))
 
 
+def _deck_slides(config: Config, entry: PlanEntry) -> int:
+    """This carousel's real deck length — FR-95/FR-107/FR-257 as amended v2.1.0 (§0.4′).
+
+    `entry.slide_count` is the number `plan.assign()` fixed from the bound source post's own panel
+    count, so every deck is priced at the length it will actually render rather than at one flat
+    ceiling for the whole plan. The platform ceiling is still applied on top: a source may reduce a
+    deck below it and may never raise it above (FR-257), and a plan priced BEFORE assignment (the
+    pre-Collect estimate, and every override brief, §0.14d) carries the ceiling as its length —
+    which is the honest number while no post is bound.
+    """
+    ceiling = config.platform(entry.platform).carousel_slides
+    return max(1, min(int(entry.slide_count or ceiling), ceiling))
+
+
 def _entry_lines(config: Config, entry: PlanEntry, lines: list[EstimateLine]) -> None:
     """Render lines, vision-check lines and worst-case allowances for ONE plan entry."""
     orders, run = (entry.order,), config.run
@@ -309,9 +336,7 @@ def _entry_lines(config: Config, entry: PlanEntry, lines: list[EstimateLine]) ->
                            SpendCategory.RENDER, "render", 1, image_priced, orders))
         checked_images = 1
     elif entry.creative_format == "carousel":
-        # FR-95/FR-257: the configured ceiling is the estimate basis; a trend may only reduce it.
-        ceiling = config.platform(entry.platform).carousel_slides
-        slides = max(1, min(entry.slide_count or ceiling, ceiling))
+        slides = _deck_slides(config, entry)
         lines.append(_line("carousel_slides", f"carousel slides ({slides}) · {entry.asset_id}",
                            SpendCategory.RENDER, "render", slides, image_priced, orders))
         checked_images = slides
@@ -451,6 +476,78 @@ def _filter_lines(config: Config, planned: Sequence[PlanEntry], effort: float,
                        SpendCategory.LLM, "retry", 2, wide, orders, allowance=True))
 
 
+def _slide_intel_lines(config: Config, planned: Sequence[PlanEntry],
+                       lines: list[EstimateLine]) -> None:
+    """FR-306/§0.11's slide-intelligence pass: ONE analysis call per bound carousel source post.
+
+    It runs after the Confirm gate and before COPY, which is precisely why it has to be quoted
+    before the gate (rule 7): it is paid LLM spend on top of the renders. The quantity is one call
+    per DISTINCT `source_post_id` — two sibling carousels bound to one post are analysed once
+    (`slide_intel.enrich` deduplicates), so pricing them twice would over-quote the commonest run
+    shape rather than the rare one.
+
+    **Before assignment binds anything the line is still quoted, worst-case-honest** (the v1.6.5
+    estimator-fidelity convention, and the reason `runner._stamp_provisional` exists): the gate
+    currently runs ahead of Collect, so a non-override carousel is priced as its OWN source post at
+    the platform ceiling — the most `plan.assign()` can produce. Binding can only make it cheaper
+    (siblings collapse onto one post, and a deck shorter than the ceiling carries fewer images),
+    and understating is the one unacceptable estimator error (D11).
+
+    Basis, per §0.11: the deck length (`_deck_slides` — the bound post's `panel_count` once ASSIGN
+    has run), one image block per slide at the provider's token ceiling, plus the question and one
+    answer object per slide. One bound is stated rather than hidden: a source deck LONGER than the
+    platform ceiling is analysed in full (that is what `panels_truncated` means) and so costs more
+    image blocks than this line quotes, capped by `slide_intel`'s own 20-slide fence. Nothing is
+    quoted at all when no call will be made — `sources.vision_transcribe: false` (§0.6) or a plan
+    with no non-override carousel in it — because a $0 line for work that will not happen reads
+    like a rate that failed to load.
+    """
+    if not config.sources.vision_transcribe:
+        return
+    posts: dict[str, list[PlanEntry]] = {}
+    for entry in planned:
+        if entry.creative_format != "carousel" or entry.brief_influence == "override":
+            continue  # an override brief binds no source post and is never analysed (§0.14d)
+        posts.setdefault(str(entry.source_post_id or "").strip() or entry.asset_id,
+                         []).append(entry)
+    if not posts:
+        return
+    per_slide = _image_tokens(_IMAGE_TOKEN_MAX_PX, _SOURCE_SLIDE_RATIO)
+    widest = 0
+    for key, members in posts.items():
+        slides = max(_deck_slides(config, member) for member in members)
+        widest = max(widest, slides)
+        bound = bool(str(members[0].source_post_id or "").strip())
+        # Reasoning is 0 for the same reason the vision check prices none: `analysis` is Sonnet,
+        # and the reasoning-effort knob (30 §2) is the COPY role's.
+        priced = _llm_call_price(config, "analysis",
+                                 _SLIDE_INTEL_PROMPT_TOKENS + slides * per_slide,
+                                 _intel_completion(config, slides), 0)
+        lines.append(_line("slide_intel",
+                           f"slide intelligence ({slides} source slides) · "
+                           + (f"post {key}" if bound
+                              else f"{key} (worst case: one source post per deck)"),
+                           SpendCategory.LLM, "call", 1, priced,
+                           [member.order for member in members]))
+    # FR-107's per-call retry allowance applies to every role: FR-127's widened truncation retry and
+    # FR-41's parse retry are independent single retries that can compound on one call. Priced at
+    # the widest post in the plan — the worst case this plan can produce — and an allowance only,
+    # because the stage itself is fail-open (§0.14c: a failed read keeps the Virlo panels).
+    wide_out = _widened_cap(_intel_completion(config, widest))
+    wide = _llm_call_price(config, "analysis", _SLIDE_INTEL_PROMPT_TOKENS + widest * per_slide,
+                           wide_out, 0)
+    lines.append(_line("slide_intel_retry_allowance",
+                       f"slide intelligence truncation + parse retry allowance ({2 * len(posts)})",
+                       SpendCategory.LLM, "retry", 2 * len(posts), wide,
+                       [member.order for members in posts.values() for member in members],
+                       allowance=True))
+
+
+def _intel_completion(config: Config, slides: int) -> int:
+    """One slide-intelligence answer's output size, bounded by `max_tokens.analysis` (30 §2)."""
+    return min(config.max_tokens_for("analysis"), slides * _SLIDE_INTEL_COMPLETION_PER_SLIDE)
+
+
 def _llm_lines(config: Config, entries: Sequence[PlanEntry], lines: list[EstimateLine]) -> None:
     """The topic-filter screen (one batched call) and the copy calls (one per FR-99 group).
 
@@ -469,6 +566,9 @@ def _llm_lines(config: Config, entries: Sequence[PlanEntry], lines: list[Estimat
                if not (e.creative_format == "reel" and not config.reels_plannable)]
     effort = _REASONING_FRACTION.get(config.models.reasoning_effort, 0.0)
     _filter_lines(config, planned, effort, lines)
+    # Stage order, so the printed estimate reads like the run: screen at Collect, read the source
+    # decks after the Confirm gate, then write the copy (FR-306 sits between the two).
+    _slide_intel_lines(config, planned, lines)
 
     groups: dict[tuple[str, str], list[PlanEntry]] = {}
     for entry in planned:  # FR-99: one call per (trend x language); briefs by (brief x language)

@@ -278,9 +278,15 @@ def test_fr107_per_platform_resolution(cfg: Config) -> None:
     assert est.per_entry_usd[1] > est.per_entry_usd[0]
 
 
-def test_fr107_carousel_slides_at_the_configured_ceiling(cfg: Config) -> None:
-    """"carousel slides at the configured ceiling (FR-95)" — `carousel_slides` is the estimate
-    basis, and a trend's own panel count may only reduce a deck below it (FR-257)."""
+def test_fr107_carousel_slides_at_each_entrys_own_deck_length(cfg: Config) -> None:
+    """"carousel slides (deck length from Virlo `panel_count` at ASSIGN per FR-95, clamped to
+    platform ceiling)" — FR-107 as amended v2.1.0.
+
+    Each deck is priced at ITS OWN length now, not at one flat ceiling for the whole plan: a
+    three-panel source and a nine-panel source in the same run cost three and six renders under a
+    ceiling of six. The ceiling is still the bound (FR-257) and still the number an unbound plan —
+    the pre-Collect estimate, and every override brief — is quoted at.
+    """
     cfg.platforms["linkedin"] = PlatformConfig(formats=["carousel"], carousel_slides=6)
     assert one(estimate(cfg, [entry(0, "carousel")]), "carousel_slides").quantity == 6
     assert one(estimate(cfg, [entry(0, "carousel", slide_count=4)]),
@@ -288,6 +294,104 @@ def test_fr107_carousel_slides_at_the_configured_ceiling(cfg: Config) -> None:
     # A source may never raise the deck above the configured ceiling.
     assert one(estimate(cfg, [entry(0, "carousel", slide_count=99)]),
                "carousel_slides").quantity == 6
+
+    # Per-entry, not per-plan: two decks of different lengths are two differently priced lines.
+    mixed = estimate(cfg, [entry(0, "carousel", slide_count=3),
+                           entry(1, "carousel", slide_count=9)])
+    short, long = lines(mixed, "carousel_slides")
+    assert (short.quantity, long.quantity) == (3, 6)
+    assert mixed.per_entry_usd[1] > mixed.per_entry_usd[0]
+
+
+# ------------------------------------------------- FR-306 slide intelligence (D46 §0.11)
+
+
+def bound(order: int, post: str, slides: int = 4, **kwargs: object) -> PlanEntry:
+    """A carousel as `plan.assign()` leaves it: a bound source post and a real deck length."""
+    return entry(order, "carousel", source_post_id=post, slide_count=slides,
+                 trend_key="t1", **kwargs)
+
+
+def test_fr306_one_slide_intelligence_call_per_bound_carousel_source_post(cfg: Config) -> None:
+    """§0.11: vision runs for every assigned carousel source post, ONE analysis-role call each,
+    after the Confirm gate — so the estimate has to quote it BEFORE the gate (rule 7)."""
+    est = estimate(cfg, [bound(0, "post-a", 3), bound(1, "post-b", 5)])
+    first, second = lines(est, "slide_intel")
+
+    assert first.category is SpendCategory.LLM and first.unit == "call"
+    assert (first.quantity, second.quantity) == (1, 1)
+    assert first.assumed_model == cfg.models.analysis  # the `analysis` role — Sonnet prices it
+    assert first.price_key == "models.price_per_unit.llm.sonnet"
+    assert "3 source slides" in first.label and "post post-a" in first.label
+    assert second.unit_price is not None and first.unit_price is not None
+    assert second.unit_price > first.unit_price, "five slides is five image blocks, not three"
+    assert not first.allowance and first.amount_usd > 0
+    assert one(est, "slide_intel_retry_allowance").allowance  # FR-127 + FR-41, worst case only
+    assert est.per_entry_usd[0] > 0
+
+
+def test_fr306_two_siblings_on_one_source_post_are_analysed_once(cfg: Config) -> None:
+    """`slide_intel.enrich` deduplicates by post id, so pricing two calls for one post would
+    over-quote the commonest run shape — and the one line is attributed to BOTH entries."""
+    est = estimate(cfg, [bound(0, "post-a"), bound(1, "post-a"), bound(2, "post-b")])
+    intel = lines(est, "slide_intel")
+
+    assert len(intel) == 2
+    assert {line.entry_orders for line in intel} == {(0, 1), (2,)}
+    assert one(est, "slide_intel_retry_allowance").quantity == 4  # 2 retries x 2 posts
+
+
+def test_fr306_no_line_when_vision_is_off_or_no_carousel_can_be_analysed(cfg: Config) -> None:
+    """$0 spend is $0 line. A line quoting a call that will not happen reads as a rate that failed
+    to load, and the two no-call shapes are the switch off (§0.6) and a plan with no analysable
+    carousel in it — an image plan, or a carousel owned outright by an override brief (§0.14d)."""
+    assert lines(estimate(cfg, [bound(0, "post-a")]), "slide_intel"), "the fixture must bind one"
+
+    cfg.sources.vision_transcribe = False
+    off = estimate(cfg, [bound(0, "post-a")])
+    assert lines(off, "slide_intel") == [] and lines(off, "slide_intel_retry_allowance") == []
+
+    cfg.sources.vision_transcribe = True
+    assert lines(estimate(cfg, [entry(0, "image"), entry(1, "image")]), "slide_intel") == []
+    brief = estimate(cfg, [bound(0, "post-a", brief_name="cta", brief_influence="override")])
+    assert lines(brief, "slide_intel") == []
+
+
+def test_fr306_an_unbound_carousel_is_still_quoted_at_the_worst_case(cfg: Config) -> None:
+    """The Confirm gate currently runs ahead of Collect, so the plan it prices has no bound post
+    yet — and a line that appeared only AFTER the gate would be spend the operator never approved.
+
+    Worst-case-honest, exactly like `runner._stamp_provisional`'s topic keys: one source post per
+    deck, at the platform ceiling. Assignment can only make it cheaper.
+    """
+    cfg.platforms["linkedin"] = PlatformConfig(formats=["carousel"], carousel_slides=6)
+    provisional = estimate(cfg, [entry(0, "carousel"), entry(1, "carousel")])
+    quoted = lines(provisional, "slide_intel")
+
+    assert len(quoted) == 2, "two decks could genuinely be two distinct source posts"
+    assert "worst case: one source post per deck" in quoted[0].label
+    assert "6 source slides" in quoted[0].label  # the ceiling, until a panel count replaces it
+
+    # ... and every way assignment can resolve it costs less than what was approved.
+    siblings = estimate(cfg, [bound(0, "post-a", 6), bound(1, "post-a", 6)])
+    shorter = estimate(cfg, [bound(0, "post-a", 3), bound(1, "post-b", 4)])
+    for settled in (siblings, shorter):
+        assert (sum(l.amount_usd for l in lines(settled, "slide_intel"))
+                < sum(l.amount_usd for l in quoted))
+
+
+def test_fr306_slide_intelligence_is_expected_spend_inside_the_confirm_gate(cfg: Config) -> None:
+    """It is paid work the run WILL do, not a contingency — so it sits in `expected_usd`, which is
+    the number FR-106a gates the batch on, and it moves the operator's total."""
+    plan = [bound(0, "post-a", 4)]
+    cfg.sources.vision_transcribe = False
+    without = estimate(cfg, plan)
+    cfg.sources.vision_transcribe = True
+    with_intel = estimate(cfg, plan)
+
+    intel = one(with_intel, "slide_intel")
+    assert with_intel.expected_usd == pytest.approx(without.expected_usd + intel.amount_usd)
+    assert intel.category is SpendCategory.LLM and not intel.allowance
 
 
 def test_fr107_reels_priced_per_second_at_the_configured_resolution(cfg: Config) -> None:

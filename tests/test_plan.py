@@ -13,6 +13,14 @@ each one took its tests with it:
    used posts while choosing a reference set — there is no reference set — so `select()` owns the
    exclusion decision and reads `TrendItem.posts` to make it.
 
+Amended for the slideshow-fidelity pass (v2.1.0, D46 T2.2). A fourth premise is now pinned:
+
+4. **A carousel binds ONE specific fresh slideshow POST at ASSIGN** (FR-304/FR-307). Affinity is a
+   hard constraint for that format — a video-majority topic has no panels to map a deck onto — the
+   bound post's panel count fixes `slide_count` before the Confirm gate (§0.4′), and a carousel
+   with no unused source deck left skips with `no_fresh_post_available` rather than quoting a post
+   whose text already shipped.
+
 Pure logic, so every test is sync: no event loop, no I/O, no fixtures beyond small builders.
 """
 
@@ -22,7 +30,9 @@ from datetime import datetime, timedelta, timezone
 
 from hypesocials.config import Config, PlatformConfig, RunConfig
 from hypesocials.models import Brief, PlanEntry, PlanEntryStatus, SourcePost, TrendItem
-from hypesocials.plan import BriefRequest, assign, build_plan, select
+from hypesocials.plan import (
+    MIN_DECK_SLIDES, NO_FRESH_POST_AVAILABLE, BriefRequest, assign, build_plan, deck_length,
+    fresh_source_post, select, source_panel_count, usable_panel_slots)
 
 # --------------------------------------------------------------------------- builders
 
@@ -51,16 +61,40 @@ def _hk(topic: str, monitor: str = "m1") -> str:
 
 
 def _post(post_id: str, *, caption: str = "the hook that stole the week",
-          views: int = 1000) -> SourcePost:
-    """One winning post inside a topic — the unit FR-7 excludes on and §1.7 quotes from."""
+          views: int = 1000, panels: int = 0, texts: tuple[str, ...] | None = None,
+          images: bool = True) -> SourcePost:
+    """One winning post inside a topic — the unit FR-7 excludes on and §1.7 quotes from.
+
+    `panels > 0` makes it a SLIDESHOW row the way `sources/virlo.py` returns one (FR-293): a
+    declared `panel_count`, `panel_texts` index-aligned to it (padded, never compacted) and one
+    position-sorted image URL per panel. `texts` overrides the words slot by slot, `images=False`
+    is the row that declares panels but shipped no pictures — the two levers §0.14a's usability
+    predicate turns on.
+    """
+    words = list(texts) if texts is not None else [f"panel {i} of {post_id}"
+                                                   for i in range(1, panels + 1)]
     return SourcePost(post_id=post_id, url=f"https://www.tiktok.com/@creator/video/{post_id}",
-                      author="creator", caption=caption, views=views)
+                      author="creator", caption=caption, views=views,
+                      is_slideshow=panels > 0, panel_count=panels, panel_texts=words,
+                      image_urls=[f"https://cdn.virlo.test/{post_id}/{i}.jpg"
+                                  for i in range(1, panels + 1)] if images else [])
+
+
+def _deck(post_id: str, *, panels: int = 4, views: int = 1000,
+          texts: tuple[str, ...] | None = None, images: bool = True) -> SourcePost:
+    """A slideshow source post — the only shape FR-304 lets a carousel bind."""
+    return _post(post_id, views=views, panels=panels, texts=texts, images=images)
 
 
 def _trend(topic: str, *, strength: float = 0.5, slideshow: bool = False,
            name: str | None = None, why: str = "strong pattern interrupt",
-           posts: tuple[str, ...] = (), monitor: str = "m1") -> TrendItem:
-    """One post-pivot TOPIC item. `posts` are its own view-ranked `SourcePost` ids (FR-293)."""
+           posts: tuple[str, ...] = (), monitor: str = "m1",
+           source_posts: tuple[SourcePost, ...] = ()) -> TrendItem:
+    """One post-pivot TOPIC item. `posts` are its own view-ranked `SourcePost` ids (FR-293).
+
+    `source_posts` passes fully built posts instead, for the FR-304 tests that care about panels,
+    views and freshness rather than about ids alone.
+    """
     return TrendItem(
         history_key=_hk(topic, monitor),
         monitor_id=monitor,
@@ -69,7 +103,14 @@ def _trend(topic: str, *, strength: float = 0.5, slideshow: bool = False,
         strength=strength,
         is_slideshow=slideshow,
         why_it_works=why,
-        posts=[_post(post_id) for post_id in posts])
+        posts=list(source_posts) if source_posts else [_post(post_id) for post_id in posts])
+
+
+def _deck_topic(topic: str, *decks: SourcePost, strength: float = 0.5,
+                monitor: str = "m1") -> TrendItem:
+    """A slideshow-majority topic carrying real slideshow posts — a bindable carousel source."""
+    return _trend(topic, strength=strength, slideshow=True, monitor=monitor,
+                  source_posts=decks or (_deck("post-a"),))
 
 
 def _brief(name: str, influence: str = "override", formats=("image",)) -> Brief:
@@ -377,8 +418,7 @@ def test_fr90_slideshow_topics_go_to_carousels_and_video_topics_to_images() -> N
     actually quote rather than one label carried by a whole monitor."""
     cfg = _config(formats={"image": 1, "carousel": 1, "reel": 0}, platforms=["linkedin"])
     plan = build_plan(cfg)
-    selection = select([_trend("vid", strength=0.9), _trend("deck", strength=0.5, slideshow=True)],
-                       cfg)
+    selection = select([_trend("vid", strength=0.9), _deck_topic("deck", strength=0.5)], cfg)
 
     result = assign(plan.entries, selection, cfg)
 
@@ -391,15 +431,199 @@ def test_fr90_slideshow_topics_go_to_carousels_and_video_topics_to_images() -> N
     assert result.batch_ceiling == 12
 
 
-def test_fr90_no_affinity_match_falls_back_to_plain_rank_order() -> None:
+def test_fr90_no_affinity_match_falls_back_to_plain_rank_order_for_an_image() -> None:
+    """Affinity stays the SOFT tie-break it always was for images and reels (FR-90).
+
+    Under `sources.include_videos: false` those formats are refused at pre-flight (§0.14e), so
+    hard-constraining them here would turn a config refusal the operator can act on into a silent
+    famine — an image is written from a post's caption or hooks either way.
+    """
+    cfg = _config(formats={"image": 1, "carousel": 0, "reel": 0}, platforms=["linkedin"])
+    plan = build_plan(cfg)
+    selection = select([_deck_topic("weak-deck", strength=0.3),
+                        _deck_topic("strong-deck", strength=0.9)], cfg)
+
+    result = assign(plan.entries, selection, cfg)
+
+    assert plan.entries[0].topic_key == "strong-deck"
+    assert result.decisions[0].reason == "rank_fallback"
+
+
+def test_fr90_a_carousel_never_rank_falls_back_onto_video_material() -> None:
+    """FR-90 as amended v2.1.0: affinity is a CONSTRAINT for carousels, and the miss is a skip.
+
+    Our slide *i* renders their panel *i* (FR-304), so a video-majority topic has nothing to map a
+    deck from. The pre-D46 code bound it anyway and labelled the decision `rank_fallback`, which is
+    exactly how run `20260813_093720_7hiu` came to quote hashtag captions onto five slides.
+    """
     cfg = _config(formats={"image": 0, "carousel": 1, "reel": 0}, platforms=["linkedin"])
     plan = build_plan(cfg)
     selection = select([_trend("weak-vid", strength=0.3), _trend("strong-vid", strength=0.9)], cfg)
 
     result = assign(plan.entries, selection, cfg)
 
-    assert plan.entries[0].topic_key == "strong-vid"
-    assert result.decisions[0].reason == "rank_fallback"
+    entry = plan.entries[0]
+    assert entry.trend_key is None and entry.source_post_id is None
+    assert entry.status is PlanEntryStatus.SKIPPED
+    assert (entry.skip_reason or "").startswith(f"{NO_FRESH_POST_AVAILABLE}: ")
+    assert "no-repeat window" in (entry.skip_reason or "")
+    assert result.decisions[0].reason == NO_FRESH_POST_AVAILABLE
+    assert "rank_fallback" not in {d.reason for d in result.decisions}
+    assert result.no_fresh_post_skips == 1 and result.carousel_posts_available == 0
+    assert result.fresh_post_line == (
+        "1 carousel(s) found no unused source slideshow: 0 fresh post(s) were bindable across the "
+        "eligible topics and 0 of them were bound")
+
+
+# ------------------------------------------------------- FR-304/FR-307 source-post binding
+
+
+def test_fr304_a_carousel_binds_the_viewiest_fresh_slideshow_post_and_its_deck_length() -> None:
+    """The whole of §0.4′ in one assignment: WHICH post, and how many slides it makes.
+
+    `TrendItem.posts` arrives view-ranked, so "first bindable" IS "viewiest bindable" — and the
+    deck length is that post's own `panel_count`, fixed here so the Confirm gate prices the deck
+    the run will actually render rather than a flat platform ceiling.
+    """
+    cfg = _config(formats={"image": 0, "carousel": 1, "reel": 0}, platforms=["linkedin"])
+    plan = build_plan(cfg)
+    assert plan.entries[0].slide_count == 5, "the config ceiling stands in until ASSIGN binds"
+    topic = _deck_topic("decks", _deck("post-top", panels=3, views=9000),
+                        _deck("post-second", panels=4, views=100))
+
+    result = assign(plan.entries, select([topic], cfg), cfg)
+
+    entry = plan.entries[0]
+    assert entry.source_post_id == "post-top"
+    assert entry.slide_count == 3, "the bound post's panel count, not the platform ceiling"
+    assert result.decisions[0].source_post_id == "post-top"
+    assert "post post-top · 3 slide(s) of 3 source panel(s)" in result.decisions[0].detail
+    assert result.carousel_posts_available == 2 and result.carousel_posts_bound == 1
+    assert result.fresh_post_line == "", "nothing starved, so there is no famine line to print"
+
+
+def test_fr304_a_video_post_inside_a_slideshow_topic_is_never_bound() -> None:
+    """A topic is slideshow-MAJORITY, not slideshow-only (§1.6), so the pick still reads panels."""
+    cfg = _config(formats={"image": 0, "carousel": 1, "reel": 0}, platforms=["linkedin"])
+    plan = build_plan(cfg)
+    topic = _deck_topic("mixed", _post("post-video", views=9000),  # no panels at all
+                        _deck("post-deck", panels=2, views=10))
+
+    assign(plan.entries, select([topic], cfg), cfg)
+
+    assert plan.entries[0].source_post_id == "post-deck"
+    assert plan.entries[0].slide_count == 2
+
+
+def test_fr307_a_post_burnt_by_history_is_not_bound_and_the_next_one_is() -> None:
+    """§0.10's pick-time half of the guard: `select()` computed the burnt union, `assign()` binds
+    around it. The topic itself is still eligible — one fresh post is all it needs (FR-7)."""
+    cfg = _config(formats={"image": 0, "carousel": 1, "reel": 0}, platforms=["linkedin"],
+                  trend_history_days=30)
+    plan = build_plan(cfg)
+    topic = _deck_topic("decks", _deck("post-yesterday", panels=6, views=9000),
+                        _deck("post-fresh", panels=3, views=50))
+    history = {_hk("decks"): _seen(1, "post-yesterday")}
+    selection = select([topic], cfg, history)
+
+    assert selection.burnt_posts == frozenset({"post-yesterday"})
+    result = assign(plan.entries, selection, cfg)
+
+    assert plan.entries[0].source_post_id == "post-fresh"
+    assert plan.entries[0].slide_count == 3
+    assert result.carousel_posts_available == 1, "the burnt post is not counted as supply"
+
+
+def test_fr307_two_carousels_on_one_topic_take_two_different_posts_then_starve() -> None:
+    """A post is a one-shot resource INSIDE a run as well as across runs (§0.10). The third deck
+    has nothing left to quote, so it skips — it never wraps back onto slide-for-slide repeats."""
+    cfg = _config(formats={"image": 0, "carousel": 3, "reel": 0}, platforms=["linkedin"],
+                  max_trend_reuses_per_run=6)
+    plan = build_plan(cfg)
+    topic = _deck_topic("decks", _deck("post-a", panels=2, views=900),
+                        _deck("post-b", panels=4, views=200))
+
+    result = assign(plan.entries, select([topic], cfg), cfg)
+
+    assert [e.source_post_id for e in plan.entries] == ["post-a", "post-b", None]
+    assert [e.slide_count for e in plan.entries] == [2, 4, 5]  # the starved entry keeps its stub
+    assert [d.reason for d in result.decisions] == ["affinity", "reuse", NO_FRESH_POST_AVAILABLE]
+    assert plan.entries[2].status is PlanEntryStatus.SKIPPED
+    assert result.no_fresh_post_skips == 1
+    assert result.carousel_posts_available == 2 and result.carousel_posts_bound == 2
+    assert "2 fresh post(s) were bindable" in result.fresh_post_line
+
+
+def test_fr304_the_deck_is_clamped_into_two_and_the_platform_ceiling() -> None:
+    """§0.4′/FR-257's clamp, both ends. A source deck longer than the ceiling ships its first N
+    panels (the cut is tagged `panels_truncated` at generate time); a one-panel post is not a
+    carousel source at all, so the floor is only ever reached through the ceiling."""
+    cfg = _config(formats={"image": 0, "carousel": 2, "reel": 0}, platforms=["linkedin"])
+    cfg.platforms["linkedin"] = PlatformConfig(formats=["carousel"], carousel_slides=4)
+    plan = build_plan(cfg)
+    topic = _deck_topic("decks", _deck("post-long", panels=9, views=900),
+                        _deck("post-short", panels=2, views=100))
+
+    assign(plan.entries, select([topic], cfg), cfg)
+
+    assert [e.slide_count for e in plan.entries] == [4, 2]
+    tiny = PlatformConfig(formats=["carousel"], carousel_slides=1)
+    cfg.platforms["linkedin"] = tiny
+    assert deck_length(_deck("post-short", panels=2), cfg, "linkedin") == MIN_DECK_SLIDES, \
+        "a misconfigured ceiling of 1 can never produce a one-slide carousel"
+
+
+def test_fr304_a_one_panel_post_is_not_a_carousel_source() -> None:
+    """§0.14a's deck-eligibility bar: two usable panel slots, or it is not a deck."""
+    cfg = _config(formats={"image": 0, "carousel": 1, "reel": 0}, platforms=["linkedin"])
+    plan = build_plan(cfg)
+    topic = _deck_topic("thin", _deck("post-single", panels=1))
+
+    result = assign(plan.entries, select([topic], cfg), cfg)
+
+    assert plan.entries[0].status is PlanEntryStatus.SKIPPED
+    assert result.decisions[0].reason == NO_FRESH_POST_AVAILABLE
+
+
+def test_fr304_usable_panel_slots_follow_the_vision_switch() -> None:
+    """§0.14a: a slot is usable iff it carries words after the merge — and at ASSIGN the vision
+    half of that merge is a PROSPECT, gated by `sources.vision_transcribe` (§0.6).
+
+    With vision on, a picture is a promise of words; with it off, only the words Virlo already
+    shipped count, which narrows the pool of bindable posts as well as the run's spend.
+    """
+    cfg = _config()
+    silent = _deck("post-silent", panels=4, texts=("", "", "", ""))
+    half = _deck("post-half", panels=4, texts=("headline", "", "", ""))
+
+    assert source_panel_count(silent) == 4
+    assert usable_panel_slots(silent, cfg) == 4 and usable_panel_slots(half, cfg) == 4
+
+    cfg.sources.vision_transcribe = False
+    assert usable_panel_slots(silent, cfg) == 0
+    assert usable_panel_slots(half, cfg) == 1  # one non-empty slot is below the two-slot bar
+    topic = _deck_topic("quiet", silent, half)
+    assert fresh_source_post(topic, cfg) is None
+
+    pictureless = _deck("post-nopics", panels=4, texts=("a", "b", "", ""), images=False)
+    assert usable_panel_slots(pictureless, cfg) == 2, "Virlo's own words never need a picture"
+    assert fresh_source_post(_deck_topic("wordy", pictureless), cfg) is pictureless
+
+
+def test_fr144_an_override_brief_carousel_binds_no_post_and_keeps_the_config_ceiling() -> None:
+    """§0.14d: FR-304 does not apply to an `override` brief. It quotes no source, so it has no
+    panel map, no bound post and no source-driven length — the config ceiling stays its deck."""
+    cfg = _config(formats={"image": 0, "carousel": 0, "reel": 0}, platforms=["linkedin"])
+    plan = build_plan(cfg, briefs=[BriefRequest(_brief("ai-audit-cta", formats=("carousel",)), 1)])
+
+    result = assign(plan.entries, select([_trend("vid", strength=0.9)], cfg), cfg)
+
+    entry = plan.entries[0]
+    assert entry.creative_format == "carousel" and entry.brief_influence == "override"
+    assert entry.source_post_id is None and entry.slide_count == 5
+    assert entry.status is PlanEntryStatus.PENDING
+    assert [d.reason for d in result.decisions] == ["brief_override"]
+    assert result.no_fresh_post_skips == 0 and result.trends_needed == 0
 
 
 def test_fr90_no_last_resort_tier_survives_the_pivot() -> None:
@@ -456,8 +680,10 @@ def test_fr8_assignment_rewrites_the_asset_id_and_stamps_the_topic_key() -> None
     meta.yaml, the gallery and post-level recency all read the second one (§1.6)."""
     cfg = _config(formats={"image": 0, "carousel": 1, "reel": 0}, platforms=["linkedin"])
     plan = build_plan(cfg)
+    topic = _deck_topic("dance", _deck("post-a"))
+    topic.name = "Dance Challenge!"
 
-    assign(plan.entries, select([_trend("dance", name="Dance Challenge!")], cfg), cfg)
+    assign(plan.entries, select([topic], cfg), cfg)
 
     assert plan.entries[0].asset_id == "Li_car_dance-challenge_01"
     assert plan.entries[0].trend_key == _hk("dance")

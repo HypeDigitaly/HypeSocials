@@ -53,6 +53,8 @@ from hypesocials.models import (
     RenderOutcome,
     RenderOutcomeKind,
     RenderPriority,
+    SourcePost,
+    TrendItem,
     VisionCheckResult,
 )
 from hypesocials.outputs import AssetFolder, PackagingError, packager
@@ -289,6 +291,25 @@ def make_entry(slides: int = 4, **overrides: Any) -> PlanEntry:
     for key, value in overrides.items():
         setattr(entry, key, value)
     return entry
+
+
+def make_trends(*, panels: int = 3, post_id: str = "post-a",
+                trend_key: str = "t1") -> dict[str, TrendItem]:
+    """`env.trends` carrying the SOURCE deck this entry was bound to at ASSIGN (FR-304).
+
+    The join is `entry.trend_key` -> topic -> the post whose id is `entry.source_post_id`, which is
+    the same join the gallery's provenance card makes; `panels` is the source's own panel count,
+    the number `panels_truncated` is decided by.
+    """
+    return {trend_key: TrendItem(
+        history_key=trend_key, monitor_id="m1", topic_key="ai-tool-stacks",
+        name="AI tool stacks", is_slideshow=True,
+        posts=[SourcePost(post_id=post_id, url="https://www.tiktok.com/@creator/video/1",
+                          author="creator", caption="Most people wire this backwards.",
+                          views=9000, is_slideshow=True, panel_count=panels,
+                          panel_texts=[f"panel {i}" for i in range(1, panels + 1)],
+                          image_urls=[f"https://cdn.virlo.test/{post_id}/{i}.jpg"
+                                      for i in range(1, panels + 1)])])}
 
 
 def make_env(tmp_path: Path, entry: PlanEntry, *, texts: list[str] | None = None,
@@ -684,19 +705,117 @@ async def test_anchor_failure_falls_back_to_independent_slides_precommitted(
     assert record.status is AssetStatus.SUCCESS and record.slide_count == 4
 
 
-async def test_deck_size_is_the_config_ceiling_reduced_by_the_copy(tmp_path: Path) -> None:
-    """FR-95/257: config is the ceiling; the topic's own pacing may only reduce it."""
-    entry = make_entry(slides=5)
+# ------------------------------------------------------- FR-304 panel-mapped decks (§0.4′)
+
+
+async def test_deck_length_is_the_entrys_assign_fixed_count_not_the_copy_length(
+    tmp_path: Path,
+) -> None:
+    """FR-304/§0.4′: the deck is as long as the SOURCE deck, decided at ASSIGN and priced at the
+    Confirm gate. Copy fills slots; it no longer decides how many there are.
+
+    Before D46 a short copy list silently shortened the deck (`min(ceiling, len(written))`), which
+    made the render count disagree with the number the operator approved money against.
+    """
+    entry = make_entry(slides=5, source_post_id="post-a")
     env = make_env(tmp_path, entry, texts=["one", "two", "three"])
     short = FakeSubmit()
     await render_carousel(entry, env, make_folder(tmp_path, entry), submit=short)
-    assert [call.slide for call in short.calls] == [1, 2, 3]
+    assert [call.slide for call in short.calls] == [1, 2, 3, 4, 5]
 
-    entry2 = make_entry(slides=3, asset_id="0002_carousel_linkedin")
+    entry2 = make_entry(slides=3, asset_id="0002_carousel_linkedin", source_post_id="post-a")
     env2 = make_env(tmp_path, entry2, texts=[f"line {n}" for n in range(8)])
     long = FakeSubmit()
     await render_carousel(entry2, env2, make_folder(tmp_path, entry2), submit=long)
     assert [call.slide for call in long.calls] == [1, 2, 3], "the ceiling is never raised"
+
+
+async def test_an_empty_source_panel_renders_wordless_and_never_repeats_the_headline(
+    tmp_path: Path,
+) -> None:
+    """The defect D46 was written against: slide 4 of the source said nothing, and our slide 4
+    printed slide 1's line again.
+
+    A panel with no words is a wordless slide (FR-304) — the TEXT block goes away entirely for it,
+    through the same no-on-image-text path a caption-only creative uses (FR-100's degrade), while
+    the slides that DO have words keep theirs verbatim.
+    """
+    entry = make_entry(slides=4, source_post_id="post-a")
+    env = make_env(tmp_path, entry, texts=["ZZONE the opener", "", "ZZTHREE the payoff", ""])
+    submit = FakeSubmit()
+
+    await render_carousel(entry, env, make_folder(tmp_path, entry), submit=submit)
+
+    assert [call.slide for call in submit.calls] == [1, 2, 3, 4]
+    assert 'headline (render verbatim): "ZZONE the opener"' in submit.slide(1).prompt
+    assert 'headline (render verbatim): "ZZTHREE the payoff"' in submit.slide(3).prompt
+    for wordless in (2, 4):
+        prompt = submit.slide(wordless).prompt
+        assert "render verbatim" not in prompt, f"slide {wordless} was given words it never had"
+        assert "ZZONE the opener" not in prompt, "the headline came back as a repeat"
+    # The deck's own CopySet is untouched — the blanking is per-slide context, not a mutation.
+    assert env.copy[entry.asset_id].headline == "Wired backwards"
+
+
+async def test_every_slide_label_states_its_source_panel(tmp_path: Path) -> None:
+    """FR-302's mapping is positional and 1-based, so the log says which panel a slide came from —
+    `slide 2/3 (source panel 2)`. A brief-driven deck binds no post and says nothing of the kind."""
+    entry = make_entry(slides=3, source_post_id="post-a")
+    env = make_env(tmp_path, entry, texts=["one", "two", "three"], trends=make_trends(panels=3))
+    submit = FakeSubmit()
+
+    await render_carousel(entry, env, make_folder(tmp_path, entry), submit=submit)
+
+    assert [call.label.split(" · ")[0] for call in submit.calls] == [
+        "carousel slide 1/3 (source panel 1)",
+        "carousel slide 2/3 (source panel 2)",
+        "carousel slide 3/3 (source panel 3)"]
+
+    brief = make_entry(slides=2, asset_id="0002_carousel_linkedin")
+    plain = FakeSubmit()
+    await render_carousel(brief, make_env(tmp_path, brief, texts=["one", "two"]),
+                          make_folder(tmp_path, brief), submit=plain)
+    assert [call.label.split(" · ")[0] for call in plain.calls] == [
+        "carousel slide 1/2", "carousel slide 2/2"]
+
+
+async def test_a_source_deck_longer_than_the_ceiling_is_tagged_panels_truncated(
+    tmp_path: Path,
+) -> None:
+    """§0.4′: the first N panels ship with their indices preserved, and the cut is LABELLED.
+
+    The operator comparing our deck against the source in the gallery has to be able to tell
+    "panels 4–9 were never ordered" from "slides 4–9 failed to render" — the second is
+    `incomplete`, this is not.
+    """
+    entry = make_entry(slides=3, source_post_id="post-a")
+    env = make_env(tmp_path, entry, texts=["one", "two", "three"], trends=make_trends(panels=9))
+    folder = make_folder(tmp_path, entry)
+
+    record = await render_carousel(entry, env, folder, submit=FakeSubmit())
+
+    assert "panels_truncated" in [str(getattr(tag, "value", tag)) for tag in record.degradations]
+    assert "carousel_panels_truncated" in env.log.types()
+    assert record.slide_count == 3 and record.missing_slide_numbers == []
+    assert "panels_truncated" in packager.read_meta(folder.path)["degradations"]
+
+
+async def test_a_deck_that_fits_the_ceiling_is_not_tagged_truncated(tmp_path: Path) -> None:
+    """The tag is a fact about the SOURCE, so a deck that took every panel it was offered — and a
+    brief-driven deck that had no source at all — carry nothing."""
+    entry = make_entry(slides=3, source_post_id="post-a")
+    env = make_env(tmp_path, entry, texts=["one", "two", "three"], trends=make_trends(panels=3))
+
+    record = await render_carousel(entry, env, make_folder(tmp_path, entry), submit=FakeSubmit())
+
+    assert [str(getattr(tag, "value", tag)) for tag in record.degradations] == []
+    assert "carousel_panels_truncated" not in env.log.types()
+
+    brief = make_entry(slides=2, asset_id="0002_carousel_linkedin")
+    brief_env = make_env(tmp_path, brief, texts=["one", "two"], trends=make_trends(panels=9))
+    plain = await render_carousel(brief, brief_env, make_folder(tmp_path, brief),
+                                  submit=FakeSubmit())
+    assert [str(getattr(tag, "value", tag)) for tag in plain.degradations] == []
 
 
 # ------------------------------------------------------------------- partial decks & moderation

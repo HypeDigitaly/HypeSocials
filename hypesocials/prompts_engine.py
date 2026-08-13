@@ -126,8 +126,16 @@ _ALLOWLIST: dict[str, frozenset[str]] = {
     # blocks and no copy-side context.
     "carousel_slide.md": frozenset({
         "slide_index", "style_dna", "render_prompt", "onimage_text", "reference_roles",
-        "exclusions", "text_budgets", "brief_directives", "niche_visual_world", "branding_block"}),
+        "exclusions", "text_budgets", "brief_directives", "niche_visual_world", "branding_block",
+        # D46 (FR-304/FR-308) — the two panel-mapping slots, allowlisted for slides ONLY: the
+        # cover/image/reel roles have no source panel to mirror, so the names do not resolve
+        # there and a template drift fails loudly instead of leaking a blank line.
+        "visual_brief", "slide_panel_source"}),
     "carousel_anchor_instruction.md": frozenset(),
+    # FR-306's slide-intelligence question is a GLOBAL template like the vision check: zero
+    # placeholders — the images ARE the variable input, and the question must read identically
+    # for every post so transcriptions are comparable across a run.
+    "slide_intel_question.md": frozenset(),
     "reel_seed_frame.md": frozenset({
         "render_prompt", "layout_zones", "onimage_text", "reference_roles", "exclusions",
         "text_budgets", "brief_directives", "niche_visual_world", "branding_block"}),
@@ -375,6 +383,8 @@ def build_context(
     audio_cue: str = "",
     content_sentence: str = "",
     reel_beats: str = "",
+    visual_brief: str = "",
+    slide_panel_source: str = "",
 ) -> dict[str, str]:
     """Build the ONE prompt context (FR-261). Every value is derived from typed domain objects.
 
@@ -487,6 +497,12 @@ def build_context(
         "slide_index": slide_index,
         "seed_frame_ref": seed_frame_ref,
         "audio_cue": audio_cue,
+        # D46 (FR-304/FR-308) — per-slide panel mapping, carousel_slide.md only. Both default
+        # empty: an image/reel/anchor context carries them harmlessly (the allowlist keeps them
+        # out of those templates), and a deck without slide intelligence renders its "(ignore if
+        # empty)" lines blank rather than failing the slide.
+        "visual_brief": visual_brief,
+        "slide_panel_source": slide_panel_source,
     }
     if not set(context) <= PLACEHOLDERS:  # FR-261 condition 2 — a typo here is a build error
         raise ValueError(
@@ -999,15 +1015,21 @@ def _budget_line(budgets: TextBudgets, style: MetaStyle | None, creative_format:
         return (f"hook headline at most {limit(budgets.reel_seed_headline, 'overlay', 'headline')} "
                 "characters, spaces included")
     if creative_format == "carousel":
-        return (f"headline at most {limit(budgets.image_headline, 'slide')} characters and subline "
-                f"at most {limit(budgets.image_subline, 'subline')} characters, spaces included")
+        # v2.1.0: the deck's slide text has its own config key (`text_budgets.slide`, FR-259) —
+        # borrowing `image_headline` for it was the pre-D46 arrangement, and the cover headline
+        # keeps that key while the per-slide budget states the panel ceiling the mapped source
+        # text must fit (FR-304: an over-budget panel is never trimmed, that slide ships bare).
+        return (f"cover headline at most {limit(budgets.image_headline, 'headline')} characters, "
+                f"per-slide text at most {limit(budgets.slide, 'slide')} characters, spaces "
+                "included")
     if creative_format == "image":
         return (f"headline at most {limit(budgets.image_headline, 'headline')} characters and "
                 f"subline at most {limit(budgets.image_subline, 'subline')} characters, spaces "
                 "included")
     return (f"image and carousel headline at most "
-            f"{limit(budgets.image_headline, 'headline', 'slide')} characters, subline at most "
-            f"{limit(budgets.image_subline, 'subline')} characters, reel seed-frame hook at most "
+            f"{limit(budgets.image_headline, 'headline')} characters, subline at most "
+            f"{limit(budgets.image_subline, 'subline')} characters, carousel per-slide text at "
+            f"most {limit(budgets.slide, 'slide')} characters, reel seed-frame hook at most "
             f"{limit(budgets.reel_seed_headline, 'overlay', 'headline')} characters, spaces "
             "included")
 
@@ -1230,8 +1252,9 @@ You are choosing for every creative in this block at once:
 Each sibling line names its asset id, platform, format and language. Rules:
 
 - Siblings share the topic, not the sentence. Two creatives from one topic
-  must not quote the same string, and where the candidate list offers strings
-  from more than one post, prefer a different post per sibling.
+  must not quote the same string. Which post each creative quotes is already
+  decided by the engine (each entry is bound to one source post — FR-304/307);
+  choose among that post's own candidates only.
 - If two siblings would land on the same label, change one of them — the
   weaker fit moves, the stronger one keeps its pick.
 - The caption and the on-image text of one creative are never the same label.
@@ -1311,6 +1334,51 @@ Include every field for every sibling; leave the fields its format does not
 use empty. Never emit a field that is not in this list.
 """,
 
+    # FR-306 (D46, v2.1.0) — the slide-intelligence question, byte-identical to
+    # prompts/slide_intel_question.md (FR-183 parity): the images are the variable
+    # input, so the template itself carries zero placeholders.
+    "slide_intel_question.md": """Each attached image is one slide of a source slideshow, attached in slide
+order. Report exactly three things about every slide. Report nothing else.
+
+1. ON-IMAGE TEXT — transcribe every word that appears ON the slide, exactly as
+   it is written: same language, same spelling, same capitalisation, same
+   accents and diacritics, same emoji, same punctuation, same numbers. Keep the
+   line breaks the slide has, one per visible break. Keep the reading order:
+   heading first, then body text, then labels, callouts, chart labels, button
+   or badge text. Do not translate, correct, complete, shorten, summarise,
+   re-order or explain. A slide with no text on it at all is an empty string.
+
+2. VISUAL BRIEF — one to three sentences, ALWAYS IN ENGLISH whatever language
+   the slide is in, describing what is on the slide well enough to draw it
+   again: the layout (where the blocks sit), and the graphics — photos,
+   charts (type, how many series, which direction), diagrams, tables, icons,
+   arrows, numbered lists, how many of each. Describe CONTENT, not art
+   direction: "line chart, three series, all rising left to right, legend
+   bottom right; short heading above it" is a brief. "Bold modern look", "make
+   it pop", "use a warm palette" are instructions, and instructions are not
+   what is being asked. Do not judge quality, do not suggest improvements, do
+   not guess at anything the slide does not show.
+
+3. BRAND MARKS — list every logo, wordmark, watermark, app badge, platform
+   chrome or visible @handle on the slide, named as what it is: "TikTok
+   watermark", "Nike swoosh, top left", "@creator handle over the footer".
+   Name what you can see; never describe how to reproduce it. A slide with
+   none of these gets an empty list.
+
+Answer for every attached slide, one entry each, in the order the slides were
+attached, numbered from 1. Return valid JSON and nothing else:
+
+{
+  "slides": [
+    {
+      "slide": 1,
+      "onimage_text": "<every word on this slide, verbatim, source language, line breaks kept, or empty>",
+      "visual_brief": "<English description of this slide's layout and graphics>",
+      "brand_marks": ["<a logo, wordmark or watermark you can see>"]
+    }
+  ]
+}
+""",
     "vision_check_question.md": """Inspect each attached image and answer exactly two objective
 questions about it. Answer nothing else.
 1. TEXT BROKEN — is any rendered text garbled, misspelled, cut off at an edge, overlapping,
@@ -1582,6 +1650,15 @@ STYLE_DNA (identical on every slide of this deck — reproduce it exactly):
 
 SLIDE CONTENT:
   {{render_prompt}}
+
+  SOURCE PANEL (ignore if empty): {{slide_panel_source}}
+  VISUAL BRIEF (ignore if empty): {{visual_brief}}
+  When present, the visual brief describes WHAT this slide shows — a chart, an
+  icon grid, a numbered list, a diagram — mirrored from the stated source
+  panel. Reproduce that CONTENT, composed entirely in STYLE_DNA's own palette,
+  typography and treatment: the brief never overrides the style, never names a
+  colour or typeface to copy, and any brand mark it mentions is rendered as a
+  generic shape of its kind, never as the real logo.
 
   BRIEF OVERLAY: {{brief_directives}}
 

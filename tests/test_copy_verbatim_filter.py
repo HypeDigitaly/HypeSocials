@@ -265,7 +265,7 @@ async def test_the_provenance_records_which_string_not_merely_which_post() -> No
     """FR-298/contracts item 14: `copy_source_refs` is `{slot: "P<n>.<kind>[.<i>]"}` keyed by the
     `CopySet` field the label resolved into, so meta.yaml can say "quotes P1.hook.2 verbatim"."""
     source = topic(post(1, hooks=("First hook", "Second hook"), overlays=("An overlay line",),
-                        caption="The caption."))
+                        caption="The caption, long enough to be one."))
     call = ScriptedCall({"a1": [refs(headline_ref="P1.hook.2", subline_ref="P1.overlay.1",
                                      caption_ref="P1.caption")]})
 
@@ -279,63 +279,81 @@ async def test_the_provenance_records_which_string_not_merely_which_post() -> No
     assert all(copywrite._REF.match(label) for label in provenance.refs.values())
 
 
-async def test_slide_refs_are_recorded_by_their_final_position_not_the_answers_position() -> None:
-    """A dropped ref closes the gap in `slide_texts`, so `slide_3` in meta.yaml has to mean the
-    third slide that SHIPPED — not the third label the model happened to write."""
-    source = topic(post(1, panels=("Panel one", "Panel two", "Panel three"), caption="Caption."))
-    call = ScriptedCall({"a1": [refs(slide_refs=["P1.panel.1", "P1.panel.9", "P1.panel.3"],
-                                     caption_ref="P1.caption")]})
+async def test_a_mapped_decks_slide_is_its_source_panel_and_a_gap_stays_a_gap() -> None:
+    """FR-304 at the provenance level: `slide_<n>` means OUR slide *n*, which renders THEIR panel
+    *n*, and a slot neither Virlo nor vision could fill keeps its position rather than closing.
 
-    result = await write([entry("a1", 0, creative_format="carousel", slide_count=3)], call,
-                         trends={"t1": source})
+    This test used to assert the opposite — that a dropped reference CLOSED the gap and `slide_2`
+    meant "the second slide that shipped". That was defensible while every slide was an independent
+    quote; under D46 the deck is a re-render of one source deck, so closing a gap ships a deck that
+    reads as theirs with two slides swapped. The rule reversed with FR-302's position-preserving
+    grammar, and the reversal is the fix.
+    """
+    source = topic(post(1, panels=("Panel one", "", "Panel three"),
+                        caption="A caption, long enough to be one."))
+    call = ScriptedCall({"a1": [refs(caption_ref="P1.caption")]})
 
-    assert result.copy["a1"].slide_texts == ["Panel one", "Panel three"]
+    result = await write([entry("a1", 0, creative_format="carousel", slide_count=3,
+                                source_post_id="p1")], call, trends={"t1": source})
+
+    assert result.copy["a1"].slide_texts == ["Panel one", "", "Panel three"]
     assert result.provenance["a1"].refs["slide_1"] == "P1.panel.1"
-    assert result.provenance["a1"].refs["slide_2"] == "P1.panel.3"
-    assert "slide_3" not in result.provenance["a1"].refs
+    assert result.provenance["a1"].refs["slide_3"] == "P1.panel.3"
+    assert "slide_2" not in result.provenance["a1"].refs, "an empty slot claims nothing"
+    assert [row["source_position"] for row in result.provenance["a1"].panel_map] == [1, 2, 3]
 
 
-async def test_a_ref_naming_another_post_is_re_pointed_at_the_assigned_one_and_logged() -> None:
-    """§1.7.6 assigns the post; the model chooses the STRING. A label naming a post this creative
-    was not given keeps the editorial choice (same kind, same index) and moves it to the assigned
-    post, so the divergence rule holds and the answer is not simply thrown away."""
+async def test_a_ref_naming_another_post_is_re_pointed_at_the_bound_one_and_logged() -> None:
+    """The plan binds the post; the model chooses the STRING. A label naming a post this creative
+    was not given keeps the editorial choice (same kind, same index) and moves it to the bound
+    post, so the no-repeat guarantee holds and the answer is not simply thrown away."""
     log = Recorder()
-    source = topic(post(1, hooks=("First post hook",), caption="First caption."),
-                   post(2, hooks=("Second post hook",), caption="Second caption."))
+    source = topic(post(1, hooks=("First post hook",), caption="First caption, written in full."),
+                   post(2, hooks=("Second post hook",), caption="Second caption, written in full."))
     call = ScriptedCall({"a2": [refs(headline_ref="P1.hook.1", caption_ref="P1.caption")]})
 
-    result = await write([entry("a2", 1, trend_reuse_index=1)], call, trends={"t1": source},
+    result = await write([entry("a2", 1, source_post_id="p2")], call, trends={"t1": source},
                          log=log)
 
-    assert result.copy["a2"].headline == "Second post hook", "re-pointed to the assigned post"
+    assert result.copy["a2"].headline == "Second post hook", "re-pointed to the bound post"
     assert result.provenance["a2"].refs["headline"] == "P2.hook.1"
-    assert result.copy["a2"].caption == "Second caption."
+    assert result.copy["a2"].caption == "Second caption, written in full."
     assert log.warned("copy_ref_out_of_scope")
 
 
 async def test_two_creatives_on_one_topic_quote_two_different_posts() -> None:
     """W5's assertion, at its source: `copy_source_post_id` differs per sibling. Cloned captions
-    across the creatives of one topic are what `trend_reuse_index` exists to prevent."""
-    source = topic(post(1, hooks=("First post hook",), caption="First caption."),
-                   post(2, hooks=("Second post hook",), caption="Second caption."))
+    across the creatives of one topic are what the ASSIGN-time binding prevents — and, unlike the
+    rotation it replaced, each bound post is one the plan checked was fresh (FR-307)."""
+    source = topic(post(1, hooks=("First post hook",), caption="First caption, written in full."),
+                   post(2, hooks=("Second post hook",), caption="Second caption, written in full."))
     call = ScriptedCall({"a1": [refs(headline_ref="P1.hook.1", caption_ref="P1.caption")],
                          "a2": [refs(headline_ref="P2.hook.1", caption_ref="P2.caption")]})
 
-    result = await write([entry("a1", 0, trend_reuse_index=0),
-                          entry("a2", 1, trend_reuse_index=1)], call, trends={"t1": source})
+    result = await write([entry("a1", 0, source_post_id="p1"),
+                          entry("a2", 1, source_post_id="p2")], call, trends={"t1": source})
 
     assert result.provenance["a1"].post_id != result.provenance["a2"].post_id
     assert {result.provenance["a1"].post_id, result.provenance["a2"].post_id} == {"p1", "p2"}
     assert result.copy["a1"].caption != result.copy["a2"].caption
 
 
-def test_the_ref_label_grammar_is_the_pinned_one_and_nothing_else_parses() -> None:
-    """`P<n>.<kind>[.<i>]`, 1-based, five kinds, the two scalars carrying no index (item 10)."""
-    for label in ("P1.hook.2", "P3.panel.1", "P2.caption", "P10.overlay.4", "P1.description"):
+def test_the_ref_label_grammar_is_the_pinned_one_and_description_no_longer_parses() -> None:
+    """FR-302, 1-based, FOUR kinds, the one scalar carrying no index.
+
+    `P1.description` used to parse and used to resolve, and the first paid run captioned a creative
+    with what it resolved to: Virlo's own AI summary, shipped as though a human had written it.
+    FR-303 removes it from the grammar itself rather than from a length filter or a caption list —
+    a label nothing can name is a label nothing can ship, on any path, however the offer table is
+    rebuilt later.
+    """
+    for label in ("P1.hook.2", "P3.panel.1", "P2.caption", "P10.overlay.4"):
         assert copywrite._REF.match(label), label
-    for label in ("hook.1", "P1.headline.1", "P1", "Pone.hook.1", "P1.hook.two", ""):
+    for label in ("P1.description", "P2.description.1", "hook.1", "P1.headline.1", "P1",
+                  "Pone.hook.1", "P1.hook.two", ""):
         assert copywrite._REF.match(label) is None, label
-    assert set(copywrite._KIND_FIELDS) == {"hook", "overlay", "panel", "caption", "description"}
+    assert set(copywrite._KIND_FIELDS) == {"hook", "overlay", "panel", "caption"}
+    assert copywrite._CAPTION_KINDS == ("caption",)
 
 
 # ----------------------------------------------------------- the blocklist and its asymmetry
@@ -509,17 +527,17 @@ async def test_a_failed_carousel_and_reel_both_stay_wordless_on_the_no_call_tier
     and a reel overlay that `reel_director.md` then locks as a fixed graphic layer for the whole
     clip."""
     source = topic(post(1, panels=("Panel one", "Panel two"), hooks=("A hook",),
-                        caption="A caption."))
+                        caption="A caption, written out in full."))
 
-    deck = await write([entry("a1", 0, creative_format="carousel", slide_count=3)], DeadCall(),
-                       trends={"t1": source})
-    reel = await write([entry("a2", 0, creative_format="reel", aspect_ratio="9:16")], DeadCall(),
-                       trends={"t1": source})
+    deck = await write([entry("a1", 0, creative_format="carousel", slide_count=3,
+                              source_post_id="p1")], DeadCall(), trends={"t1": source})
+    reel = await write([entry("a2", 0, creative_format="reel", aspect_ratio="9:16",
+                              source_post_id="p1")], DeadCall(), trends={"t1": source})
 
     assert deck.copy["a1"].slide_texts == [] and deck.copy["a1"].headline == ""
     assert reel.copy["a2"].overlay_text == "" and reel.copy["a2"].headline == ""
     assert "Panel one" not in shipped_strings(deck.copy["a1"])
-    assert deck.copy["a1"].caption == "A caption." == reel.copy["a2"].caption
+    assert deck.copy["a1"].caption == "A caption, written out in full." == reel.copy["a2"].caption
 
 
 async def test_the_no_call_tier_strips_the_blocklist_from_the_caption_it_ships() -> None:
@@ -559,27 +577,86 @@ def _offer(plan_entry: PlanEntry, source: TrendItem, meta: MetaStyle | None = No
                                                              entries=[plan_entry]), run)
 
 
-def test_virlos_own_summary_is_caption_material_and_never_on_image_material() -> None:
+async def test_virlos_own_summary_is_now_banned_from_every_output_not_merely_from_the_frame() -> None:
     """`SourcePost.description` is the ONE field that is not the creator's words — Virlo's
     `intelligence` block writes it (`virlo._source_post`'s table says so in as many words, and
-    names `copywrite` as the module that must enforce the distinction). It is legitimate CONTEXT
-    and legitimately verbatim *from Virlo*, but burning an AI paraphrase into a frame as though a
-    human wrote it is the one quote this engine must not make.
+    names `copywrite` as the module that must enforce the distinction).
 
-    History: this test shipped `xfail(strict=True)` at the W2 barrier because `_offer_for` applied
-    the F23 rejection rules and the budget filter to every numbered field alike, so a SHORT
-    `description` was offerable as a headline. T2.2's route-back fixed it at the source
-    (`copywrite._NEVER_ON_IMAGE`, consulted before `_fitting_slots`) and the marker was removed
-    with it — strict=True existed precisely so it could not outlive the defect.
+    History, in two reversals. It was a CAPTION candidate and never an on-image one: legitimate
+    context, legitimately verbatim *from Virlo*, and burning an AI paraphrase into a frame as
+    though a human wrote it was the one quote this engine would not make. Then the first paid run
+    captioned a creative with it, and the operator saw a machine's summary of a post presented as
+    the post's own voice. FR-303 (D46) closes it completely: the summary is fenced CONTEXT and
+    nothing else. It is enforced at the grammar (FR-302 dropped the kind), so there is no offer
+    table, no caption list and no fallback tier through which it can reach an output.
+
+    The post here has NOTHING else to caption with — the summary is the only long string on it —
+    so if any path could still reach it, this is the run where it would show.
     """
-    source = topic(post(1, hooks=("A real hook",), caption="A real caption.",
-                        description="Virlo says the post is about pricing."))
+    source = topic(post(1, hooks=("A real hook",), caption=" ",  # blank, not defaulted
+                        description="Virlo says the post is mostly about pricing pages."))
+    call = ScriptedCall({"a1": [refs(headline_ref="P1.hook.1", caption_ref="P1.description")]})
 
     offer = _offer(entry(), source)
+    result = await write([entry()], call, trends={"t1": source})
+    degraded = await write([entry("a2")], DeadCall(), trends={"t1": source})
 
-    assert "P1.description" in [c.label for c in offer.captions], "still a caption candidate"
+    assert [c.label for c in offer.captions] == [], "not a caption candidate any more"
     assert "P1.description" not in [c.label for c in offer.onimage]
-    assert "Virlo says" not in " ".join(c.text for c in offer.onimage)
+    assert "Virlo says" not in " ".join(c.text for c in offer.onimage + offer.captions)
+    assert "Virlo says" not in shipped_strings(result.copy["a1"]), "not through a ref"
+    assert "Virlo says" not in shipped_strings(degraded.copy["a2"]), "not through the degrade tier"
+    assert result.copy["a1"].caption.startswith("AI tool stacks"), "our own assembled caption"
+
+
+async def test_a_caption_of_hashtags_and_three_words_is_not_a_caption(
+) -> None:
+    """D46 §0.7, the operator-settled floor: a caption is a caption only when at least 25
+    non-hashtag characters survive the trailing-tag split. Six of the eight creatives in the first
+    paid run shipped a tag dump as their caption, which is what the source posts actually carried
+    under the picture — so the engine now falls back to the assembled caption (topic name plus the
+    standing niche line) instead, exactly as it does when a post has no caption at all.
+
+    The two captions below differ by ONE character — a full stop — and that is the whole boundary:
+    24 non-hashtag characters is a tag dump, 25 is a caption.
+    """
+    thin = topic(post(1, hooks=("A real hook",),
+                      caption="Everything changed today #ai #saas #growth"))
+    just_enough = topic(post(1, hooks=("A real hook",),
+                             caption="Everything changed today. #ai #saas #growth"))
+
+    assert copywrite._caption_substance("Everything changed today #ai #saas #growth") == 24
+    assert copywrite._caption_substance("Everything changed today. #ai #saas #growth") == 25
+    assert copywrite._caption_substance("#ai #saas #growth") == 0, "tags alone measure nothing"
+    assert copywrite._CAPTION_MIN_CHARS == 25
+
+    log = Recorder()
+    spam = await write([entry()], ScriptedCall({"a1": [refs(caption_ref="P1.caption")]}),
+                       trends={"t1": thin}, log=log)
+    real = await write([entry()], ScriptedCall({"a1": [refs(caption_ref="P1.caption")]}),
+                       trends={"t1": just_enough})
+
+    assert spam.copy["a1"].caption == f"AI tool stacks — {NICHE}"
+    assert spam.copy["a1"].hashtags == [], "we did not adopt the tag dump either"
+    assert spam.provenance["a1"].refs == {}, "our own words claim no provenance"
+    assert log.warned("copy_caption_unavailable")
+    assert "25 non-hashtag characters" in log.warned("copy_caption_unavailable")[0]
+    assert real.copy["a1"].caption == "Everything changed today."
+    assert real.copy["a1"].hashtags == ["#ai", "#saas", "#growth"]
+
+
+async def test_the_substance_floor_applies_to_the_no_call_tier_too() -> None:
+    """The degrade tier is the one path with no model in it to screen anything, so a hashtag-spam
+    caption would otherwise ship there unchallenged — on the very path where nobody chose it.
+    Under the floor it falls through to FR-99's own "minimal assembled caption"."""
+    source = topic(post(1, views=900, caption="Wild results  #ai #saas #growth #startup"))
+
+    result = await write([entry()], DeadCall(), trends={"t1": source})
+
+    assert result.copy["a1"].caption == f"AI tool stacks — {NICHE}"
+    assert result.provenance["a1"].refs == {} and result.provenance["a1"].post_id == ""
+    assert set(result.tags["a1"]) == {DegradationTag.COPY_DEGRADED,
+                                      DegradationTag.NO_ONIMAGE_TEXT}
 
 
 def test_an_emoji_handle_url_or_hashtag_string_is_never_offered_as_on_image_text() -> None:
@@ -600,12 +677,12 @@ def test_an_emoji_handle_url_or_hashtag_string_is_never_offered_as_on_image_text
 def test_a_captions_trailing_hashtags_are_never_offered_inside_the_frame() -> None:
     """The peeled tags travel in `hashtags[]` for the publisher; the caption BODY is what a
     headline could quote, and the untouched string carrying the tags is refused outright."""
-    source = topic(post(1, caption="Short caption body #ai #saas"))
+    source = topic(post(1, caption="A caption body long enough to be one #ai #saas"))
 
     offer = _offer(entry(), source)
 
     assert offer.onimage == [], "the raw caption carries hashtags, so no slot may hold it"
-    assert offer.captions[0].text == "Short caption body"
+    assert offer.captions[0].text == "A caption body long enough to be one"
     assert offer.captions[0].hashtags == ("#ai", "#saas")
 
 

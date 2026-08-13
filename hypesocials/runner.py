@@ -159,6 +159,13 @@ class _Session:
     #: to copywrite, and the SAME mapping rides `generate.Env` so LLM-discovered brands reach every
     #: render prompt's `competitor_strings`, not only the CopySet (Session-C obligation 2).
     strip_brands: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    #: FR-307: the burnt post-id union read before Collect — the fetch gate consumes it there,
+    #: and `_write` hands the SAME set to copywrite's pick-time guard (belt-and-braces; one
+    #: read, two enforcement points, zero drift).
+    used_post_ids: frozenset[str] = frozenset()
+    #: FR-306: `post_id -> SlideIntel` from the INTEL stage — `_write` derives `merged_panels`
+    #: from it and `_create` rides it onto `generate.Env.slide_intel` for the per-slide briefs.
+    slide_intel: dict[str, Any] = field(default_factory=dict)
 
     def say(self, text: str) -> None:
         """Print one operator-facing block and put the identical (redacted) text in run.log."""
@@ -381,7 +388,8 @@ async def _pipeline(session: _Session, overrides: Sequence[str]) -> int:
     trends = await _collect(session, fetch_trends=not brief_only)
     verdicts = await _screen_topics(session, trends) if trends else {}
     if trends:  # FR-297a: the sort proof, once, right after FILTER — previews share this block
-        session.say(_topics_table(trends, verdicts))
+        session.say(_topics_table(trends, verdicts,
+                                 window_days=session.config.sources.max_post_age_days))
     # A filter `skip` never reaches Select: the topic is dropped here, before any render spend,
     # and the table row + FILTER detail line above are its whole story (§1.5).
     kept = [topic for ordinal, topic in enumerate(trends, start=1)
@@ -408,6 +416,7 @@ async def _pipeline(session: _Session, overrides: Sequence[str]) -> int:
             topics_limit=None if session.verbose else _DETAIL_TRENDS,
             posts_limit=None if session.verbose else _DETAIL_TRENDS))
     _store_references(session, live)
+    await _slide_intel(session, live, by_key)  # FR-306: post-Confirm, before COPY
     copy_result = await _write(session, live, by_key, session.strip_brands)
     report, attached = await _create(session, resolved.entries, live, by_key, copy_result)
 
@@ -594,9 +603,16 @@ async def _collect(session: _Session, *, fetch_trends: bool = True) -> sources.T
     window = session.config.run.trend_history_days
     fresh_against = {post for posts in used_posts(read_history(LOGS_DIR, session.log),
                                                   within_days=window).values() for post in posts}
+    session.used_post_ids = frozenset(fresh_against)  # FR-307: one read, two enforcement points
     session.virlo_contacted = "virlo" in session.config.sources.active
     monitors = len([m for m in session.config.sources.virlo_monitor_ids if str(m).strip()])
-    _stage(session, "COLLECT", f"collecting trends from {monitors} monitor(s)", opening=True)
+    # FR-296 (v2.1.0): the header states the recency window in force, so a stale-looking topic
+    # list is arguable from the console alone — `0` prints as `off` because an operator who
+    # disabled the cap should read that back, not a zero that looks like a bug.
+    age = session.config.sources.max_post_age_days
+    descriptor = f"window <={age}d" if age else "window off"
+    _stage(session, "COLLECT",
+           f"collecting trends from {monitors} monitor(s) ({descriptor})", opening=True)
     try:
         trends = await sources.fetch(session.config, log=session.log,
                                      used_posts=fresh_against, say=session.say)
@@ -771,6 +787,11 @@ async def _write(session: _Session, live: Sequence[PlanEntry], trends: dict[str,
                            for entry in live},
         competitors=tuple(config.branding.competitors),  # §1.5 layer 1, fail-closed
         strip_brands=dict(strip_brands),  # the filter's guarded LLM strips (M6)
+        # FR-306/FR-307 (D46): the INTEL stage's merged per-slide readings (post_id-keyed —
+        # siblings on one post see one reading) and the burnt set for the pick-time guard.
+        merged_panels={pid: list(intel.panel_texts)
+                       for pid, intel in session.slide_intel.items()} or None,
+        burnt_post_ids=sorted(session.used_post_ids),
         progress=progress,
         niche_descriptor=config.niche.as_text(), log=session.log), heartbeat, suppress_s=10.0)
     session.log.event("copy_complete", f"copy for {len(result.copy)} creative(s)",
@@ -782,6 +803,71 @@ async def _write(session: _Session, live: Sequence[PlanEntry], trends: dict[str,
            f"{groups} call(s) -> {len(result.copy)} creative(s) quoted verbatim",
            elapsed_s=watch.elapsed_s)
     return result
+
+
+async def _slide_intel(session: _Session, live: Sequence[PlanEntry],
+                       by_key: Mapping[str, TrendItem]) -> None:
+    """INTEL (FR-306, D46): read every bound source deck ONCE — download, transcribe, brief.
+
+    Post-Confirm by construction (this runs after the gate), before COPY by necessity (the
+    vision transcription fills panel slots the offer needs). One deck = one analysis call;
+    siblings quoting the same post share the reading. The $0 path (`vision_transcribe: false`
+    or no LLM) still downloads the slides — the FR-309 gallery shows the source deck either
+    way. Results land on `session.slide_intel`, and the operator sees one line per deck: how
+    many slides, whose words (Virlo vs vision), how many briefs and brand marks, and what it
+    cost — the D45 posture that every AI step prints its result, not just its happening.
+
+    No stage-list guard here, deliberately: previews run this pass with an EMPTY stage list
+    (their headers no-op through `_stage` per D19, the per-deck lines still print), and on a
+    paid run every shape that removes INTEL from the list also leaves `bound` empty — no
+    carousels means no bound post, brief-only means no topic at all.
+    """
+    bound: dict[str, Any] = {}
+    for entry in live:
+        if (entry.creative_format == "carousel" and entry.source_post_id
+                and entry.brief_influence != "override"):
+            topic = by_key.get(entry.trend_key or "")
+            post = next((p for p in getattr(topic, "posts", ())
+                         if str(p.post_id) == entry.source_post_id), None)
+            if post is not None:
+                bound.setdefault(str(post.post_id), post)
+    watch = Stopwatch()
+    _stage(session, "INTEL",
+           f"{len(bound)} source deck(s) to read (analysis-only)", opening=True)
+    if _halt(session, "slide intelligence") or not bound:
+        _stage(session, "INTEL", f"{len(bound)} deck(s) -> 0 read", elapsed_s=watch.elapsed_s)
+        return
+    call = (_metered(session)
+            if session.config.sources.vision_transcribe and session.llm is not None else None)
+    intels = await _with_pulse(
+        session,
+        sources.slide_intel.enrich(list(bound.values()), run_dir=session.run_dir, call=call,
+                                   engine=session.engine, cfg=session.config, log=session.log),
+        lambda: f"          reading {len(bound)} source deck(s) ... {_dur(watch.elapsed_s)}",
+        suppress_s=10.0)
+    session.slide_intel = dict(intels)
+    lines, read = [], 0
+    for post_id, intel in intels.items():
+        slides = list(getattr(intel, "slides", ()))
+        virlo = sum(1 for s in slides if getattr(s, "text_source", "") == "virlo")
+        vision = sum(1 for s in slides
+                     if getattr(s, "text_source", "") == "vision_transcribed")
+        briefs = sum(1 for s in slides if str(getattr(s, "visual_brief", "")).strip())
+        marks = sum(len(getattr(s, "brand_marks", ()) or ()) for s in slides)
+        status = str(getattr(intel, "status", ""))
+        read += status == "ok"
+        note = "" if status == "ok" else f"  [{status}]"
+        lines.append(f"  {post_id[:12]:<12} {len(slides)} slide(s): {virlo} virlo + "
+                     f"{vision} vision, {briefs} brief(s), {marks} mark(s), "
+                     f"{_money(float(getattr(intel, 'cost_usd', 0.0) or 0.0))}{note}")
+    if lines:
+        session.say("\n".join(lines))
+    session.log.event(
+        "slide_intel_complete", f"{read}/{len(bound)} source deck(s) read",
+        duration_ms=watch.elapsed_ms,
+        decks={pid: str(getattr(intel, "status", "")) for pid, intel in intels.items()})
+    _stage(session, "INTEL", f"{len(bound)} deck(s) -> {read} read, "
+                             f"{len(bound) - read} degraded", elapsed_s=watch.elapsed_s)
 
 
 async def _with_pulse(session: _Session, awaitable: Any, line: Any, *,
@@ -859,6 +945,7 @@ async def _create(session: _Session, entries: Sequence[PlanEntry], live: Sequenc
         campaign_briefs=session.campaign_briefs,
         styles=session.registry, branding=session.config.branding,  # FR-290/292
         strip_brands=dict(session.strip_brands),  # M6: LLM-discovered brands reach every prompt
+        slide_intel=dict(session.slide_intel),  # FR-306/308: per-slide briefs for the deck
         llm_call=_metered(session) if checking else None,
         stop=session.control.stop, deadline=session.deadline,
         say=session.say, pulse=session.pulse, heartbeat_s=session.pulse.interval_s,
@@ -985,8 +1072,8 @@ async def _package(session: _Session, entries: Sequence[PlanEntry], plan_estimat
 
 #: FR-296's stage vocabulary, in pipeline order. The LIVE list is computed per run by
 #: `_live_stages()` — `[n/N]` is derived from it and is never hardcoded anywhere.
-_STAGE_ORDER = ("COLLECT", "TOPICS", "FILTER", "SELECT", "ASSIGN", "COPY", "RENDER", "CHECK",
-                "DONE")
+_STAGE_ORDER = ("COLLECT", "TOPICS", "FILTER", "SELECT", "ASSIGN", "INTEL", "COPY", "RENDER",
+                "CHECK", "DONE")
 
 
 def _live_stages(config: Config, *, brief_only: bool) -> list[str]:
@@ -1001,6 +1088,12 @@ def _live_stages(config: Config, *, brief_only: bool) -> list[str]:
         stages = [s for s in stages if s not in ("COLLECT", "TOPICS", "FILTER", "SELECT")]
     if not config.run.vision_check:
         stages = [s for s in stages if s != "CHECK"]
+    # FR-306: INTEL exists only when a source deck could be read — a brief-only plan binds no
+    # post, and a plan with no carousels has no deck. `vision_transcribe: false` KEEPS the
+    # stage: the $0 path still downloads the source slides for the gallery (FR-309), and a
+    # stage that silently vanished would hide that work from the [n/N] arithmetic.
+    if brief_only or not config.run.formats.get("carousel", 0):
+        stages = [s for s in stages if s != "INTEL"]
     return stages
 
 
@@ -1039,12 +1132,16 @@ def _stage(session: _Session, stage: str, body: str, *,
         return
     position, total = session.stages.index(stage) + 1, len(session.stages)
     tag = f"[{position}/{total}]"
+    # FR-286: 78 columns TOTAL. The body width flexes with the tag — a ten-stage run's tag is
+    # two characters wider than a nine-stage run's, and a fixed 53 was one character of silent
+    # overflow away the day INTEL made the stage count double-digit.
+    width = 78 - len(tag) - 1 - 8 - 2 - 8  # tag + space + stage column + gutter + elapsed
     if opening:
         session.stage_watch.reset()
-        session.say(f"{tag} {stage:<8}  {fit(body, 53)} ...")
+        session.say(f"{tag} {stage:<8}  {fit(body, width)} ...")
         return
     right = "-" if elapsed_s is None else _dur(elapsed_s)
-    session.say(f"{tag} {stage:<8}  {fit(body, 53):<53}{right:>8}")
+    session.say(f"{tag} {stage:<8}  {fit(body, width):<{width}}{right:>8}")
     session.log.event("stage_complete", f"{stage}: {body}", stage=stage, position=position,
                       total=total,
                       elapsed_s=None if elapsed_s is None else round(elapsed_s, 3))
@@ -1074,7 +1171,8 @@ def _verdict_cell(verdict: topic_filter.Verdict | None) -> str:
 
 
 def _topics_table(topics: Sequence[TrendItem],
-                  verdicts: Mapping[int, topic_filter.Verdict]) -> str:
+                  verdicts: Mapping[int, topic_filter.Verdict],
+                  window_days: int = 0) -> str:
     """FR-297a — ALL topics, one line each, strongest first: the visible sort proof.
 
     The monotonically non-increasing `strn` column IS the proof; the caption states the strength
@@ -1095,6 +1193,11 @@ def _topics_table(topics: Sequence[TrendItem],
         f"  strength = {weights['total_views']:.2f} views + {weights['median_views']:.2f} median"
         f" + {weights['velocity']:.2f} velocity + {weights['engagement']:.2f} engage,",
         f"  min-maxed across all {len(topics)} topics; every figure is that topic's own posts",
+        # FR-297a (v2.1.0): the caption names the recency window in force, because every
+        # views/median figure above is computed over the WINDOWED survivors (FR-301/305) and a
+        # reader comparing against Virlo's all-time UI numbers must see why they differ.
+        (f"  counted over posts <={window_days}d old (sources.max_post_age_days)"
+         if window_days else "  counted with the post-age window off"),
         f"{'rk':>5}  {'topic':<22}  {'mon':>3} {'posts':>6} {'views':>8} {'median':>8}  "
         f"{'strn':<5}  verdict",
     ]
@@ -1550,10 +1653,21 @@ def _funnel_block(counters: sources.Counters) -> str:
     if tally.posts_raw == 0:
         lines += _funnel_row("input", "Virlo returned no video and no slideshow — "
                                       "no topic material")
+        # The drop rows still print (zeros included) — with the videos ask disabled, the row
+        # that says "not called" is exactly what distinguishes an empty monitor from an
+        # unasked one (FR-305/FR-307, v2.1.0; wording owned by the adapter's `drop_rows`).
+        for label, clauses in tally.drop_rows():
+            lines += _funnel_row(label, *clauses)
     else:
         lines += _funnel_row(
             "input", f"{tally.videos_raw} video(s) + {tally.slideshows_raw} slideshow(s)",
             f"{tally.duplicates_dropped} duplicate row(s) dropped")
+        # FR-305/FR-307 gate losses sit between input and topics because that is where they
+        # happen: rows are judged after the dedupe and before the split, so `topics`' posts_in
+        # already counts only survivors. Words come from `Counters.drop_rows` (FR-155 one-place
+        # rule); this block owns only the 78-column packing.
+        for label, clauses in tally.drop_rows():
+            lines += _funnel_row(label, *clauses)
         lines += _funnel_row(
             "topics", f"{tally.posts_in} post(s) split into {tally.topics_out} topic(s)",
             f"{tally.topics_synthesized} synthesized")

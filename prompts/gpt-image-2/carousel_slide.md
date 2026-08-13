@@ -30,6 +30,15 @@ STYLE_DNA (identical on every slide of this deck — reproduce it exactly):
 SLIDE CONTENT:
   {{render_prompt}}
 
+  SOURCE PANEL (ignore if empty): {{slide_panel_source}}
+  VISUAL BRIEF (ignore if empty): {{visual_brief}}
+  When present, the visual brief describes WHAT this slide shows — a chart, an
+  icon grid, a numbered list, a diagram — mirrored from the stated source
+  panel. Reproduce that CONTENT, composed entirely in STYLE_DNA's own palette,
+  typography and treatment: the brief never overrides the style, never names a
+  colour or typeface to copy, and any brand mark it mentions is rendered as a
+  generic shape of its kind, never as the real logo.
+
   BRIEF OVERLAY: {{brief_directives}}
 
 TEXT (locked asset — this slide's exact content):

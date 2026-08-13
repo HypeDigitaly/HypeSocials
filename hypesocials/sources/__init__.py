@@ -29,7 +29,12 @@ from typing import TYPE_CHECKING
 
 from hypesocials.config import Config
 from hypesocials.sources import virlo as _virlo
+# FR-306 (D46): the slide-intelligence module is part of this facade — the runner's INTEL
+# stage calls `sources.slide_intel.enrich(...)`, and `SlideIntel` is the result type consumers
+# hold. The module import (not just the names) keeps `sources.slide_intel.STATUS_*` reachable.
+from hypesocials.sources import slide_intel
 from hypesocials.sources.notion import BrandContext, apply_brand_overrides, fetch_brand_context
+from hypesocials.sources.slide_intel import SlideIntel
 from hypesocials.sources.virlo import Counters, TrendFeed, list_monitors
 #: FR-297a: the topics table's caption states the strength formula by READING the adapter's own
 #: weights — one definition, so the printed sentence can never drift from the scoring code.
@@ -95,6 +100,6 @@ async def fetch(
 
 
 __all__ = [
-    "SOURCE_STATUS", "STRENGTH_WEIGHTS", "BrandContext", "Counters", "TrendFeed",
-    "apply_brand_overrides", "fetch", "fetch_brand_context", "list_monitors",
+    "SOURCE_STATUS", "STRENGTH_WEIGHTS", "BrandContext", "Counters", "SlideIntel", "TrendFeed",
+    "apply_brand_overrides", "fetch", "fetch_brand_context", "list_monitors", "slide_intel",
 ]

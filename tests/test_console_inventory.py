@@ -180,7 +180,8 @@ def record(item: PlanEntry, source: TrendItem | None = None, *, cost: float = 0.
 
 def test_fr296_the_stage_list_is_computed_from_the_resolved_plan_never_hardcoded() -> None:
     """A brief-only plan consumes no topic and `vision_check: false` runs no check, so the two
-    ordinary shapes below have 4 and 8 stages. A denominator typed at a call site is wrong in both.
+    ordinary shapes below have 4 and 9 stages (the v2.1.0 default plan is all-carousels, so
+    INTEL is live — FR-306). A denominator typed at a call site is wrong in both.
     """
     config = Config()
     config.run.vision_check = False
@@ -188,9 +189,14 @@ def test_fr296_the_stage_list_is_computed_from_the_resolved_plan_never_hardcoded
     brief_only = runner._live_stages(config, brief_only=True)
     config.run.vision_check = True
     checked = runner._live_stages(config, brief_only=False)
+    config.run.formats = {"image": 2, "carousel": 0, "reel": 0}
+    config.sources.include_videos = True  # §0.14e: images need the videos ask
+    no_decks = runner._live_stages(config, brief_only=False)
 
-    assert full == ["COLLECT", "TOPICS", "FILTER", "SELECT", "ASSIGN", "COPY", "RENDER", "DONE"]
-    assert len(full) == 8 and len(checked) == 9 and "CHECK" in checked
+    assert full == ["COLLECT", "TOPICS", "FILTER", "SELECT", "ASSIGN", "INTEL", "COPY",
+                    "RENDER", "DONE"]
+    assert len(full) == 9 and len(checked) == 10 and "CHECK" in checked
+    assert "INTEL" not in no_decks, "a plan with no carousels has no source deck to read"
     assert brief_only == ["ASSIGN", "COPY", "RENDER", "DONE"], \
         "a pure-override plan has no Collect, no Topics, no Filter and no Select (10 §10)"
     assert all(stage in runner._STAGE_ORDER for stage in checked)
@@ -207,7 +213,7 @@ def test_fr296_no_stage_counter_is_written_as_a_literal_anywhere() -> None:
     assert "session.stages.index(stage)" in inspect.getsource(runner._stage)
 
 
-@pytest.mark.parametrize("vision,total,position", [(False, 8, 3), (True, 9, 3)])
+@pytest.mark.parametrize("vision,total,position", [(False, 9, 3), (True, 10, 3)])
 def test_fr296_a_closing_header_reads_position_stage_body_and_elapsed(
     vision: bool, total: int, position: int, capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -817,7 +823,7 @@ def test_fr296_filter_prints_one_line_per_NON_keep_and_keeps_go_to_the_log(
     skips = [line for line in lines if line.strip().startswith("skip")]
     assert len(strips) == 1 and '"Cursor", "Lovable"' in strips[0]
     assert len(skips) == 1 and "PROMO: post sells n8n Cloud" in skips[0]
-    assert lines[0].startswith("[3/8] FILTER") and lines[0].endswith("...")
+    assert lines[0].startswith("[3/9] FILTER") and lines[0].endswith("...")
     assert "4 topic(s) -> 2 keep, 1 strip, 1 skip" in lines[1]
     assert live.strip_brands == {topics[1].history_key: ("Cursor", "Lovable")}, \
         "M6: the LLM's strips ride to the copy AND render paths, keyed by trend_key"

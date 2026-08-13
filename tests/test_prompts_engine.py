@@ -220,7 +220,9 @@ def test_the_allowlist_table_is_the_pinned_final_one() -> None:
         "branding_block"})
     assert pe.allowlist("carousel_slide.md") == frozenset({
         "slide_index", "style_dna", "render_prompt", "onimage_text", "reference_roles",
-        "exclusions", "text_budgets", "brief_directives", "niche_visual_world", "branding_block"})
+        "exclusions", "text_budgets", "brief_directives", "niche_visual_world", "branding_block",
+        "visual_brief", "slide_panel_source"})  # D46: the two panel-mapping slots (FR-304/308)
+    assert pe.allowlist("slide_intel_question.md") == frozenset()
     assert pe.allowlist("reel_seed_frame.md") == frozenset({
         "render_prompt", "layout_zones", "onimage_text", "reference_roles", "exclusions",
         "text_budgets", "brief_directives", "niche_visual_world", "branding_block"})
@@ -232,9 +234,10 @@ def test_the_allowlist_table_is_the_pinned_final_one() -> None:
         "text_budgets", "platform_conventions", "brief_directives"})
     assert pe.allowlist("carousel_anchor_instruction.md") == frozenset()
     assert pe.allowlist("vision_check_question.md") == frozenset()
-    # And the table holds exactly the eight shipped roles — the W3.5 excision left no
-    # transitional rows behind.
-    assert len(pe._ALLOWLIST) == 8
+    # And the table holds exactly the nine shipped roles — the W3.5 excision left no
+    # transitional rows behind, and D46 added exactly one (the slide-intelligence question,
+    # FR-306).
+    assert len(pe._ALLOWLIST) == 9
 
 
 def test_the_competitor_screens_two_slots_are_allowlisted_for_that_role_and_nowhere_else() -> None:

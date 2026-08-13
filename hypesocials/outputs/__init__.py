@@ -47,6 +47,7 @@ from hypesocials.outputs.packager import (
     PUBLISH_LIST,
     PUBLISHED_MARKER,
     SELECTED_MARKER,
+    SOURCE_DIR,
     AssetFolder,
     PackagingError,
     clear_marker,
@@ -56,7 +57,9 @@ from hypesocials.outputs.packager import (
     read_meta,
     save_reference,
     set_marker,
+    store_source,
     update_meta,
+    write_source_yaml,
 )
 
 __all__ = [
@@ -73,6 +76,9 @@ __all__ = [
     "PUBLISHED_MARKER",
     "PUBLISH_ATTEMPTED_MARKER",
     "PUBLISH_LIST",
+    "SOURCE_DIR",
+    "store_source",
+    "write_source_yaml",
     "SELECTED_MARKER",
     "clear_marker",
     "close_downloads",

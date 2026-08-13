@@ -49,6 +49,30 @@ class DegradationTag(str, Enum):
     # check, so the style shipped as text-only (its prose still steers the render, its pictures do
     # not). A warning at pre-flight, never an error: a style without its files is still a style.
     STYLE_REFS_MISSING = "style_refs_missing"
+    # --- D46 / v2.1.0 (FR-73's amended vocabulary, four new spellings) ---
+    # FR-306 — the slide-intelligence pass supplied on-image text Virlo had not transcribed: at
+    # least one of this deck's slides carries the VISION reading of the source panel rather than
+    # Virlo's own `panel_texts[i]`. Still verbatim (it is the words that were on that slide) and
+    # still position-preserving; the tag says which reading the operator is looking at, because a
+    # transcription can misread a glyph in a way a Virlo panel cannot.
+    VISION_TRANSCRIBED = "vision_transcribed"
+    # FR-306 — the vision call failed, timed out or had nothing readable to send, so the deck kept
+    # the Virlo panels it already had and rendered without visual briefs. Fail-open by contract
+    # (§0.14c): a source deck we could not read is never a reason to lose a creative the operator
+    # has already approved spending on.
+    VISION_UNAVAILABLE = "vision_unavailable"
+    # FR-304/§0.4′ — the source deck was LONGER than the platform's carousel ceiling, so only its
+    # first N panels were rendered. Indices are preserved (slide i is still source panel i); what
+    # is lost is the tail, and the tag is what tells the operator the deck they see is a prefix of
+    # the deck that was analysed. Emitted by `generate/carousel.py` against `source_panel_count`.
+    PANELS_TRUNCATED = "panels_truncated"
+    # FR-307/§0.10 — no unused source post was left for this creative. Emitted in two places, both
+    # meaning the same thing: `plan.assign` skips a creative group outright when a topic's fresh
+    # slideshow posts are exhausted, and `copywrite` refuses (belt-and-braces behind the fetch
+    # gate) when the post the plan bound turns out to be burnt after all — that creative still
+    # ships, with our own assembled caption and no on-image text. Famine over silent repeats: a
+    # post an earlier run quoted is never quoted again, and no neighbour is substituted for it.
+    NO_FRESH_POST_AVAILABLE = "no_fresh_post_available"
     REFERENCE_FREE = "reference_free"  # FR-18
     REFS_DROPPED_MODERATION = "refs_dropped_moderation"  # FR-97
     TEXT_TRIMMED = "text_trimmed"  # FR-101
@@ -222,11 +246,26 @@ class PlanEntry:
     trend_key: str | None = None  # assigned trend's history_key; None for override briefs (FR-144)
     # §1.6's rotation index, re-scoped by the pivot: this creative's 0-based position among the
     # creatives sharing its topic, set by `plan.assign` from the `use_index` it already counts.
-    # It picks WHICH `SourcePost` this sibling quotes (`posts[i % len]`, copywrite) AND turns the
-    # style reference window (`styles.pick_reference_window`) — sibling divergence on one topic
-    # is this one number. Every member of an atomic group shares one value: a carousel's slides
-    # must quote one post. 0 for override briefs, which quote nothing at all.
+    # It turns the style reference window (`styles.pick_reference_window`) — sibling divergence on
+    # one topic is this one number. Every member of an atomic group shares one value: a carousel's
+    # slides must quote one post. 0 for override briefs, which quote nothing at all.
+    #
+    # **DEPRECATED as a post picker (v2.1.0, D46 §0.10).** It used to ALSO choose which
+    # `SourcePost` a sibling quoted (`posts[i % len(posts)]`), and that modulo is what let a topic
+    # with one fresh post re-quote yesterday's exact post: a rotation over a list cannot know which
+    # of its members are burnt. `source_post_id` below replaces it — the plan binds a specific
+    # fresh post at ASSIGN and `copywrite` quotes THAT one. The field itself survives because
+    # `generate/refs.py` and `styles.pick_reference_window` still turn on it (retired in W3).
     trend_reuse_index: int = 0
+    # FR-304/FR-307 (v2.1.0) — the post this creative quotes, bound at ASSIGN by `plan.assign`
+    # from the topic's FRESH posts (never a post `trend_history` records as used). It is the whole
+    # no-repeat guarantee at pick time: a stable post id, chosen once, carried through copy
+    # (`copywrite._offer_for` builds the candidate table from THIS post and refuses a burnt one),
+    # provenance (`meta.yaml.copy_source_post_id`) and history. `None` is the legacy/unbound shape
+    # — override briefs, which quote nothing, and any entry a caller built before ASSIGN ran.
+    # A carousel additionally binds a SLIDESHOW post with ≥2 usable panel slots (§0.14a), because
+    # FR-304 renders our slide *i* from that post's panel *i*.
+    source_post_id: str | None = None
     # --- style + branding assignment (v2.0.0, FR-290/291/292) ---
     # Written by `styles.assign_styles` / `styles.assign_branding` right after `plan.assign`, both
     # pure functions of `order` over the registry: the style this creative renders in, and whether
@@ -309,10 +348,17 @@ class CopySelection:
     The split from `CopySet` is the whole point of FR-99/100: the model CHOOSES (a label), the
     engine RESOLVES (the bytes). A model that answers with prose can drift, translate or invent;
     a model that answers with `P1.hook.2` cannot, and the resolution step can never fail the
-    verbatim check because it copies from the source it is checked against. Ref-label grammar:
-    `P<n>.<kind>[.<i>]` — `n` = 1-based post ordinal in the topic's view-ranked `posts`, `kind` ∈
-    {hook, overlay, panel, caption, description}, `i` = 1-based index into that post's list field
-    (`caption`/`description` are scalars and carry none). E.g. `P1.hook.2`, `P3.panel.1`.
+    verbatim check because it copies from the source it is checked against. Ref-label grammar
+    (FR-302, v2.1.0): `P<n>.<kind>[.<i>]` — `n` = 1-based post ordinal in the topic's view-ranked
+    `posts`, `kind` ∈ {panel, overlay, hook, caption}, `i` = 1-based index into that post's list
+    field (`caption` is a scalar and carries none). E.g. `P1.hook.2`, `P3.panel.1`. A `panel`
+    index is a SOURCE SLIDE POSITION and is position-preserving. `description` is NOT a kind:
+    Virlo's AI summary is fenced context only and is never offered, quoted or rendered (FR-303).
+
+    `slide_refs` is answered only by a carousel that bound no source post. A carousel bound to a
+    slideshow post has its slides mapped deterministically by the engine (source panel i → slide i,
+    FR-304), so the model chooses that deck's cover headline, caption and hashtags and leaves
+    `slide_refs` empty; anything it returns there is ignored and logged.
     """
 
     asset_id: str
@@ -376,6 +422,30 @@ class AssetRecord:
     # Empty for override briefs and degrade paths — there was nothing quoted.
     copy_source_post_id: str = ""
     copy_source_refs: dict[str, str] = field(default_factory=dict)
+    # FR-73 (v2.1.0) — the slideshow receipt, beside the refs it explains. `copy_source_post_id`
+    # says WHICH post; these three say what that post WAS and how its deck maps onto ours, which is
+    # what FR-309's three-part gallery card needs to lay the source strip beside our slides.
+    #
+    # `source_post` is nested provenance of the bound post — `{post_id, url, author, views,
+    # published_at, caption}` with ISO strings, never `datetime` objects, because meta.yaml is a
+    # plain YAML document a human reads and a Phase-2 publisher parses. `None` when nothing was
+    # bound: an override-brief carousel (§0.14d), an image, a reel, a degrade path.
+    #
+    # `source_panel_count` is the SOURCE deck's own length (not ours) — the number the gallery
+    # needs to say "their 7 slides, our 5" and the number `panels_truncated` is measured against.
+    # 0 on every non-carousel and on override briefs.
+    #
+    # `panel_map` is one row per OUR slide, in slide order and position-preserving:
+    # `{slide, source_position, source_text, ref_label, visual_brief, source_image}`. The first
+    # four are the copy stage's (`copywrite.CopyProvenance.panel_map`), the last two are joined in
+    # by `generate.__init__._record()` from the slide-intelligence result (FR-306/FR-308). A slide
+    # whose source panel was empty, unusable or over budget keeps its row with an empty
+    # `source_text` and an empty `ref_label` — the row is the alignment, so dropping it would
+    # silently re-map slide 3's words onto slide 2, which is exactly the defect FR-304 exists to
+    # prevent. Empty list for override-brief carousels and for everything that is not a deck.
+    source_post: dict | None = None
+    source_panel_count: int = 0
+    panel_map: list = field(default_factory=list)
     degradations: list[DegradationTag] = field(default_factory=list)
     brief_name: str | None = None  # --- brief overrides (D26) ---
     brief_influence_mode: InfluenceMode | None = None
@@ -578,9 +648,12 @@ class BriefLoader(Protocol):
 #: FR-181 two-level template layout, level 1: the three GLOBAL role templates sit FLAT in
 #: `prompts/`. They belong to the OpenRouter roles, not to any render profile, and exist once.
 GLOBAL_TEMPLATES: tuple[str, ...] = (
-    # Final post-pivot trio (W3.5, contracts item 4): the copywriter, the vision check and the
-    # FR-294 topic filter — the style-brief role died with the analyze stage.
+    # Post-pivot trio (W3.5, contracts item 4) — the copywriter, the vision check and the
+    # FR-294 topic filter — plus D46's slide-intelligence question (FR-306, v2.1.0), which is
+    # global for the same reason the vision check is: it belongs to the analysis role, not to
+    # any render profile, and must read identically for every post it is asked about.
     "copywriter_system.md", "vision_check_question.md", "topic_filter_system.md",
+    "slide_intel_question.md",
 )
 
 #: Level 2: per-profile render sets under `prompts/<profile>/` (FR-181/262). A new profile ships
@@ -619,6 +692,12 @@ PLACEHOLDERS: frozenset[str] = frozenset(
         "reference_roles",  # one engine-emitted line per attached reference: index · source kind ·
         #   contribution · exclusions (FR-191/91) — carries the RESULTS.md §B wordmark defense
         # A15 steering fix (2026-08-11):
+        # D46 (v2.1.0) slideshow-fidelity slots — carousel_slide.md only (FR-304/FR-308):
+        "visual_brief",  # the slide's English content directive from slide intelligence (FR-306):
+        #   WHAT the source slide shows (chart, icon grid, numbered list), rendered in OUR style —
+        #   never a style command, never competitor marks (§0.12). Empty when vision degraded.
+        "slide_panel_source",  # the FR-304 position line — "source panel i of N" — so the model
+        #   knows this slide mirrors one specific slide of the source deck, not a free layout.
         "niche_visual_world",  # `niche.visual_world` ALONE — the operator's standing art direction
         #   in the only shape a render prompt may carry it. Deliberately NOT `niche_descriptor`,
         #   which also carries `audience`: copy-side context must not leak into a render prompt,

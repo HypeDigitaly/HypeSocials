@@ -213,7 +213,7 @@ def test_the_healthy_block_names_every_surviving_stage_and_reads_as_designed() -
     block = runner._funnel_block(healthy())
 
     assert block.splitlines()[0].startswith("Virlo funnel")
-    assert labels(block) == ["input", "topics", "filter", "verdict", "render"]
+    assert labels(block) == ["input", "dropped", "dropped", "dropped", "videos", "topics", "filter", "verdict", "render"]
     # Conductor fix for the FR-286 header overflow: `total_available` prints in FR-297's
     # compact form (2,674 -> 2.7K) and the clauses join on `·` — the raw figure stays in the
     # `collect_funnel` event.
@@ -224,7 +224,9 @@ def test_the_healthy_block_names_every_surviving_stage_and_reads_as_designed() -
     assert "6 eligible, 2 excluded by history, 1 unusable" in block
     assert "6 job(s) will attach 2 style ref(s) each" in block
     assert "3 style(s) over 3 topic(s)" in block
-    assert len(block.splitlines()) == 6, "one block, six lines — no wrapping at this scale"
+    assert len(block.splitlines()) == 10, (
+        "one block, ten lines — six stage rows plus the four always-printed gate rows "
+        "(FR-305/307), no wrapping at this scale")
 
 
 def test_the_media_rows_died_with_the_media_funnel() -> None:
@@ -243,7 +245,7 @@ def test_the_media_rows_died_with_the_media_funnel() -> None:
 
     block = runner._funnel_block(tally)
 
-    assert labels(block) == ["input", "topics", "filter", "verdict", "render"]
+    assert labels(block) == ["input", "dropped", "dropped", "dropped", "videos", "topics", "filter", "verdict", "render"]
     for dead in ("set(s)", "coherent", "motion", "downloaded", "dead URL", "text-only",
                  "inspiration", "trend ref"):
         assert dead not in block, f"a withdrawn media clause reached the funnel: {dead!r}"
@@ -272,7 +274,9 @@ def test_a_run_where_virlo_returned_nothing_says_so_in_words() -> None:
     console_safe(rows_of(block))
     assert "Virlo returned no video and no slideshow" in block
     assert "0 video(s)" not in block and "duplicate row(s) dropped" not in block
-    assert labels(block) == ["input"], "no topics/filter/verdict rows for material never collected"
+    assert labels(block) == ["input", "dropped", "dropped", "dropped", "videos"], (
+        "no topics/filter/verdict rows for material never collected; the gate rows still "
+        "print so 'not called' is distinguishable from 'nothing found' (FR-305/307)")
     assert "3 monitor(s) asked" in block and "3 failed" in block
 
 
@@ -316,7 +320,7 @@ def test_increment_b_scale_wraps_onto_continuation_lines_rather_than_overflowing
 
     console_safe(rows_of(block))
     assert continuations(block), "the packer overflowed instead of wrapping"
-    assert labels(block) == ["input", "topics", "filter", "verdict", "render"], \
+    assert labels(block) == ["input", "dropped", "dropped", "dropped", "videos", "topics", "filter", "verdict", "render"], \
         "22 monitors still produce ONE block with one row per stage"
     # A wrapped clause stays whole: no continuation line starts mid-number or mid-word.
     for line in continuations(block):

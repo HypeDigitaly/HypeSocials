@@ -69,6 +69,7 @@ from hypesocials.runner import (
     _record_style_forecast,
     _screen_topics,
     _select,
+    _slide_intel,
     _topics_table,
     _write,
 )
@@ -165,7 +166,8 @@ async def _shallow_stages(session: runner._Session, trends: Sequence[TrendItem])
     session.counters.record_selection(eligible=len(selection.eligible),
                                       excluded=len(selection.excluded),
                                       unusable=len(selection.unusable))
-    if table := _topics_table(list(trends), verdicts):  # empty only when Collect returned nothing
+    if table := _topics_table(list(trends), verdicts,
+                              window_days=config.sources.max_post_age_days):  # empty only when Collect returned nothing
         session.say(table)
         session.say(_BLOCKLIST_NOTE)
     session.say(_funnel_block(session.counters))
@@ -205,7 +207,8 @@ async def _deep_stages(session: runner._Session, trends: Sequence[TrendItem],
     styles.assign_branding(live, config.branding.brand_ratio)
     _record_style_forecast(session, live, registry, dropped=len(assignment.dropped))
 
-    if table := _topics_table(list(trends), verdicts):
+    if table := _topics_table(list(trends), verdicts,
+                              window_days=config.sources.max_post_age_days):
         session.say(table)
     if roster := _post_roster(list(trends), verdicts, live,
                               topics_limit=None, posts_limit=None):
@@ -216,6 +219,13 @@ async def _deep_stages(session: runner._Session, trends: Sequence[TrendItem],
     # on the session (that mapping also rides `generate.Env` on a paid run); passing it back in is
     # the pinned `_write` contract, and re-deriving it here would be a second implementation of
     # the same turn, free to disagree with the first.
+    # FR-306 on the preview tier: the INTEL pass runs here too — this preview exists to show
+    # what a paid run would quote, and post-D46 that includes the vision-merged panel texts and
+    # per-deck reading lines. The stage HEADERS stay silent (previews set no stage list, D19);
+    # the per-deck result lines print through `say` like every other preview block. Costed LLM
+    # spend, exactly like the copy call this mode already makes (FR-140).
+    session.stages = []  # explicit: headers off, D19 — the say-lines below still print
+    await _slide_intel(session, live, by_key)
     copy_result = await _write(session, live, by_key, session.strip_brands)
     session.say(_copy_block(copy_result, live))
     session.say(_funnel_block(session.counters))

@@ -11,6 +11,12 @@ module never prices a job, never touches `env.budget` and never calls `render.ru
 Public API: `render_carousel(entry, env, folder, *, submit) -> AssetRecord` · `Submit`.
 
 Invariants:
+- **The deck is the SOURCE deck** (FR-304/§0.4′, v2.1.0). Its length was fixed at ASSIGN from the
+  bound slideshow post's panel count — clamped to the platform ceiling, priced at the Confirm gate
+  — and this module renders exactly that many slides, mapping our slide *i* onto their panel *i*.
+  Copy no longer decides the length, and a panel that carried no words renders WITHOUT on-image
+  text: the pre-D46 fallback repeated the headline into every unwritten slot, which turned a
+  source deck's empty panel into a second printing of slide 1's line.
 - **The anchor is checked BEFORE slides 2–N are submitted** (FR-105/95). Slide 1 is a chained
   artifact — every other slide copies it — so a garbled headline found afterwards is found N
   renders too late. Its single re-render is discretionary (FR-106c); a declined or failed retry
@@ -44,16 +50,21 @@ at runtime — that package imports this module.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from hypesocials import render, vision_check
 from hypesocials.models import (
     AssetRecord, CopySet, DegradationTag, MetaStyle, PlanEntry, PlanEntryStatus, RenderFailCause,
-    RenderOutcome, RenderOutcomeKind, RenderParams, RenderPriority, RenderRefs, VisionCheckResult,
+    RenderOutcome, RenderOutcomeKind, RenderParams, RenderPriority, RenderRefs, SourcePost,
+    VisionCheckResult,
 )
 from hypesocials.outputs import AssetFolder, PackagingError
+# `plan.py` owns the source-deck arithmetic (it is the stage that fixed this deck's length), so the
+# truncation test below asks it rather than re-deriving "how long was the source deck" here — two
+# implementations of that question are two decks that can disagree about which panels shipped.
+from hypesocials.plan import source_panel_count
 from hypesocials.generate.refs import (
     Reference, attach, branding_block, role_lines, style_of, wordmark,
 )
@@ -86,6 +97,12 @@ _CREDITS = "kie_credits_exhausted — top up your Kie.ai credits (FR-167)"
 _SEVERITY = (VisionCheckResult.RETRIED_FAILED, VisionCheckResult.RETRIED_PASSED,
              VisionCheckResult.PASSED)
 _FALLBACK_SLIDES = 5
+#: FR-73's `panels_truncated` (§0.4′): the source deck was longer than the platform ceiling, so it
+#: ships as its first N panels with the indices preserved. Resolved off `DegradationTag` when that
+#: enum carries the member and spelled literally until then — `models.py` belongs to another task
+#: this wave, `AssetFolder.mark` stores whatever it is given, and `DegradationTag` is a `str` enum,
+#: so the bytes in `meta.yaml` are identical either way.
+PANELS_TRUNCATED = getattr(DegradationTag, "PANELS_TRUNCATED", "panels_truncated")
 
 
 class Submit(Protocol):
@@ -142,16 +159,17 @@ class _Deck:
     abandoned: bool = False
 
     def __post_init__(self) -> None:
-        # FR-95/257: config is the ceiling AND the estimate basis; the topic's own pacing may only
-        # reduce it, so a surprisingly long source deck can never outrun the pre-flight estimate.
+        # FR-304/§0.4′: the deck's length was decided at ASSIGN from the bound source post's panel
+        # count and is what the Confirm gate priced, so it is READ here, never re-derived. Copy no
+        # longer shortens a deck: a source panel with no words is a wordless slide, not an absent
+        # one, because slide i must stay aligned with source panel i (FR-302's position-preserving
+        # grammar) and a deck that silently lost its middle would misalign every slide after it.
         copyset = self.copy
-        ceiling = (self.entry.slide_count
-                   or self.env.config.platform(self.entry.platform).carousel_slides
-                   or _FALLBACK_SLIDES)
         written = list(copyset.slide_texts) if copyset else []
-        count = max(1, min(ceiling, len(written) or ceiling))
-        fallback = copyset.headline if copyset else ""
-        self.texts = [written[i] if i < len(written) else fallback for i in range(count)]
+        # No headline fallback (D46): an unwritten slot renders wordless through the existing
+        # no-text path. Repeating slide 1's line into it made a stutter the verbatim contract had
+        # no opinion about, and it was the single most visible defect in the run that produced D46.
+        self.texts = [written[i] if i < len(written) else "" for i in range(self._length())]
         # The look is ASSIGNED now, not re-derived per trend (FR-290/291): one registry entry for
         # the whole deck, so `style_dna` is a pure function of that entry and every slide of this
         # deck carries the same bytes (FR-189/M9) without anyone caching anything.
@@ -164,6 +182,7 @@ class _Deck:
 
     async def build(self) -> None:
         """Anchor, check, deck — or the independent-slide fallback when the anchor never lands."""
+        self._mark_truncation()
         self.attached = await attach(self.entry, self.env, self.folder)
         self.anchored = bool(self.env.config.run.carousel_anchor)
         if self.anchored:
@@ -183,6 +202,27 @@ class _Deck:
         # both are PRE-COMMITTED wave-2 work — never discretionary (FR-106b, plan §2 T4.3).
         await self._burst(range(1, len(self.texts) + 1))
         await self._check(sorted(self.delivered), RenderPriority.WAVE2)
+
+    def _mark_truncation(self) -> None:
+        """FR-304/FR-257: say so when the source deck was longer than this platform's ceiling.
+
+        The cut itself happened at ASSIGN (`plan.deck_length` kept the first N panels, indices
+        preserved); what is owed here is the honest label on the artifact — the operator comparing
+        our deck with the source in the gallery must be able to see that panels 6..N were never
+        ordered, rather than reading it as slides that failed to render.
+        """
+        post = self.source_post
+        panels = source_panel_count(post) if post is not None else 0
+        if post is None or panels <= len(self.texts):
+            return
+        self.folder.mark(PANELS_TRUNCATED)
+        self.env.log.warn(
+            "carousel_panels_truncated",
+            f"{self.entry.asset_id}: source post {post.post_id} has {panels} panels and this "
+            f"platform's ceiling is {len(self.texts)} — source panels "
+            f"{len(self.texts) + 1}–{panels} are not rendered (FR-304/FR-257)",
+            asset_id=self.entry.asset_id, source_post_id=post.post_id, source_panels=panels,
+            slides=len(self.texts))
 
     async def _burst(self, numbers: range) -> None:
         """Every remaining slide at once — inside a wave nothing waits for a sibling (FR-25)."""
@@ -235,7 +275,8 @@ class _Deck:
     ) -> RenderOutcome | None:
         """The one door to `submit`: tally every outcome, apply FR-97, swallow the 402 (FR-167)."""
         outcome = await self._submit(prompt, urls, kind=kind, priority=priority,
-                                     label=f"carousel slide {number}/{self.entry.slide_count}"
+                                     label=f"carousel slide {number}/{len(self.texts)}"
+                                           f"{self._panel_note(number)}"
                                            f" · {self.entry.asset_id}")
         if (outcome is None or outcome.kind is RenderOutcomeKind.SUCCESS
                 or outcome.fail_cause is not RenderFailCause.MODERATION or not urls):
@@ -334,6 +375,14 @@ class _Deck:
         """One slide's finished prompt, or `None` when it cannot be filled (FR-260)."""
         env = self.env
         copyset = plan.copy if plan is not None else self.copy
+        text = plan.slide_text if plan is not None else self.texts[number - 1]
+        if copyset is not None and not text.strip():
+            # FR-304: a wordless source panel renders wordless. `prompts_engine._onimage_text`
+            # falls back to `copy.headline` when a carousel slide's text is empty (`slide_text or
+            # headline`) — the last repeat path left in the deck — so this slide's context gets a
+            # headline-free copy of the CopySet. A local blanking, not a mutation: the deck's own
+            # copy is what the caption, the retry plan and every other slide still read.
+            copyset = replace(copyset, headline="")
         urls = [ref.url for ref in refs]
         try:
             roles = role_lines(refs)  # FR-191: one line per attachment, by provenance
@@ -367,7 +416,11 @@ class _Deck:
                 budget_scale=plan.budget_scale if plan is not None else 1.0,
                 reference_roles=roles,
                 slide_index=f"{number} of {len(self.texts)}",  # 50 §6's fill convention
-                slide_text=plan.slide_text if plan is not None else self.texts[number - 1])
+                slide_text=text,
+                # D46 (FR-304/FR-308): the two panel-mapping slots — both empty for unbound or
+                # brief-driven decks, and the template's "(ignore if empty)" lines stay silent.
+                visual_brief=self._visual_brief(number),
+                slide_panel_source=self._panel_source_line(number))
             context["style_dna"] = self.dna  # FR-189: the one block that never varies
             context["render_prompt"] = self._guided(context["render_prompt"], number)
             prompt = env.engine.render(ROLE_SLIDE, context,
@@ -379,8 +432,12 @@ class _Deck:
             return None
         if plan is not None:  # FR-193: the retry repeats the preserve list and adds one line
             prompt = f"{prompt}\n\n{plan.instruction}"
-        env.log.event("render_prompt_assembled", f"{self.entry.asset_id} slide {number} ready",
+        env.log.event("render_prompt_assembled",
+                      f"{self.entry.asset_id} slide {number}/{len(self.texts)}"
+                      f"{self._panel_note(number)} ready",
                       verbose_only=True, asset_id=self.entry.asset_id, slide=number,
+                      source_panel=number if self.source_post is not None else None,
+                      onimage_text=bool(text.strip()),
                       references=len(urls), retry=plan is not None, prompt=prompt)
         return prompt
 
@@ -451,6 +508,62 @@ class _Deck:
         return self.env.copy.get(self.entry.asset_id)
 
     @property
+    def source_post(self) -> SourcePost | None:
+        """The slideshow post this deck was bound to at ASSIGN (FR-304), or None.
+
+        None on two legitimate paths: an override brief binds no post at all (§0.14d), and a topic
+        that is no longer in `env.trends` — a plan resurrected from a previous run's meta, say —
+        leaves the join unresolved. Both mean the same thing here: no source deck to compare
+        against, so no panel wording and no truncation tag.
+        """
+        post_id = str(self.entry.source_post_id or "")
+        trend = self.env.trends.get(self.entry.trend_key or "") if post_id else None
+        return next((post for post in getattr(trend, "posts", ()) or ()
+                     if str(post.post_id) == post_id), None)
+
+    def _length(self) -> int:
+        """This deck's slide count — `entry.slide_count` under the platform ceiling (FR-95/§0.4′).
+
+        ASSIGN already clamped it; the ceiling is re-applied here because generation may never
+        outrun the number the Confirm gate priced, whatever wrote the entry. `_FALLBACK_SLIDES`
+        covers a platform config that names no ceiling at all.
+        """
+        ceiling = (self.env.config.platform(self.entry.platform).carousel_slides
+                   or _FALLBACK_SLIDES)
+        return max(1, min(int(self.entry.slide_count or ceiling), ceiling))
+
+    def _panel_note(self, number: int) -> str:
+        """` (source panel i)` for a panel-mapped deck, `""` for a brief-driven one (FR-302).
+
+        Slide *i* renders source panel *i* — the mapping is positional and never renumbered — so
+        the label states the source position rather than a lookup nobody can verify from the log.
+        """
+        return f" (source panel {number})" if self.source_post is not None else ""
+
+    def _intel(self) -> Any:
+        """This deck's FR-306 slide intelligence, or `None` — duck-typed off the Env like every
+        optional seam here, so a caller without the field (previews, older tests) renders the
+        deck exactly as before, briefs simply absent."""
+        if self.source_post is None:
+            return None
+        return getattr(self.env, "slide_intel", {}).get(self.entry.source_post_id or "")
+
+    def _visual_brief(self, number: int) -> str:
+        """FR-308: the slide's English content directive, `""` whenever intelligence degraded —
+        the `(ignore if empty)` line in the template makes the absence silent by design."""
+        intel = self._intel()
+        slide = intel.slide(number) if intel is not None else None
+        return str(getattr(slide, "visual_brief", "") or "")
+
+    def _panel_source_line(self, number: int) -> str:
+        """FR-304's position line — `source panel i of N` — only for a panel-mapped deck."""
+        post = self.source_post
+        if post is None:
+            return ""
+        width = int(getattr(post, "panel_count", 0) or 0) or len(self.texts)
+        return f"source panel {number} of {width}"
+
+    @property
     def _checking(self) -> bool:
         """FR-27: the check runs only when it is on AND a metered LLM call exists to make it."""
         return bool(self.env.config.run.vision_check) and self.env.llm_call is not None
@@ -487,5 +600,5 @@ class _Deck:
         return False
 
 
-__all__ = ["GUIDANCE_COVER", "GUIDANCE_SLIDE", "ROLE_ANCHOR", "ROLE_SLIDE", "ReserveKind",
-           "Submit", "render_carousel"]
+__all__ = ["GUIDANCE_COVER", "GUIDANCE_SLIDE", "PANELS_TRUNCATED", "ROLE_ANCHOR", "ROLE_SLIDE",
+           "ReserveKind", "Submit", "render_carousel"]

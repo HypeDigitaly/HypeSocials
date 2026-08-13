@@ -4,11 +4,14 @@ Post-pivot (v2.0.0) this module does not write words: it NUMBERS the source post
 asks the model for LABELS, and resolves those labels back to bytes (§1.7). So the surface worth
 pinning changed completely, and this file follows it:
 
-* `_offer_for` — which post a creative may quote (`posts[trend_reuse_index % len(posts)]`, the
-  engine's decision, §1.7.6) and which of its strings are offerable at all;
+* `_offer_for` — which post a creative may quote (`entry.source_post_id`, bound at ASSIGN by
+  `plan.assign` from the topic's FRESH posts, FR-304/FR-307; the old
+  `posts[trend_reuse_index % len(posts)]` rotation survives for unbound entries alone and is
+  deprecated) and which of its strings are offerable at all;
 * `_slot_budgets` — the character ceiling actually in force, the TIGHTER of the meta-style's
-  `max_onimage_chars` and FR-101's config budgets, with the reel's overlay borrowing the style's
-  `headline` key because the registry vocabulary has no reel slot;
+  `max_onimage_chars` and FR-101's config budgets, with the slide carrying its own
+  `text_budgets.slide` (D46 §0.5) and the reel's overlay borrowing the style's `headline` key
+  because the registry vocabulary has no reel slot;
 * `_selection_schema` / `_free_text_schema` — the two answer shapes, generated from the
   dataclasses rather than hand-listed, so a field added to `CopySelection` reaches the wire;
 * grouping and FR-99's split-then-fallback tiers, which are unchanged in shape and changed in
@@ -133,6 +136,19 @@ def context(**overrides: Any) -> dict[str, Any]:
     return base
 
 
+class Recorder:
+    """The `LogWriter` surface `copywrite` touches — enough to assert WHICH warning fired."""
+
+    def __init__(self) -> None:
+        self.warnings: list[tuple[str, str, dict[str, Any]]] = []
+
+    def warn(self, event: str, message: str = "", /, **data: Any) -> None:
+        self.warnings.append((event, message, data))
+
+    def warned(self, event: str) -> list[str]:
+        return [message for name, message, _ in self.warnings if name == event]
+
+
 def _offer(plan_entry: PlanEntry, trend: TrendItem | None = None,
            style: MetaStyle | None = None, **run_kwargs: Any) -> copywrite._Offer:
     """`_offer_for` with the run/group scaffolding a caller would otherwise have to build."""
@@ -141,7 +157,10 @@ def _offer(plan_entry: PlanEntry, trend: TrendItem | None = None,
                          styles={STYLE_KEY: style or make_style()}, conventions={},
                          onimage_languages={}, niche_descriptor="", brand_context="",
                          competitors=tuple(run_kwargs.pop("competitors", ())),
-                         strip_brands=run_kwargs.pop("strip_brands", {}), log=None)
+                         strip_brands=run_kwargs.pop("strip_brands", {}),
+                         merged_panels=run_kwargs.pop("merged_panels", {}),
+                         burnt_posts=frozenset(run_kwargs.pop("burnt_post_ids", ())),
+                         log=run_kwargs.pop("log", None))
     group = copywrite._Group(trend=trend if trend is not None else make_trend(),
                              campaign_brief=None, entries=[plan_entry])
     return copywrite._offer_for(plan_entry, group, run)
@@ -164,14 +183,14 @@ async def test_one_call_per_topic_and_language_pair() -> None:
 async def test_two_creatives_on_one_topic_share_one_call_and_quote_different_posts() -> None:
     """Post-pivot there is one line per ENTRY — no pair representative, no cloned `CopySet`.
 
-    §1.7.6 gives creative *k* `posts[trend_reuse_index % len(posts)]`, so two creatives on one
-    topic are two different quotes of two different posts. That is the whole reason the reuse
-    index survived the pivot, and it is what makes a second creative on a strong topic worth
-    rendering at all.
+    D46 binds the post at ASSIGN (`entry.source_post_id`), so two creatives on one topic are two
+    different quotes of two different posts — and, unlike the rotation this replaced, each of them
+    is a post the plan verified was FRESH. That is what makes a second creative on a strong topic
+    worth rendering at all.
     """
     trend = make_trend(post(1, views=900, caption="First post caption, plainly written."),
                        post(2, views=800, caption="Second post caption, plainly written."))
-    entries = [entry("a1", 0, trend_reuse_index=0), entry("a2", 1, trend_reuse_index=1)]
+    entries = [entry("a1", 0, source_post_id="p1"), entry("a2", 1, source_post_id="p2")]
     call = StubCall({"a1": selection(caption_ref="P1.caption"),
                      "a2": selection(caption_ref="P2.caption")})
 
@@ -225,44 +244,126 @@ async def test_a_partial_group_response_only_splits_the_missing_creatives() -> N
 # ------------------------------------------------------------------ `_offer_for`: the candidates
 
 
-def test_a_creative_is_offered_its_assigned_posts_strings_and_nobody_elses() -> None:
+def test_a_creative_is_offered_its_bound_posts_strings_and_nobody_elses() -> None:
     """The divergence rule enforced in the TABLE, not only in the resolver: the model is never
     shown a string it is not allowed to pick, so "both creatives quoted the best post" is not an
     answer it can express."""
-    trend = make_trend(post(1, views=900, hooks=("First hook",), caption="First caption here."),
-                       post(2, views=800, hooks=("Second hook",), caption="Second caption here."))
+    trend = make_trend(
+        post(1, views=900, hooks=("First hook",), caption="First caption, written out in full."),
+        post(2, views=800, hooks=("Second hook",), caption="Second caption, written out in full."))
 
-    second = _offer(entry("a2", 1, trend_reuse_index=1), trend)
+    second = _offer(entry("a2", 1, source_post_id="p2"), trend)
 
     assert second.post is not None and second.post.post_id == "p2"
+    assert second.bound, "the plan bound it; nothing here rotated to it"
     assert second.post_ordinal == 2, "labels stay TOPIC-global, so the second post is P2"
-    # The short caption is offerable as a headline as well as a caption — with DIFFERENT bytes on
-    # each side, which is why `_Offer` keeps the two tables apart.
+    # The caption is offerable as a headline as well as a caption — with DIFFERENT bytes on each
+    # side, which is why `_Offer` keeps the two tables apart.
     assert [c.label for c in second.onimage] == ["P2.hook.1", "P2.caption"]
     assert second.onimage[0].text == "Second hook"
     assert all("P1." not in c.label for c in second.onimage + second.captions)
     assert all("First" not in c.text for c in second.onimage + second.captions)
 
 
+def test_the_bound_post_id_beats_the_rotation_and_the_rotation_is_only_the_legacy_path() -> None:
+    """FR-304/FR-307, the pick half. The modulo could not know which posts an earlier run had
+    already spent — that is how the first paid run re-quoted a post from 2023 — so the plan now
+    binds a specific FRESH post id and this module looks it up. The rotation survives for the
+    entries nothing binds (images and reels, until W3 retires the field with `generate/refs.py`),
+    and it must not be able to override a binding: here the two disagree on purpose.
+    """
+    trend = make_trend(post(1, hooks=("First hook",), caption="First caption, written in full."),
+                       post(2, hooks=("Second hook",), caption="Second caption, written in full."),
+                       post(3, hooks=("Third hook",), caption="Third caption, written in full."))
+
+    bound = _offer(entry("a1", 0, source_post_id="p3", trend_reuse_index=1), trend)
+    unbound = _offer(entry("a2", 1, trend_reuse_index=1), trend)
+
+    assert bound.post is not None and bound.post.post_id == "p3", "the binding wins outright"
+    assert bound.post_ordinal == 3 and bound.bound
+    assert unbound.post is not None and unbound.post.post_id == "p2", "the legacy rotation"
+    assert not unbound.bound, "an unbound pick never claims FR-304's mapping"
+
+
+def test_a_burnt_bound_post_is_refused_rather_than_swapped_for_a_neighbour() -> None:
+    """FR-307/§0.10's belt-and-braces at the pick, behind the fetch gate that already dropped used
+    posts. A post an earlier run quoted may not be quoted again — and the remedy is refusal, not
+    substitution: swapping in P2 would leave `copy_source_post_id`, the panel map and
+    `trend_history` naming three different posts, and the operator chose famine over silent
+    repeats. The creative still ships: assembled caption, wordless frame."""
+    log = Recorder()
+    trend = make_trend(post(1, hooks=("First hook",), caption="First caption, written in full."),
+                       post(2, hooks=("Second hook",), caption="Second caption, written in full."))
+
+    refused = _offer(entry("a1", 0, source_post_id="p1"), trend, burnt_post_ids=("p1",), log=log)
+
+    assert refused.refused == "no_fresh_post_available", "FR-73's own vocabulary"
+    assert refused.post is None and refused.onimage == [] and refused.captions == []
+    assert log.warned("copy_bound_post_burnt")
+
+
+async def test_a_creative_whose_bound_post_is_burnt_ships_our_words_and_costs_no_call() -> None:
+    """The whole-run shape of the same refusal. It is NOT `copy_degraded` — no model call failed,
+    and counting it as an FR-248 `llm_starved` loss would blame the LLM for a plan that bound a
+    spent post. It is not the P1 fallback either: P1 may BE the burnt post."""
+    trend = make_trend(post(1, hooks=("First hook",),
+                            caption="A caption long enough to be a caption."))
+    call = StubCall({"a1": selection()})
+
+    result = await copywrite.write_copy(
+        [entry("a1", 0, source_post_id="p1")], call=call, burnt_post_ids=["p1"],
+        niche_descriptor="AI automation for Czech SMBs", **context(trends={"t1": trend}))
+
+    copyset = result.copy["a1"]
+    assert call.calls == [], "nothing was asked, so nothing was spent"
+    assert copyset.headline == "" and copyset.slide_texts == []
+    assert copyset.caption == "AI tool stacks — AI automation for Czech SMBs"
+    assert "First hook" not in copyset.caption
+    # FR-73's amended vocabulary, and deliberately the SAME word `plan.assign` uses when it skips
+    # a creative group for the same condition: the operator reads one spelling whichever gate
+    # caught the exhausted supply.
+    assert set(result.tags["a1"]) == {DegradationTag.NO_ONIMAGE_TEXT,
+                                      DegradationTag.NO_FRESH_POST_AVAILABLE}
+    assert not result.degraded, "a refusal is not a failed copy call"
+    assert result.provenance["a1"].post_id == "", "nothing was quoted, so nothing is claimed"
+
+
+def test_a_bound_post_the_topic_no_longer_carries_is_refused_too() -> None:
+    """The other half of the binding check. A re-fetch between ASSIGN and COPY, or a mis-keyed
+    topic, must not silently make the deck somebody else's."""
+    log = Recorder()
+    trend = make_trend(post(1, caption="A caption long enough to count as a caption."))
+
+    refused = _offer(entry("a1", 0, source_post_id="p9"), trend, log=log)
+
+    assert refused.refused == "bound_post_missing"
+    assert refused.post is None
+    assert log.warned("copy_bound_post_missing")
+
+
 def test_the_ref_labels_number_every_quotable_field_in_the_grammars_own_order() -> None:
-    """`P<n>.<kind>[.<i>]` (contracts item 10): hooks, overlays and panels are 1-indexed lists,
-    `caption` and `description` are scalars and carry no index. The order is the grammar's own, so
-    two runs' prompts diff meaningfully."""
+    """FR-302's grammar and FR-100's offer PRIORITY: panels, then overlays, then hooks, then the
+    caption. The order is a reversal (it used to lead with hooks) and it is the fix for what the
+    first paid run shipped — the words ON the slides are the material, so they are what the model
+    reads first. `caption` is a scalar and carries no index; `description` is not in the grammar at
+    all any more (FR-303).
+    """
     single = make_trend(post(1, hooks=("Hook A", "Hook B"), overlays=("Overlay A",),
-                             panels=("Panel A", "Panel B"), caption="A caption.",
+                             panels=("Panel A", "Panel B"),
+                             caption="A caption long enough to be a caption at all.",
                              description="Virlo's own summary."))
 
     offer = _offer(entry("a1", 0), single)
 
     assert [kind for kind, _text, _index in copywrite._numbered_fields(single.posts[0])] == [
-        "hook", "hook", "overlay", "panel", "panel", "caption", "description"]
-    # `description` is Virlo's own summary rather than the creator's words, so it is numbered and
-    # quotable as a CAPTION and never offered as pixels (`copywrite._NEVER_ON_IMAGE`; the rule is
-    # stated in `virlo._source_post`'s field table and owned by `copywrite`). Its own test is
-    # `test_copy_verbatim_filter.py::test_virlos_own_summary_is_caption_material_...`.
+        "panel", "panel", "overlay", "hook", "hook", "caption"]
     assert [c.label for c in offer.onimage] == [
-        "P1.hook.1", "P1.hook.2", "P1.overlay.1", "P1.panel.1", "P1.panel.2", "P1.caption"]
-    assert [c.label for c in offer.captions] == ["P1.caption", "P1.description"]
+        "P1.panel.1", "P1.panel.2", "P1.overlay.1", "P1.hook.1", "P1.hook.2", "P1.caption"]
+    assert [c.label for c in offer.captions] == ["P1.caption"]
+    # FR-303 at the grammar rather than at a filter: nothing can NAME the summary, so nothing can
+    # resolve it. Its own tests are in `test_copy_verbatim_filter.py`.
+    assert "Virlo's own summary." not in [c.text for c in offer.onimage + offer.captions]
+    assert copywrite._REF.match("P1.description") is None
 
 
 def test_only_the_slots_this_format_renders_are_offered() -> None:
@@ -345,6 +446,220 @@ def test_a_topic_with_no_posts_offers_nothing_and_falls_to_the_free_text_path() 
     assert (empty.onimage, empty.captions, empty.haystack) == ([], [], ())
 
 
+# --------------------------------------------------- FR-304: the deck the engine maps itself
+
+
+def deck_style(**overrides: Any) -> MetaStyle:
+    """A style whose slide cap is wide enough for real panels (D46 §0.5 raises the registry)."""
+    return make_style(max_onimage_chars={"headline": 90, "subline": 60, "slide": 300}, **overrides)
+
+
+def deck_entry(asset_id: str = "d1", *, slides: int = 4, **overrides: Any) -> PlanEntry:
+    """A carousel bound to post p1, the shape `plan.assign` produces post-D46."""
+    return entry(asset_id, 0, creative_format="carousel", aspect_ratio="1:1",
+                 slide_count=slides, source_post_id="p1", **overrides)
+
+
+async def test_a_bound_decks_slides_are_mapped_from_the_source_panels_position_for_position() -> None:
+    """FR-304, the whole rule in one assertion: OUR slide *i* renders THEIR panel *i*, verbatim,
+    and the model is not in the loop. It chooses the cover headline, the caption and the hashtags;
+    the deck is arithmetic.
+
+    The empty middle slot is the point. Compacting it would put panel 4's words on slide 3 and
+    ship a deck that reads as the source's with two slides swapped — which is precisely the defect
+    the index-aligned `panel_texts` contract (§0.14a) exists to make impossible.
+    """
+    trend = make_trend(post(1, hooks=("A cover hook",),
+                            panels=("Panel one line", "Panel two line", "",
+                                    "Panel four line"),
+                            caption="A caption long enough to be a caption at all."))
+    call = StubCall({"d1": selection(headline_ref="P1.hook.1", caption_ref="P1.caption",
+                                     slide_refs=[])})
+
+    result = await copywrite.write_copy([deck_entry()], call=call, **context(
+        trends={"t1": trend}, styles={STYLE_KEY: deck_style()}))
+
+    copyset, provenance = result.copy["d1"], result.provenance["d1"]
+    assert copyset.slide_texts == ["Panel one line", "Panel two line", "", "Panel four line"]
+    assert copyset.headline == "A cover hook", "the LLM still chooses the cover"
+    assert provenance.refs["slide_1"] == "P1.panel.1"
+    assert provenance.refs["slide_4"] == "P1.panel.4", "slide 4 quotes panel 4, not panel 3"
+    assert "slide_3" not in provenance.refs, "an empty panel quotes nothing and claims nothing"
+    assert provenance.source_panel_count == 4
+    assert provenance.panel_map == [
+        {"slide": 1, "source_position": 1, "source_text": "Panel one line",
+         "ref_label": "P1.panel.1"},
+        {"slide": 2, "source_position": 2, "source_text": "Panel two line",
+         "ref_label": "P1.panel.2"},
+        {"slide": 3, "source_position": 3, "source_text": "", "ref_label": ""},
+        {"slide": 4, "source_position": 4, "source_text": "Panel four line",
+         "ref_label": "P1.panel.4"},
+    ], "one row per OUR slide, empty ones included — the row IS the alignment (FR-309)"
+
+
+async def test_the_merged_vision_panels_are_what_a_mapped_deck_quotes() -> None:
+    """The T2.3 seam, asserted: `write_copy(merged_panels={post_id: [...]})` is where slide
+    intelligence's reading of the deck arrives (FR-306 — Virlo's panel where it has one, the vision
+    transcription of that slide where it does not). Keyed by POST, because the merge is a property
+    of the source deck and two siblings bound to one post must see one reading of it."""
+    trend = make_trend(post(1, panels=("Virlo had this one", "", ""),
+                            caption="A caption long enough to be a caption at all."))
+    call = StubCall({"d1": selection(headline_ref="", caption_ref="P1.caption")})
+
+    result = await copywrite.write_copy(
+        [deck_entry(slides=3)], call=call,
+        merged_panels={"p1": ["Virlo had this one", "Vision read this one", ""]},
+        **context(trends={"t1": trend}, styles={STYLE_KEY: deck_style()}))
+
+    assert result.copy["d1"].slide_texts == ["Virlo had this one", "Vision read this one", ""]
+    assert result.provenance["d1"].refs["slide_2"] == "P1.panel.2"
+
+
+async def test_an_over_budget_panel_degrades_its_slide_and_is_never_trimmed() -> None:
+    """FR-100's structural guarantee, applied to the mapped deck: "a string that does not fit was
+    never offered", so there is nothing left to trim by the time the bytes exist. The slide renders
+    without text, KEEPS ITS POSITION, and the loss is warned once for the whole creative rather
+    than once per slide — the operator's question is how much of this deck came through."""
+    log = Recorder()
+    long_panel = "A panel that runs on for well past forty characters and keeps going besides"
+    trend = make_trend(post(1, panels=("Short panel", long_panel, "Third panel"),
+                            caption="A caption long enough to be a caption at all."))
+    call = StubCall({"d1": selection(headline_ref="", caption_ref="P1.caption")})
+
+    result = await copywrite.write_copy([deck_entry(slides=3)], call=call, log=log, **context(
+        trends={"t1": trend},
+        styles={STYLE_KEY: make_style(max_onimage_chars={"headline": 90, "slide": 40})}))
+
+    copyset = result.copy["d1"]
+    assert copyset.slide_texts == ["Short panel", "", "Third panel"]
+    assert long_panel not in " ".join(copyset.slide_texts)
+    assert not any(long_panel.startswith(text) and text for text in copyset.slide_texts), \
+        "no prefix of it shipped either — a trimmed quote is not a quote"
+    assert not result.trimmed and DegradationTag.TEXT_TRIMMED not in result.tags.get("d1", ())
+    assert result.provenance["d1"].panel_map[1] == {
+        "slide": 2, "source_position": 2, "source_text": "", "ref_label": ""}
+    assert len(log.warned("panel_over_budget")) == 1
+    assert "slide 2" in log.warned("panel_over_budget")[0]
+
+
+def test_a_panel_keeps_its_emoji_newlines_and_hashtags_for_the_slide_slot_alone() -> None:
+    """D46 §0.14b. Those three are the source deck's own typography and our slide IS their slide,
+    so refusing them would leave the frame wordless exactly where a creator got expressive. The
+    same panel offered as a HEADLINE is still held to the full F23 rule — a headline is our frame's
+    own line, not a re-render of theirs — and @handles and URLs are excluded on every slot, because
+    they leak an identity or a link rather than a voice."""
+    fits = copywrite._fitting_slots
+    budgets = {"headline": 90, "slide": 300}
+    slots = ("headline", "slide")
+
+    assert fits("Growth 🚀 unlocked", slots, budgets, kind="panel") == ("slide",)
+    assert fits("Two\nlines on one slide", slots, budgets, kind="panel") == ("slide",)
+    assert fits("Wins big #ai", slots, budgets, kind="panel") == ("slide",)
+    assert fits("A plain panel line", slots, budgets, kind="panel") == ("headline", "slide")
+    # The two that stay absolute, on the relaxed kind as well.
+    assert fits("Ask @someone about it", slots, budgets, kind="panel") == ()
+    assert fits("Read more at example.com", slots, budgets, kind="panel") == ()
+    # And every other kind keeps all five exclusions, `slide` slot included.
+    assert fits("Growth 🚀 unlocked", slots, budgets, kind="hook") == ()
+    assert fits("Growth 🚀 unlocked", slots, budgets) == ()
+
+
+async def test_an_emoji_panel_really_does_reach_the_deck() -> None:
+    """The §0.14b relaxation at the level that ships bytes, not at the predicate."""
+    trend = make_trend(post(1, panels=("Growth 🚀 unlocked", "Then it plateaued"),
+                            caption="A caption long enough to be a caption at all."))
+    call = StubCall({"d1": selection(headline_ref="", caption_ref="P1.caption")})
+
+    result = await copywrite.write_copy([deck_entry(slides=2)], call=call, **context(
+        trends={"t1": trend}, styles={STYLE_KEY: deck_style()}))
+
+    assert result.copy["d1"].slide_texts == ["Growth 🚀 unlocked", "Then it plateaued"]
+
+
+async def test_a_mapped_deck_ignores_slide_refs_the_model_sent_anyway_and_says_so() -> None:
+    """The deck is not negotiable. A model that answers with slide labels — an older prompt, a
+    hallucinated habit — cannot re-order the source's slides."""
+    log = Recorder()
+    trend = make_trend(post(1, panels=("Panel one", "Panel two"),
+                            caption="A caption long enough to be a caption at all."))
+    call = StubCall({"d1": selection(caption_ref="P1.caption", headline_ref="",
+                                     slide_refs=["P1.panel.2", "P1.panel.1"])})
+
+    result = await copywrite.write_copy([deck_entry(slides=2)], call=call, log=log, **context(
+        trends={"t1": trend}, styles={STYLE_KEY: deck_style()}))
+
+    assert result.copy["d1"].slide_texts == ["Panel one", "Panel two"], "source order, not theirs"
+    assert log.warned("copy_slide_refs_ignored")
+
+
+async def test_an_unbound_carousel_keeps_the_selection_path_and_it_is_position_preserving() -> None:
+    """The pre-D46 path still exists for a carousel nothing bound — and it, too, no longer closes
+    gaps. `slide_refs[k]` is slide *k+1*; an unusable label leaves that slide wordless instead of
+    pulling slide 3's words onto slide 2 (FR-302's position-preserving grammar)."""
+    trend = make_trend(post(1, panels=("Panel one", "Panel two", "Panel three"),
+                            caption="A caption long enough to be a caption at all."))
+    call = StubCall({"c1": selection(headline_ref="", caption_ref="P1.caption",
+                                     slide_refs=["P1.panel.1", "P1.panel.9", "P1.panel.3"])})
+
+    result = await copywrite.write_copy(
+        [entry("c1", 0, creative_format="carousel", aspect_ratio="1:1", slide_count=3)],
+        call=call, **context(trends={"t1": trend}, styles={STYLE_KEY: deck_style()}))
+
+    assert result.copy["c1"].slide_texts == ["Panel one", "", "Panel three"]
+    assert result.provenance["c1"].refs["slide_3"] == "P1.panel.3"
+    assert "slide_2" not in result.provenance["c1"].refs
+    assert result.provenance["c1"].panel_map == [], "no binding, no FR-304 map"
+
+
+async def test_a_deck_whose_panels_are_all_empty_ships_caption_only() -> None:
+    """The `no_onimage_text` degrade, on a deck: the list of slides is full of empty slots (they
+    are the alignment) and not one of them became pixels, so the tag is decided on the STRINGS."""
+    trend = make_trend(post(1, panels=("", ""),
+                            caption="A caption long enough to be a caption at all."))
+    call = StubCall({"d1": selection(headline_ref="", caption_ref="P1.caption")})
+
+    result = await copywrite.write_copy([deck_entry(slides=2)], call=call, **context(
+        trends={"t1": trend}, styles={STYLE_KEY: deck_style()}))
+
+    assert result.copy["d1"].slide_texts == ["", ""]
+    assert result.tags["d1"] == (DegradationTag.NO_ONIMAGE_TEXT,)
+
+
+async def test_the_deck_length_is_the_plans_not_the_sources() -> None:
+    """§0.4′: the deck was fixed at ASSIGN from `panel_count` clamped to the platform ceiling, and
+    that number is what the Confirm gate priced. A copy stage that grew the deck to fit a longer
+    source would spend money the operator never approved; one that shrank it would leave a slide
+    the estimator paid for unrendered. Positions past the source's own panels render wordless."""
+    trend = make_trend(post(1, panels=("One", "Two", "Three", "Four", "Five"),
+                            caption="A caption long enough to be a caption at all."))
+    call = StubCall({"d1": selection(headline_ref="", caption_ref="P1.caption")})
+
+    short = await copywrite.write_copy([deck_entry(slides=3)], call=call, **context(
+        trends={"t1": trend}, styles={STYLE_KEY: deck_style()}))
+    over = await copywrite.write_copy([deck_entry(slides=7)], call=StubCall(
+        {"d1": selection(headline_ref="", caption_ref="P1.caption")}), **context(
+        trends={"t1": trend}, styles={STYLE_KEY: deck_style()}))
+
+    assert short.copy["d1"].slide_texts == ["One", "Two", "Three"]
+    assert over.copy["d1"].slide_texts == ["One", "Two", "Three", "Four", "Five", "", ""]
+    assert len(over.provenance["d1"].panel_map) == 7
+
+
+def test_panel_slots_are_padded_to_the_declared_panel_count_never_compacted() -> None:
+    """§0.14a at the offer: a post that declares eight panels and shipped three texts still has
+    eight slides, and slots 4–8 being empty is what tells the mapping to render them wordless
+    instead of pulling slide 8's words forward onto slide 4."""
+    sparse = make_trend(post(1, panels=("First", "", "Third"),
+                             caption="A caption long enough to be a caption at all."))
+    sparse.posts[0].panel_count = 6
+
+    offer = _offer(deck_entry(), sparse, deck_style())
+
+    assert offer.panels == ("First", "", "Third", "", "", "")
+    assert [c.label for c in offer.onimage if c.kind == "panel"] == ["P1.panel.1", "P1.panel.3"], \
+        "an empty slot is not a candidate, and its neighbours keep their own numbers"
+
+
 # ------------------------------------------------------------------ `_slot_budgets`: the ceiling
 
 
@@ -352,7 +667,8 @@ def test_the_budget_in_force_is_the_tighter_of_the_style_and_the_config() -> Non
     """Neither outranks the other (§1.3/FR-101): the config budget is the run's ceiling, the
     style's `max_onimage_chars` is what that layout can hold without the text colliding with its
     own artwork, so both apply and the smaller wins."""
-    budgets = TextBudgets(image_headline=42, image_subline=60, reel_seed_headline=32)
+    budgets = TextBudgets(image_headline=42, image_subline=60, slide=300,
+                          reel_seed_headline=32)
 
     tight_style = copywrite._slot_budgets(
         make_style(max_onimage_chars={"headline": 34, "subline": 80, "slide": 110}), budgets)
@@ -362,9 +678,12 @@ def test_the_budget_in_force_is_the_tighter_of_the_style_and_the_config() -> Non
 
     assert tight_style["headline"] == 34, "the style is tighter"
     assert tight_style["subline"] == 60, "the config is tighter"
-    assert tight_style["slide"] == 42, "a slide's text is a headline in its own frame"
+    # D46 §0.5/FR-259: the slide has its OWN config ceiling now. It used to borrow
+    # `image_headline`, and borrowing is what made the first paid run's decks wordless — a source
+    # panel is a whole thought, not a headline, and an over-budget panel is never trimmed.
+    assert tight_style["slide"] == 110, "the style is tighter"
     assert loose_style["headline"] == 42
-    assert no_style == {"headline": 42, "subline": 60, "slide": 42, "overlay": 32}
+    assert no_style == {"headline": 42, "subline": 60, "slide": 300, "overlay": 32}
 
 
 def test_a_zero_or_absent_style_cap_leaves_the_config_budget_in_force() -> None:
@@ -374,10 +693,10 @@ def test_a_zero_or_absent_style_cap_leaves_the_config_budget_in_force() -> None:
     `_FORMAT_SLOTS` instead."""
     limits = copywrite._slot_budgets(
         make_style(max_onimage_chars={"headline": 34, "subline": 0, "slide": 0}),
-        TextBudgets(image_headline=42, image_subline=60))
+        TextBudgets(image_headline=42, image_subline=60, slide=300))
 
     assert limits["headline"] == 34
-    assert limits["subline"] == 60 and limits["slide"] == 42
+    assert limits["subline"] == 60 and limits["slide"] == 300
 
 
 def test_the_reel_overlay_borrows_the_styles_headline_cap_because_the_registry_has_no_reel_slot() -> None:

@@ -49,7 +49,14 @@ def _config(**run_kwargs: object) -> Config:
 
 
 def _trend(key: str, name: str, *, strength: float = 0.9, slideshow: bool = False) -> TrendItem:
-    """One post-pivot TOPIC item, carrying the one post that keeps it usable under FR-6."""
+    """One post-pivot TOPIC item, carrying the one post that keeps it usable under FR-6.
+
+    Those posts are SLIDESHOW rows (`panel_count` + index-aligned panel texts + one image per
+    panel, FR-293), and there are two of them: post-D46 a carousel binds a specific fresh slideshow
+    post at ASSIGN and a post is a one-shot resource (FR-304/FR-307), so a topic built without
+    panels — or with only one — would leave a second carousel unassigned and its asset id forever
+    `…_unassigned_…`. This file is about the SHAPE of an id, never about supply.
+    """
     return TrendItem(
         history_key=f"m1::{key}",
         monitor_id="m1",
@@ -58,8 +65,13 @@ def _trend(key: str, name: str, *, strength: float = 0.9, slideshow: bool = Fals
         strength=strength,
         is_slideshow=slideshow,
         why_it_works="hard pattern interrupt in the first frame",
-        posts=[SourcePost(post_id=f"{key}-post-1", url="https://www.tiktok.com/@c/video/1",
-                          author="c", caption="the hook that stole the week", views=9000)],
+        posts=[SourcePost(post_id=f"{key}-post-{n}", url=f"https://www.tiktok.com/@c/video/{n}",
+                          author="c", caption="the hook that stole the week", views=9000 - n,
+                          is_slideshow=True, panel_count=4,
+                          panel_texts=[f"panel {i}" for i in range(1, 5)],
+                          image_urls=[f"https://cdn.virlo.test/{key}-{n}/{i}.jpg"
+                                      for i in range(1, 5)])
+               for n in (1, 2)],
     )
 
 

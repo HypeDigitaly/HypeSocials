@@ -43,7 +43,7 @@ SHIPPED: list[tuple[str, str]] = (
 #: The FINAL count (contracts item 4, set by the W3.5 excision): 3 global —
 #: `copywriter_system.md`, `vision_check_question.md`, `topic_filter_system.md` — plus 4
 #: gpt-image-2 (the merged `image_post.md` and its three siblings) plus 1 seedance.
-SHIPPED_COUNT = 8
+SHIPPED_COUNT = 9
 
 
 def _built_in_key(profile: str, role: str) -> str:
@@ -63,7 +63,7 @@ def test_every_shipped_role_ships_both_a_file_and_a_built_in_default() -> None:
     assert len(SHIPPED) == SHIPPED_COUNT, \
         "the shipped role set changed — the parity checks below need it"
     assert set(GLOBAL_TEMPLATES) == {"copywriter_system.md", "vision_check_question.md",
-                                     "topic_filter_system.md"}
+                                     "topic_filter_system.md", "slide_intel_question.md"}
     assert "image_post.md" in PROFILE_TEMPLATES["gpt-image-2"]
     for profile, role in SHIPPED:
         assert _on_disk(profile, role).is_file(), f"{_built_in_key(profile, role)}: no file"

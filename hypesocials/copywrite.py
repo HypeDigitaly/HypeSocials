@@ -14,10 +14,15 @@ prompt-level:
 
 1. **The engine numbers offerable candidates.** Every string on the creative's assigned
    `SourcePost` that this engine is *willing to render* is labelled `P<n>.<kind>[.<i>]` and shown
-   to the model with the slots it fits. On-image candidates are pre-filtered against the style's
-   own `max_onimage_chars` (intersected with the config budgets) and must be emoji-free,
-   @handle-free, URL-free and hashtag-free; caption candidates keep emoji and inline hashtags, and
-   their TRAILING hashtag run is extracted into `hashtags[]` instead of being offered as pixels.
+   to the model with the slots it fits, panels first (FR-100/FR-302). On-image candidates are
+   pre-filtered against the style's own `max_onimage_chars` (intersected with the config budgets)
+   and must be @handle-free and URL-free; every kind but `panel` must additionally be emoji-free,
+   newline-free and hashtag-free, while a `panel` offered to the SLIDE slot keeps all three
+   (§0.14b — that is the source deck's own voice, and our slide *is* their slide). Caption
+   candidates keep emoji and inline hashtags, their TRAILING hashtag run is extracted into
+   `hashtags[]` instead of being offered as pixels, and what is left has to be a caption at all:
+   under 25 non-hashtag characters it is hashtag spam, not copy, and the creative takes the
+   assembled caption instead (§0.7).
 2. **The model returns REFERENCES** (`CopySelection`: `headline_ref`, `subline_ref`,
    `overlay_ref`, `slide_refs`, `caption_ref`) plus free text only where nothing becomes pixels —
    `through_line`, `narrative_arc`, `motion_beat`.
@@ -25,6 +30,12 @@ prompt-level:
    language is detected, no accent is lost and nothing is trimmed, because an over-budget string
    was never offered. `_apply_budgets` is BYPASSED for every ref-resolved field — trimming a
    quoted string is precisely how byte identity dies.
+4. **A bound carousel's slides are not selected at all (FR-304).** When the plan bound a slideshow
+   post to the entry, source panel *i* becomes our slide *i*, verbatim and position-preserving,
+   with no model in the loop: an empty or unusable panel keeps its index and yields an empty slide
+   text (that slide renders wordless) rather than closing the gap and shipping the deck with two
+   slides silently swapped. The model still chooses that deck's cover headline, its caption and
+   its hashtags.
 
 Public API:
     await write_copy(entries, trends=..., styles=..., call=..., engine=...) -> CopyResult
@@ -37,10 +48,16 @@ Invariants:
   `headline`, `subline`, `overlay_text`, `slide_texts` or `caption` on a verbatim creative: those
   five are assigned from the candidate table or left empty. A ref naming a string we did not
   offer (wrong post, wrong slot, unknown label) is logged and dropped, never approximated.
-- **Sibling divergence is the ENGINE's decision (§1.6/§1.7.6).** Creative *k* on a topic quotes
-  `posts[trend_reuse_index % len(posts)]` and is offered that post's strings ALONE, so two
-  creatives on one topic can never ship the same caption. The model chooses which string of that
-  post to use, never which post.
+- **Which post a creative quotes is decided at ASSIGN, not here (FR-304/FR-307, D46 §0.10).**
+  `entry.source_post_id` names it, the plan chose it from the topic's FRESH posts, and this module
+  looks it up by id and offers that post's strings ALONE — so two creatives on one topic can never
+  ship the same caption and neither can re-quote a post an earlier run already used. The model
+  chooses which string of that post to use, never which post. A bound post that arrives BURNT (or
+  that the topic no longer carries) is refused outright rather than quietly swapped for a
+  neighbour: swapping would make `copy_source_post_id`, `trend_history` and the panel map all
+  disagree about what shipped. The `posts[trend_reuse_index % len(posts)]` rotation survives ONLY
+  for unbound legacy entries and is deprecated — a rotation over a list cannot know which of its
+  members are burnt, which is exactly how the first paid run re-quoted a 2023 post.
 - **Degrade has two distinct shapes.** No candidate fits the style's budget → `no_onimage_text`
   and a caption-only creative (the call succeeded; there was simply nothing short enough). The
   copy call failing outright → `_fallback_copy`: the top post's caption verbatim, no on-image
@@ -113,32 +130,47 @@ _FORMAT_SLOTS: dict[str, tuple[str, ...]] = {
 }
 _ALL_SLOTS = ("headline", "subline", "slide", "overlay")
 
-#: Ref-label grammar (contracts item 10), pinned: `P<n>.<kind>[.<i>]`, 1-based everywhere.
-#: `caption` and `description` are scalar fields and carry no index.
-_REF = re.compile(r"^\s*[`\"']?\s*P(\d+)\.(hook|overlay|panel|caption|description)"
+#: Ref-label grammar (FR-302), pinned: `P<n>.<kind>[.<i>]`, 1-based everywhere. `caption` is a
+#: scalar field and carries no index; a `panel` index is a SOURCE SLIDE POSITION (FR-304).
+#:
+#: **`description` is not in the grammar at all (FR-303, v2.1.0).** It used to be — as a
+#: caption-only kind — and the first paid run captioned a creative with it: Virlo's AI summary,
+#: shipped as though a human had written it. Removing it from the length filter alone would have
+#: left the label parseable and the field numbered, so it is removed HERE, at the grammar: nothing
+#: can name it, `_KIND_FIELDS` cannot resolve it, and `_numbered_fields` never sees it. The field
+#: stays legitimate FENCED CONTEXT in the prompt (`{{trend_texts}}`, built by `prompts_engine`)
+#: and it is still ledgered in `virlo_fields` — it simply can never become a pixel or a caption.
+_REF = re.compile(r"^\s*[`\"']?\s*P(\d+)\.(hook|overlay|panel|caption)"
                   r"(?:\.(\d+))?\s*[`\"']?\s*$", re.IGNORECASE)
 #: `kind` -> the `SourcePost` attribute it numbers. Scalar kinds map to a str, list kinds to a
 #: list, and nothing outside this table is quotable — the grammar and the model are one contract.
+#: `panel` names `panel_texts`, but its VALUES may arrive merged with the vision transcription of
+#: the same slides (`sources/slide_intel`, FR-306) — see `write_copy(merged_panels=...)`.
 _KIND_FIELDS = {"hook": "hooks", "overlay": "text_overlays", "panel": "panel_texts",
-                "caption": "caption", "description": "description"}
-#: The two kinds a caption may be quoted from. Hooks and panel texts are on-image material: they
-#: are written to be read in one glance, and a three-word hook makes a poor caption.
-_CAPTION_KINDS = ("caption", "description")
-#: Kinds that may never become pixels, however short and however clean they are.
-#:
-#: `description` is `SourcePost`'s one field that is NOT the creator's words: it is Virlo's
-#: `summary`, written by its `intelligence` block (`sources/virlo.py::_source_post`'s field table
-#: says so, and names THIS module as the place the distinction has to be enforced). That makes it
-#: legitimate context and legitimately verbatim *from Virlo*, so it stays a caption candidate —
-#: but burning an AI paraphrase into a frame as though a human wrote it is the one quote this
-#: engine must not make, and the length filter alone would happily allow a short one.
-_NEVER_ON_IMAGE = ("description",)
+                "caption": "caption"}
+#: The one kind a caption may be quoted from (FR-303 took the second away). Hooks and panel texts
+#: are on-image material: they are written to be read in one glance, and a three-word hook makes a
+#: poor caption.
+_CAPTION_KINDS = ("caption",)
+#: D46 §0.7 — the floor a source caption must clear to BE this creative's caption. Six of the eight
+#: creatives in the first paid run were captioned with a hashtag run and three words; measured
+#: after the trailing run is peeled and after every remaining `#tag` token is discounted, a caption
+#: under this many characters is spam rather than copy, and the creative takes the assembled
+#: caption (topic name + the standing niche line) instead. Operator-settled, 2026-08-13.
+_CAPTION_MIN_CHARS = 25
 
 # ---------------------------------------------------------------------------------------------
-# On-image pre-filters (§1.7.1, F23). A string that fails any of these can never be an on-image
-# candidate, whatever its length: emoji and @handles render as garbage or as an accidental
-# mention, URLs invite a hallucinated hyperlink, and a hashtag in the frame is a caption artefact
-# that has no business inside the artwork. Captions keep all four.
+# On-image pre-filters (§1.7.1, F23, relaxed for panels by D46 §0.14b). A string that fails one of
+# these can never fill the slot it failed for, whatever its length: emoji and @handles render as
+# garbage or as an accidental mention, URLs invite a hallucinated hyperlink, and a hashtag in the
+# frame is a caption artefact that has no business inside the artwork. Captions keep all four.
+#
+# The ONE relaxation: a `panel` candidate filling the SLIDE slot keeps emoji, newlines and
+# `#`-tokens. Those three are not defects there — they are the source deck's own typography, and
+# our slide *i* is a re-rendering of their slide *i* (FR-304). Rejecting them would have left the
+# panel-mapped deck with a wordless slide wherever the creator used an emoji, which is the same
+# empty frame D46 exists to fix. @handles and URLs stay excluded on every slot and every kind:
+# they leak an identity or a link rather than a voice.
 # ---------------------------------------------------------------------------------------------
 
 #: Pictographs (1F000–1FAFF), dingbats/misc symbols (2600–27BF), the arrow-and-symbol block
@@ -156,10 +188,26 @@ _URL = re.compile(
 #: One trailing `#tag` at the very end of a caption, with the whitespace before it. Applied
 #: repeatedly, this peels the whole trailing run off and leaves the caption body untouched.
 _TRAILING_TAG = re.compile(r"(?:\s|^)(#[^\s#]+)\s*$")
+#: Any hashtag token anywhere, for MEASURING a caption's substance (§0.7). Deliberately not the
+#: same expression as `_TRAILING_TAG`: an inline `#ai` stays in the caption we ship (it is part of
+#: the author's sentence) but it is not what makes the sentence a caption, so it does not count
+#: towards the floor.
+_HASHTAG_TOKEN = re.compile(r"(?<!\w)#\S+")
 
 #: How much of a candidate is shown in the prompt. The model only needs enough to CHOOSE; the
 #: engine ships the original bytes from `SourcePost`, so a display truncation costs nothing.
 _DISPLAY_CHARS = 400
+#: How far an offer will PAD a panel list out to the post's declared `panel_count` (§0.14a keeps
+#: slot *i* at index *i*, so the padding is what preserves the alignment when Virlo shipped fewer
+#: texts than slides). A fence, not a policy: `panel_count` is a source-controlled integer, no
+#: platform's deck comes near this, and slots past it would be empty strings by definition. Real
+#: panel TEXTS are never dropped by it — only invented empty slots are.
+_MAX_PANEL_SLOTS = 60
+
+#: Why an offer refused to quote its post at all — both are FR-307/§0.10 belt-and-braces behind the
+#: fetch gate, and both leave the creative with the assembled caption and a wordless frame.
+_REFUSED_BURNT = "no_fresh_post_available"  # FR-73's vocabulary, verbatim
+_REFUSED_MISSING = "bound_post_missing"
 
 
 @dataclass(slots=True)
@@ -170,10 +218,23 @@ class CopyProvenance:
     `headline`, `subline`, `overlay_text`, `slide_1`…`slide_N`, `caption` — so meta.yaml records
     the string, not merely the post. Empty on a free-text creative (an override brief quotes
     nothing), and caption-only on the `_fallback_copy` path.
+
+    `panel_map` and `source_panel_count` are FR-304's half of the same receipt, and they are what
+    `AssetRecord.panel_map` / `AssetRecord.source_panel_count` are built from
+    (`generate.__init__._record()`, which joins each row's `visual_brief` and `source_image` in
+    from the slide-intelligence result before writing meta.yaml). One row per OUR slide, in slide
+    order, INCLUDING the slides whose source panel was empty, unusable or over budget:
+
+        {"slide": 3, "source_position": 3, "source_text": "", "ref_label": ""}
+
+    The row is the alignment. A deck that dropped its empty rows would tell the gallery that our
+    slide 3 came from their slide 4, which is the precise failure FR-304 is written against.
     """
 
     post_id: str = ""
     refs: dict[str, str] = field(default_factory=dict)
+    panel_map: list[dict[str, Any]] = field(default_factory=list)
+    source_panel_count: int = 0
 
 
 @dataclass(slots=True)
@@ -228,6 +289,8 @@ async def write_copy(
     brand_context: str = "",
     competitors: Sequence[str] = (),
     strip_brands: Mapping[str, Sequence[str]] | None = None,
+    merged_panels: Mapping[str, Sequence[str]] | None = None,
+    burnt_post_ids: Sequence[str] = (),
     progress: dict[str, int] | None = None,
     log: Any = None,
 ) -> CopyResult:
@@ -254,6 +317,22 @@ async def write_copy(
         strip_brands: `trend_key -> brands_to_strip`, the topic filter's `strip` verdicts. These
             have ALREADY passed `topic_filter.screen`'s M15 guards; this module applies them, it
             never re-judges them.
+        merged_panels: `post_id -> the post's per-slide on-image words, index-aligned`, the
+            MERGED list `sources.slide_intel` produces (`SlideIntel.panel_texts`: Virlo's own
+            `panel_texts[i]` where it has one, the vision transcription of slide *i* where it does
+            not, FR-306/§0.11). Keyed by post rather than by asset id on purpose — the merge is a
+            property of the SOURCE DECK, two sibling creatives bound to one post must see one
+            reading of it, and the caller already holds `{post_id: SlideIntel}`. Omitted or absent
+            for a post, the offer falls back to `SourcePost.panel_texts` as shipped by Virlo; the
+            list is padded to the post's `panel_count` either way, because slot *i* IS source slide
+            *i* (§0.14a) and a compacted list would re-map the deck. These strings go through the
+            same competitor strip as every other candidate (§0.12).
+        burnt_post_ids: post ids this run may not quote — the used-post set the fetch gate already
+            filtered on (FR-305/FR-307). Belt-and-braces, and deliberately redundant: an entry
+            whose bound post turns up here is refused outright (assembled caption, wordless frame,
+            `reason="no_fresh_post_available"` in the log) rather than re-pointed at a neighbour,
+            because the alternative is a creative whose provenance, history record and panel map
+            all name different posts.
         progress: OPTIONAL live tally for FR-299's COPY heartbeat — this function keeps
             `{"total", "done", "in_flight"}` current while the group calls run and never reads
             it back. The runner's silence-breaker prints from it; `None` costs nothing.
@@ -266,7 +345,9 @@ async def write_copy(
                styles=styles or {}, conventions=conventions or {},
                onimage_languages=onimage_languages or {}, niche_descriptor=niche_descriptor,
                brand_context=brand_context, competitors=tuple(competitors),
-               strip_brands=strip_brands or {}, log=log)
+               strip_brands=strip_brands or {}, merged_panels=merged_panels or {},
+               burnt_posts=frozenset(str(post_id) for post_id in burnt_post_ids
+                                     if str(post_id).strip()), log=log)
     groups = _build_groups(entries, trends or {}, campaign_briefs or {})
 
     async def _tracked(group: _Group) -> Any:
@@ -309,7 +390,12 @@ class _Run:
     brand_context: str
     competitors: tuple[str, ...]  # §1.5 layer 1 — deterministic, fail-closed, unguarded
     strip_brands: Mapping[str, Sequence[str]]  # trend_key -> the filter's post-guard survivors
-    log: Any
+    # The last three carry defaults so a caller that has none of them — a test, a preview path —
+    # constructs the run without inventing empties. `write_copy` always passes all three.
+    merged_panels: Mapping[str, Sequence[str]] = field(default_factory=dict)  # post_id -> merged
+    #   per-slide texts, Virlo ∪ vision (FR-306)
+    burnt_posts: frozenset[str] = frozenset()  # post ids an earlier run already quoted (FR-307)
+    log: Any = None
 
 
 @dataclass(slots=True)
@@ -318,7 +404,7 @@ class _Group:
 
     A/B pairing is dead (v2.0.0), so there is one line per ENTRY here — no pair representative and
     no cloning of one `CopySet` across siblings. Two creatives on one topic are two different
-    quotes of two different posts, which is the whole point of `trend_reuse_index` post-pivot.
+    quotes of two different posts, which is what `PlanEntry.source_post_id` binds at ASSIGN.
     """
 
     trend: TrendItem | None
@@ -365,7 +451,7 @@ class _Candidate:
 
 @dataclass(slots=True)
 class _Offer:
-    """The candidate table for ONE creative — its assigned post and nothing else (§1.7.6)."""
+    """The candidate table for ONE creative — its bound post and nothing else (FR-304/§1.7.6)."""
 
     post: SourcePost | None = None
     post_ordinal: int = 0  # 1-based, as it appears in the ref labels
@@ -373,6 +459,20 @@ class _Offer:
     captions: list[_Candidate] = field(default_factory=list)
     budgets: dict[str, int] = field(default_factory=dict)  # slot -> characters, style ∩ config
     haystack: tuple[str, ...] = ()  # every stripped source field — the verifier's substring pool
+    #: The post's per-slide words AFTER the strip, INDEX-ALIGNED to its `panel_count`: slot *i - 1*
+    #: is source slide *i*, and an empty string is a real empty slot rather than a missing one
+    #: (§0.14a). This is what FR-304's deterministic mapping walks — the candidate list above
+    #: cannot serve, because it drops the empty slots and the gaps are the alignment.
+    panels: tuple[str, ...] = ()
+    stripped_panels: frozenset[int] = frozenset()  # 1-based positions a competitor was cut from
+    #: True when this post came from `entry.source_post_id` (the plan bound it at ASSIGN) rather
+    #: than from the deprecated modulo rotation. FR-304's panel mapping applies to bound decks
+    #: alone: an unbound carousel has no promise that this post's slides are the deck's slides.
+    bound: bool = False
+    #: Set when the post may not be quoted at all — `_REFUSED_BURNT` / `_REFUSED_MISSING`. The
+    #: creative still ships (it is already planned and about to be paid for); it ships the
+    #: assembled caption and a wordless frame, and it is never sent to the model.
+    refused: str = ""
 
     @property
     def by_label(self) -> dict[str, _Candidate]:
@@ -388,62 +488,173 @@ class _Offer:
 
 
 def _offer_for(entry: PlanEntry, group: _Group, run: _Run) -> _Offer:
-    """Number this creative's offerable strings — its assigned post's, pre-filtered per slot.
+    """Number this creative's offerable strings — its bound post's, pre-filtered per slot.
 
-    The assignment is `posts[trend_reuse_index % len(posts)]` and it is the ENGINE's (§1.7.6):
-    offering the whole topic would let two creatives pick the same caption, which is exactly the
-    cloned-copy failure the reuse index exists to prevent. Labels stay TOPIC-global (`P3.hook.1`
-    means the third-ranked post of the topic, whichever creative is looking at it), so FR-298's
-    provenance and the FR-297b console roster read the same alphabet.
+    **Which post (FR-304/FR-307, D46 §0.10).** `entry.source_post_id` names it and `plan.assign`
+    chose it from the topic's FRESH posts; this function looks it up by id among the topic's posts
+    and offers that post ALONE. The old `posts[trend_reuse_index % len(posts)]` rotation survives
+    only for entries nothing bound (images, reels, anything built before ASSIGN ran) and is
+    DEPRECATED: a modulo over a list has no way to skip the posts an earlier run already spent, so
+    a topic with one fresh post re-quoted yesterday's exact post — the defect D46 was written
+    against. Labels stay TOPIC-global (`P3.hook.1` means the third-ranked post of the topic,
+    whichever creative is looking at it), so FR-298's provenance and the FR-297b console roster
+    read the same alphabet.
 
-    Two tables come out of one pass, and a field can land in either, both or neither: `_NEVER_ON_IMAGE`
-    keeps Virlo's own summary out of the pixels table while leaving it quotable as a caption, and
-    `_fitting_slots` decides the rest on the F23 rules plus this creative's own budgets.
+    Two tables come out of one pass, and a field can land in either, both or neither:
+    `_fitting_slots` decides the pixels side on the F23 rules (relaxed for panels, §0.14b) plus
+    this creative's own budgets, and the caption side additionally has to survive §0.7's substance
+    floor. `panels` is built alongside them and is neither table: it is the index-aligned deck the
+    FR-304 mapping walks, empty slots included.
     """
     posts = list(group.trend.posts) if group.trend else []
     if not posts:
         return _Offer()
-    index = entry.trend_reuse_index % len(posts)
+    index, bound, refusal = _bound_index(entry, posts, run)
+    if index is None:
+        return _Offer(refused=refusal)
     post = posts[index]
     style = run.styles.get(entry.style_key)
     budgets = _slot_budgets(style, run.budgets)
     slots = _FORMAT_SLOTS.get(str(entry.creative_format), _ALL_SLOTS)
     brands = _strip_terms(entry, run)
-    offer = _Offer(post=post, post_ordinal=index + 1,
+    offer = _Offer(post=post, post_ordinal=index + 1, bound=bool(bound),
                    budgets={slot: budgets[slot] for slot in slots if slot in budgets})
+    panels = _panel_slots(post, run)
+    kept: list[str] = list(panels)  # post-strip, index-aligned — the FR-304 deck
+    cut: set[int] = set()
     haystack: list[str] = []
-    for kind, raw, ordinal in _numbered_fields(post):
+    for kind, raw, ordinal in _numbered_fields(post, panels):
         text, stripped = _apply_strip(raw, brands)
+        if kind == "panel":
+            kept[ordinal - 1] = text  # empty when the whole panel WAS the brand: a wordless slide
+            if stripped:
+                cut.add(ordinal)
         if not text.strip():
             continue  # the whole string WAS the brand — there is nothing left to quote
         haystack.append(text)
         label = f"P{offer.post_ordinal}.{kind}" + (f".{ordinal}" if ordinal else "")
-        fits = () if kind in _NEVER_ON_IMAGE else _fitting_slots(text, slots, offer.budgets)
-        body, tags = _split_trailing_hashtags(text) if kind in _CAPTION_KINDS else (text, ())
+        fits = _fitting_slots(text, slots, offer.budgets, kind=kind)
         if fits:
             offer.onimage.append(_Candidate(label, text, kind, stripped, slots=fits))
-        if kind in _CAPTION_KINDS and body.strip():
-            offer.captions.append(_Candidate(label, body, kind, stripped, hashtags=tags))
+        if kind in _CAPTION_KINDS:
+            body, tags = _split_trailing_hashtags(text)
+            if _caption_substance(body) >= _CAPTION_MIN_CHARS:
+                offer.captions.append(_Candidate(label, body, kind, stripped, hashtags=tags))
     offer.haystack = tuple(haystack)
+    offer.panels = tuple(kept)
+    offer.stripped_panels = frozenset(cut)
     return offer
 
 
-def _numbered_fields(post: SourcePost) -> list[tuple[str, str, int]]:
+def _bound_index(
+    entry: PlanEntry, posts: Sequence[SourcePost], run: _Run
+) -> tuple[int | None, bool, str]:
+    """`(index into posts, was it BOUND, refusal reason)` — the index is None iff there is a reason.
+
+    Three outcomes, and the two refusals are belt-and-braces behind gates that already ran
+    (FR-305 drops used posts before ranking; `plan.assign` binds only fresh ones). They are kept
+    because the cost of being wrong here is a creative that quotes a post the operator was told
+    they would never see again, and because a second check on a stable id is nearly free:
+
+    - **bound and quotable** — `entry.source_post_id` names one of the topic's posts and that post
+      is not burnt. This is the normal post-D46 path.
+    - **bound and burnt** — refused with `no_fresh_post_available`. NOT re-pointed at a neighbour:
+      a swap would leave `copy_source_post_id`, the panel map and `trend_history` naming three
+      different posts, and the operator asked for famine over silent repeats (§0.10).
+    - **bound and absent** — the topic no longer carries the post the plan bound (a re-fetch
+      between ASSIGN and COPY, a mis-keyed topic). Refused for the same reason: quoting whatever
+      else is in the list would silently make the deck someone else's.
+
+    An entry with no binding at all falls back to the deprecated modulo rotation and is reported
+    as unbound, so FR-304's panel mapping stays off for it.
+    """
+    bound_id = str(entry.source_post_id or "").strip()
+    if not bound_id:
+        index = entry.trend_reuse_index % len(posts)
+        if str(posts[index].post_id) in run.burnt_posts:
+            _warn(run.log, "copy_post_burnt",
+                  f"{entry.asset_id}: the rotation landed on post {posts[index].post_id}, which an "
+                  "earlier run already quoted; this creative quotes nothing and ships the "
+                  "assembled caption (FR-307)", asset_id=entry.asset_id,
+                  post_id=str(posts[index].post_id), reason=_REFUSED_BURNT)
+            return None, False, _REFUSED_BURNT
+        return index, False, ""
+    found = next((i for i, post in enumerate(posts) if str(post.post_id) == bound_id), None)
+    if found is None:
+        _warn(run.log, "copy_bound_post_missing",
+              f"{entry.asset_id}: the plan bound source post {bound_id}, which this topic no "
+              "longer carries; this creative quotes nothing rather than quoting a post it was not "
+              "assigned, and ships the assembled caption (FR-304)",
+              asset_id=entry.asset_id, post_id=bound_id, reason=_REFUSED_MISSING,
+              available=[str(post.post_id) for post in posts])
+        return None, False, _REFUSED_MISSING
+    if bound_id in run.burnt_posts:
+        _warn(run.log, "copy_bound_post_burnt",
+              f"{entry.asset_id}: the plan bound source post {bound_id}, which an earlier run "
+              "already quoted; it is refused rather than re-pointed at another post, and this "
+              "creative ships the assembled caption with no on-image text (FR-307/§0.10)",
+              asset_id=entry.asset_id, post_id=bound_id, reason=_REFUSED_BURNT)
+        return None, False, _REFUSED_BURNT
+    return found, True, ""
+
+
+def _panel_slots(post: SourcePost, run: _Run) -> list[str]:
+    """This post's per-slide words, INDEX-ALIGNED to its own deck (§0.14a) — slot *i-1* is slide *i*.
+
+    Prefers the MERGED reading when the caller has one (`write_copy(merged_panels=...)`: Virlo's
+    panel text where Virlo had one, the vision transcription of that slide where it did not,
+    FR-306). Falls back to `SourcePost.panel_texts` as shipped, which is already index-aligned by
+    the adapter.
+
+    The padding is the point: a post that declares eight panels and shipped three texts still has
+    eight slides, and slots 4–8 being empty is what tells FR-304's mapping to render those slides
+    wordless instead of pulling slide 8's words forward onto slide 4.
+    """
+    merged = run.merged_panels.get(str(post.post_id))
+    values = [str(text or "") for text in (post.panel_texts if merged is None else merged)]
+    width = max(len(values), min(_int(post.panel_count), _MAX_PANEL_SLOTS))
+    return values + [""] * (width - len(values))
+
+
+def _numbered_fields(
+    post: SourcePost, panels: Sequence[str] | None = None
+) -> list[tuple[str, str, int]]:
     """`(kind, raw text, 1-based index or 0)` for every field the ref grammar can name.
 
-    Order is the grammar's own — hooks, then overlays, then panels, then the two scalars — so the
-    numbered block reads the same way every run and a diff of two runs' prompts is meaningful.
+    Order is FR-100's offer priority — **panels, then overlays, then hooks, then the caption** —
+    and it is a deliberate reversal of the pre-D46 order. The words ON the slides are what the
+    first paid run failed to use; putting them first is what the model reads first, and for a
+    carousel they are the deck itself. Within `panel` the index is the SOURCE SLIDE POSITION, so
+    an empty slot is skipped as a candidate while its neighbours keep their own numbers —
+    `enumerate` counts before the blank filter, never after.
+
+    `panels` lets the caller supply the merged Virlo ∪ vision reading of the deck (`_panel_slots`);
+    without it the post's own `panel_texts` are numbered.
     """
     out: list[tuple[str, str, int]] = []
-    for kind in ("hook", "overlay", "panel"):
-        values = getattr(post, _KIND_FIELDS[kind], None) or []
+    values = list(panels) if panels is not None else [str(text or "")
+                                                      for text in post.panel_texts]
+    out.extend(("panel", str(value), index)
+               for index, value in enumerate(values, start=1) if str(value).strip())
+    for kind in ("overlay", "hook"):
+        field_values = getattr(post, _KIND_FIELDS[kind], None) or []
         out.extend((kind, str(value), index)
-                   for index, value in enumerate(values, start=1) if str(value).strip())
+                   for index, value in enumerate(field_values, start=1) if str(value).strip())
     for kind in _CAPTION_KINDS:
         value = str(getattr(post, _KIND_FIELDS[kind], "") or "")
         if value.strip():
             out.append((kind, value, 0))
     return out
+
+
+def _caption_substance(text: str) -> int:
+    """How many characters of `text` are WORDS rather than hashtags — D46 §0.7's measure.
+
+    Every `#tag` token is discounted wherever it sits and the remainder is whitespace-collapsed, so
+    `"#ai #saas #growth"` measures 0, `"Read this  #ai"` measures 9, and a caption made of tags and
+    an emoji cannot clear the floor by being long. It measures; `_CAPTION_MIN_CHARS` decides.
+    """
+    return len(" ".join(_HASHTAG_TOKEN.sub(" ", text).split()))
 
 
 def _slot_budgets(style: MetaStyle | None, budgets: TextBudgets) -> dict[str, int]:
@@ -469,28 +680,41 @@ def _slot_budgets(style: MetaStyle | None, budgets: TextBudgets) -> dict[str, in
     return {
         "headline": cap(budgets.image_headline, "headline"),
         "subline": cap(budgets.image_subline, "subline"),
-        # A carousel slide's text is a headline in its own frame; FR-101 has always priced it that
-        # way and the registry names it `slide`.
-        "slide": cap(budgets.image_headline, "slide"),
+        # A carousel slide's text is NOT a headline any more (D46 §0.5/FR-259): under FR-304 it is
+        # a whole source panel, a complete thought written to be read on its own slide, so it has
+        # its own config ceiling (`text_budgets.slide`, default 300) instead of borrowing
+        # `image_headline`. Borrowing is what made the first paid run's decks wordless — a 42
+        # character headline budget cannot hold a real panel, and an over-budget panel is not
+        # trimmed, it is simply never offered.
+        "slide": cap(budgets.slide, "slide"),
         "overlay": cap(budgets.reel_seed_headline, "overlay", "headline"),
     }
 
 
-def _fitting_slots(text: str, slots: Sequence[str], budgets: Mapping[str, int]) -> tuple[str, ...]:
-    """Which of this creative's slots `text` may fill — length plus the four F23 exclusions.
+def _fitting_slots(text: str, slots: Sequence[str], budgets: Mapping[str, int],
+                   *, kind: str = "") -> tuple[str, ...]:
+    """Which of this creative's slots `text` may fill — length plus F23, relaxed per §0.14b.
 
     Everything here is a REJECTION rule: a string that fails is simply never offered, which is
     what makes the resolution step incapable of trimming, re-spelling or apologising later.
+
+    Two exclusions are absolute on every slot and every kind — an `@handle` renders as somebody
+    else's identity and a URL invites a hallucinated hyperlink. The other three (emoji, newlines,
+    hashtags) are absolute everywhere EXCEPT a `panel` filling the `slide` slot: that string was
+    already on a slide, in a deck people watched to the end, and its emoji is typography rather
+    than noise (D46 §0.14b). The same panel offered as a HEADLINE is held to the full rule — a
+    headline is our frame's own line, not a re-render of theirs.
     """
-    if _EMOJI.search(text) or _HANDLE.search(text) or _HASHTAG.search(text) or _URL.search(text):
+    if _HANDLE.search(text) or _URL.search(text):
         return ()
-    if "\n" in text.strip():
-        return ()  # a multi-line string is a caption, not a headline; the frame would break it
+    length = len(text)
+    fits = tuple(slot for slot in slots if length <= budgets.get(slot, 0))
     # Measured on the bytes that SHIP, whitespace included — the alternative is to measure a
     # stripped string and then render a longer one, which is how an "in budget" headline overflows
     # its zone. Trimming the whitespace instead is not an option: nothing here edits a quote.
-    length = len(text)
-    return tuple(slot for slot in slots if length <= budgets.get(slot, 0))
+    if not (_EMOJI.search(text) or _HASHTAG.search(text) or "\n" in text.strip()):
+        return fits
+    return tuple(slot for slot in fits if slot == "slide" and kind == "panel")
 
 
 def _split_trailing_hashtags(text: str) -> tuple[str, tuple[str, ...]]:
@@ -572,13 +796,19 @@ async def _write_group(
     - **Free text** (override briefs, and the degenerate topic that arrived with no posts): the
       legacy `CopySet` shape, `config.languages` in force, FR-101's trim applied. §1.7.5 keeps
       exactly these two cases on the configured language; everything else follows its source.
+
+    A creative whose bound post was refused (burnt or absent, FR-307) is in neither shape: it is
+    left OUT of the call entirely — there are no candidates to offer and no words to ask for, so
+    asking would spend tokens on an answer we would have to discard — and it is written
+    deterministically by `_refused` afterwards.
     """
     offers = {entry.asset_id: _offer_for(entry, group, run) for entry in group.entries}
-    verbatim = any(offer.post is not None for offer in offers.values())
-    payloads = await _call_copy(group, group.entries, run, offers, verbatim)
-    if missing := [entry for entry in group.entries if entry.asset_id not in payloads]:
+    askable = [entry for entry in group.entries if not offers[entry.asset_id].refused]
+    verbatim = any(offers[entry.asset_id].post is not None for entry in askable)
+    payloads = await _call_copy(group, askable, run, offers, verbatim) if askable else {}
+    if missing := [entry for entry in askable if entry.asset_id not in payloads]:
         _warn(run.log, "copy_group_split",
-              f"grouped copy call missed {len(missing)} of {len(group.entries)} creatives; "
+              f"grouped copy call missed {len(missing)} of {len(askable)} creatives; "
               "splitting into one call each (FR-99)",
               asset_ids=[entry.asset_id for entry in missing])
         for split in await asyncio.gather(*(
@@ -591,7 +821,9 @@ async def _write_group(
     for entry in group.entries:
         payload = payloads.get(entry.asset_id)
         offer = offers[entry.asset_id]
-        if payload is None:
+        if offer.refused:
+            written = _refused(entry, group, run, offer)
+        elif payload is None:
             written = _fallback(entry, group.trend, run)
         elif verbatim and offer.post is not None:
             written = _resolve(entry, payload, offer, group, run)
@@ -661,6 +893,13 @@ def _candidate_block(entries: Sequence[PlanEntry], offers: Mapping[str, _Offer])
     Long candidates are shown truncated and multi-line ones are shown folded, because the model
     only needs enough to CHOOSE: the engine ships the original bytes from `SourcePost`, line
     breaks and all, and says so here so the model does not "fix" what it sees.
+
+    Panels lead the table and are shown as an ORDERED SEQUENCE (FR-100's offer priority), because
+    their index is not an arbitrary number — it is the position of that slide in the source deck,
+    empty slots included. On a deck whose slides this engine maps itself (FR-304) the sequence is
+    shown anyway and labelled as already-assigned: the model needs to see what its cover headline
+    and caption are sitting on top of, and telling it the slides are taken is what stops it
+    answering `slide_refs` we would then have to discard.
     """
     blocks: list[str] = []
     for entry in entries:
@@ -671,10 +910,18 @@ def _candidate_block(entries: Sequence[PlanEntry], offers: Mapping[str, _Offer])
                                 for slot, limit in offer.budgets.items())
         lines = [f"{entry.asset_id} · {entry.creative_format} · "
                  f"quote ONLY from post P{offer.post_ordinal}"]
+        lines.extend(_panel_lines(entry, offer))
+        # A mapped deck's panels are shown once, in the sequence above, and are not repeated here
+        # as choosable candidates — they are already assigned to their slides.
+        shown = [c for c in offer.onimage
+                 if not (c.kind == "panel" and _panel_mapped(entry, offer))]
         lines.append(f"  on-image candidates ({budget_line}):")
-        if offer.onimage:
+        if shown:
             lines.extend(f"    {c.label} [fits {', '.join(c.slots)}] {_display(c.text)}"
-                         for c in offer.onimage)
+                         for c in shown)
+        elif offer.onimage:
+            lines.append("    NONE besides the panels above. Leave headline_ref and subline_ref "
+                         "empty; the deck's slides carry this creative's words.")
         else:
             lines.append("    NONE — no string on this post fits this style's on-image budget. "
                          "Leave headline_ref, subline_ref, overlay_ref and slide_refs empty; "
@@ -682,7 +929,7 @@ def _candidate_block(entries: Sequence[PlanEntry], offers: Mapping[str, _Offer])
         lines.append("  caption candidates:")
         lines.extend(f"    {c.label} {_display(c.text)}" for c in offer.captions)
         if not offer.captions:
-            lines.append("    NONE — leave caption_ref empty.")
+            lines.append("    NONE — leave caption_ref empty; this creative captions itself.")
         blocks.append("\n".join(lines))
     if not blocks:
         return ""
@@ -690,6 +937,44 @@ def _candidate_block(entries: Sequence[PlanEntry], offers: Mapping[str, _Offer])
               "renders the ORIGINAL bytes of the string you name, line breaks and all. Choose by "
               "label only.")
     return f"{header}\n\n" + "\n\n".join(blocks)
+
+
+def _panel_lines(entry: PlanEntry, offer: _Offer) -> list[str]:
+    """The source deck, one line per SOURCE SLIDE POSITION, empty slots included.
+
+    Shown before every other candidate (FR-100) and shown whole rather than as the sparse list of
+    offerable panels, because the sequence is the information: `slide 3 — (empty on the source
+    deck)` is what makes `P1.panel.4` legible as *their fourth slide* instead of *the third string
+    in a list*. Nothing here is a new candidate — the labels are the same ones the on-image table
+    would print — so the block costs one line per source slide and buys the position contract.
+    """
+    if not offer.panels:
+        return []
+    mapped = _panel_mapped(entry, offer)
+    lines = ["  source deck panels, in the source's own slide order"
+             + (" — the slides of this carousel are ENGINE-MAPPED from them (our slide i renders "
+                "their panel i, verbatim). They are already assigned: leave slide_refs empty."
+                if mapped else
+                " (index = the source slide's own position). Context: the ones this creative may "
+                "quote appear again in the candidate list below, with the slots they fit.")]
+    for position, text in enumerate(offer.panels, start=1):
+        label = f"P{offer.post_ordinal}.panel.{position}"
+        lines.append(f"    {label} {_display(text)}" if text.strip() else
+                     f"    {label} (empty on the source deck — that slide renders without text)")
+    return lines
+
+
+def _panel_mapped(entry: PlanEntry, offer: _Offer) -> bool:
+    """FR-304: is this creative a deck whose slides the ENGINE assigns from the source's panels?
+
+    Three conditions, all structural. It must be a carousel (nothing else has slides); it must
+    have BOUND its source post at ASSIGN (an unbound rotation pick carries no promise that this
+    post's deck is our deck); and it must not be an override brief, which binds no source post at
+    all and renders from its own directives (§0.14d). A blend brief is NOT exempt — it quotes the
+    topic in full and merely carries a message alongside it (FR-146).
+    """
+    return (str(entry.creative_format) == "carousel" and offer.bound
+            and entry.brief_influence != "override" and bool(offer.panels))
 
 
 def _display(text: str) -> str:
@@ -728,6 +1013,8 @@ def _sibling_list(entries: Sequence[PlanEntry], run: _Run, offers: Mapping[str, 
         if verbatim and offer is not None and offer.post is not None:
             line += (f" · quote post P{offer.post_ordinal}"
                      " · caption language: as-selected (source language, never translated)")
+            if _panel_mapped(entry, offer):
+                line += " · slides engine-mapped from that post's panels (slide_refs unused)"
         else:
             onimage = run.onimage_languages.get(entry.asset_id, entry.language)
             line += f" · caption {entry.language} · on-image {onimage}"
@@ -809,6 +1096,11 @@ def _resolve(entry: PlanEntry, payload: Mapping[str, Any], offer: _Offer, group:
     `text` field, and that field was built once from the `SourcePost` (minus a logged strip). The
     only decisions left are *which* candidate and *what to do when the label is unusable*, and
     both are answered by dropping the field rather than approximating it.
+
+    The deck is the exception, and after D46 it is the normal case: a bound carousel's
+    `slide_texts` are not in the answer at all. `_mapped_deck` builds them from the source's own
+    panels, position for position, and the model's `slide_refs` — if it sent any — are logged and
+    discarded (FR-304).
     """
     refs: dict[str, str] = {}
     tags: list[DegradationTag] = []
@@ -829,17 +1121,16 @@ def _resolve(entry: PlanEntry, payload: Mapping[str, Any], offer: _Offer, group:
     headline = pick(payload.get("headline_ref"), "headline", "headline")
     subline = pick(payload.get("subline_ref"), "subline", "subline")
     overlay = pick(payload.get("overlay_ref"), "overlay", "overlay_text")
-    slides: list[str] = []
-    for raw in _strings(payload.get("slide_refs")):
-        # The provenance key is the slide's FINAL position, not the ref's position in the answer:
-        # a dropped ref closes the gap in `slide_texts`, and `slide_3` in meta.yaml has to mean
-        # the third slide that shipped, not the third label the model happened to write.
-        candidate = _lookup(raw, "slide", offer, entry, run)
-        if candidate is None:
-            continue
-        slides.append(candidate.text)
-        refs[f"slide_{len(slides)}"] = candidate.label
-        stripped = stripped or candidate.stripped
+    deck = (_mapped_deck(entry, offer, run) if _panel_mapped(entry, offer)
+            else _selected_deck(payload, offer, entry, run))
+    slides, stripped = deck.texts, stripped or deck.stripped
+    refs.update(deck.refs)
+    if _panel_mapped(entry, offer) and _strings(payload.get("slide_refs")):
+        _warn(run.log, "copy_slide_refs_ignored",
+              f"{entry.asset_id}: the model answered with slide references on a deck whose slides "
+              "are mapped from the source post's own panels (FR-304); they are discarded and the "
+              "mapping stands", asset_id=entry.asset_id,
+              refs=_strings(payload.get("slide_refs")))
     caption_candidate = _caption_for(payload.get("caption_ref"), offer, entry, run)
     caption, hashtags = "", []
     if caption_candidate is not None:
@@ -847,15 +1138,20 @@ def _resolve(entry: PlanEntry, payload: Mapping[str, Any], offer: _Offer, group:
         stripped = stripped or caption_candidate.stripped
         caption, hashtags = caption_candidate.text, list(caption_candidate.hashtags)
     else:
-        # The assigned post carries no quotable caption at all (rare: a video post with an empty
-        # caption and an empty description). Our own words are the honest answer — the topic name
-        # plus the standing niche line — and they are ours, so no verbatim claim is made about
-        # them and no provenance label is recorded.
+        # The bound post carries no caption worth shipping: it is empty, it was entirely a
+        # competitor's name, or — the case D46 §0.7 added — what remains after its trailing hashtag
+        # run is peeled is under `_CAPTION_MIN_CHARS` non-hashtag characters, which is a tag dump
+        # rather than a caption. Our own words are the honest answer, and they are ours, so no
+        # verbatim claim is made about them and no provenance label is recorded. (Virlo's own
+        # `description` summary is NOT a candidate here any more — FR-303 removed it from the
+        # grammar, so a post with nothing but a summary caption reaches exactly this branch.)
         caption = _fallback_caption(_subject_name(entry, group), run.niche_descriptor)
         own_words.append(caption)
         _warn(run.log, "copy_caption_unavailable",
-              f"{entry.asset_id}: post P{offer.post_ordinal} offers no quotable caption; shipping "
-              "the topic name and the standing niche line instead", asset_id=entry.asset_id)
+              f"{entry.asset_id}: post P{offer.post_ordinal} offers no caption with at least "
+              f"{_CAPTION_MIN_CHARS} non-hashtag characters (§0.7); shipping the topic name and "
+              "the standing niche line instead", asset_id=entry.asset_id,
+              post_id=offer.post.post_id if offer.post else "")
 
     copyset = CopySet(
         asset_id=entry.asset_id,
@@ -871,7 +1167,9 @@ def _resolve(entry: PlanEntry, payload: Mapping[str, Any], offer: _Offer, group:
         through_line=str(payload.get("through_line") or "") or _subject_name(entry, group),
         motion_beat=str(payload.get("motion_beat") or ""),
     )
-    if not (headline or subline or overlay or slides):
+    # A mapped deck keeps its empty slots (they ARE the alignment), so "did anything become
+    # pixels" is a question about the strings, never about the length of the list.
+    if not (headline or subline or overlay or any(text.strip() for text in slides)):
         tags.append(DegradationTag.NO_ONIMAGE_TEXT)
         _warn(run.log, "no_onimage_text",
               f"{entry.asset_id}: no string on post P{offer.post_ordinal} fits this style's "
@@ -886,9 +1184,95 @@ def _resolve(entry: PlanEntry, payload: Mapping[str, Any], offer: _Offer, group:
               asset_id=entry.asset_id, refs=dict(refs))
     return _Written(
         copyset=copyset,
-        source=CopyProvenance(post_id=offer.post.post_id if offer.post else "", refs=refs),
+        source=CopyProvenance(post_id=offer.post.post_id if offer.post else "", refs=refs,
+                              panel_map=deck.panel_map,
+                              source_panel_count=len(offer.panels)),
         tags=tags,
         quoted=(*offer.haystack, *own_words))
+
+
+@dataclass(slots=True)
+class _PanelDeck:
+    """One carousel's finished slide texts, their provenance labels and their FR-304 panel map.
+
+    `texts` is POSITION-INDEXED, not compacted: `texts[i - 1]` is slide *i*, and an empty string
+    means that slide renders without text. `refs` carries `slide_<n> -> P<m>.panel.<n>` for the
+    slides that really did quote something, and `panel_map` carries one row for EVERY slide,
+    quoted or not, because the gallery aligns our slide *i* against their slide *i* (FR-309).
+    """
+
+    texts: list[str] = field(default_factory=list)
+    refs: dict[str, str] = field(default_factory=dict)
+    panel_map: list[dict[str, Any]] = field(default_factory=list)
+    stripped: bool = False
+
+
+def _mapped_deck(entry: PlanEntry, offer: _Offer, run: _Run) -> _PanelDeck:
+    """FR-304 — source panel *i* becomes our slide *i*, verbatim, with no model in the loop.
+
+    The deck's LENGTH is the plan's (`entry.slide_count`, fixed at ASSIGN from the source's
+    `panel_count` clamped to the platform ceiling, §0.4′) and never this function's: the estimate
+    the operator approved was priced on that number, and a copy stage that grew or shrank the deck
+    would spend money the Confirm gate never quoted. Positions past the source's own panels — a
+    ceiling floor, a short deck — simply render wordless.
+
+    Three ways a panel yields an empty slide, and all three KEEP THEIR POSITION:
+
+    - **empty on the source** — Virlo transcribed nothing and vision filled nothing (§0.14a). The
+      slide renders without text; `generate/carousel` draws it as a no-text slide.
+    - **unusable** — it carries an @handle or a URL (§0.14b keeps emoji, newlines and `#` for
+      exactly this slot, and excludes those two everywhere).
+    - **over budget** — longer than the `slide` ceiling in force (style ∩ config). It is NOT
+      trimmed. "A string that does not fit was never offered" is the whole verbatim contract
+      (FR-100), and trimming a source panel to fit our frame is retyping it by another name.
+
+    All three are warned ONCE per creative, together, because the operator's question is "how much
+    of this deck came through" and not "what happened to slide 4".
+    """
+    limit = offer.budgets.get("slide", 0)
+    length = max(0, _int(entry.slide_count)) or len(offer.panels)
+    deck, dropped = _PanelDeck(), []
+    for position in range(1, length + 1):
+        text = offer.panels[position - 1] if position <= len(offer.panels) else ""
+        label = f"P{offer.post_ordinal}.panel.{position}"
+        usable = bool(text.strip()) and bool(
+            _fitting_slots(text, ("slide",), {"slide": limit}, kind="panel"))
+        if text.strip() and not usable:
+            dropped.append(f"slide {position} ({len(text)} characters, ceiling {limit})")
+        deck.texts.append(text if usable else "")
+        deck.refs[f"slide_{position}"] = label if usable else ""
+        deck.panel_map.append({"slide": position, "source_position": position,
+                               "source_text": text if usable else "",
+                               "ref_label": label if usable else ""})
+        deck.stripped = deck.stripped or (usable and position in offer.stripped_panels)
+    deck.refs = {slot: label for slot, label in deck.refs.items() if label}
+    if dropped:
+        _warn(run.log, "panel_over_budget",
+              f"{entry.asset_id}: {len(dropped)} source panel(s) could not be rendered as they "
+              f"were written and are never trimmed (FR-100) — {'; '.join(dropped)}. Those slides "
+              "render without text and keep their position, so the rest of the deck still lines "
+              "up with the source", asset_id=entry.asset_id, slide_budget=limit, slides=dropped)
+    return deck
+
+
+def _selected_deck(payload: Mapping[str, Any], offer: _Offer, entry: PlanEntry,
+                   run: _Run) -> _PanelDeck:
+    """The pre-D46 path: the model's own `slide_refs`, now POSITION-PRESERVING (FR-302/FR-304).
+
+    Reachable only by a carousel that bound no source post — an override brief with a topic, or an
+    entry built before ASSIGN's binding existed. `slide_refs[k]` is slide *k+1* and an unusable
+    label leaves that slide wordless instead of pulling slide 3's words onto slide 2. The old
+    gap-closing behaviour was defensible while slides were independent quotes; under FR-302's
+    position-preserving grammar it is a deck that reads as the source's with two slides swapped.
+    """
+    deck = _PanelDeck()
+    for position, raw in enumerate(_strings(payload.get("slide_refs")), start=1):
+        candidate = _lookup(raw, "slide", offer, entry, run)
+        deck.texts.append(candidate.text if candidate else "")
+        if candidate is not None:
+            deck.refs[f"slide_{position}"] = candidate.label
+            deck.stripped = deck.stripped or candidate.stripped
+    return deck
 
 
 def _lookup(raw: Any, slot: str, offer: _Offer, entry: PlanEntry, run: _Run) -> _Candidate | None:
@@ -1003,6 +1387,51 @@ def _free_text(entry: PlanEntry, payload: Mapping[str, Any], group: _Group,
     return _Written(copyset=copyset, source=CopyProvenance(), tags=tags)
 
 
+def _refused(entry: PlanEntry, group: _Group, run: _Run, offer: _Offer) -> _Written:
+    """The creative whose bound post may not be quoted (FR-307/§0.10) — ours words, wordless frame.
+
+    This is NOT `copy_degraded`: no model call failed, and counting it as an FR-248 `llm_starved`
+    loss would blame the LLM for a plan that bound a post the fetch gate had already spent. It is
+    not `_fallback_copy` either — that tier quotes P1, and P1 may be the very post being refused.
+    So the creative ships what is unambiguously ours: the topic's own name plus the standing niche
+    line, hashtags assembled from the name, and NO on-image text (`no_onimage_text`, which is what
+    the operator will actually see in the frame).
+
+    Two tags, and the second one only where it is true: `no_onimage_text` always (the frame is
+    wordless whatever the reason), plus `no_fresh_post_available` when the post was BURNT — the
+    same FR-73 spelling `plan.assign` uses for its own skip of the same condition, so the operator
+    reads one vocabulary whichever gate caught it. A `bound_post_missing` refusal is a different
+    fault (the topic changed under the plan) and does not borrow that word; it lives in the log
+    line `_bound_index` already wrote.
+    """
+    name = _subject_name(entry, group)
+    caption = _fallback_caption(name, run.niche_descriptor)
+    hashtags = _hashtags(name)
+    copyset = CopySet(
+        asset_id=entry.asset_id,
+        language=entry.language,
+        trend_key=entry.trend_key,
+        caption=caption,
+        hashtags=hashtags,
+        headline="",
+        subline="",
+        slide_texts=[],
+        overlay_text="",
+        through_line=name,
+    )
+    _warn(run.log, "copy_post_refused",
+          f"{entry.asset_id}: its source post was refused ({offer.refused}); the creative ships "
+          "the topic name plus the standing niche line and renders without on-image text. No "
+          "other post is substituted — the plan's binding is the run's no-repeat guarantee",
+          asset_id=entry.asset_id, reason=offer.refused,
+          post_id=str(entry.source_post_id or ""))
+    tags = [DegradationTag.NO_ONIMAGE_TEXT]
+    if offer.refused == _REFUSED_BURNT:
+        tags.append(DegradationTag.NO_FRESH_POST_AVAILABLE)
+    return _Written(copyset=copyset, source=CopyProvenance(), tags=tags,
+                    quoted=(caption, *hashtags))
+
+
 def _fallback(entry: PlanEntry, trend: TrendItem | None, run: _Run) -> _Written:
     """FR-99's last resort — the copy call produced nothing for this creative.
 
@@ -1052,14 +1481,21 @@ def _fallback_copy(entry: PlanEntry, trend: TrendItem | None, niche_descriptor: 
     back to what is ours: the topic's own name (the monitor's theme label) plus the niche
     descriptor from config, and `through_line` carries the theme name so `reel_director.md` still
     knows what the clip is about.
+
+    §0.7's substance floor applies to this tier too, and it has to: the caption that reaches here
+    is unscreened by any model, so a top post whose caption is a hashtag run and three words would
+    otherwise ship as our caption on the very path where nobody chose it. Under the floor, this
+    tier falls through to the assembled caption below — which is exactly what FR-99 calls the
+    "minimal assembled caption" of the no-call tier.
     """
     name = trend.name if trend else (entry.brief_name or entry.asset_id)
     post = _top_post(trend)
     caption, hashtags = "", []
     if post is not None:
         text, _ = _apply_strip(post.caption, competitors)
-        caption, tags = _split_trailing_hashtags(text)
-        hashtags = list(tags)
+        body, tags = _split_trailing_hashtags(text)
+        if _caption_substance(body) >= _CAPTION_MIN_CHARS:
+            caption, hashtags = body, list(tags)
     if not caption.strip():
         caption, hashtags = _fallback_caption(name, niche_descriptor), _hashtags(name)
     return CopySet(
@@ -1158,14 +1594,19 @@ def _apply_budgets(copyset: CopySet, entry: PlanEntry, run: _Run) -> bool:
 def _verify(written: _Written, entry: PlanEntry, run: _Run) -> list[DegradationTag]:
     """Audit every shipped string. Deviation tags `copy_not_verbatim`; it NEVER fails a creative.
 
-    Two questions, asked of the finished `CopySet` rather than of the plan that produced it — the
-    point of a verifier is to catch the day the plan and the product disagree:
+    FR-303 formalises this pass and FR-73 owns its one tag's spelling (`copy_not_verbatim`, cited
+    to FR-303 in the degradation vocabulary). Two questions, asked of the finished `CopySet` rather
+    than of the plan that produced it — the point of a verifier is to catch the day the plan and
+    the product disagree:
 
     1. **Is it the source's?** Every rendered string must be a byte-substring of one of the strings
-       this creative was entitled to quote (`_Written.quoted`), AFTER the logged strip. Ref
-       resolution makes this true by construction today; the check is what notices the day someone
-       adds a "helpful" normalisation between the candidate table and the `CopySet`. It is skipped
-       for free-text creatives, which quote nothing and claim nothing.
+       this creative was entitled to quote (`_Written.quoted`), AFTER the logged strip. That pool
+       is built from `_numbered_fields`, so it contains exactly the four quotable kinds — a shipped
+       string that happens to match Virlo's `description` is a deviation like any other, which is
+       the second half of FR-303's ban and the reason it is enforced at the grammar rather than at
+       a length filter. Ref resolution makes the check true by construction today; it is what
+       notices the day someone adds a "helpful" normalisation between the candidate table and the
+       `CopySet`. It is skipped for free-text creatives, which quote nothing and claim nothing.
     2. **Is it clean?** No blocklisted competitor may appear in ANY shipped string, on any path,
        verbatim or free text. This half is the fail-closed one and it re-checks §1.5 layer 1 at
        the very last moment before the bytes leave this module — the same asymmetry `_strip_terms`
@@ -1211,6 +1652,14 @@ def _strings(value: Any) -> list[str]:
     if isinstance(value, Sequence):
         return [str(item) for item in value if str(item).strip()]
     return []
+
+
+def _int(value: Any) -> int:
+    """A non-negative int from anything a source or a plan can put in an integer field."""
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
 
 
 def _warn(log: Any, event_type: str, message: str, **data: Any) -> None:

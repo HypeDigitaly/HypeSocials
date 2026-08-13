@@ -481,7 +481,9 @@ def _pick_counts(io: Console, config: Config, steps: Sequence[str]) -> None:
                  default=5)
     while True:
         _step(io, steps, "counts",
-              f"A carousel is a deck of {slides} slides, so 2 order {2 * slides} images.",
+              f"A deck follows its source slideshow's slide count, up to {slides} "
+              "(FR-304).",
+              f"The estimate prices the {slides}-slide ceiling per carousel.",
               "Platforms come from the config or --platforms, never asked here:"
               "\n     " + _fit(", ".join(config.run.platforms), 50))
         current = " ".join(f"{_PLURAL[name]}={config.run.formats.get(name, 0)}"
