@@ -86,7 +86,7 @@ The ranking is intentionally crude. Its job is to avoid picking a dud, not to fi
 
 - Topics whose windowed posts are **majority-slideshow** (image panels + `panel_texts` + narrative arc) are preferred for **carousels** — the posts already are carousels.
 - Topics whose windowed posts are **majority-video** (hooks, overlay text) are preferred for **images and reels**.
-- When no affinity match remains for a format and all remaining topics are slideshow-majority, **assignment marks the entry with `no_fresh_post_available` (§0.10 famine/skip), never silently binds a carousel to an image-format creative.** A formats guard (§0.14e) catches the impossible case at pre-flight: if videos are disabled but images/reels are requested, no affinity match can ever succeed, and the run refuses with exit 2 rather than silently failing every image-format creative.
+- When no affinity match remains for a format and all remaining topics are slideshow-majority, **assignment marks the entry with `no_fresh_post_available` (§0.10 famine/skip), never silently binds a carousel to an image-format creative** — **scoped to runs where the formats guard (§0.14e) has passed pre-flight**. A formats guard catches the impossible case at pre-flight: if videos are disabled but images/reels are requested, no affinity match can ever succeed, and the run refuses with exit 2 rather than silently failing every image-format creative.
 
 Every affinity decision — which topic went to which creative and whether it was an affinity match — is logged with its reason, so an odd pairing is always explainable.
 
@@ -152,12 +152,13 @@ The copy model is GPT 5.6 Luna (OpenRouter id `openai/gpt-5.6-luna`, confirmed),
 
 **A failed group call is split, not surrendered.** Grouping is an efficiency, and an efficiency must never widen the blast radius: one failed call cannot be allowed to take four creatives down with it. So when a grouped (topic × language) call fails after its single retry, the engine **splits the group and issues one copy call per creative in it, one attempt each**, all concurrently. Only then can anything be declared lost, and only individually.
 
-If a per-creative call also fails, that creative still renders: its on-image text falls back to a minimal sourced text if available, and its caption is a **minimal assembled caption** (topic name plus the platform's hashtag convention) built without any model call. The asset is marked `copy_degraded` in metadata, the log and the summary.
+If a per-creative call also fails, that creative still renders: for a **BOUND panel-mapped carousel** (FR-304), the mapped panels are rendered **verbatim with full provenance** — the source post's original panel texts go on the slides they came from — and the creative ships with the bound post's own best caption (the post's original caption, no model contribution, marked `copy_degraded` to note the loss of the LLM's angle selection); only the model's free-text contributions (`through_line` and `narrative_arc` for reels) are lost. For images and reels using a trend's hook text, fallback is a minimal sourced text if available. All creatives are marked `copy_degraded` in metadata, the log and the summary.
 
 **FR-13 — Copy outputs per format *(amended v2.1.0)*.** Every creative gets on-image text and a caption plus hashtag set. Beyond that:
 - **Image** — one on-image text block (headline plus optional subline), sourced from the selected `SourcePost`'s caption or hooks.
 - **Carousel** — per-slide on-image text for every slide (each sourced from the `SourcePost` selection per FR-304) plus any narrative arc the posts contained. **Per-slide text is sourced from `panel_texts` verbatim**: if the selected post's `panel_texts` slot i contains those four words on panel i, those four words go there; if the selected post has no panel text for that slot, the on-image text degrades (tagged `NO_ONIMAGE_TEXT`).
 - **Reel** — the overlay/hook text (sourced from the selected post's caption or hooks) plus a one-line through-line (free text from the copy model, describing the motion beat for the video).
+- **Caption substance (§0.7):** a caption candidate from source posts must carry **≥25 non-hashtag characters** after any trailing hashtag run is peeled; below that threshold, the engine ships the topic name plus the platform's niche line as the caption and makes no verbatim claim (the source post's caption was too slight to be rendered as primary copy).
 
 **FR-14 — Copy inputs (amended v2.0.0).** The prompt receives: the topic's posts (offered by reference number, with caption/hook/text samples for the model to choose from); the platform, format and language; the platform's tone and length conventions from config; Notion brand context when `notion_influence` is `copy` or `full`; the brief's copy directives when the creative came from a campaign brief (FR-146); the style's max character budgets for on-image text.
 
@@ -341,7 +342,7 @@ What happens when the estimate exceeds the cap depends on whether anyone is at t
 
 A `--yes` run only refuses outright when trimming cannot help — an unpriced format (FR-107) or a cap so low that nothing at all fits.
 
-**FR-107 — What the estimate must include *(amended v2.1.0)*.** The estimate enumerates every **conditional contributor**, not just the obvious renders, because an estimate that omits half the spend is worse than no estimate:
+**FR-107 — What the estimate must include *(amended v2.1.0)*.** The estimate enumerates every **conditional contributor**, not just the obvious renders, because an estimate that omits half the spend is worse than no estimate. **The estimate prices the ceiling; binding after Confirm only lowers the bill** — Confirm runs before ASSIGN in the real flow (and before copy attempts), so actual spend depends on topic supply and success; provisioning for worst case ensures the operator never sees a surprise overage.
 
 - **Topic filter call** — one batched LLM screen of all candidate topics at the worst-case bound `len(monitors) × virlo_topics_per_monitor × per-topic-tokens` priced pre-Collect.
 - **Slide intelligence (analysis) calls** — one Claude Sonnet 5 call per assigned carousel post after the Confirm gate, analyzing all slides in one call (one overhead per post, all image tokens per slide); estimated pre-Confirm from Virlo `panel_count` at ASSIGN (FR-306).

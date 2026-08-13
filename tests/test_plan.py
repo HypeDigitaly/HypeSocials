@@ -554,6 +554,62 @@ def test_fr307_two_carousels_on_one_topic_take_two_different_posts_then_starve()
     assert "2 fresh post(s) were bindable" in result.fresh_post_line
 
 
+def test_fr307_a_topic_with_no_bindable_deck_left_loses_the_entry_to_a_weaker_topic() -> None:
+    """Bindability is a FILTER over the candidate topics, not a test applied to the winner.
+
+    The strong topic here is perfectly eligible — it still carries a fresh post, so FR-7's topic
+    gate keeps it — but its only SLIDESHOW is one an earlier run already quoted, and its other post
+    is a video with no panels to map (FR-304). If the pick chose the topic first and looked for a
+    deck second, this entry would skip while a bindable deck sat one rank down; instead the topic
+    falls out of the candidate list and the weaker topic's fresh deck is bound.
+
+    This is the cross-topic half of §0.10's exhaustion rule. The within-topic half (a second
+    carousel taking a second post, a third starving) is pinned above; famine is only honest once it
+    means the whole eligible pool is spent, not that the first choice was.
+    """
+    cfg = _config(formats={"image": 0, "carousel": 1, "reel": 0}, platforms=["linkedin"],
+                  trend_history_days=30)
+    plan = build_plan(cfg)
+    strong = _deck_topic("strong", _deck("post-burnt", panels=6, views=9000),
+                         _post("post-video", views=8000), strength=0.9)
+    weak = _deck_topic("weak", _deck("post-fresh", panels=3, views=10), strength=0.2)
+    history = {_hk("strong"): _seen(1, "post-burnt")}
+
+    selection = select([strong, weak], cfg, history)
+    result = assign(plan.entries, selection, cfg)
+
+    assert [t.topic_key for t in selection.eligible] == ["strong", "weak"], \
+        "the strong topic is still eligible — one fresh post is all FR-7 asks of a topic"
+    assert plan.entries[0].topic_key == "weak"
+    assert plan.entries[0].source_post_id == "post-fresh" and plan.entries[0].slide_count == 3
+    assert plan.entries[0].status is PlanEntryStatus.PENDING
+    assert result.decisions[0].reason == "affinity"
+    assert result.no_fresh_post_skips == 0
+    assert result.carousel_posts_available == 1, "the burnt deck and the video are not supply"
+
+
+def test_fr307_the_supply_figure_counts_each_post_once_however_many_topics_carry_it() -> None:
+    """§0.9's supply arithmetic is what W5 writes into FR-307's placeholder, so it has to be the
+    number of DECKS the run could actually bind — not a sum of per-topic counts.
+
+    One post can sit in two topics (the clusters are themed, not disjoint), and counting it twice
+    would overstate the weekly supply and make a daily cadence look affordable when it is not.
+    """
+    cfg = _config(formats={"image": 0, "carousel": 2, "reel": 0}, platforms=["linkedin"],
+                  max_trend_reuses_per_run=6)
+    plan = build_plan(cfg)
+    shared = _deck("post-shared", panels=4, views=900)
+    first = _deck_topic("agents", shared, _deck("post-own", panels=2, views=100), strength=0.9)
+    second = _deck_topic("automation", shared, strength=0.4)
+
+    result = assign(plan.entries, select([first, second], cfg), cfg)
+
+    assert result.carousel_posts_available == 2, "post-shared is one deck, not two"
+    assert [e.source_post_id for e in plan.entries] == ["post-shared", "post-own"], \
+        "and once bound it is spent for the whole run, in every topic that carries it"
+    assert result.carousel_posts_bound == 2 and result.no_fresh_post_skips == 0
+
+
 def test_fr304_the_deck_is_clamped_into_two_and_the_platform_ceiling() -> None:
     """§0.4′/FR-257's clamp, both ends. A source deck longer than the ceiling ships its first N
     panels (the cut is tagged `panels_truncated` at generate time); a one-panel post is not a

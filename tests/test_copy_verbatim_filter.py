@@ -685,6 +685,59 @@ def test_an_emoji_handle_url_or_hashtag_string_is_never_offered_as_on_image_text
     assert "🚀" in offer.captions[0].text
 
 
+def test_0_14b_a_panel_keeps_its_emoji_hashtag_and_line_break_for_the_slide_slot_alone() -> None:
+    """D46 §0.14b's ONE relaxation, and the exact width of it.
+
+    A source panel's emoji is typography: that string was already on a slide, in a deck people
+    watched to the end, and our slide *i* IS their slide *i* (FR-304). Holding it to F23 would ship
+    a panel-mapped deck with a wordless slide wherever the creator used an emoji, a hashtag or a
+    second line — which is most decks. So those three are allowed for a `panel` filling the `slide`
+    slot, and nowhere else: the same panel offered as a HEADLINE is our frame's own line and is
+    held to the full rule.
+    """
+    source = topic(post(1, panels=("Growth 🚀 unlocked", "Wins big #ai", "Two lines\nof panel"),
+                        hooks=("Growth 🚀 unlocked",),
+                        caption="A caption long enough to be a caption at all."))
+
+    deck = _offer(entry("d1", 0, creative_format="carousel", slide_count=3, source_post_id="p1"),
+                  source)
+
+    panels = {candidate.label: candidate for candidate in deck.onimage
+              if candidate.kind == "panel"}
+    assert sorted(panels) == ["P1.panel.1", "P1.panel.2", "P1.panel.3"]
+    assert all(candidate.slots == ("slide",) for candidate in panels.values()), \
+        "allowed for the slide it came from, never promoted into the headline"
+    assert panels["P1.panel.1"].text == "Growth 🚀 unlocked", "the bytes are the source's own"
+    # The identical string, offered as a HOOK, is held to the full F23 rule and reaches no slot.
+    assert all(candidate.kind != "hook" for candidate in deck.onimage)
+
+
+async def test_0_14b_a_panel_carrying_a_handle_or_a_url_is_excluded_like_every_other_kind() -> None:
+    """The two exclusions §0.14b does NOT relax, and what they cost when they bite.
+
+    An `@handle` renders as somebody else's identity inside our frame and a URL invites a
+    hallucinated hyperlink — neither is typography, and neither becomes acceptable because a
+    creator put it on a slide. The slide keeps its POSITION and renders wordless (FR-304's
+    "unusable" branch), so the rest of the deck still lines up against the source.
+    """
+    source = topic(post(1, panels=("Ask @someone about it", "A perfectly ordinary panel",
+                                   "Read more at example.com"),
+                        caption="A caption long enough to be a caption at all."))
+    call = ScriptedCall({"d1": [refs(caption_ref="P1.caption")]})
+
+    result = await write(
+        [entry("d1", 0, creative_format="carousel", slide_count=3, source_post_id="p1")],
+        call, trends={"t1": source},
+        styles={STYLE_KEY: style(max_onimage_chars={"headline": 90, "subline": 60, "slide": 300})})
+
+    assert result.copy["d1"].slide_texts == ["", "A perfectly ordinary panel", ""]
+    assert result.provenance["d1"].refs == {"slide_2": "P1.panel.2", "caption": "P1.caption"}
+    assert [row["source_text"] for row in result.provenance["d1"].panel_map] == [
+        "", "A perfectly ordinary panel", ""]
+    assert [row["source_position"] for row in result.provenance["d1"].panel_map] == [1, 2, 3], \
+        "an unusable panel keeps its slot; nothing slides up"
+
+
 def test_a_captions_trailing_hashtags_are_never_offered_inside_the_frame() -> None:
     """The peeled tags travel in `hashtags[]` for the publisher; the caption BODY is what a
     headline could quote, and the untouched string carrying the tags is refused outright."""

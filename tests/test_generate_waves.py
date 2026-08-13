@@ -321,6 +321,234 @@ def test_ref_source_names_the_brief_whose_photos_a_creative_actually_uploaded(
     assert generate._record(with_photos, env).ref_source == ""
 
 
+# ------------------------------------------------- FR-73 v2.1.0: the three-stage provenance join
+#
+# `_record` is the ONE place the PLAN's bound post, the COPY stage's panel map and the slide
+# INTELLIGENCE reading of that same deck become a single document. FR-309's gallery card is built
+# from exactly these fields and re-derives nothing, so a join that drops a key, invents a value or
+# lets one absent stage take another one down with it is a wrong page over a correct run.
+
+
+class FakeSlide:
+    """One `sources.slide_intel.SourceSlide`, duck-typed — `_record` reads attributes, not types."""
+
+    def __init__(self, position: int, *, brief: str = "", image: str | None = None) -> None:
+        self.position = position
+        self.visual_brief = brief
+        self.image_file = image
+
+
+class FakeIntel:
+    """The `SlideIntel` surface `_record` uses: `slide()`, `relative_image()`, `degradations`.
+
+    Deliberately NOT the real dataclass. `generate` imports nothing from `sources` (the dependency
+    runs the other way), so the contract between them is a duck type, and a test that instantiated
+    the real class would be pinning an import this module is not allowed to have.
+    """
+
+    def __init__(self, *slides: FakeSlide, folder: str = "source/p1",
+                 degradations: tuple[str, ...] = ()) -> None:
+        self.slides = list(slides)
+        self.folder = folder
+        self.degradations = list(degradations)
+
+    def slide(self, position: int) -> FakeSlide | None:
+        return next((item for item in self.slides if item.position == position), None)
+
+    def relative_image(self, position: int) -> str | None:
+        found = self.slide(position)
+        return f"{self.folder}/{found.image_file}" if found and found.image_file else None
+
+
+def bound_deck(tmp_path: Path, **overrides: Any) -> tuple[PlanEntry, generate.Env]:
+    """A carousel bound to post `p1` of topic `t1`, with a copy-stage map over three slides."""
+    from datetime import datetime, timezone
+
+    from hypesocials.copywrite import CopyProvenance
+    from hypesocials.models import SourcePost
+
+    entry = make_entry(0, "carousel", source_post_id="p1", slide_count=3)
+    env = make_env(tmp_path, [entry])
+    env.trends["t1"].posts = [SourcePost(
+        post_id="p1", url="https://www.tiktok.com/@creator/photo/p1", author="creator",
+        views=1_240_000, caption="the five tools I actually use", is_slideshow=True,
+        panel_count=3, published_at=datetime(2026, 8, 1, 9, 30, tzinfo=timezone.utc))]
+    env.copy_provenance = {entry.asset_id: CopyProvenance(
+        post_id="p1", refs={"slide_1": "P1.panel.1"}, source_panel_count=3,
+        panel_map=[{"slide": 1, "source_position": 1, "source_text": "Panel one",
+                    "ref_label": "P1.panel.1"},
+                   {"slide": 2, "source_position": 2, "source_text": "", "ref_label": ""},
+                   {"slide": 3, "source_position": 3, "source_text": "Panel three",
+                    "ref_label": "P1.panel.3"}])}
+    for key, value in overrides.items():
+        setattr(env, key, value)
+    return entry, env
+
+
+def test_fr73_the_meta_joins_the_bound_post_the_panel_map_and_the_slide_reading(
+    tmp_path: Path,
+) -> None:
+    """All three stages present — the shape FR-309's three-part card is drawn from.
+
+    The copy stage owns `{slide, source_position, source_text, ref_label}` and the intelligence
+    pass owns `visual_brief` (FR-308's content directive) and `source_image` (FR-309's strip,
+    run-relative per FR-75). Neither overwrites the other, and the row ORDER is the copy stage's,
+    because the row IS the alignment.
+    """
+    entry, env = bound_deck(tmp_path)
+    env.slide_intel = {"p1": FakeIntel(
+        FakeSlide(1, brief="hero image, heading centred", image="slide_01.jpg"),
+        FakeSlide(2, brief="two-column table, four rows", image="slide_02.jpg"),
+        FakeSlide(3, brief="line chart, three series", image="slide_03.jpg"))}
+
+    record = generate._record(entry, env)
+
+    assert record.source_panel_count == 3
+    assert record.panel_map == [
+        {"slide": 1, "source_position": 1, "source_text": "Panel one", "ref_label": "P1.panel.1",
+         "visual_brief": "hero image, heading centred", "source_image": "source/p1/slide_01.jpg"},
+        {"slide": 2, "source_position": 2, "source_text": "", "ref_label": "",
+         "visual_brief": "two-column table, four rows", "source_image": "source/p1/slide_02.jpg"},
+        {"slide": 3, "source_position": 3, "source_text": "Panel three", "ref_label": "P1.panel.3",
+         "visual_brief": "line chart, three series", "source_image": "source/p1/slide_03.jpg"}]
+    assert record.source_post == {
+        "post_id": "p1", "url": "https://www.tiktok.com/@creator/photo/p1", "author": "creator",
+        "views": 1_240_000, "published_at": "2026-08-01T09:30:00+00:00",
+        "caption": "the five tools I actually use"}
+    assert isinstance(record.source_post["published_at"], str), \
+        "meta.yaml is a document a human reads, so a datetime never reaches it"
+    assert record.copy_source_post_id == "p1" and record.copy_source_refs == {
+        "slide_1": "P1.panel.1"}
+
+
+def test_fr73_a_panel_map_row_carries_both_intel_keys_even_with_no_intelligence_at_all(
+    tmp_path: Path,
+) -> None:
+    """ONE row schema, always. Vision off, a failed read, a preview, a test — every row still gains
+    `visual_brief` and `source_image`, empty and `None`.
+
+    A consumer that had to ask whether a key EXISTS before reading it would be reading two schemas,
+    and the gallery's alignment loop is the last place that should have to branch. The row count
+    and order are untouched either way: the intelligence pass adds content to rows, it never
+    creates, drops or re-orders them.
+    """
+    entry, env = bound_deck(tmp_path)  # env.slide_intel deliberately left empty
+
+    record = generate._record(entry, env)
+
+    assert [row["slide"] for row in record.panel_map] == [1, 2, 3]
+    assert all(row["visual_brief"] == "" and row["source_image"] is None
+               for row in record.panel_map)
+    assert record.source_post is not None, "no intelligence is not no provenance"
+    assert record.degradations == []
+
+
+def test_fr73_a_slide_whose_picture_never_downloaded_keeps_its_row_and_loses_only_the_picture(
+    tmp_path: Path,
+) -> None:
+    """§0.14c case (b) through the join: a 404 leaves that row's `source_image` null while its
+    words, its ref label and its position survive — the gallery draws a labelled gap in that one
+    tile instead of shifting every later tile up by one."""
+    entry, env = bound_deck(tmp_path)
+    env.slide_intel = {"p1": FakeIntel(FakeSlide(1, brief="hero image", image="slide_01.jpg"),
+                                       FakeSlide(2, brief="", image=None),
+                                       FakeSlide(3, brief="line chart", image="slide_03.jpg"))}
+
+    rows = generate._record(entry, env).panel_map
+
+    assert rows[1] == {"slide": 2, "source_position": 2, "source_text": "", "ref_label": "",
+                       "visual_brief": "", "source_image": None}
+    assert rows[2]["source_image"] == "source/p1/slide_03.jpg"
+
+
+def test_fr73_the_join_never_mutates_the_copy_stages_own_rows(tmp_path: Path) -> None:
+    """`CopyProvenance` is the caller's data and two sibling creatives may share one — so the meta
+    writer copies each row before adding to it. Writing through would give the second creative a
+    map already carrying the first one's briefs."""
+    entry, env = bound_deck(tmp_path)
+    env.slide_intel = {"p1": FakeIntel(FakeSlide(1, brief="hero image", image="slide_01.jpg"))}
+    original = [dict(row) for row in env.copy_provenance[entry.asset_id].panel_map]
+
+    generate._record(entry, env)
+
+    assert env.copy_provenance[entry.asset_id].panel_map == original
+    assert all("visual_brief" not in row
+               for row in env.copy_provenance[entry.asset_id].panel_map)
+
+
+def test_fr73_a_bound_post_the_topic_can_no_longer_resolve_carries_its_id_alone(
+    tmp_path: Path,
+) -> None:
+    """The id is a fact; `author: ""` and `views: 0` beside it would be invented provenance.
+
+    Reachable whenever the roster moved under the plan — a re-fetch between ASSIGN and meta, a
+    trend dropped from `env.trends`, a plan resurrected from an older run. The gallery renders the
+    id alone and offers no permalink, which is the honest rendering of "we know which post, and
+    nothing else about it any more".
+    """
+    entry, env = bound_deck(tmp_path)
+    env.trends["t1"].posts = []
+
+    record = generate._record(entry, env)
+
+    assert record.source_post == {"post_id": "p1"}
+    assert record.panel_map, "losing the post does not lose the deck's own alignment"
+
+
+def test_fr73_an_unbound_creative_has_no_source_post_and_no_rows(tmp_path: Path) -> None:
+    """`source_post: null` is FR-309's routing signal to the single-card layout (§0.14d).
+
+    An image, a reel and an override-brief carousel bind no deck, so there is nothing to align and
+    nothing to claim — and the fallback the null routes to is today's card, unchanged.
+    """
+    entry = make_entry(0, "carousel", brief_influence="override", brief_name=BRIEF_NAME,
+                       style_key="")
+    env = make_env(tmp_path, [entry])
+
+    record = generate._record(entry, env)
+
+    assert record.source_post is None
+    assert record.panel_map == [] and record.source_panel_count == 0
+    # M14: an override brief was the visual authority, and the card says so where a style key
+    # would otherwise stand — the gallery treats it as a style key like any other.
+    assert record.style_key == "brief_override"
+
+
+def test_fr306_the_intel_tags_reach_meta_without_duplicating_the_copy_stages_own(
+    tmp_path: Path,
+) -> None:
+    """FR-306's two degradations, in FR-73's enum, appended to what the copy stage already tagged.
+
+    `SlideIntel.degradations` answers in the meta.yaml vocabulary by contract, so this is a lookup
+    rather than a mapping table — one spelling, owned by `DegradationTag`. The de-duplication
+    matters because both stages can legitimately report the same condition, and a badge printed
+    twice reads as two separate losses.
+    """
+    entry, env = bound_deck(tmp_path)
+    env.copy_tags = {entry.asset_id: [DegradationTag.NO_ONIMAGE_TEXT,
+                                      DegradationTag.VISION_TRANSCRIBED]}
+    env.slide_intel = {"p1": FakeIntel(FakeSlide(1),
+                                       degradations=("vision_transcribed", "vision_unavailable"))}
+
+    record = generate._record(entry, env)
+
+    assert record.degradations == [DegradationTag.NO_ONIMAGE_TEXT,
+                                   DegradationTag.VISION_TRANSCRIBED,
+                                   DegradationTag.VISION_UNAVAILABLE]
+
+
+def test_fr306_a_degradation_this_build_cannot_spell_is_skipped_not_raised(
+    tmp_path: Path,
+) -> None:
+    """An unknown tag is a version skew between two modules, and the render is already paid for —
+    so it is dropped from the enum-typed list rather than costing this creative its meta.yaml."""
+    entry, env = bound_deck(tmp_path)
+    env.slide_intel = {"p1": FakeIntel(
+        FakeSlide(1), degradations=("a_tag_from_the_future", "vision_unavailable"))}
+
+    assert generate._record(entry, env).degradations == [DegradationTag.VISION_UNAVAILABLE]
+
+
 # --------------------------------------------------------------------------- dispatch by format
 
 

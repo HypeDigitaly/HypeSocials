@@ -38,6 +38,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -858,3 +859,204 @@ def test_fr294_only_a_skip_drops_a_topic_before_select() -> None:
 
     assert 'verdicts.get(ordinal) is None or verdicts[ordinal].verdict != "skip"' in drop
     assert '"strip"' not in drop, "a stripped topic is kept, not dropped"
+
+
+# ------------------------------------------------ FR-306: the INTEL stage, wired and narrated
+#
+# The slide-intelligence pass is the one stage D46 ADDED to the pipeline, and it is the one stage
+# that spends money the operator approved for something else if it is wired wrongly: it runs after
+# the Confirm gate (it is paid), before COPY (its transcription fills the panel slots the offer
+# reads), and only for the decks the plan actually bound. `sources.slide_intel.enrich` has its own
+# suite; what is pinned here is the WIRING and the narration around it.
+
+
+class _Enrich:
+    """A stand-in for `sources.slide_intel.enrich` — records the call, answers with readings."""
+
+    def __init__(self, *, answers: dict[str, Any] | None = None) -> None:
+        self.answers = answers
+        self.calls: list[dict[str, Any]] = []
+
+    async def __call__(self, posts: Any, *, run_dir: Any, call: Any, engine: Any, cfg: Any,
+                       log: Any) -> dict[str, Any]:
+        self.calls.append({"posts": list(posts), "run_dir": run_dir, "call": call, "cfg": cfg})
+        if self.answers is not None:
+            return self.answers
+        return {str(item.post_id): _intel(str(item.post_id)) for item in posts}
+
+    @property
+    def post_ids(self) -> list[str]:
+        return [str(item.post_id) for item in (self.calls[0]["posts"] if self.calls else ())]
+
+
+def _slide(source: str = "virlo", *, brief: str = "", marks: tuple[str, ...] = ()) -> Any:
+    return SimpleNamespace(text_source=source, visual_brief=brief, brand_marks=list(marks))
+
+
+def _intel(post_id: str, *, slides: Any = None, status: str = "ok", cost: float = 0.02) -> Any:
+    """One `SlideIntel`, duck-typed exactly as the runner reads it (`getattr` throughout)."""
+    return SimpleNamespace(
+        post_id=post_id, status=status, cost_usd=cost,
+        slides=list(slides) if slides is not None else [_slide("virlo", brief="hero image"),
+                                                        _slide("vision_transcribed", brief="table"),
+                                                        _slide("none")])
+
+
+def _deck_post(post_id: str) -> SourcePost:
+    """A slideshow post a carousel could be bound to."""
+    return SourcePost(post_id=post_id, url=f"https://www.tiktok.com/@creator/photo/{post_id}",
+                      author="creator", views=900_000, is_slideshow=True, panel_count=3,
+                      caption="the five tools I actually use")
+
+
+def _deck_entry(order: int, post_id: str | None, *, topic_key: str = "m1::decks",
+                override: bool = False) -> PlanEntry:
+    item = entry(order, fmt="carousel")
+    item.trend_key = topic_key
+    item.source_post_id = post_id
+    item.slide_count = 3
+    if override:
+        item.brief_influence, item.brief_name = "override", "ai-audit-cta"
+    return item
+
+
+def _bound_topic(*posts: SourcePost) -> TrendItem:
+    return TrendItem(history_key="m1::decks", monitor_id="m1", name="Source decks",
+                     topic_key="decks", posts=list(posts))
+
+
+def test_fr306_only_a_bound_non_override_carousel_reaches_the_intel_stage(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """WHICH decks are read, and therefore what the run pays for (§0.11: one call per bound post).
+
+    An image and a reel bind no deck; an override brief binds none by construction (§0.14d); a
+    binding the topic can no longer resolve has nothing to download. Two siblings quoting one post
+    are ONE reading — the deck is a property of the source, not of the creative, and paying twice
+    for the same slides would be a bill the Confirm gate never quoted.
+    """
+    enrich = _Enrich()
+    monkeypatch.setattr(runner.sources.slide_intel, "enrich", enrich)
+    live = session(stages=runner._live_stages(Config(), brief_only=False))
+    live.llm = object()  # `_metered` needs a client; the wrapped call is never invoked here
+    topic_item = _bound_topic(_deck_post("post-a"), _deck_post("post-b"))
+    entries = [entry(0, fmt="image"), entry(1, fmt="reel"),
+               _deck_entry(2, "post-a"), _deck_entry(3, "post-a"),  # siblings on one deck
+               _deck_entry(4, "post-b"),
+               _deck_entry(5, "post-b", override=True),  # §0.14d binds nothing
+               _deck_entry(6, "post-gone"),              # the topic no longer carries it
+               _deck_entry(7, None)]                     # never bound at all
+
+    asyncio.run(runner._slide_intel(live, entries, {topic_item.history_key: topic_item}))
+
+    assert len(enrich.calls) == 1, "one pass over the run, not one per creative"
+    assert enrich.post_ids == ["post-a", "post-b"], "deduped, in plan order"
+    assert sorted(live.slide_intel) == ["post-a", "post-b"]
+    assert enrich.calls[0]["run_dir"] == live.run_dir
+    for line in printed(capsys):
+        console_safe(line)
+
+
+def test_fr306_a_run_that_bound_no_deck_spends_nothing_and_still_closes_its_stage(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """An images-and-reels run reaches this code and must leave without calling anything.
+
+    The stage still opens and closes, because a header that appears only sometimes makes the
+    `[n/N]` counter the operator is reading walk — and `0 deck(s) -> 0 read` is a fact worth
+    printing on the run that expected decks and got none.
+    """
+    enrich = _Enrich()
+    monkeypatch.setattr(runner.sources.slide_intel, "enrich", enrich)
+    live = session(stages=runner._live_stages(Config(), brief_only=False))
+    live.llm = object()
+
+    asyncio.run(runner._slide_intel(live, [entry(0, fmt="image")], {}))
+
+    assert enrich.calls == [] and live.slide_intel == {}
+    lines = printed(capsys)
+    assert any("0 source deck(s) to read" in line for line in lines)
+    assert any("0 deck(s) -> 0 read" in line for line in lines)
+
+
+def test_fr306_vision_off_still_reads_the_deck_for_the_gallery_at_zero_dollars(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """§0.6/§0.14c: `sources.vision_transcribe: false` passes `call=None`, which is the $0 path —
+    the slides still download, so FR-309's source strip works on a run that paid for no analysis.
+    A stage that skipped itself entirely would take the gallery's provenance with it."""
+    enrich = _Enrich()
+    monkeypatch.setattr(runner.sources.slide_intel, "enrich", enrich)
+    config = Config()
+    config.sources.vision_transcribe = False
+    live = session(config=config, stages=runner._live_stages(config, brief_only=False))
+    live.llm = object()
+    topic_item = _bound_topic(_deck_post("post-a"))
+
+    asyncio.run(runner._slide_intel(live, [_deck_entry(0, "post-a")],
+                                    {topic_item.history_key: topic_item}))
+
+    assert enrich.calls[0]["call"] is None, "no model call is metered, and none is made"
+    assert enrich.post_ids == ["post-a"], "the download still happens — the gallery needs it"
+
+
+def test_fr306_every_deck_prints_what_the_reading_actually_produced(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """D45's posture: every AI step prints its RESULT, not just its happening.
+
+    Per deck: how many slides, whose words (Virlo vs vision), how many visual briefs, how many
+    brand marks and what it cost — plus the degrade status where there is one, because a deck that
+    fell back to Virlo panels alone looks identical to a clean read from the stage header.
+    """
+    enrich = _Enrich(answers={
+        "post-a": _intel("post-a"),
+        "post-b": _intel("post-b", status="vision_unavailable", cost=0.0,
+                         slides=[_slide("virlo"), _slide("virlo")])})
+    monkeypatch.setattr(runner.sources.slide_intel, "enrich", enrich)
+    live = session(stages=runner._live_stages(Config(), brief_only=False))
+    live.llm = object()
+    topic_item = _bound_topic(_deck_post("post-a"), _deck_post("post-b"))
+
+    asyncio.run(runner._slide_intel(live, [_deck_entry(0, "post-a"), _deck_entry(1, "post-b")],
+                                    {topic_item.history_key: topic_item}))
+
+    lines = printed(capsys)
+    read = next(line for line in lines if line.strip().startswith("post-a"))
+    degraded = next(line for line in lines if line.strip().startswith("post-b"))
+    console_safe(read)
+    assert "3 slide(s): 1 virlo + 1 vision, 2 brief(s), 0 mark(s), $0.02" in read
+    assert "[vision_unavailable]" in degraded, "a degraded read says so on its own line"
+    assert any("2 deck(s) -> 1 read, 1 degraded" in line for line in lines)
+    complete = [fields for code, _, fields in live.log.events if code == "slide_intel_complete"]
+    assert complete and complete[0]["decks"] == {"post-a": "ok", "post-b": "vision_unavailable"}
+
+
+def test_fr306_intel_sits_after_the_confirm_gate_and_before_copy_in_both_callers() -> None:
+    """The ordering IS the requirement (§0.11), and it is two requirements in one line.
+
+    After Confirm: the pass is paid LLM spend plus a download per slide, and rule 7 allows neither
+    before the gate. Before COPY: the transcription fills the panel slots `_offer_for` reads, so a
+    stage that ran afterwards would produce briefs for a deck whose words were already chosen.
+    `previews` runs the same pass on the $0 path, which is why it is asserted in both callers
+    rather than in the runner alone.
+    """
+    pipeline = inspect.getsource(runner._pipeline)
+    assert pipeline.index("_confirm(") < pipeline.index("_slide_intel(") < pipeline.index("_write(")
+
+    preview = inspect.getsource(previews)
+    assert "_slide_intel(" in preview, "a preview reads the decks too, at $0 (D19)"
+    assert preview.index("await _slide_intel(") < preview.index("await _write("), \
+        "same order, same reason"
+
+
+def test_fr306_the_merged_panels_the_copy_stage_reads_come_from_this_stage_alone() -> None:
+    """One reading of a deck, two consumers: `_write` derives `merged_panels` (the words) and
+    `_create` rides the same objects onto `generate.Env.slide_intel` (the briefs and the picture
+    paths). Two independent re-derivations would be two chances to disagree about what the source
+    deck said — which is the disagreement `source.yaml` exists to make impossible."""
+    write_source = inspect.getsource(runner._write)
+    create_source = inspect.getsource(runner._create)
+
+    assert "session.slide_intel.items()" in write_source and "merged_panels=" in write_source
+    assert "slide_intel=dict(session.slide_intel)" in create_source

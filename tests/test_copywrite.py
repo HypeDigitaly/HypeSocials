@@ -341,6 +341,83 @@ def test_a_bound_post_the_topic_no_longer_carries_is_refused_too() -> None:
     assert log.warned("copy_bound_post_missing")
 
 
+async def test_a_missing_bound_post_never_borrows_the_famine_word_from_the_burnt_one() -> None:
+    """The whole-run shape of `bound_post_missing`, and the tag it deliberately does NOT carry.
+
+    Both refusals ship the same creative — our assembled caption, a wordless frame — but they are
+    different faults. `no_fresh_post_available` is FR-307's famine, counted in the run summary and
+    read by the operator as "the supply ran out"; a topic that changed under the plan is a
+    consistency fault and borrowing the famine word would inflate the very figure §0.9's cadence
+    arithmetic is measured on. It lives in `copy_bound_post_missing` in the log instead.
+    """
+    log = Recorder()
+    trend = make_trend(post(1, hooks=("First hook",),
+                            caption="A caption long enough to be a caption."))
+    call = StubCall({"a1": selection()})
+
+    result = await copywrite.write_copy(
+        [entry("a1", 0, source_post_id="p404")], call=call, log=log,
+        niche_descriptor="AI automation for Czech SMBs", **context(trends={"t1": trend}))
+
+    assert call.calls == [], "a refused post is settled before anything is asked"
+    assert result.tags["a1"] == (DegradationTag.NO_ONIMAGE_TEXT,)
+    assert DegradationTag.NO_FRESH_POST_AVAILABLE not in result.tags["a1"]
+    assert result.copy["a1"].caption == "AI tool stacks — AI automation for Czech SMBs"
+    assert "First hook" not in result.copy["a1"].caption, "P1 is not a consolation prize"
+    assert log.warned("copy_bound_post_missing") and log.warned("copy_post_refused")
+
+
+async def test_a_burnt_bound_deck_ships_wordless_rather_than_mapping_a_spent_source() -> None:
+    """The refusal outranks FR-304's deterministic mapping — the sharpest edge of §0.10.
+
+    `_mapped_deck` needs no model in the loop, so a bound carousel whose copy CALL fails still
+    ships its panels (the `_mapped_fallback` ruling). A bound carousel whose POST is burnt must not:
+    the mapping would re-render, slide for slide, the exact deck an earlier run already shipped,
+    which is the repeat the whole guard exists to prevent. So the deck goes out wordless, claims no
+    panel map, and the operator sees the famine tag rather than yesterday's slides.
+    """
+    log = Recorder()
+    trend = make_trend(post(1, panels=("Panel one line", "Panel two line", "Panel three line"),
+                            caption="A caption long enough to be a caption at all."))
+
+    result = await copywrite.write_copy(
+        [entry("d1", 0, creative_format="carousel", slide_count=3, source_post_id="p1")],
+        call=StubCall({"d1": selection()}), burnt_post_ids=["p1"], log=log,
+        niche_descriptor="AI automation for Czech SMBs",
+        **context(trends={"t1": trend}, styles={STYLE_KEY: make_style(
+            max_onimage_chars={"headline": 90, "subline": 60, "slide": 300})}))
+
+    copyset, provenance = result.copy["d1"], result.provenance["d1"]
+    assert copyset.slide_texts == [], "not one source panel was re-rendered"
+    assert "Panel one line" not in " ".join([copyset.caption, *copyset.hashtags])
+    assert provenance.panel_map == [] and provenance.source_panel_count == 0
+    assert provenance.post_id == "", "nothing was quoted, so nothing is claimed"
+    assert set(result.tags["d1"]) == {DegradationTag.NO_ONIMAGE_TEXT,
+                                      DegradationTag.NO_FRESH_POST_AVAILABLE}
+    assert log.warned("copy_bound_post_burnt")
+
+
+def test_the_legacy_rotation_is_guarded_by_the_same_no_repeat_rule_as_a_binding() -> None:
+    """FR-307 binds on POST IDS, not on how the post was chosen. The deprecated modulo survives for
+    the entries nothing binds (images, reels), and it is exactly the path that re-quoted a 2023
+    post — so landing on a burnt post refuses there too rather than rotating on to a neighbour.
+
+    Rotating on would be worse than refusing: the label grammar, the provenance and the history
+    line would all name whichever post the modulo happened to reach, and the run would report a
+    quote it was never entitled to make.
+    """
+    log = Recorder()
+    trend = make_trend(post(1, hooks=("First hook",), caption="First caption, written in full."),
+                       post(2, hooks=("Second hook",), caption="Second caption, written in full."))
+
+    refused = _offer(entry("a1", 0, trend_reuse_index=1), trend, burnt_post_ids=("p2",), log=log)
+
+    assert refused.refused == "no_fresh_post_available"
+    assert refused.post is None and refused.onimage == []
+    assert log.warned("copy_post_burnt"), "the rotation's own warning, not the binding's"
+    assert not log.warned("copy_bound_post_burnt")
+
+
 def test_the_ref_labels_number_every_quotable_field_in_the_grammars_own_order() -> None:
     """FR-302's grammar and FR-100's offer PRIORITY: panels, then overlays, then hooks, then the
     caption. The order is a reversal (it used to lead with hooks) and it is the fix for what the
