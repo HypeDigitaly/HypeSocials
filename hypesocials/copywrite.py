@@ -824,7 +824,10 @@ async def _write_group(
         if offer.refused:
             written = _refused(entry, group, run, offer)
         elif payload is None:
-            written = _fallback(entry, group.trend, run)
+            # FR-99 vs FR-304 ruling (D15, SESSION G): a BOUND deck's slides are a deterministic
+            # panel mapping that needs no model, so a failed copy call must not cost it its words.
+            written = (_mapped_fallback(entry, offer, group, run)
+                       if _panel_mapped(entry, offer) else _fallback(entry, group.trend, run))
         elif verbatim and offer.post is not None:
             written = _resolve(entry, payload, offer, group, run)
         else:
@@ -1430,6 +1433,60 @@ def _refused(entry: PlanEntry, group: _Group, run: _Run, offer: _Offer) -> _Writ
         tags.append(DegradationTag.NO_FRESH_POST_AVAILABLE)
     return _Written(copyset=copyset, source=CopyProvenance(), tags=tags,
                     quoted=(caption, *hashtags))
+
+
+def _mapped_fallback(entry: PlanEntry, offer: _Offer, group: _Group, run: _Run) -> _Written:
+    """FR-99's fallback for a BOUND deck — the mapping stands even though the model said nothing.
+
+    The FR-99-vs-FR-304 ruling (D15, SESSION G): `_mapped_deck` is deterministic — source panel
+    *i* becomes our slide *i* with no model in the loop — so a failed copy call on a bound
+    carousel loses only what the model actually contributed (`through_line`, `narrative_arc`,
+    a caption CHOICE). The slides ship mapped, the caption falls back to the bound post's own
+    best candidate (`_caption_for(None, …)`, still the same post, §0.7 in force), and
+    `copy_degraded` still tags the creative because the LLM outcome IS a loss FR-248 counts —
+    it is just no longer a loss of the deck's words.
+    """
+    deck = _mapped_deck(entry, offer, run)
+    refs = dict(deck.refs)
+    own_words: list[str] = []
+    caption_candidate = _caption_for(None, offer, entry, run)
+    if caption_candidate is not None:
+        refs["caption"] = caption_candidate.label
+        caption, hashtags = caption_candidate.text, list(caption_candidate.hashtags)
+    else:  # the bound post carries no §0.7-worthy caption: our own words, claimed as ours
+        caption, hashtags = _fallback_caption(_subject_name(entry, group),
+                                              run.niche_descriptor), []
+        own_words.append(caption)
+    copyset = CopySet(
+        asset_id=entry.asset_id,
+        language=entry.language,
+        trend_key=entry.trend_key,
+        caption=caption,
+        hashtags=hashtags,
+        slide_texts=deck.texts,
+        through_line=_subject_name(entry, group),
+    )
+    tags = [DegradationTag.COPY_DEGRADED]
+    if not any(text.strip() for text in deck.texts):
+        tags.append(DegradationTag.NO_ONIMAGE_TEXT)
+    if deck.stripped or (caption_candidate is not None and caption_candidate.stripped):
+        tags.append(DegradationTag.COMPETITOR_STRIPPED)
+    _warn(run.log, "copy_degraded",
+          f"{entry.asset_id}: copy call failed; the bound deck still renders its "
+          f"{sum(1 for text in deck.texts if text.strip())} mapped panel(s) verbatim (FR-304 "
+          "needs no model) and ships "
+          + ("its post's own caption" if caption_candidate is not None
+             else "our own standing caption")
+          + " — lost to the failure: through-line and narrative arc only (FR-99)",
+          asset_id=entry.asset_id, reason="copy_call_failed",
+          copy_source_post_id=offer.post.post_id if offer.post else "")
+    return _Written(
+        copyset=copyset,
+        source=CopyProvenance(post_id=offer.post.post_id if offer.post else "", refs=refs,
+                              panel_map=deck.panel_map,
+                              source_panel_count=len(offer.panels)),
+        tags=tags,
+        quoted=(*offer.haystack, *own_words))
 
 
 def _fallback(entry: PlanEntry, trend: TrendItem | None, run: _Run) -> _Written:

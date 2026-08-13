@@ -522,10 +522,13 @@ async def test_a_failed_copy_call_ships_the_top_posts_caption_verbatim_and_no_on
     assert log.warned("copy_degraded")
 
 
-async def test_a_failed_carousel_and_reel_both_stay_wordless_on_the_no_call_tier() -> None:
-    """The two shapes where a guessed string is most expensive: a deck reproduced panel for panel,
-    and a reel overlay that `reel_director.md` then locks as a fixed graphic layer for the whole
-    clip."""
+async def test_a_failed_bound_deck_still_maps_its_panels_and_a_reel_stays_wordless() -> None:
+    """The FR-99-vs-FR-304 ruling (D15, SESSION G) splits the no-call tier by what the model
+    actually contributed. A BOUND deck's slides are a deterministic panel mapping — no model in
+    the loop — so a failed copy call ships the mapped panels verbatim, position-preserving, with
+    full provenance, and loses only the model's own additions (through-line, narrative arc). A
+    reel's overlay was genuinely the model's CHOICE, so guessing one is still wrong and the reel
+    stays wordless."""
     source = topic(post(1, panels=("Panel one", "Panel two"), hooks=("A hook",),
                         caption="A caption, written out in full."))
 
@@ -534,9 +537,17 @@ async def test_a_failed_carousel_and_reel_both_stay_wordless_on_the_no_call_tier
     reel = await write([entry("a2", 0, creative_format="reel", aspect_ratio="9:16",
                               source_post_id="p1")], DeadCall(), trends={"t1": source})
 
-    assert deck.copy["a1"].slide_texts == [] and deck.copy["a1"].headline == ""
+    assert deck.copy["a1"].slide_texts == ["Panel one", "Panel two", ""], \
+        "mapped, position-preserving, the plan's length — the empty slot IS the alignment"
+    assert deck.copy["a1"].headline == "", "only the deck is mapped; nothing else is guessed"
+    prov = deck.provenance["a1"]
+    assert prov.post_id == "p1" and prov.source_panel_count == 2
+    assert [row["source_text"] for row in prov.panel_map] == ["Panel one", "Panel two", ""]
+    assert prov.refs["slide_1"] == "P1.panel.1" and prov.refs["caption"] == "P1.caption"
+    assert DegradationTag.COPY_DEGRADED in deck.tags["a1"], "the LLM loss still counts (FR-248)"
+    assert DegradationTag.NO_ONIMAGE_TEXT not in deck.tags["a1"], "the frame has words now"
     assert reel.copy["a2"].overlay_text == "" and reel.copy["a2"].headline == ""
-    assert "Panel one" not in shipped_strings(deck.copy["a1"])
+    assert reel.copy["a2"].slide_texts == []
     assert deck.copy["a1"].caption == "A caption, written out in full." == reel.copy["a2"].caption
 
 
