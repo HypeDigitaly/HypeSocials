@@ -11,7 +11,14 @@
 label: "neutral template - no monitor ids yet, not runnable"
 
 run:
-  formats: { image: 4, carousel: 2, reel: 0 }   # reels ship OFF (PRD v1.6): raise only after price_per_unit.reel_second is real (FR-131)
+  formats: { image: 0, carousel: 6, reel: 0 }   # ALL-CAROUSELS (v2.1.0/D46 §0.3, operator default;
+                                   # was 4/2/0). v1 of the slideshow pivot fetches SLIDESHOWS only
+                                   # (sources.include_videos below), so every topic is
+                                   # slideshow-majority and a carousel is the only format that can
+                                   # quote one panel for panel (FR-304). Raising image or reel here
+                                   # without also setting include_videos: true is REFUSED at load
+                                   # (§0.14e) rather than silently rank-falling-back. Reels also
+                                   # stay OFF until price_per_unit.reel_second is real (FR-131).
   platforms: [linkedin, instagram, tiktok]
   languages: { linkedin: en, instagram: en, tiktok: en }   # en | cs per platform (D6). Post-D42
                                    # this is the language SLOT a creative is planned for, not a
@@ -23,7 +30,12 @@ run:
   notion_influence: off            # off | copy | full (needs NOTION_TOKEN + pages shared once)
   vision_check: false              # cs platforms get a startup hint to turn this on
   spend_cap_usd: 10.00             # pre-flight control; --yes trims to fit, interactive refuses
-  trend_history_days: 7            # 0 disables the repeat-prevention window
+  trend_history_days: 30           # post-ID no-repeat window in days (v2.1.0/FR-307, was 7). It
+                                   # must be >= sources.max_post_age_days below, or a post drops
+                                   # out of history while it is still being fetched and gets quoted
+                                   # twice - that pair is REFUSED at load, never clamped. `0`
+                                   # disables the window entirely and is the explicit opt-out, so
+                                   # it is exempt from the check.
   max_trend_reuses_per_run: 6      # how many creatives may share one TOPIC. Was 2 until
                                    # 2026-08-11, when D36's post-level recency made a higher
                                    # number safe (exclusion is per POST now, so reuse is no
@@ -40,9 +52,17 @@ run:
   nsfw_checker: true               # provider knob, always sent (provider's own default is false)
   onimage_text_language: {}        # per-platform override for on-image text; else the caption language
   text_budgets:                    # on-image character ceilings, enforced BEFORE submission (FR-101)
-    image_headline: 42
-    image_subline: 60
-    reel_seed_headline: 32
+                                   # RAISED at v2.1.0 (D46 §0.5/FR-259). The old numbers were sized
+                                   # for text the model WROTE; on-image strings are now verbatim
+                                   # quotes of a source panel/hook/overlay that nobody may trim
+                                   # (FR-304), so a ceiling under a real panel does not shorten it -
+                                   # it makes it unofferable and the creative ships with no text at
+                                   # all. A style's own max_onimage_chars may still only LOWER
+                                   # these, never raise them.
+    image_headline: 90             # was 42
+    image_subline: 160             # was 60
+    slide: 300                     # NEW: per-slide deck text on panel-mapped carousels (FR-304)
+    reel_seed_headline: 60         # was 32
     retry_reduction_pct: 40        # cut budgets by this % on a vision-check retry
   run_deadline_min: 25             # soft elapsed ceiling, monotonic clock (FR-108). DEPENDS ON
                                    # models.video_job_timeout_s below: this file ships reels OFF,
@@ -62,6 +82,28 @@ sources:
                                    # the pool it is ranked in. `-1` = the kill switch, one topic
                                    # per monitor (pre-pivot cardinality); `0` is refused as a
                                    # config error - drop the monitor instead of muting it.
+  include_videos: false            # v2.1.0/FR-301: when false the fetch gate skips Virlo's VIDEO
+                                   # rows and yields slideshows only. A slideshow is a deck, and a
+                                   # deck is what a carousel reproduces panel for panel (FR-304); a
+                                   # video row has no panels. Turning this on is also what unlocks
+                                   # run.formats image/reel counts above (§0.14e).
+  fetch_pages: 3                   # v2.1.0/FR-301: result pages pulled per monitor at
+                                   # `created_at desc` - ~100 posts a page, so 3 is roughly the last
+                                   # week of a normally active monitor. Bounds 1-10, REFUSED out of
+                                   # range rather than clamped (FR-285): a quietly corrected typo
+                                   # would change which posts a paid run quotes without saying so.
+  max_post_age_days: 30            # v2.1.0/FR-301: posts older than this are dropped pre-rank as
+                                   # stale, measured on the post's own publish_date. This is the fix
+                                   # for the run that ranked by views over ALL TIME and quoted posts
+                                   # from 2023. Bounds 0-365; `0` disables the cap. Must be <=
+                                   # run.trend_history_days above (FR-307, refused at load).
+  vision_transcribe: true          # v2.1.0/FR-306: after the Confirm gate, download the assigned
+                                   # carousel source posts' slides and have the analysis model
+                                   # transcribe their on-image text and describe their visuals, so
+                                   # our slides reproduce the CONTENT in our own style. Paid LLM
+                                   # spend, estimated before Confirm and never run ahead of it.
+                                   # `false` relies on Virlo's own panel_texts alone - cheaper, and
+                                   # blind wherever that field is empty (many fresh rows are).
 
 styles:
   refs_per_job: 2                  # local reference images from the ASSIGNED meta-style that ride
@@ -170,9 +212,15 @@ models:
                                             #   with the pivot; the visual authority is now the
                                             #   local meta-style registry, FR-290.)
   copy: openai/gpt-5.6-luna                 # OpenRouter chat id - captions/hooks/on-image text
-  image: gpt-image-2-image-to-image         # Kie route, reference-bearing (input_urls <= 16);
-                                            #   the profile routes reference-free jobs to
-                                            #   gpt-image-2-text-to-image (OQ-17 closed)
+  image: gpt-image-2-text-to-image          # Kie route, TEXT-TO-IMAGE (v2.1.0/FR-280; was
+                                            #   gpt-image-2-image-to-image). D46 took the style
+                                            #   registry's reference images out of every render job,
+                                            #   so the ordinary job carries no reference at all; the
+                                            #   profile still routes the jobs that DO have one - a
+                                            #   brief image, a carousel anchor, a reel seed frame -
+                                            #   to the gpt-image-2-image-to-image sibling
+                                            #   (20 §8c/FR-241). Pointing this at i2i is what made
+                                            #   the first paid run clone its inputs ~1:1.
   video: bytedance/seedance-2-5             # Kie route; needs price_per_unit.reel_second to plan
   # Profiles change ONLY on a model FAMILY change (e.g. Seedance -> Kling). A same-family swap is
   # just the id line above. An unknown profile is a pre-flight refusal, exit code 2 (FR-281).

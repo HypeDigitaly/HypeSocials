@@ -34,6 +34,7 @@ from __future__ import annotations
 import json
 import re
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -152,6 +153,28 @@ def _config(**sources_kwargs: Any) -> Config:
     return cfg
 
 
+def _all_time() -> Config:
+    """The config the CAPTURED CORPUS has to be read under (FR-301/FR-305).
+
+    `tests/fixtures/virlo/` is a `views desc` page captured before D46 — it spans 2023-11 to
+    2026-07-20, which is exactly the all-time pool the window now exists to refuse. Under the
+    shipped 30-day cap the whole corpus is `dropped_stale` and every split assertion below would
+    be measuring the gate instead of the split, so the tests whose subject is the SPLIT disable
+    the age cap explicitly (`0`, FR-301's documented off switch) and the gate gets its own tests.
+    """
+    return _config(max_post_age_days=0, include_videos=True)
+
+
+def _fresh(days_ago: float = 2) -> str:
+    """A `publish_date` inside the default 30-day window, expressed RELATIVE to now.
+
+    A hardcoded literal would pass today and turn the whole suite red a month from now, with a
+    failure ("the split lost every post") that names nothing about the real cause — the same
+    silent-staleness failure mode D46 was written about, one layer down.
+    """
+    return (datetime.now(timezone.utc) - timedelta(days=days_ago)).isoformat()
+
+
 def _analysis(*themes: dict[str, Any], name: str = "AI Trends Tracker",
               **overrides: Any) -> dict[str, Any]:
     """A hand-built monitor analysis — used where the corpus's nine real themes are too coarse."""
@@ -183,7 +206,7 @@ def _video(slug: str, *, views: int, post_id: str | None = None, author: str = "
         "views": views, "likes": views // 20, "shares": views // 100,
         "comments": views // 200, "bookmarks": views // 300,
         "author_username": author,
-        "publish_date": "2026-08-08T09:00:00Z",
+        "publish_date": _fresh(2),
         "hashtags": [f"#{slug}"],
         "hook_text": f"{slug} hook",
         "text_overlay_content": f"{slug} overlay",
@@ -204,7 +227,7 @@ def _slideshow(slug: str, *, views: int, panels: int = 3, post_id: str | None = 
         "views": views, "likes": views // 20, "shares": views // 100,
         "comments": views // 200, "bookmarks": views // 300,
         "author_username": author,
-        "publish_date": "2026-08-07T09:00:00Z",
+        "publish_date": _fresh(3),
         "hashtags": [f"#{slug}"],
         "image_urls": [f"https://cdn.virlo.test/{slug}-{n}.jpg" for n in range(1, panels + 1)],
         "panel_count": panels,
@@ -219,10 +242,15 @@ def _slideshow(slug: str, *, views: int, panels: int = 3, post_id: str | None = 
 
 def _split(analysis: dict[str, Any], videos: list[dict[str, Any]],
            shows: list[dict[str, Any]], *, cfg: Config | None = None,
+           used: set[str] | None = None,
            log: _Log | None = None, counters: virlo.Counters | None = None) -> list[TrendItem]:
-    """One monitor's topics — the unit under test, no I/O of any kind."""
+    """One monitor's topics — the unit under test, no I/O of any kind.
+
+    `used` is the burnt-post window the FR-305 gate consumes; omitted, nothing is burnt, which is
+    what a `run.trend_history_days: 0` run passes.
+    """
     return virlo._split_topics(MONITOR, analysis, videos, shows, cfg or _config(),
-                               log=log, counters=counters)
+                               used=used or frozenset(), log=log, counters=counters)
 
 
 def _post_ids(item: TrendItem) -> list[str]:
@@ -298,16 +326,26 @@ def test_a_theme_backed_topic_is_keyed_monitor_then_topic_and_collisions_take_a_
 
 def test_the_real_corpus_monitor_splits_into_its_nine_themes_at_the_default_cap() -> None:
     """The end-to-end cardinality claim on real captured data: nine themes, nine topics, nine
-    distinct history keys, and the whole page of posts dealt out among them."""
+    distinct history keys, and every ELIGIBLE post dealt out among them.
+
+    Read under `_all_time()`, so the 2023-2026 corpus is not simply eaten by the 30-day window —
+    what is being asserted here is the split, and the window has its own tests below. The
+    slideshow rows still pass FR-305's enrichment predicate on their own merits, so the expected
+    total is computed from the gate rather than assumed to be every row.
+    """
     videos, shows = _corpus()
+    cfg = _all_time()
 
-    items = _split(_corpus_analysis(), videos, shows)
+    items = _split(_corpus_analysis(), videos, shows, cfg=cfg)
 
-    assert len(items) == 9 == _config().sources.virlo_topics_per_monitor
+    assert len(items) == 9 == cfg.sources.virlo_topics_per_monitor
     assert len({item.history_key for item in items}) == 9
     assert all(item.history_key.startswith(f"{MONITOR}::") for item in items)
-    assert sum(len(item.posts) for item in items) == len(virlo._dedupe(videos)) + len(
-        virlo._dedupe(shows))
+    eligible_videos, eligible_shows = virlo._eligible(
+        virlo._dedupe(videos), virlo._dedupe(shows), virlo._Gate.of(cfg, frozenset()),
+        virlo.Counters())
+    assert sum(len(item.posts) for item in items) == len(eligible_videos) + len(eligible_shows)
+    assert len(eligible_videos) == len(virlo._dedupe(videos)), "no video row fails the gate here"
 
 
 # --------------------------------------------------------------- `SourcePost` extraction map
@@ -340,12 +378,16 @@ def test_the_documented_field_map_is_the_one_the_code_actually_applies() -> None
     documented = _documented_field_map()
     assert documented == {"caption": "description", "hooks": "hook_text",
                           "text_overlays": "text_overlay_content", "panel_texts": "panel_texts",
-                          "description": "summary"}, documented
+                          "description": "summary", "panel_count": "panel_count",
+                          "image_urls": "image_urls",
+                          "intelligence_status": "intelligence_status"}, documented
     raw = {"id": "p-1", "url": "https://virlo.test/p/1", "author_username": "@writer",
            "description": "MARKER-CREATOR-CAPTION", "summary": "MARKER-VIRLO-SUMMARY",
            "hook_text": "MARKER-HOOK", "text_overlay_content": "MARKER-OVERLAY",
-           "panel_texts": ["MARKER-PANEL-1", "MARKER-PANEL-2"],
-           "views": 4_900_000, "publish_date": "2026-08-08T09:00:00Z"}
+           "panel_texts": ["MARKER-PANEL-1", "MARKER-PANEL-2"], "panel_count": 2,
+           "image_urls": ["https://cdn.virlo.test/1.jpg", "https://cdn.virlo.test/2.jpg"],
+           "intelligence_status": "ready",
+           "views": 4_900_000, "publish_date": _fresh(2)}
 
     post = virlo._source_post(raw, MONITOR, 0, is_slideshow=True)
 
@@ -361,7 +403,12 @@ def test_the_documented_field_map_is_the_one_the_code_actually_applies() -> None
     assert post.hooks == ["MARKER-HOOK"] and post.text_overlays == ["MARKER-OVERLAY"]
     assert (post.post_id, post.url, post.author) == ("p-1", "https://virlo.test/p/1", "@writer")
     assert post.views == 4_900_000 and post.is_slideshow is True
-    assert post.published_at is not None and post.published_at.year == 2026
+    assert post.published_at is not None and post.published_at.tzinfo is not None
+    # The three fields the adapter dropped until v2.1.0 (FR-293): the deck's width, its slides and
+    # Virlo's enrichment marker. Dropping them is what made the first paid run unable to say how
+    # many slides a source deck had while it was rendering one.
+    assert post.panel_count == 2 and post.intelligence_status == "ready"
+    assert post.image_urls == ["https://cdn.virlo.test/1.jpg", "https://cdn.virlo.test/2.jpg"]
 
 
 def test_a_source_string_is_stored_exactly_as_it_arrived_diacritics_and_emoji_included() -> None:
@@ -388,6 +435,196 @@ def test_a_row_with_neither_id_nor_url_takes_a_stable_positional_post_id() -> No
 
     assert first.post_id == second.post_id == f"{MONITOR}:4"
     assert not any(part.isdigit() and len(part) > 8 for part in first.post_id.split(":")[1:])
+
+
+# --------------------------------------------------- FR-305: the eligibility gate, before the rank
+
+
+def test_a_post_older_than_the_window_is_dropped_before_it_can_take_a_label() -> None:
+    """FR-301/FR-305's whole reason for existing. The first paid run quoted posts from December
+    2023 because `views desc` over all time is what it asked for; the age cap is what makes "top"
+    mean top OF THIS WINDOW. Dropped BEFORE the rank, so the stale post cannot become `P1` and
+    cannot be quoted by a copy call that only ever sees labels."""
+    fresh = _slideshow("s-fresh", views=1_000, publish_date=_fresh(5))
+    stale = _slideshow("s-stale", views=9_000_000, publish_date=_fresh(400))
+    tally = virlo.Counters()
+
+    item = _split(_analysis(), [], [fresh, stale], counters=tally)[0]
+
+    assert _post_ids(item) == ["s-fresh"], "the stale post outranked it and still lost"
+    assert (tally.dropped_stale, tally.posts_in) == (1, 1)
+    assert tally.posts_kept - tally.dropped_ineligible == tally.posts_in
+
+
+def test_a_row_with_no_publish_date_is_stale_because_it_cannot_be_shown_to_be_fresh() -> None:
+    """Undatable is unwindowable. Keeping it would mean a row Virlo forgot to date could be quoted
+    forever, which is the same silent staleness with an extra step — and the cap's `0` switch is
+    the documented way to say "I want the archive" on purpose."""
+    undated = _slideshow("s-undated", views=10, publish_date=None)
+    tally = virlo.Counters()
+
+    items = _split(_analysis(), [], [undated], counters=tally)
+
+    assert items[0].posts == [] and tally.dropped_stale == 1
+    kept = _split(_analysis(), [], [undated], cfg=_config(max_post_age_days=0))
+    assert _post_ids(kept[0]) == ["s-undated"], "`0` disables the cap entirely (FR-301)"
+
+
+def test_a_post_already_quoted_inside_the_history_window_is_dropped_at_fetch() -> None:
+    """FR-7/FR-307's first of three enforcement points. The recon case: a topic with one fresh post
+    re-quoted yesterday's exact post, because the window was only ever consulted at topic level.
+    A burnt post now never becomes a `SourcePost` at all — it cannot take a label, so it cannot be
+    picked, whatever a later stage does."""
+    burnt, fresh = _slideshow("s-burnt", views=9_000), _slideshow("s-new", views=10)
+    tally = virlo.Counters()
+
+    item = _split(_analysis(), [], [burnt, fresh], used={"s-burnt"}, counters=tally)[0]
+
+    assert _post_ids(item) == ["s-new"]
+    assert (tally.dropped_used, tally.dropped_stale) == (1, 0)
+    # An empty window is what a `run.trend_history_days: 0` run passes (`outputs.used_posts`
+    # returns nothing), and it must read as "no exclusions" rather than as "exclude everything".
+    assert len(_split(_analysis(), [], [burnt, fresh])[0].posts) == 2
+
+
+def test_a_slideshow_with_no_slides_is_unenriched_whatever_the_vision_tier_does() -> None:
+    """§0.14a's first limb: `panel_count == 0` means Virlo has no images for the post, so there is
+    nothing to transcribe, nothing for the gallery to show and no source panel *i* for FR-304 to
+    render our slide *i* from. Vision cannot rescue a deck that has no slides."""
+    empty = _slideshow("s-empty", views=10, panels=0, panel_texts=[], image_urls=[])
+    for vision in (True, False):
+        tally = virlo.Counters()
+
+        items = _split(_analysis(), [], [empty], cfg=_config(vision_transcribe=vision),
+                       counters=tally)
+
+        assert items[0].posts == [], vision
+        assert tally.dropped_unenriched == 1, vision
+
+
+def test_vision_on_keeps_a_deck_whose_panel_texts_are_empty_and_vision_off_drops_it() -> None:
+    """The §0.14a edge the whole vision tier exists for, and the one an implementation is most
+    likely to get backwards.
+
+    Many fresh Virlo rows carry slides and NO `panel_texts` (D46 §1) — those are precisely the
+    posts FR-306's post-Confirm call reads the words off. Dropping them with vision ON would throw
+    away the material the tier was bought for; keeping them with vision OFF would plan a deck out
+    of a post that has no text and never will.
+    """
+    silent = _slideshow("s-silent", views=10, panel_texts=["", "  ", ""], hook_text="")
+
+    with_vision = virlo.Counters()
+    kept = _split(_analysis(), [], [silent], cfg=_config(vision_transcribe=True),
+                  counters=with_vision)
+    without_vision = virlo.Counters()
+    dropped = _split(_analysis(), [], [silent], cfg=_config(vision_transcribe=False),
+                     counters=without_vision)
+
+    assert _post_ids(kept[0]) == ["s-silent"] and with_vision.dropped_unenriched == 0
+    assert dropped[0].posts == [] and without_vision.dropped_unenriched == 1
+    # Vision off, the row's own words are enough — a hook alone keeps it, because that is text the
+    # copy call can quote and a slide the render can carry.
+    hooked = _slideshow("s-hook", views=10, panel_texts=[], hook_text="the one line it does have")
+    assert _post_ids(_split(_analysis(), [], [hooked],
+                            cfg=_config(vision_transcribe=False))[0]) == ["s-hook"]
+
+
+def test_a_video_is_never_dropped_for_the_slideshow_enrichment_predicate() -> None:
+    """A video has no panels to be missing, so judging it on them would empty an
+    `include_videos: true` run while reporting a slideshow reason for it."""
+    tally = virlo.Counters()
+
+    item = _split(_analysis(), [_video("v1", views=10)], [], cfg=_config(include_videos=True),
+                  counters=tally)[0]
+
+    assert _post_ids(item) == ["v1"] and tally.dropped_unenriched == 0
+
+
+def test_each_dropped_row_is_counted_once_under_the_first_reason_it_fails() -> None:
+    """The funnel is read as a CHAIN (`posts_kept - drops == posts_in`), so a row that is stale AND
+    unenriched AND burnt must move exactly one counter. Three tallies of one lost post would make
+    the block's arithmetic stop closing, which is worse than a missing reason: it invites the
+    operator to go looking for material that never existed."""
+    hopeless = _slideshow("s-doomed", views=10, publish_date=_fresh(900), panels=0,
+                          panel_texts=[], image_urls=[])
+    tally = virlo.Counters()
+
+    _split(_analysis(), [], [hopeless], used={"s-doomed"}, counters=tally)
+
+    assert (tally.dropped_stale, tally.dropped_unenriched, tally.dropped_used) == (1, 0, 0)
+    assert tally.dropped_ineligible == 1
+    assert tally.posts_kept - tally.dropped_ineligible == tally.posts_in == 0
+
+
+def test_strength_is_computed_over_the_windowed_survivors_not_over_everything_fetched() -> None:
+    """FR-5, amended: the ranked quantities are measured on the posts that survived the window.
+
+    The stale monster below out-views the whole fresh pool by three orders of magnitude, so a
+    strength computed before the gate would rank this topic on a post it may not quote — the
+    ranking table would then be describing material the copy call can never see.
+    """
+    fresh = [_slideshow("s1", views=1_000), _slideshow("s2", views=3_000)]
+    monster = _slideshow("s-old", views=50_000_000, publish_date=_fresh(500))
+
+    item = _split(_analysis(), [], [*fresh, monster])[0]
+
+    assert item.total_views == 4_000 and item.median_views == 2_000
+    assert item.newest_published_at is not None
+    assert all(post.post_id != "s-old" for post in item.posts)
+    assert item.strength_components["total_views"] == 4_000.0
+
+
+# ------------------------------------------------------- FR-293/§0.14a: panels keep their slots
+
+
+def test_an_empty_middle_panel_keeps_its_slot_instead_of_shifting_the_deck_up() -> None:
+    """The mapping FR-304 renders from: our slide *i* carries source panel *i*. Compaction (what
+    `_source_post` did until v2.1.0) silently moved slide 3's words onto slide 2 and produced a
+    deck that reads as a faithful copy of a post nobody made."""
+    raw = {"id": "s1", "views": 10, "publish_date": _fresh(1), "panel_count": 4,
+           "panel_texts": ["first", "", "third", ""]}
+
+    post = virlo._source_post(raw, MONITOR, 0, is_slideshow=True)
+
+    assert post.panel_texts == ["first", "", "third", ""]
+    assert post.panel_texts[2] == "third", "slot 3 is source slide 3, not the second non-empty one"
+    assert len(post.panel_texts) == post.panel_count == 4
+
+
+def test_a_deck_transcribed_only_in_part_is_padded_out_to_its_slide_count() -> None:
+    """Virlo ships fewer texts than slides all the time (its transcription is best-effort). The
+    padding is what gives the vision tier (FR-306) a slot to put slide 4's words into, and what
+    keeps `len(panel_texts) == panel_count` true for the deck-length arithmetic at ASSIGN."""
+    post = virlo._source_post({"id": "s1", "views": 1, "publish_date": _fresh(1),
+                               "panel_count": 5, "panel_texts": ["one", "two"]},
+                              MONITOR, 0, is_slideshow=True)
+
+    assert post.panel_texts == ["one", "two", "", "", ""]
+    assert post.panel_count == 5
+
+
+def test_alignment_never_truncates_because_losing_source_bytes_is_the_worse_failure() -> None:
+    """If Virlo ever sends more texts than images, the extra texts keep their indices. Padding to a
+    smaller `panel_count` would delete verbatim material the copy call could have quoted."""
+    post = virlo._source_post({"id": "s1", "views": 1, "publish_date": _fresh(1),
+                               "panel_count": 1, "panel_texts": ["one", "two", "three"]},
+                              MONITOR, 0, is_slideshow=True)
+
+    assert post.panel_texts == ["one", "two", "three"]
+
+
+def test_the_topic_level_panel_list_prefers_a_deck_that_actually_carries_words() -> None:
+    """`TrendItem.panel_texts` is ONE post's rhythm, and since the alignment an untranscribed deck
+    is `["", "", ""]` — truthy, and previously the first thing this pick found. The prompt would
+    then describe a three-slide deck with nothing on any slide while the topic held a transcribed
+    one."""
+    silent = _slideshow("s-silent", views=9_000, panel_texts=["", "", ""])
+    spoken = _slideshow("s-spoken", views=10, panel_texts=["a", "b", "c"])
+
+    item = _split(_analysis(), [], [silent, spoken])[0]
+
+    assert item.posts[0].post_id == "s-silent", "the silent deck still ranks first on views"
+    assert item.panel_texts == ["a", "b", "c"]
 
 
 # ------------------------------------------------------------------ ranking and exclusive shares
@@ -425,6 +662,7 @@ def test_no_post_belongs_to_two_topics_and_the_shares_reconcile_with_posts_in() 
         for other in shares[index + 1:]:
             assert not share & other
     assert (counters.posts_in, counters.topics_out) == (11, 3)
+    assert counters.dropped_ineligible == 0, "eleven fresh videos, nothing for the gate to take"
 
 
 def test_a_single_seed_takes_every_row_because_there_is_nothing_to_divide() -> None:
@@ -544,6 +782,9 @@ def test_one_monitors_rows_are_counted_once_and_never_once_per_topic() -> None:
     assert run_wide.posts_in == 10, "absorbed once, not once per topic"
     assert run_wide.topics_out == 3
     assert run_wide.posts_kept == 10
+    # The chain the funnel block is read as: what the dedupe kept, minus what the gate took, IS
+    # what the split saw. A drop counted twice (or not at all) shows up here as a broken identity.
+    assert run_wide.posts_kept - run_wide.dropped_ineligible == run_wide.posts_in
 
 
 def test_duplicates_dropped_is_an_explicit_field_that_both_construction_styles_agree_on() -> None:
@@ -598,21 +839,28 @@ def test_record_filter_counts_the_three_verdicts_and_latches_the_degrade_marker(
 def test_the_funnel_event_and_its_run_log_sentence_read_the_post_pivot_stages() -> None:
     """FR-155's machine record and the flat sentence beside it: the nested objects would render in
     run.log as a shredded dict, so the sentence is what an operator actually reads."""
-    counters = virlo.Counters(monitors_asked=2, monitors_failed=1)
+    counters = virlo.Counters(monitors_asked=2, monitors_failed=1, rows_per_call=100,
+                              pages_asked=3, videos_disabled=True)
     counters.add_input(videos_raw=6, slideshows_raw=4, videos_kept=5, slideshows_kept=4,
                        total_available=2_039)
-    counters.add_topics(posts_in=9, topics_out=3)
+    counters.add_drops(stale=4, unenriched=2, used=1)
+    counters.add_topics(posts_in=2, topics_out=3)
     counters.trends_returned = 3
 
     payload = counters.as_event()
 
     # W3 conductor decision (FR-296): `synthesized` joined the topics group so the TOPICS stage
     # header can print its `N synth` clause — a monitor-aggregate fallback is now countable.
-    assert payload["topics"] == {"posts_in": 9, "topics_out": 3, "synthesized": 0, "returned": 3}
+    assert payload["topics"] == {"posts_in": 2, "topics_out": 3, "synthesized": 0, "returned": 3}
     assert payload["input"]["duplicates_dropped"] == 1
     assert payload["input"]["total_available"] == 2_039
+    # FR-305's three reasons ride their own group: a parser asking "why is this run thin?" reads
+    # exactly this, and `total` is the figure that closes the chain against `posts_in`.
+    assert payload["drops"] == {"stale": 4, "unenriched": 2, "used": 1, "total": 7}
+    assert payload["caps"] == {"rows_per_call": 100, "pages_asked": 3, "videos_disabled": True}
     line = counters.summary_line()
     assert "9 post(s) after 1 duplicate(s)" in line
+    assert "7 ineligible (4 stale/2 unenriched/1 used)" in line
     assert "3 topic(s) from 1 monitor(s)" in line and "3 returned" in line
 
 
@@ -635,7 +883,7 @@ async def test_topic_posts_names_every_post_in_rank_order_and_stays_out_of_run_l
                         "get_top_slideshows": {"slideshows": [_slideshow("s-low", views=1_000)],
                                                "total": 635}})
 
-    items = await virlo._monitor_item(_Pool(session), MONITOR, _config(), log)
+    items = await virlo._monitor_item(_Pool(session), MONITOR, _config(include_videos=True), log)
 
     records = log.named("topic_posts")
     assert len(records) == len(items) == 2
@@ -645,7 +893,16 @@ async def test_topic_posts_names_every_post_in_rank_order_and_stays_out_of_run_l
         assert [row["post_id"] for row in record["posts"]] == _post_ids(item)
         assert [row["views"] for row in record["posts"]] == sorted(
             (row["views"] for row in record["posts"]), reverse=True)
-        assert set(record["posts"][0]) == {"post_id", "url", "author", "views"}
+        # FR-155's v2.1.0 event shape. `published_at` answers the question the D46 post-mortem
+        # could not ask of any log line — how old was the post we quoted — and the panel/image
+        # counts say whether a row could have carried a deck at all.
+        assert set(record["posts"][0]) == {"post_id", "url", "author", "views", "published_at",
+                                           "format", "panel_count", "image_count", "vision_status"}
+    deck = next(row for record in records for row in record["posts"]
+                if row["format"] == "slideshow")
+    assert (deck["panel_count"], deck["image_count"]) == (3, 3)
+    assert deck["vision_status"] == "ready"
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", deck["published_at"]), "a plain ISO date, not a stamp"
     assert "P1 at 4,900,000 views" in log.messages("topic_posts")[0]
 
 
@@ -660,7 +917,7 @@ async def test_virlo_fields_is_the_per_monitor_consumption_ledger() -> None:
                         "get_top_videos": {"videos": videos, "total": 2_039},
                         "get_top_slideshows": {"slideshows": shows, "total": 635}})
 
-    await virlo._monitor_item(_Pool(session), MONITOR, _config(), log)
+    await virlo._monitor_item(_Pool(session), MONITOR, _all_time(), log)
 
     records = log.named("virlo_fields")
     assert len(records) == 1
@@ -675,6 +932,11 @@ async def test_virlo_fields_is_the_per_monitor_consumption_ledger() -> None:
         assert not set(entry["consumed"]) & set(entry["ignored"])
     assert "views" in ledger["video"]["consumed"] and "hook_text" in ledger["video"]["consumed"]
     assert "panel_texts" in ledger["slideshow"]["consumed"]
+    # v2.1.0: the three fields the ledger reported as `ignored` on every run while the deck they
+    # describe was the product. The ledger is what made that visible, so it is what pins the fix.
+    for field in ("panel_count", "image_urls", "intelligence_status"):
+        assert field in ledger["slideshow"]["consumed"], field
+        assert field not in record["ignored"], field
     assert record["ignored"] == sorted(record["ignored"])
     assert "thumbnail_url" in record["ignored"], "the media fields really are ignored post-pivot"
 
@@ -719,7 +981,7 @@ async def test_the_per_topic_payload_reports_the_topics_own_posts_not_the_monito
                         "get_top_slideshows": {"slideshows": [_slideshow("s1", views=8)],
                                                "total": 12}})
 
-    items = await virlo._monitor_item(_Pool(session), MONITOR, _config(), log)
+    items = await virlo._monitor_item(_Pool(session), MONITOR, _config(include_videos=True), log)
 
     payloads = log.named("virlo_payload")
     assert len(payloads) == 2
@@ -729,19 +991,28 @@ async def test_the_per_topic_payload_reports_the_topics_own_posts_not_the_monito
     assert all(row["total_available"] == 52 for row in payloads)
     assert [row["topic"] for row in payloads] == [item.topic_key for item in items]
     assert payloads[0]["views"] == items[0].total_views
+    # FR-301's event-shape amendment: what the calls returned, what the gate removed, what is left.
+    # Monitor-scoped like the dedupe figures beside them — the gate runs before the split, so no
+    # topic can be given a share of the loss.
+    assert all(row["rows_fetched"] == 3 and row["posts_available"] == 3 for row in payloads)
+    assert all(row["dropped_stale"] == row["dropped_unenriched"] == row["dropped_used"] == 0
+               for row in payloads)
 
 
-async def test_both_media_calls_still_ask_for_the_monitors_winners_after_the_split() -> None:
-    """The sort is what makes `P1` mean anything, so the split must not have quietly dropped it:
-    `views desc`, one page of 100, never an `offset` (Virlo answers that with HTTP 400)."""
+async def test_the_media_ask_survives_the_split_as_the_windowed_slideshow_first_one() -> None:
+    """The ask is what makes `P1` mean a post from this week, so the split must not quietly change
+    it: `created_at desc`, pages 1..`fetch_pages`, slideshows only, never an `offset` (Virlo
+    answers that with HTTP 400)."""
     session = _Session({"get_monitor_analysis": _analysis(_theme("first"))})
 
-    await virlo._monitor_item(_Pool(session), MONITOR, _config())
+    await virlo._monitor_item(_Pool(session), MONITOR, _config(fetch_pages=2))
 
-    media = {tool: args for tool, args in session.calls if tool != "get_monitor_analysis"}
-    assert set(media) == {"get_top_videos", "get_top_slideshows"}
-    for args in media.values():
-        assert args == {"monitor_id": MONITOR, "limit": 100, "order_by": "views", "sort": "desc"}
+    media = [(tool, args) for tool, args in session.calls if tool != "get_monitor_analysis"]
+    assert {tool for tool, _args in media} == {"get_top_slideshows"}, "videos are off by default"
+    # One short page (the stub answers `{}`) ends the paging, so only page 1 is ever asked for —
+    # the empty round trips a fixed 1..N loop would have spent are exactly what that rule saves.
+    assert [args for _tool, args in media] == [
+        {"monitor_id": MONITOR, "limit": 100, "page": 1, "order_by": "created_at", "sort": "desc"}]
     assert all("offset" not in args for _tool, args in session.calls)
 
 

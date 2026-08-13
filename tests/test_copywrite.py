@@ -279,11 +279,18 @@ def test_only_the_slots_this_format_renders_are_offered() -> None:
 
 def test_an_over_budget_string_is_never_offered_which_is_why_nothing_is_ever_trimmed() -> None:
     """§1.7.3's structural guarantee: resolution cannot trim, re-spell or apologise, because the
-    only strings it can reach were already short enough."""
+    only strings it can reach were already short enough.
+
+    The style caps BOTH slots an image renders, at 42 each. Capping only the headline stopped
+    demonstrating anything at v2.1.0, when `text_budgets.image_subline` rose to 160 (D46 §0.5): a
+    73-character hook then fits the subline slot honestly and is offered for it, which is the
+    budgets working, not failing. A string is "over budget" only when it fits no slot at all.
+    """
     long_hook = "A hook that runs on well past forty-two characters and keeps going besides"
     trend = make_trend(post(1, hooks=("Short hook", long_hook)))
 
-    offer = _offer(entry("a1", 0), trend, make_style(max_onimage_chars={"headline": 42}))
+    offer = _offer(entry("a1", 0), trend,
+                   make_style(max_onimage_chars={"headline": 42, "subline": 42}))
 
     assert offer.budgets["headline"] == 42
     assert "P1.hook.1" in [c.label for c in offer.onimage]

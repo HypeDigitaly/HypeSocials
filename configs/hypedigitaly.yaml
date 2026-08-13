@@ -21,12 +21,16 @@ niche:
   visual_world: "dark UI and dashboard screenshots, terminal/automation-graph fragments, one electric accent on near-black, heavy geometric sans headlines, numbered playbook cards, whiteboard-style arrows"
 
 run:
-  formats: { image: 4, carousel: 2, reel: 0 }
+  formats: { image: 0, carousel: 6, reel: 0 }
+  # ALL-CAROUSELS since 2026-08-13 (v2.1.0/D46 §0.3, operator decision; was 4/2/0). v1 of the
+  # slideshow pivot fetches SLIDESHOWS only (sources.include_videos below), and a slideshow is a
+  # deck: a carousel is the only format that can quote one panel for panel (FR-304). Raising image
+  # or reel here without also setting sources.include_videos: true is REFUSED at load (§0.14e).
   # Post-pivot (v2.0.0, D44) a reel is a seed frame plus Seedance with NO video reference, so it
   # bills at the plain no-reference per-second rate set under price_per_unit.reel_second below:
   # ~$1.58 for a 5 s 720p clip, where the withdrawn motion-reference path cost ~$2.85-$4.75.
   # formats.reel still ships 0 as the everyday default - a reel is ~15x an image even now -
-  # so enable it per run with --reels N when a reel is actually wanted.
+  # so enable it per run with --reels N (and video sourcing) when a reel is actually wanted.
   platforms: [linkedin, instagram, tiktok]
   languages: { linkedin: en, instagram: en, tiktok: en }
   # 45 min (operator decision 2026-08-10, default is 25). This is a REEL-CAPABLE config, so the
@@ -55,6 +59,25 @@ sources:
   # switch: one topic per monitor, i.e. the pre-pivot cardinality. `0` is a config error, not a
   # setting - a monitor that contributes nothing should be removed from the list instead.
   virlo_topics_per_monitor: 9
+  # The v2.1.0 fetch window (D46/FR-301). Spelled out here rather than inherited because these four
+  # keys decide WHICH posts a paid run may quote, and this is the file that actually runs.
+  # false = the fetch gate skips Virlo's video rows and yields slideshows only; a slideshow is a
+  # deck, which is what a carousel reproduces panel for panel (FR-304). It also gates run.formats
+  # image/reel counts above (§0.14e).
+  include_videos: false
+  # Result pages per monitor at `created_at desc` - ~100 posts a page, so 3 is roughly this
+  # monitor's last week. Bounds 1-10, REFUSED out of range rather than clamped (FR-285).
+  fetch_pages: 3
+  # Posts older than this are dropped pre-rank as stale (publish_date). The run this file produced
+  # on 2026-08-13 quoted posts from 2023 because ranking was views-over-all-time; this is the cap
+  # that ends that. Must be <= run.trend_history_days (30 by default) or the load is refused
+  # (FR-307) - a post must not fall out of the no-repeat memory while it is still being fetched.
+  max_post_age_days: 30
+  # After the Confirm gate, download the assigned carousel source posts' slides and have the
+  # analysis model transcribe their on-image text and describe their visuals (FR-306), so our
+  # slides reproduce the CONTENT in our own style. Paid LLM spend, estimated before Confirm.
+  # `false` relies on Virlo's own panel_texts alone, which many fresh rows leave empty.
+  vision_transcribe: true
 
 styles:
   # Run-side knob for the meta-style registry (FR-290); the registry ITSELF is prompts/styles.yaml

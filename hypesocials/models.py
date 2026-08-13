@@ -111,7 +111,12 @@ class SourcePost:
     caption: str = ""
     hooks: list[str] = field(default_factory=list)
     text_overlays: list[str] = field(default_factory=list)  # absorbs `text_overlay_contents`
-    panel_texts: list[str] = field(default_factory=list)  # per-slide words, in panel order
+    #: Per-slide words, INDEX-ALIGNED to `panel_count` (FR-293/FR-304, §0.14a of the D46 plan): slot
+    #: *i* holds the text of source slide *i+1*, and a slide Virlo transcribed nothing for holds an
+    #: empty string rather than closing the gap. The alignment is the contract — FR-304 renders OUR
+    #: slide *i* from SOURCE panel *i*, so a compacted list would silently re-map slide 3's words
+    #: onto slide 2 and produce a deck that reads as the source's with two slides swapped.
+    panel_texts: list[str] = field(default_factory=list)
     description: str = ""
     views: int = 0
     # FR-297b's roster prints an age column and a type tag per post, and neither is derivable from
@@ -119,6 +124,22 @@ class SourcePost:
     # majority over the topic's posts (§1.6), so format affinity stops being a per-monitor guess.
     published_at: datetime | None = None
     is_slideshow: bool = False
+    # --- slideshow shape (v2.1.0, FR-293/FR-301): the three fields the adapter used to drop.
+    #: How many slides the source deck has, per Virlo's own position-sorted image list. FREE and
+    #: known at fetch, which is what lets ASSIGN fix the deck length before the Confirm gate
+    #: (§0.4′) instead of discovering it after money moved. Zero on a video row, and zero on a
+    #: slideshow row Virlo shipped without images — which is one of FR-305's drop reasons.
+    panel_count: int = 0
+    #: The slide image URLs, in panel order (the wrapper sorts them by Virlo's `position`), so
+    #: `image_urls[i]` is the picture whose words are `panel_texts[i]`. ANALYSIS AND DISPLAY ONLY
+    #: (D41 carve-out, FR-306): slide intelligence downloads them into `output/<run>/source/` and
+    #: the gallery shows the local copies — a Virlo URL or byte never enters a render payload.
+    image_urls: list[str] = field(default_factory=list)
+    #: Virlo's own enrichment marker for this row (`"ready"` when its `intelligence` block is
+    #: populated). Read as vision-eligibility evidence and logged on `topic_posts`; never a gate on
+    #: its own, because rows enriched before a monitor's `data_intelligence_enabled` flipped still
+    #: carry populated intelligence while the agent reports `false`.
+    intelligence_status: str = ""
 
 
 @dataclass(slots=True)

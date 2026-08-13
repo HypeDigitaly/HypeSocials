@@ -7,6 +7,7 @@ Purpose: own the run folder, the per-asset folder and the whole `meta.yaml` life
 asset path, an asset id, a file name or a YAML key itself.
 Public API: `create_run_folder()` · `AssetFolder` · `read_meta()` ·
 `update_meta()` · `set_marker()` / `has_marker()` / `clear_marker()` · `save_reference()` ·
+`store_source()` / `write_source_yaml()` / `source_dir()` / `source_slide_name()` ·
 `close_downloads()` · `PackagingError`.
 Invariants:
 - **A folder never holds media without meta** (NFR-21): the folder and its `pending` meta.yaml
@@ -17,6 +18,10 @@ Invariants:
   `aspect_ratio_requested` / `native_size_rendered`.
 - A failed creative keeps its paid artifacts: `skip()` writes `SKIP_REASON.txt` and a
   `status: failed` meta, it never deletes the folder (FR-74, 10 §10).
+- **`source/<post_id>/` is analysis-and-display only (FR-71/FR-306, D46 §0.13).** The slides a
+  carousel was sourced FROM are downloaded here once per run so the gallery can show them offline
+  and the vision pass can read them; they are never published (FR-72/FR-213) and never uploaded to
+  Kie or any other service (`render.upload_file` is the carve-out boundary, D41 as amended).
 - `caption.txt` is FR-230's publishing contract *and the one hand-editable asset file*: caption
   body, one blank line, hashtag line. Operator edits after the run are honored — nothing here
   rewrites it later.
@@ -31,7 +36,8 @@ result URL still resolves in a later run (~24 h retention — download inside th
 from __future__ import annotations
 
 import errno
-from collections.abc import Sequence
+import re
+from collections.abc import Mapping, Sequence
 from dataclasses import fields
 from enum import Enum
 from pathlib import Path
@@ -48,6 +54,11 @@ META_FILE = "meta.yaml"
 CAPTION_FILE = "caption.txt"
 SKIP_REASON_FILE = "SKIP_REASON.txt"
 REFS_DIR = "refs"
+#: FR-71's run-level source-slide store: `output/<run_id>/source/<post_id>/slide_NN.jpg` plus one
+#: `source.yaml` per post. Run-level rather than per-asset because two sibling creatives may quote
+#: the same slideshow, and the deck must download once (D46 §0.13).
+SOURCE_DIR = "source"
+SOURCE_META_FILE = "source.yaml"
 #: The FR-231 / 60 FR-211 selection + idempotency family — one suffix, four well-known names.
 SELECTED_MARKER = "SELECTED.marker"
 PUBLISH_ATTEMPTED_MARKER = "PUBLISH_ATTEMPTED.marker"
@@ -107,6 +118,61 @@ def save_reference(
     """
     folder = Path(run_dir) / REFS_DIR / slugify(key)
     return _write_bytes(folder / f"image_{int(index)}{suffix or '.jpg'}", data)
+
+
+# --------------------------------------------------------------------------- source slide store
+
+def source_dir(run_dir: str | Path, post_id: str) -> Path:
+    """`output/<run_id>/source/<post_id>/` — the run-level source-slide folder (FR-71).
+
+    The post id is a Virlo-controlled string that becomes a Windows path segment, so it is passed
+    through `_safe_segment()`: an ordinary id (digits, letters) survives byte for byte, and an id
+    carrying a separator, a device name character or 200 characters of junk cannot escape the run
+    folder or blow past MAX_PATH. Callers that need the on-disk name (the gallery's relative
+    hrefs, `meta.yaml.panel_map`) read it from here rather than re-deriving it.
+    """
+    return Path(run_dir) / SOURCE_DIR / _safe_segment(post_id)
+
+
+def source_slide_name(position: int, url: str = "") -> str:
+    """The on-disk name of one source slide: `slide_01.jpg`, `slide_02.png`, … (FR-71).
+
+    1-based and zero-padded so the folder sorts in panel order, and the position IS the source
+    panel position — the deck's own index, never a compacted one (D46 §0.14a). The extension is
+    taken from the URL when it is a known media suffix, `.jpg` otherwise.
+    """
+    return f"slide_{int(position):02d}{_extension(url) or '.jpg'}"
+
+
+async def store_source(run_dir: str | Path, post_id: str, position: int, url: str) -> Path:
+    """Download ONE source slide into `source/<post_id>/slide_NN.<ext>` and return its path.
+
+    This is the only door from a Virlo CDN URL to a local file (FR-306). The bytes serve two
+    readers and cost one fetch: the slide-intelligence vision call reads them, and the gallery
+    shows them offline after the CDN URL has expired (FR-75's hotlink ban, FR-309's panel strip).
+
+    Deduplicated on disk: a slide already stored under this run — a second creative quoting the
+    same slideshow, or a resumed step — is returned as-is without a second request. Raises
+    `PackagingError` (`download_failed` / `disk_full` / `write_failed`) exactly like the render
+    downloads do; slide intelligence catches it and degrades that one slide (D46 §0.14c).
+
+    Nothing written here is ever uploaded (FR-244) or published (FR-72/FR-213).
+    """
+    target = source_dir(run_dir, post_id) / source_slide_name(position, url)
+    if target.is_file() and target.stat().st_size > 0:
+        return target
+    return _write_bytes(target, await _download(url))
+
+
+def write_source_yaml(run_dir: str | Path, post_id: str, payload: Mapping[str, Any]) -> Path:
+    """Write `source/<post_id>/source.yaml` atomically and return its path (FR-71).
+
+    The CALLER owns the schema — post provenance, per-slide rows, vision provenance — for the same
+    reason `AssetRecord` owns `meta.yaml`'s: one producer, one place to read the key names. This
+    only guarantees the file is whole (temp+rename), UTF-8, and written in declaration order.
+    """
+    return _write_bytes(source_dir(run_dir, post_id) / SOURCE_META_FILE,
+                        _dump(_plain(dict(payload))).encode("utf-8"))
 
 
 # --------------------------------------------------------------------------- asset folder
@@ -309,6 +375,25 @@ def _os_error(message: str, exc: OSError) -> PackagingError:
     """Disk-full is its own reason: 10 §10 stops further downloads on it, not on any OSError."""
     reason = "disk_full" if exc.errno in _OUT_OF_SPACE else "write_failed"
     return PackagingError(f"{message}: {exc}", reason=reason)
+
+
+#: Everything a Windows path segment may hold without quoting, plus nothing that can traverse:
+#: no separators, no colon, no dots-only segment. Deliberately NOT `slugify()` — that folds case
+#: and diacritics, and a post id is an identity, not a label: two ids differing only in case are
+#: two posts and must not collide into one folder.
+_UNSAFE_SEGMENT = re.compile(r"[^A-Za-z0-9._-]+")
+_SEGMENT_MAX = 64  # MAX_PATH headroom: run folder + `source/` + this + `slide_NN.jpg`
+
+
+def _safe_segment(value: str) -> str:
+    """One source-controlled string as a path segment that cannot escape its parent.
+
+    The second strip is after the length cut on purpose: Explorer and the Win32 API silently drop
+    a trailing dot or space from a folder name, so a cut that landed on one would leave us writing
+    a path we can no longer read back by the name we computed.
+    """
+    cleaned = _UNSAFE_SEGMENT.sub("-", str(value or "")).strip("-. ")[:_SEGMENT_MAX].rstrip("-. ")
+    return cleaned or "unknown-post"
 
 
 def _extension(url: str) -> str:

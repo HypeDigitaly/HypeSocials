@@ -89,7 +89,7 @@ branding:
   brand: hypelead
   brand_ratio: 0.5
 run:
-  formats: {{ image: 4, carousel: 2, reel: 0 }}
+  formats: {{ image: 0, carousel: 6, reel: 0 }}
   languages: {{ linkedin: cs, instagram: cs, tiktok: cs }}
 sources:
   virlo_monitor_ids: ["623203a9-1111-2222-3333-444455556666"]
@@ -99,7 +99,7 @@ _UNREADY = """label: "no monitor ids yet, not runnable"
 niche:
   audience: "SMB founders evaluating automation"
 run:
-  formats: {{ image: 4, carousel: 2, reel: 0 }}
+  formats: {{ image: 0, carousel: 6, reel: 0 }}
   languages: {{ linkedin: cs, instagram: cs, tiktok: cs }}
 sources:
   virlo_monitor_ids: []
@@ -112,7 +112,7 @@ prompts_dir: "{broken}"
 branding:
   brand: hypelead
 run:
-  formats: {{ image: 4, carousel: 2, reel: 0 }}
+  formats: {{ image: 0, carousel: 6, reel: 0 }}
 sources:
   virlo_monitor_ids: ["623203a9-1111-2222-3333-444455556666"]
 briefs_dir: "{briefs}"
@@ -120,11 +120,14 @@ briefs_dir: "{briefs}"
 #: Not valid YAML at all: `list_configs` still lists it (one broken sibling must never blank the
 #: picker) but `load_config` refuses it.
 _WONT_LOAD = "label: [unclosed\n"
-#: A run WITH reels — the confirm notice's other duration branch (FR-300e).
+#: A run WITH reels — the confirm notice's other duration branch (FR-300e). It states
+#: `include_videos: true` because an image or reel count over slideshow-only sourcing is a load
+#: refusal since v2.1.0 (D46 §0.14e): a reel-capable config is a video-sourcing config.
 _WITH_REELS = """label: "reels on"
 run:
   formats: {{ image: 1, carousel: 0, reel: 2 }}
 sources:
+  include_videos: true
   virlo_monitor_ids: ["623203a9-1111-2222-3333-444455556666"]
 briefs_dir: "{briefs}"
 """
@@ -273,7 +276,10 @@ def test_fr300_the_guided_run_asks_five_inputs_and_counts_them_1_of_5_through_5_
     assert result is not None
     assert menu._live_steps(quick=False) == ("config", "counts", "cap", "briefs", "confirm")
     assert _counters(wizard.printed) == ["1/5", "2/5", "3/5", "4/5", "5/5"]
-    assert not any(re.search(r"\b\d+/[67]\b", line) for line in wizard.printed), \
+    # Anchored like `_counters` above, because a counter is a line PREFIX. An unanchored search
+    # also matched the picker row's own `0/6/0` format triple once the shipped configs went
+    # all-carousels (D46 §0.3) — a format count is not a step counter.
+    assert not any(re.match(r"^\d+/[67]\s", line) for line in wizard.printed), \
         "a leftover seven-step counter anywhere in the output"
 
 
@@ -343,14 +349,15 @@ def test_fr300_the_mode_flag_the_deleted_step_mirrored_is_gone_from_the_cli_too(
 def test_fr300_a_picker_row_states_language_monitors_counts_brand_and_styles(
     tmp_path: Path,
 ) -> None:
-    """`cs · 1 mon · 4/2/0 · hypelead · 8 styles` — the two facts FR-300 added (brand, usable
+    """`cs · 1 mon · 0/6/0 · hypelead · 8 styles` — the two facts FR-300 added (brand, usable
     style count) sit beside the three that were already there, and the style count is the count
-    usable under THIS config's brand, not the registry's total."""
+    usable under THIS config's brand, not the registry's total. (The counts read `0/6/0` since
+    v2.1.0: the shipped shape is all-carousels, D46 §0.3.)"""
     configs = _configs(tmp_path, ready=_READY)
 
     facts = _facts(configs, "ready")
 
-    assert facts[:3] == ["cs", "1 mon", "4/2/0"]
+    assert facts[:3] == ["cs", "1 mon", "0/6/0"]
     assert facts[3] == "hypelead"
     assert re.fullmatch(r"\d+ styles", facts[4]), facts
     assert int(facts[4].split()[0]) > 0
@@ -368,7 +375,7 @@ def test_fr295_a_registry_that_will_not_serve_this_run_reads_NO_STYLES_at_pick_t
     facts = _facts(configs, "nostyles")
     summary = next(row for row in list_configs(configs) if row.name == "nostyles")
 
-    assert facts[:4] == ["en", "1 mon", "4/2/0", "hypelead"]
+    assert facts[:4] == ["en", "1 mon", "0/6/0", "hypelead"]
     assert facts[4] == "NO STYLES"
     assert not any("styles" in fact and fact != "NO STYLES" for fact in facts)
     assert menu._runnable(summary) is False, "FR-295 blocks a run exactly as no monitor ids do"
@@ -634,9 +641,9 @@ def test_fr136_counts_are_one_editable_line_never_a_prompt_per_format(tmp_path: 
     result = run_menu(cli.Options(), console=wizard.console, configs_dir=configs)
 
     assert result is not None
-    assert result.options.counts == {"image": 4, "carousel": 2, "reel": 1}
+    assert result.options.counts == {"image": 0, "carousel": 6, "reel": 1}
     assert wizard.count("counts") == 1
-    assert any("edit the line [images=4 carousels=2 reels=0]" in question
+    assert any("edit the line [images=0 carousels=6 reels=0]" in question
                for question in wizard.asked)
 
 

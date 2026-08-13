@@ -383,6 +383,21 @@ def _analysis(*, themed: bool) -> dict[str, Any]:
     return analysis
 
 
+def _all_time() -> Config:
+    """The config the captured corpus must be read under (FR-301/FR-305).
+
+    `tests/fixtures/virlo/` is a pre-D46 `views desc` capture spanning 2023-11 to 2026-07, i.e.
+    exactly the all-time pool the 30-day window now refuses — so under the shipped default every
+    row lands in `dropped_stale` and the reconciliation below would be measuring the gate rather
+    than the dedupe and the split. The window's own arithmetic is asserted separately, on rows
+    dated relative to now.
+    """
+    cfg = Config()
+    cfg.sources.max_post_age_days = 0  # FR-301's documented off switch
+    cfg.sources.include_videos = True  # the corpus carries 100 video rows; count them
+    return cfg
+
+
 def _tallied(*, themed: bool = True, duplicate_page: bool = False) -> tuple[Counters, list[Any]]:
     """One monitor's topics built from the real page, with its own private tally.
 
@@ -394,7 +409,7 @@ def _tallied(*, themed: bool = True, duplicate_page: bool = False) -> tuple[Coun
     if duplicate_page:
         videos, shows = [*videos, *videos], [*shows, *shows]
     tally = Counters()
-    items = virlo._split_topics(MONITOR, _analysis(themed=themed), videos, shows, Config(),
+    items = virlo._split_topics(MONITOR, _analysis(themed=themed), videos, shows, _all_time(),
                                 counters=tally)
     tally.trends_returned = len(items)
     return tally, items
@@ -440,6 +455,62 @@ def test_a_monitor_with_no_themes_synthesizes_exactly_one_topic_and_says_so() ->
     assert tally.topics_synthesized == 1
     assert "200 post(s) split into 1 topic(s)" in runner._funnel_block(tally)
     assert "1 synthesized" in runner._funnel_block(tally)
+
+
+def test_the_three_drop_reasons_print_as_their_own_rows_even_when_every_one_is_zero() -> None:
+    """FR-155's post-level drop vocabulary, sourced from the adapter (one-place rule).
+
+    The WORDS live beside the counters in `sources/virlo.py` — a reason renamed in the funnel
+    block and not in the gate would put a stale sentence beside a fresh number, and the operator
+    would have no way to tell which of the two was lying. `runner._funnel_block` splices these
+    rows into the printed block (W2 wire-in); what is pinned here is that they exist, that they
+    print at zero, and that they survive the runner's own packer inside FR-286's 78 columns.
+    """
+    tally = healthy()
+    tally.add_drops(stale=12, unenriched=3, used=1)
+
+    rows = tally.drop_rows()
+    printed = [line for label, clauses in rows for line in runner._funnel_row(label, *clauses)]
+
+    assert [label for label, _clauses in rows] == ["dropped", "dropped", "dropped", "videos"]
+    assert "12 stale" in printed[0] and "3 unenriched" in printed[1] and "1 used" in printed[2]
+    console_safe("\n".join(printed))
+
+    # Zeros print. "The window dropped nothing" and "the counter is dead" are the two readings a
+    # missing line cannot tell apart, which is the NFR-5 failure the whole funnel exists to close.
+    empty = [line for label, clauses in Counters().drop_rows()
+             for line in runner._funnel_row(label, *clauses)]
+    assert len(empty) == 4
+    assert "0 stale" in empty[0] and "0 unenriched" in empty[1] and "0 used" in empty[2]
+
+
+def test_the_video_row_says_disabled_in_words_rather_than_printing_a_row_of_zeros() -> None:
+    """FR-301/§0.2: `include_videos: false` means `get_top_videos` is never called. "We did not
+    ask" and "this monitor posts no videos" are different facts, only one of them is the
+    operator's own decision, and zero video rows beside a slideshow count reads as the wrong one."""
+    label, (off_clause,) = Counters(videos_disabled=True).drop_rows()[3]
+    _label, (on_clause,) = Counters(videos_raw=140).drop_rows()[3]
+
+    assert label == "videos"
+    assert "disabled (slideshow-first)" in off_clause and "get_top_videos not called" in off_clause
+    assert on_clause == "enabled — 140 row(s) fetched"
+    console_safe("\n".join(runner._funnel_row(label, off_clause)))
+
+
+def test_the_drop_counters_reconcile_the_input_stage_with_the_topics_stage() -> None:
+    """The chain the block is read as, end to end: rows Virlo shipped, minus the repeats, minus
+    the three eligibility reasons, IS what the split received. Asserted on the real corpus with a
+    30-day window applied to a page that predates it — the drop is 200 rows, and the point is that
+    all 200 are ACCOUNTED for rather than merely absent."""
+    videos, shows = _corpus()
+    tally = Counters()
+
+    virlo._split_topics(MONITOR, _analysis(themed=True), videos, shows, Config(), counters=tally)
+
+    assert tally.posts_kept == 200, "the dedupe kept the whole captured page"
+    assert tally.dropped_ineligible == 200 - tally.posts_in
+    assert tally.dropped_stale > 0, "a 2023-2026 all-time page against a 30-day window"
+    assert tally.summary_line().count("ineligible") == 1
 
 
 def test_the_filter_row_counts_every_verdict_exactly_once() -> None:

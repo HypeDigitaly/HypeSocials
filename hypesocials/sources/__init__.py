@@ -61,15 +61,21 @@ async def fetch(
         include_digest: `False` skips Virlo's metered digest, keeping a preview honestly at $0.
         used_posts: post ids already QUOTED inside the history window, as one flat set — Virlo
             post ids are globally unique, so an adapter needs no per-topic split (FR-7, FR-153).
-            Post-pivot the adapter annotates rather than filters; Select owns the verdict.
+            An adapter DROPS these before it ranks (FR-305/FR-307, v2.1.0): a burnt post never
+            reaches a `TrendItem`, so it can neither take a `P<n>` label nor be picked. Select's
+            history verdict and copywrite's pick-time refusal remain as the second and third
+            enforcement points — post-level no-repeat is checked at every stage that could
+            re-introduce one. An empty set (what a `trend_history_days: 0` run passes) is the
+            window switched off.
         say: the run's console seam, for the degrades an operator must see on screen and not
             only in `run.log` (FR-296 collect liveness — the four virlo `_warn` sites ride it).
 
     Returns:
         A `TrendFeed`: the normalized topic items from all active adapters, with every adapter's
         funnel `Counters` folded into one run-wide rollup on `.counters` (FR-155). Select
-        (`plan.py`) owns every verdict from here — usability, history window, affinity — so
-        nothing is filtered out here.
+        (`plan.py`) still owns every TOPIC verdict from here — usability, history window,
+        affinity — and nothing is filtered at this facade; the POST-level eligibility gate
+        (FR-305) belongs to each adapter, because only the adapter knows what its rows mean.
     """
     feed = TrendFeed()
     for name in dict.fromkeys(cfg.sources.active):

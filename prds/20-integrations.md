@@ -98,7 +98,7 @@ All five endpoint paths are **verified (2026-08-09)** against Virlo's live OpenA
 
 **FR-301 — Fetch strategy (v2.1.0): slideshows-only when `sources.include_videos: false`; `order_by=created_at desc`; pages `1..fetch_pages`; dedupe by post id; client-side `publish_date` staleness cap via `sources.max_post_age_days`; used-post drop pre-rank (FR-307); rank by views among survivors; FR-246 session pool intact.**
 
-**FR-305 — Eligibility gates (v2.1.0): Post-fetch, before ranking, one sequential gate pass applies four filters to each row:** (1) **Staleness** — drop if `published_at` exceeds `sources.max_post_age_days`; (2) **Enrichment** — drop if post fails §0.14a usability predicate (< 2 usable `panel_texts` slots for carousels); (3) **Deduplication** — drop if post_id already appears in this run's history window (`trend_history_days`); (4) **Used-post exclusion** — drop if post_id is in the burned list (previous creative in this plan's COPY stage or later). Each drop increments a funnel counter: `dropped_stale` / `dropped_unenriched` / `dropped_used` (FR-155 one-place rule — counted here, reported once in summaries). Survivors are ranked by views and presented to Select.
+**FR-305 — Eligibility gates (v2.1.0): Post-fetch, before ranking, one sequential gate pass applies four filters to each row:** (1) **Staleness** — drop if `published_at` exceeds `sources.max_post_age_days`; (2) **Enrichment** — drop a slideshow with no slide images (`panel_count == 0`), or — only when `sources.vision_transcribe` is off — one with no readable text at all (no non-empty `panel_texts`, no hook). The full §0.14a “≥2 usable panel slots” deck verdict is decided at ASSIGN (FR-304), because usability is defined after the merge with vision intelligence, which runs post-Confirm; a deck vision could still rescue is never dropped at fetch; (3) **Deduplication** — drop if post_id already appears in this run's history window (`trend_history_days`); (4) **Used-post exclusion** — drop if post_id is in the burned list (previous creative in this plan's COPY stage or later). Each drop increments a funnel counter: `dropped_stale` / `dropped_unenriched` / `dropped_used` (FR-155 one-place rule — counted here, reported once in summaries). Survivors are ranked by views and presented to Select.
 
 **Tool parameters for media calls (verified 2026-08-11).** The `get_top_videos` and `get_top_slideshows` endpoints accept the following parameters:
 - **`limit`** — integer, maximum **100** (the server silently clamps any value larger than 100)
@@ -333,7 +333,7 @@ Seedance's input object is enumerated field by field in Section 8a. GPT Image 2'
 
 - **`onimage_text`** — verbatim transcription of any visible text in the slide (charts, labels, callouts, overlays, on-image text). Source: Virlo `panel_texts[i]` if present (position-matched); vision fills gaps (`vision_transcribed` provenance). Never synthesized or paraphrased.
 - **`visual_brief`** — concise description of graphics, charts, icons, composition, layout (e.g., "line chart, three series, ascending", "four icons in a grid", "hero image + centered text"). **Always in English** — render prompts are English; on-image text stays source-language. Driven by slide image content, never by Virlo metadata.
-- **`brand_marks`** — Boolean: are competitor logos, wordmarks, or trademarks visible in this slide? Detected by vision; competitors are described but excluded from reproduction (§0.12 — `10-pipeline.md` applies the filter).
+- **`brand_marks`** — list of names/descriptions (≤10 entries, ≤120 chars each) of logos, wordmarks, or watermarks visible in this slide, as detected by vision. Names, not a boolean, because the competitor blocklist matches against them (§0.12); competitors are genericized, never reproduced (`10-pipeline.md` applies the filter at the pixel path). An empty list means no marks seen. Vision analyses at most **20 slides per post** — a cost fence, since `image_urls` is source-controlled and unbounded decks would be spend the Confirm-gate estimate never quoted; slides past the cap keep their position and Virlo text, and the cut is warned (`slide_intel_slides_capped`).
 
 **Prompt file.** `prompts/slide_intel_question.md` carries the structured query and instruction set, versioned and parity-tracked under FR-174. The prompt ensures analysis-role reasoning produces faithful transcriptions and visual descriptions suitable for render-prompt construction.
 
@@ -351,9 +351,14 @@ slides:
     virlo_text: "..." (if panel_texts[0] present)
     vision_text: "..." (transcription from analysis call)
     visual_brief: "..." (analysis output)
-    brand_marks: true|false
+    brand_marks: ["AcmeAI wordmark", "TikTok watermark"]   # names, [] when none
     vision_transcribed: true|false (tag when Virlo panel was absent)
     image_file: slide_01.jpg
+vision:
+  model_role: analysis
+  model_id: <resolved model string>
+  status: ok | vision_unavailable | vision_disabled
+  reason: <stable warn key when degraded, else absent>
 ```
 
 **Failure modes (fail-open, never aborts per §0.14c).** (a) Analysis call fails/times out → keep Virlo `panel_texts`, tag as `vision_unavailable`; creatives render with panel text only, no visual briefs. (b) Download 404 (source image unreachable) → that slide has no source image in the gallery; brief slot is absent. (c) Fewer briefs than slides → align by position, missing = absent; truncation tagged `panels_truncated` if source `panel_count > carousel_slides ceiling`. Every degrade is logged with the specific step and post id; the creative continues with what remains.

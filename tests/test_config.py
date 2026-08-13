@@ -74,7 +74,7 @@ def test_fr50_a_valid_file_loads_and_absent_keys_take_their_documented_defaults(
     assert cfg.run.spend_cap_usd == 3.5
     assert cfg.run.vision_check is True
     # untouched keys — the defaults 30 §2 documents
-    assert cfg.run.trend_history_days == 7
+    assert cfg.run.trend_history_days == 30  # v2.1.0 (FR-307): was 7, now covers the fetch window
     assert cfg.run.run_deadline_min == 25
     assert cfg.sources.active == ["virlo"]
     assert cfg.models.analysis == "anthropic/claude-sonnet-5"
@@ -97,8 +97,8 @@ def test_nfr19_an_empty_file_loads_as_a_full_default_config(tmp_path: Path) -> N
     documented default" — the limit case is a file that predates every key."""
     cfg = load(tmp_path, "# nothing but a comment\n")
 
-    assert cfg.run.formats == {"image": 4, "carousel": 2, "reel": 0}
-    assert cfg.run.text_budgets.image_headline == 42
+    assert cfg.run.formats == {"image": 0, "carousel": 6, "reel": 0}  # v2.1.0 §0.3: all-carousels
+    assert cfg.run.text_budgets.image_headline == 90  # v2.1.0 §0.5: was 42
     assert cfg.platforms  # per-platform defaults are built even with no platforms: block
     assert cfg.description == "nothing but a comment"  # FR-173 picker line
 
@@ -107,12 +107,18 @@ def test_nfr19_a_partial_mapping_merges_key_by_key_instead_of_replacing_it(
     tmp_path: Path,
 ) -> None:
     """30 §1: "a variant lists only what it overrides". Naming one format must not delete the
-    other two, or a niche file would silently zero the run."""
-    cfg = load(tmp_path, "run:\n  formats: { image: 1 }\n  text_budgets:\n    image_headline: 30\n")
+    other two, or a niche file would silently zero the run.
 
-    assert cfg.run.formats == {"image": 1, "carousel": 2, "reel": 0}
+    The named format is `carousel` rather than `image` since v2.1.0: an image count over a
+    slideshow-only source is refused outright (§0.14e, its own test below), so overriding it here
+    would test the guard instead of the merge.
+    """
+    cfg = load(tmp_path,
+               "run:\n  formats: { carousel: 1 }\n  text_budgets:\n    image_headline: 30\n")
+
+    assert cfg.run.formats == {"image": 0, "carousel": 1, "reel": 0}
     assert cfg.run.text_budgets.image_headline == 30
-    assert cfg.run.text_budgets.image_subline == 60  # untouched sibling keeps its default
+    assert cfg.run.text_budgets.image_subline == 160  # untouched sibling keeps its default
     assert "run.text_budgets.image_subline" in cfg.defaults_applied
 
 
@@ -299,15 +305,21 @@ def test_fr131_reels_requested_without_a_price_warn_rather_than_fail_the_load(
     tmp_path: Path,
 ) -> None:
     """10 §10: "Reels are not planned at all; the menu reports the missing price" — the config
-    still loads, because the drop happens at pre-flight, not here."""
-    cfg = load(tmp_path, "run:\n  formats: { reel: 2 }\n")
+    still loads, because the drop happens at pre-flight, not here.
+
+    Every reel config here also sets `sources.include_videos: true`: since v2.1.0 a reel count over
+    slideshow-only sourcing is a load refusal (§0.14e), and this test is about the PRICE, not that
+    guard — so the file states the sourcing a reel run genuinely needs.
+    """
+    reels = "run:\n  formats: { reel: 2 }\nsources:\n  include_videos: true\n"
+    cfg = load(tmp_path, reels)
 
     assert cfg.reels_plannable is False
     assert cfg.reel_price_key == "models.price_per_unit.reel_second.720p"
     assert any("reel_second" in w for w in cfg.warnings)
 
-    priced = load(tmp_path, "run:\n  formats: { reel: 2 }\n"
-                            "models:\n  price_per_unit:\n    reel_second: { '720p': 0.19 }\n")
+    priced = load(tmp_path, reels
+                  + "models:\n  price_per_unit:\n    reel_second: { '720p': 0.19 }\n")
     assert priced.reels_plannable is True
     assert priced.reel_price_per_second == 0.19
 
@@ -329,6 +341,109 @@ def test_a_run_deadline_under_the_video_job_timeout_warns_on_a_reel_capable_conf
     assert not any("run_deadline_min" in w for w in quiet.warnings)
     # Reels unreachable (default.yaml's shape): the same 25/1800 pairing is silent.
     assert not any("run_deadline_min" in w for w in load(tmp_path, "run: {}\n").warnings)
+
+
+# ------------------------------------------------- D46: the fetch window and its two invariants
+
+
+def test_fr170_the_v2_1_0_sourcing_and_budget_defaults_are_the_ones_30_section_2_documents(
+    tmp_path: Path,
+) -> None:
+    """The D46 defaults, asserted where an operator would look them up (30 §2, FR-170/259/280).
+
+    They are asserted together because they are one decision: v1 fetches recent SLIDESHOWS
+    (`include_videos: false`, 3 pages, 30 days), reads their slides (`vision_transcribe`), quotes
+    the panels verbatim under budgets wide enough to hold a real panel, and renders them without a
+    reference image (`models.image` on the text-to-image route). Any one of these silently reverted
+    puts the run back to the behaviour the operator rejected on 2026-08-13.
+    """
+    cfg = load(tmp_path, "run: {}\n")
+
+    assert cfg.sources.include_videos is False  # slideshows only (FR-301, §0.2)
+    assert cfg.sources.fetch_pages == 3
+    assert cfg.sources.max_post_age_days == 30
+    assert cfg.sources.vision_transcribe is True  # FR-306, §0.11
+    # FR-50: a file that names one of the new keys still reports the siblings it left out.
+    partial = load(tmp_path, "sources:\n  fetch_pages: 5\n")
+    assert partial.sources.fetch_pages == 5
+    assert "sources.include_videos" in partial.defaults_applied
+    assert "sources.fetch_pages" not in partial.defaults_applied
+
+    budgets = cfg.run.text_budgets
+    assert (budgets.image_headline, budgets.image_subline) == (90, 160)
+    assert budgets.slide == 300  # NEW key: per-slide deck text on panel-mapped carousels (FR-304)
+    assert (budgets.reel_seed_headline, budgets.retry_reduction_pct) == (60, 40)
+
+    # FR-280: the reference-FREE route is the default; the profile keeps the i2i sibling for the
+    # jobs that genuinely carry a reference (brief image, carousel anchor, reel seed frame).
+    assert cfg.models.image == "gpt-image-2-text-to-image"
+
+
+def test_fr285_the_fetch_window_keys_are_refused_out_of_range_rather_than_clamped_into_it(
+    tmp_path: Path,
+) -> None:
+    """FR-285/FR-138: "refused-not-clamped". A fetch window silently corrected into range would
+    change which posts a paid run quotes without ever telling the operator it did so."""
+    assert "1–10" in refusal(tmp_path, "sources:\n  fetch_pages: 0\n")
+    assert "sources.fetch_pages" in refusal(tmp_path, "sources:\n  fetch_pages: 11\n")
+
+    line = refusal(tmp_path, "sources:\n  max_post_age_days: 400\n")
+    assert "sources.max_post_age_days" in line and "0–365" in line
+
+    # A slide budget is bounded like its siblings, one shared range (FR-259).
+    assert "1–400" in refusal(tmp_path, "run:\n  text_budgets: { slide: 0 }\n")
+
+    # In-range values load, including the documented "off" ends of both windows.
+    wide = load(tmp_path, "sources:\n  fetch_pages: 10\n  max_post_age_days: 0\n")
+    assert (wide.sources.fetch_pages, wide.sources.max_post_age_days) == (10, 0)
+
+
+def test_fr307_a_history_window_narrower_than_the_fetch_window_is_refused_naming_both_keys(
+    tmp_path: Path,
+) -> None:
+    """FR-307: the no-repeat memory must cover at least the window the fetch reaches back over.
+
+    Under a 7-day memory and a 30-day fetch there is a three-week band where a post is forgotten by
+    history and still returned by Virlo — so the run re-quotes, word for word, what it published
+    last week. Both keys are legal alone, so the refusal has to name both and both values, and it
+    must be a refusal rather than a clamp: raising the memory and narrowing the fetch are different
+    decisions with different costs, and neither is the engine's to make.
+    """
+    line = refusal(tmp_path, "run:\n  trend_history_days: 7\nsources:\n  max_post_age_days: 30\n")
+
+    assert "run.trend_history_days" in line and "sources.max_post_age_days" in line
+    assert "7" in line and "30" in line
+    assert "FR-307" in line
+
+    # Equal is the shipped pairing and passes; wider memory than fetch window passes too.
+    assert load(tmp_path, "run: {}\n").run.trend_history_days == 30
+    assert load(tmp_path, "run:\n  trend_history_days: 90\n").run.trend_history_days == 90
+
+    # `0` is the operator's explicit opt-out — the window is OFF, not half-covering the fetch.
+    off = load(tmp_path, "run:\n  trend_history_days: 0\nsources:\n  max_post_age_days: 30\n")
+    assert off.run.trend_history_days == 0 and off.warnings == ()
+
+
+def test_d46_014e_image_and_reel_counts_are_refused_while_sourcing_is_slideshow_only(
+    tmp_path: Path,
+) -> None:
+    """§0.14e/FR-132: with `include_videos: false` every topic is slideshow-majority, and only a
+    carousel can quote a slideshow panel for panel (FR-304). An image or reel planned against that
+    pool would rank-fallback onto a post it cannot use properly — silently, every run, forever — so
+    the pair is refused and the operator picks which half to change."""
+    line = refusal(tmp_path, "run:\n  formats: { image: 2, carousel: 4, reel: 1 }\n")
+
+    assert "run.formats" in line and "sources.include_videos" in line
+    assert "2 image" in line and "1 reel" in line  # both offending counts, not just the first
+    assert "carousel" not in line.split("—")[0]  # carousels are never the thing being refused
+
+    # The two documented cures, both loading clean.
+    carousels_only = load(tmp_path, "run:\n  formats: { image: 0, carousel: 6, reel: 0 }\n")
+    assert carousels_only.run.formats == {"image": 0, "carousel": 6, "reel": 0}
+
+    with_video = load(tmp_path, "run:\n  formats: { image: 2, carousel: 4, reel: 1 }\n"
+                                "sources:\n  include_videos: true\n")
+    assert with_video.run.formats["image"] == 2 and with_video.sources.include_videos is True
 
 
 # --------------------------------------------------------------------------- the YAML 1.1 trap

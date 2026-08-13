@@ -2,12 +2,15 @@
 
 Three claims are pinned here, in the order they change what gets rendered:
 
-1. **A2 — the sort reaches the wire.** The adapter asks for `order_by=views&sort=desc&limit=100`
-   on both media tools and never sends `offset`. Unsorted, this tool drew every reference it has
-   ever attached from the bottom of a 2,039-row pool: measured 2026-08-11, a median of 2,534 views
-   against 1,940,676 sorted. Post-pivot the stake is higher, not lower — post RANK now picks the
-   verbatim copy (§1.7's `P<n>` labels count over exactly this order) — and a regression is still
-   invisible in output, because the run succeeds on rubbish posts.
+1. **A2 — the WINDOW reaches the wire (re-based by D46, v2.1.0).** The adapter asks
+   `get_top_slideshows` for `order_by=created_at&sort=desc&limit=100`, pages `1..fetch_pages`,
+   calls `get_top_videos` only when `sources.include_videos` says so, and never sends `offset`.
+   The claim this replaces was `views desc`, and it was right about the thing it measured (an
+   unsorted page is Virlo's insertion order — a median of 2,534 views against 1,940,676 sorted,
+   measured 2026-08-11) and wrong about the pool: sorted by views over ALL TIME, the live monitor's
+   page spans 2023-11 to 2026-07 and holds none of the week's posts, so the first paid run quoted a
+   three-year-old caption. Views still rank — among the survivors of the window (FR-301/FR-305).
+   A regression here is still invisible in output, because the run succeeds on stale posts.
 2. **A13 — Virlo's own labels survive** wrapper → adapter → prompt, view-ranked, absent-safe, and
    read PER ROW: the corpus monitor reports `data_intelligence_enabled: false` while 70 of its 100
    rows carry a populated `intelligence` block.
@@ -33,6 +36,7 @@ from __future__ import annotations
 
 import json
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -151,6 +155,47 @@ def _analysis() -> dict[str, Any]:
                         "tactics": ["show the terminal"]}]}
 
 
+def _config(**sources_kwargs: Any) -> Config:
+    """A default `Config` with `sources.*` overrides — the ask's shape lives entirely there."""
+    cfg = Config()
+    for key, value in sources_kwargs.items():
+        setattr(cfg.sources, key, value)
+    return cfg
+
+
+def _all_time() -> Config:
+    """The corpus is a pre-D46 `views desc` capture spanning 2023-2026, so a test whose subject is
+    the DATA CHANNEL rather than the window disables the age cap (FR-301's documented `0`) — under
+    the shipped 30-day cap every corpus row is `dropped_stale` and there is no channel left to
+    assert on. Videos are re-enabled for the same reason: the corpus has 100 of them."""
+    return _config(max_post_age_days=0, include_videos=True)
+
+
+def _fresh(days_ago: float = 2) -> str:
+    """A `publish_date` inside the window, relative to now — a literal would pass today and turn
+    the suite red a month from now, which is the very failure D46 is about."""
+    return (datetime.now(timezone.utc) - timedelta(days=days_ago)).isoformat()
+
+
+def _video(slug: str = "v1", *, views: int = 900_000, **overrides: Any) -> dict[str, Any]:
+    """One `get_top_videos` row, fresh enough to survive the window."""
+    row = {"id": slug, "url": f"https://tiktok.test/p/{slug}", "views": views,
+           "publish_date": _fresh(2), "hook_text": f"{slug} hook"}
+    row.update(overrides)
+    return row
+
+
+def _slideshow(slug: str = "s1", *, views: int = 1_000, panels: int = 3,
+               **overrides: Any) -> dict[str, Any]:
+    """One `get_top_slideshows` row, fresh and enriched enough to survive the window."""
+    row = {"id": slug, "url": f"https://virlo.test/p/{slug}", "views": views,
+           "publish_date": _fresh(3), "panel_count": panels,
+           "image_urls": [f"https://cdn.virlo.test/{slug}-{n}.jpg" for n in range(panels)],
+           "panel_texts": [f"{slug} panel {n}" for n in range(panels)]}
+    row.update(overrides)
+    return row
+
+
 def _corpus_topic(cfg: Config | None = None, log: _Log | None = None) -> TrendItem:
     """ONE topic assembled from the whole real sorted page — 100 videos + 100 slideshows.
 
@@ -165,21 +210,96 @@ def _corpus_topic(cfg: Config | None = None, log: _Log | None = None) -> TrendIt
 # ---------------------------------------------------------------- A2: the sort reaches the wire
 
 
-async def test_a2_the_adapter_asks_for_the_monitors_winners_on_both_media_tools() -> None:
+async def test_a2_the_adapter_asks_for_the_newest_rounds_page_by_page() -> None:
     """The single biggest quality lever in the plan, asserted at the one place it can be lost.
 
-    `get_top_videos` is only "top" anything if the caller says so; for this tool's whole history
-    the arguments were `{monitor_id, limit: 50}` and Virlo answered in insertion order.
+    `get_top_slideshows` returns whatever the caller asks it to: for this tool's whole history the
+    arguments were `{monitor_id, limit: 50}` (insertion order), then `views desc` (all-time
+    winners, D46's defect), and now the newest rounds `fetch_pages` deep. Full pages are asked for
+    until Virlo answers with a short one, which is the end of the pool.
+    """
+    page = [_slideshow(f"s{index}") for index in range(100)]
+    session = _Session({"get_monitor_analysis": _analysis(),
+                        "get_top_slideshows": {"slideshows": page, "total": 635}})
+
+    await virlo._monitor_item(_Pool(session), MONITOR, _config(fetch_pages=3))
+
+    media = [(tool, args) for tool, args in session.calls if tool != "get_monitor_analysis"]
+    assert [tool for tool, _args in media] == ["get_top_slideshows"] * 3, "three FULL pages"
+    assert [args["page"] for _tool, args in media] == [1, 2, 3]
+    for _tool, args in media:
+        assert args["monitor_id"] == MONITOR and args["limit"] == 100
+        assert (args["order_by"], args["sort"]) == ("created_at", "desc")
+
+
+async def test_a2_a_short_page_ends_the_paging_instead_of_buying_empty_round_trips() -> None:
+    """Every page rides `_monitor_item`'s serialized session (FR-115), so a guaranteed-empty page
+    is latency the operator waits through on every small monitor — three pages of nothing on a
+    three-monitor run is nine of them."""
+    session = _Session({"get_monitor_analysis": _analysis(),
+                        "get_top_slideshows": {"slideshows": [_slideshow("s1")], "total": 1}})
+
+    await virlo._monitor_item(_Pool(session), MONITOR, _config(fetch_pages=5))
+
+    pages = [args["page"] for tool, args in session.calls if tool == "get_top_slideshows"]
+    assert pages == [1], "one short page is the whole pool"
+
+
+async def test_a2_a_post_repeated_across_two_pages_reaches_exactly_one_topic() -> None:
+    """Paging's own hazard, and the reason the dedupe had to stay ONE pass over the concatenation.
+
+    `created_at desc` pages overlap whenever Virlo ingests a new collection round between two
+    calls — page 2 then re-serves a row page 1 already carried. A second copy would be dealt to a
+    second topic (the stride deal is exclusive by post id, not by row) and two creatives would
+    quote the same post while the funnel reported both as material.
+    """
+    class _PagedSession(_Session):
+        """Answers `get_top_slideshows` per `page`, with one row deliberately on both pages."""
+
+        async def call_tool(self, tool: str, args: dict[str, Any]) -> Any:
+            self.calls.append((tool, dict(args)))
+            if tool != "get_top_slideshows":
+                return self._payloads.get(tool, {})
+            rows = ([_slideshow(f"s{index}") for index in range(100)] if args["page"] == 1
+                    else [_slideshow("s99"), _slideshow("s100")])
+            return {"slideshows": rows, "total": 635}
+
+    session = _PagedSession({"get_monitor_analysis": _analysis()})
+    counters = virlo.Counters()
+
+    items = await virlo._monitor_item(_Pool(session), MONITOR, _config(fetch_pages=2),
+                                      counters=counters)
+
+    post_ids = [post.post_id for item in items for post in item.posts]
+    assert len(post_ids) == len(set(post_ids)) == 101, "100 + one new row, the repeat folded once"
+    assert counters.slideshows_raw == 102 and counters.slideshows_kept == 101
+    assert counters.duplicates_dropped == 1, "the repeat is COUNTED, not silently absorbed"
+
+
+async def test_a2_videos_are_not_asked_for_at_all_unless_the_config_says_so() -> None:
+    """FR-301/§0.2: `include_videos: false` (the default) means the video TOOL IS NEVER CALLED.
+
+    Not calling is a different fact from calling and receiving nothing, and only one of the two is
+    an operator's decision — so the funnel latches it in words (`videos_disabled`) rather than
+    leaving a row of zeros to be misread as "this monitor posts no videos".
     """
     session = _Session({"get_monitor_analysis": _analysis(),
-                        "get_top_videos": {"videos": []}, "get_top_slideshows": {"slideshows": []}})
+                        "get_top_videos": {"videos": [_video("v1")], "total": 2_039},
+                        "get_top_slideshows": {"slideshows": [_slideshow("s1")], "total": 635}})
+    counters = virlo.Counters()
 
-    await virlo._monitor_item(_Pool(session), MONITOR, Config())
+    await virlo._monitor_item(_Pool(session), MONITOR, _config(), counters=counters)
 
-    media = {tool: args for tool, args in session.calls if tool != "get_monitor_analysis"}
-    assert set(media) == {"get_top_videos", "get_top_slideshows"}
-    for args in media.values():
-        assert args == {"monitor_id": MONITOR, "limit": 100, "order_by": "views", "sort": "desc"}
+    assert not any(tool == "get_top_videos" for tool, _args in session.calls)
+    assert counters.videos_disabled is True and counters.videos_raw == 0
+    assert counters.slideshows_kept == 1
+    assert "disabled (slideshow-first)" in " ".join(
+        clause for _label, clauses in counters.drop_rows() for clause in clauses)
+
+    on = virlo.Counters()
+    await virlo._monitor_item(_Pool(session), MONITOR, _config(include_videos=True), counters=on)
+    assert any(tool == "get_top_videos" for tool, _args in session.calls)
+    assert on.videos_disabled is False and on.videos_raw == 1
 
 
 async def test_a2_offset_appears_in_no_argument_the_adapter_ever_builds() -> None:
@@ -188,7 +308,7 @@ async def test_a2_offset_appears_in_no_argument_the_adapter_ever_builds() -> Non
     not try to route around that, on any call, including the two that take no media parameters."""
     session = _Session({"get_monitor_analysis": _analysis()})
 
-    await virlo._monitor_item(_Pool(session), MONITOR, Config())
+    await virlo._monitor_item(_Pool(session), MONITOR, _config(include_videos=True))
 
     assert session.calls  # the sweep actually ran
     assert all("offset" not in args for _tool, args in session.calls)
@@ -196,21 +316,23 @@ async def test_a2_offset_appears_in_no_argument_the_adapter_ever_builds() -> Non
 
 def test_a2_the_adapters_arguments_are_exactly_what_the_wrapper_accepts() -> None:
     """Caller and wrapper agree, checked against the wrapper's own local validator rather than by
-    eye: a drifted constant (`order_by="view"`, `limit=101`) would raise here instead of failing
-    live, one metered run later."""
+    eye: a drifted constant (`order_by="created"`, `limit=101`, `page=0`) would raise here instead
+    of failing live, one metered run later. `page` is part of the contract since FR-301 — the
+    wrapper bounds it at 1 and Virlo counts it `limit`-relative."""
     sent = virlo_server._media_params(
-        virlo._MEDIA_LIMIT, None, virlo._MEDIA_ORDER_BY, virlo._MEDIA_SORT)
+        virlo._MEDIA_LIMIT, 3, virlo._MEDIA_ORDER_BY, virlo._MEDIA_SORT)
 
-    assert sent == {"limit": 100, "order_by": "views", "sort": "desc"}
-    assert virlo._MEDIA_LIMIT == virlo_server._MAX_LIMIT == 100  # one page, the deepest allowed
+    assert sent == {"limit": 100, "page": 3, "order_by": "created_at", "sort": "desc"}
+    assert virlo._MEDIA_LIMIT == virlo_server._MAX_LIMIT == 100  # a full page, the deepest allowed
+    assert virlo._MEDIA_ORDER_BY in virlo_server._ORDER_BY  # the enum Virlo answers 400 outside of
 
 
-def test_a2_the_sorted_page_lands_view_ranked_on_the_topic_the_copy_call_quotes() -> None:
-    """The sort's post-pivot consequence, on the real page: `TrendItem.posts` is view-ranked, so
-    `P1` really is the monitor's strongest post — and `P1` is what `_fallback_copy` quotes and what
-    FR-297b prints as the sort proof. Doubling the page (50 -> 100 rows) doubles the posts a topic
-    can offer and changes none of the caps that bound a prompt."""
-    topic = _corpus_topic()
+def test_a2_the_windowed_pages_land_view_ranked_on_the_topic_the_copy_call_quotes() -> None:
+    """The ask's post-pivot consequence, on the real page: `TrendItem.posts` is view-ranked, so
+    `P1` really is the strongest post OF THE WINDOW — and `P1` is what `_fallback_copy` quotes and
+    what FR-297b prints as the sort proof. The corpus is read all-time here (`_all_time`) because
+    its subject is the rank, not the window; the window's own effect is asserted below."""
+    topic = _corpus_topic(_all_time())
     views = [post.views for post in topic.posts]
 
     assert len(topic.posts) > 100, "the whole sorted page reaches the topic"
@@ -275,11 +397,11 @@ def test_a13_labels_are_view_ranked_not_array_ranked() -> None:
     """`[*videos, *shows]` glues two independently sorted lists together, so array position says
     nothing about strength: a 400-view video would otherwise outrank a 4,000,000-view slideshow
     purely for being a video."""
-    videos = [{"id": "v1", "views": 400, "hook_type": "weak_label", "hashtags": ["#weak"]}]
-    shows = [{"id": "s1", "views": 4_000_000, "hook_type": "strong_label",
-              "hashtags": ["#strong"]}]
+    videos = [_video("v1", views=400, hook_type="weak_label", hashtags=["#weak"])]
+    shows = [_slideshow("s1", views=4_000_000, hook_type="strong_label", hashtags=["#strong"])]
 
-    topic = virlo._split_topics(MONITOR, _analysis(), videos, shows, Config())[0]
+    topic = virlo._split_topics(MONITOR, _analysis(), videos, shows,
+                                _config(include_videos=True))[0]
 
     assert topic.hook_types == ["strong_label", "weak_label"]
     assert topic.hashtags == ["#strong", "#weak"]

@@ -8,7 +8,10 @@ Invariants: absent keys default and land in `defaults_applied` for the run log, 
 (FR-50, NFR-19); a malformed value raises ONE plain-English line — file, key, value, expected
 shape (FR-51/69); unknown keys warn; a `${VAR}` placeholder is a hard error, because config
 loading has no interpolation and that absence is what makes a config file secret-free (D30,
-FR-130/177); `max_tokens` under its floor is clamped up with a warning (NFR-111).
+FR-130/177); `max_tokens` under its floor is clamped up with a warning (NFR-111). Two CROSS-KEY
+pairs are refused rather than clamped, each naming both keys and both values: the no-repeat history
+window against the fetch window (FR-307) and the image/reel counts against slideshow-only sourcing
+(D46 §0.14e) — see `_validate_windows` and `_validate_formats_sourcing`.
 
 Do not: read env vars or `.env` here (config names variables, never values); clamp
 `reel_duration_s` here (pre-flight owns that, FR-103/138); import project modules besides `util`.
@@ -66,11 +69,24 @@ class ConfigError(Exception):
 
 @dataclass(slots=True)
 class TextBudgets:
-    """On-image character ceilings, enforced before submission — not prompt hints (FR-101/259)."""
+    """On-image character ceilings, enforced before submission — not prompt hints (FR-101/259).
 
-    image_headline: int = 42
-    image_subline: int = 60
-    reel_seed_headline: int = 32
+    Raised across the board at v2.1.0 (D46 §0.5, FR-259). The pre-pivot numbers were sized for text
+    the copy model WROTE and could be asked to write shorter; D46 makes every on-image string a
+    verbatim quote of a source panel, hook or overlay, which nobody may retype or trim (FR-304). A
+    ceiling under a real panel's length therefore does not shorten anything — it makes the string
+    unofferable, and the creative ships with no on-image text at all, which is exactly what the
+    first paid run did on six of eight creatives. A style's own `max_onimage_chars` may still only
+    LOWER these global ceilings, never raise them (FR-259), so the raise becomes fully effective
+    only once the registry's per-style caps are re-authored to match.
+    """
+
+    image_headline: int = 90  # v2.1.0: was 42
+    image_subline: int = 160  # v2.1.0: was 60
+    #: Per-slide deck text under panel-mapped carousels (FR-304) — a source panel carries a whole
+    #: thought, not a headline, which is why it is four slides' worth of a pre-pivot headline.
+    slide: int = 300
+    reel_seed_headline: int = 60  # v2.1.0: was 32
     retry_reduction_pct: int = 40  # budgets are cut by this % on a vision-check retry
 
 
@@ -78,14 +94,25 @@ class TextBudgets:
 class RunConfig:
     """`run:` — scope, spend and per-format behaviour."""
 
-    formats: dict[str, int] = field(default_factory=lambda: {"image": 4, "carousel": 2, "reel": 0})
+    # All-carousels since 2026-08-13 (D46 §0.3, operator decision; was 4/2/0). v1 of the slideshow
+    # pivot sources SLIDESHOWS only (`sources.include_videos: false`), so every topic in the pool is
+    # slideshow-majority and a carousel is the only format that can quote it panel for panel. Image
+    # and reel counts are not forbidden — they are refused *together with* slideshow-only sourcing
+    # by `_validate` (§0.14e), so turning them on is one deliberate pair of edits, never a silent
+    # rank-fallback onto a post the run was never meant to use.
+    formats: dict[str, int] = field(default_factory=lambda: {"image": 0, "carousel": 6, "reel": 0})
     platforms: list[str] = field(default_factory=lambda: ["linkedin", "instagram", "tiktok"])
     languages: dict[str, str] = field(
         default_factory=lambda: {"linkedin": "en", "instagram": "en", "tiktok": "en"})
     notion_influence: Literal["off", "copy", "full"] = "off"
     vision_check: bool = False
     spend_cap_usd: float = 10.00
-    trend_history_days: int = 7  # 0 disables the repeat-prevention window
+    # 30 since 2026-08-13 (D46/FR-307, was 7). The window is the no-repeat memory, and post-pivot
+    # the fetch reaches back `sources.max_post_age_days` (30) — a 7-day memory over a 30-day fetch
+    # window means a post quoted three weeks ago is fetched again, forgotten, and quoted again. The
+    # two keys are therefore tied by the FR-307 invariant checked in `_validate`. `0` disables the
+    # window entirely and is the operator's explicit opt-out, so it is exempt from that invariant.
+    trend_history_days: int = 30
     # 6 since 2026-08-11 (was 2). D36 moved recency to the POST, so reuse stopped being a
     # throughput ceiling, and FR-91's per-reuse rotation gives each of the 6 a different one of
     # the trend's downloaded reference groups plus its own style brief (FR-9/FR-12). A config
@@ -119,6 +146,28 @@ class SourcesConfig:
     # the kill switch — one topic per monitor, i.e. the pre-pivot cardinality; `0` would mean "this
     # monitor contributes nothing", which is a config error, not a setting (`_validate`).
     virlo_topics_per_monitor: int = 9
+    # FR-301 (D46 §0.2): `false` makes the fetch gate skip Virlo's video rows entirely and yield
+    # SLIDESHOWS only. v1 ships slideshow-first because a slideshow's panels are the thing the
+    # engine now reproduces panel for panel (FR-304); a video row carries no panels and would only
+    # ever be quoted by its caption. Turning it on is also what unlocks image/reel counts (§0.14e).
+    include_videos: bool = False
+    # FR-301: how many result pages the fetch pulls per monitor at `created_at desc`. One page is
+    # ~100 posts; 3 pages is roughly the last week of a normally active monitor, which is the
+    # cadence the run is designed around (FR-307). Out-of-bounds is REFUSED, never clamped — a
+    # silently corrected typo hides the operator mistake the refusal exists to surface (FR-285).
+    fetch_pages: int = 3
+    # FR-301/FR-305: posts older than this are dropped pre-rank as stale, measured on the post's
+    # own `publish_date`. This is the fix for the first paid run, which ranked by views over ALL
+    # TIME and quoted posts from 2023. `0` disables the staleness cap; the FR-307 invariant ties
+    # this key to `run.trend_history_days`, which must cover at least this window.
+    max_post_age_days: int = 30
+    # FR-306 (D46 §0.11): when true, the post-Confirm slide-intelligence call downloads the
+    # assigned carousel source posts' slides and has the analysis model transcribe their on-image
+    # text and describe their visuals, so our render prompts reproduce the CONTENT in our own
+    # style. `false` falls back to Virlo's own `panel_texts` alone — cheaper, and blind wherever
+    # that field is empty (many fresh rows have it empty). Paid LLM spend, so it is estimated
+    # before the Confirm gate and never runs ahead of it.
+    vision_transcribe: bool = True
 
 
 @dataclass(slots=True)
@@ -162,7 +211,14 @@ class ModelsConfig:
 
     analysis: str = "anthropic/claude-sonnet-5"
     copy: str = "openai/gpt-5.6-luna"
-    image: str = "gpt-image-2-image-to-image"  # reference-bearing route; profile picks the sibling
+    # FR-280 (amended v2.1.0): the TEXT-TO-IMAGE route is the default now (was
+    # `gpt-image-2-image-to-image`). D46 took the style registry's reference images out of every
+    # render job, so the common job carries no reference at all and the reference-bearing sibling
+    # is reserved for the jobs that genuinely have one — a brief image, a carousel anchor, a reel
+    # seed frame (20 §8c/FR-241). The profile dual-routes either way, so this only decides which
+    # route a REFERENCE-FREE job takes; pointing it at the i2i sibling is what made the first paid
+    # run clone its Inspiration files ~1:1.
+    image: str = "gpt-image-2-text-to-image"
     video: str = "bytedance/seedance-2-5"
     image_profile: str = "gpt-image-2"  # FR-281 — changes only on a model FAMILY change
     video_profile: str = "seedance-2-5"
@@ -599,6 +655,17 @@ class _Ctx:
     def fail(self, key: str, value: Any, expected: str) -> NoReturn:
         raise ConfigError(f"{self.file}: {key}: {value!r} — expected {expected}")
 
+    def refuse(self, message: str) -> NoReturn:
+        """A CROSS-KEY refusal: one whole sentence, still one line, still prefixed by the file.
+
+        `fail` is shaped for one key that holds a wrong value (`key: value — expected shape`). Two
+        keys that are each individually legal and illegal together (FR-307's history/fetch windows,
+        §0.14e's formats/sourcing pair) have no single offending key and no "expected shape" — the
+        operator needs both names, both values, and which way to move them, so those refusals write
+        their own sentence instead of being bent into a shape that would name only half the problem.
+        """
+        raise ConfigError(f"{self.file}: {message}")
+
     def warn(self, message: str) -> None:
         self.warnings.append(message)
         logger.warning("config: %s", message)
@@ -614,6 +681,7 @@ _BOUNDS: dict[str, tuple[float, float, str]] = {
     "run.run_deadline_min": (1, 720, "a whole number of minutes, 1–720"),
     "run.text_budgets.image_headline": (1, 400, "a character count, 1–400"),
     "run.text_budgets.image_subline": (1, 400, "a character count, 1–400"),
+    "run.text_budgets.slide": (1, 400, "a character count, 1–400"),
     "run.text_budgets.reel_seed_headline": (1, 400, "a character count, 1–400"),
     "run.text_budgets.retry_reduction_pct": (1, 90, "a percentage, 1–90"),
     "branding.brand_ratio": (0.0, 1.0, "a ratio between 0 and 1"),
@@ -623,6 +691,12 @@ _BOUNDS: dict[str, tuple[float, float, str]] = {
     # "-1 is the kill switch you meant" line rather than a bare range message.
     "sources.virlo_topics_per_monitor": (
         -1, 50, "a whole number of topics per monitor, 1–50, or -1 (one topic per monitor)"),
+    # FR-301/FR-138: both are refused out of range rather than clamped into it, because a fetch
+    # window is the one setting where a silently corrected typo changes which posts a paid run
+    # quotes without ever saying so.
+    "sources.fetch_pages": (1, 10, "a whole number of result pages per monitor, 1–10"),
+    "sources.max_post_age_days": (
+        0, 365, "a whole number of days, 0–365 (0 disables the staleness cap)"),
     "models.image_job_timeout_s": (5, 3600, "a whole number of seconds, 5–3600"),
     "models.video_job_timeout_s": (5, 3600, "a whole number of seconds, 5–3600"),
     "models.poll_interval_s": (1, 60, "a whole number of seconds, 1–60"),
@@ -834,6 +908,8 @@ def _validate(cfg: Config, ctx: _Ctx) -> None:
     if cfg.sources.virlo_topics_per_monitor == 0:  # in range, but it means "collect nothing"
         ctx.fail("sources.virlo_topics_per_monitor", 0,
                  _BOUNDS["sources.virlo_topics_per_monitor"][2])
+    _validate_windows(cfg, ctx)
+    _validate_formats_sourcing(cfg, ctx)
     languages = list(cfg.run.languages.items()) + list(cfg.run.onimage_text_language.items())
     for platform, language in languages:
         if language not in _LANGUAGES:
@@ -882,6 +958,55 @@ def _validate(cfg: Config, ctx: _Ctx) -> None:
             "abandons the run before a slow reel can reach its own timeout, and that reel is "
             "paid for and never resubmitted; raise run_deadline_min above the job timeout plus "
             "the analyze/copy/image stages")
+
+
+def _validate_windows(cfg: Config, ctx: _Ctx) -> None:
+    """FR-307: the no-repeat memory must cover at least the window the fetch reaches back over.
+
+    Both keys are individually legal at any value in their bounds; only the PAIR can be wrong. When
+    the history window is narrower than the fetch window there is a band of days in which a post is
+    old enough to have been forgotten by the history file and young enough to be fetched again —
+    and the run re-quotes, word for word, something it already published. That is the exact defect
+    D46 was written for, so it is refused rather than clamped: raising one key or lowering the other
+    are different decisions with different costs (memory size vs. supply), and the engine has no
+    business picking one on the operator's behalf.
+
+    `trend_history_days: 0` is the deliberate opt-out — the window is switched off entirely, the
+    operator has said out loud that repeats are acceptable, and there is no half-covered band to
+    warn about. It is exempt, not a violation.
+    """
+    history, fetch = cfg.run.trend_history_days, cfg.sources.max_post_age_days
+    if history != 0 and history < fetch:
+        ctx.refuse(
+            f"run.trend_history_days is {history} but sources.max_post_age_days is {fetch} — the "
+            "no-repeat history window must be at least as wide as the fetch window, or a post the "
+            "run already used drops out of history while it is still being fetched and gets "
+            f"quoted twice; raise run.trend_history_days to {fetch} or more, lower "
+            "sources.max_post_age_days, or set run.trend_history_days to 0 to turn the window off "
+            "on purpose (FR-307)")
+
+
+def _validate_formats_sourcing(cfg: Config, ctx: _Ctx) -> None:
+    """§0.14e: image and reel counts need video sourcing, because v1 fetches slideshows only.
+
+    With `sources.include_videos: false` every topic in the pool is slideshow-majority, and a
+    slideshow is a deck — the thing a CAROUSEL reproduces panel for panel (FR-304). An image or a
+    reel planned against that pool cannot use the panels, so it falls back to a lower-ranked field
+    of a post the run was never meant to quote that way, forever and silently. Refusing the pair
+    makes that a visible either/or: turn video sourcing on, or plan carousels.
+    """
+    if cfg.sources.include_videos:
+        return
+    images, reels = cfg.run.formats.get("image", 0), cfg.run.formats.get("reel", 0)
+    if images + reels <= 0:
+        return
+    wanted = " + ".join(f"{count} {name}" for name, count in
+                        (("image", images), ("reel", reels)) if count)
+    ctx.refuse(
+        f"run.formats asks for {wanted} while sources.include_videos is false — slideshow-first "
+        "sourcing makes every topic slideshow-majority, so image and reel creatives would "
+        "silently rank-fallback onto posts they cannot quote properly; set "
+        "sources.include_videos: true or set those counts to 0 (§0.14e, FR-132)")
 
 
 def _validate_branding(cfg: Config, ctx: _Ctx) -> None:
