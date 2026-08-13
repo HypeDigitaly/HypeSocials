@@ -288,24 +288,29 @@ Each session writes plans/SESSION-<X>-CLOSEOUT.md; the next session reads it fir
 
 **Goal: PRD amendments per the APPROVED plan, then the fetch-window/slideshow-only source
 layer and the on-image/panel-mapped copy layer.**
-Plan: `plans/xmasterplan-slideshow-fidelity.md` (v1.1 APPROVED 2026-08-13 — §0 defaults are
-SETTLED there, including the operator's all-carousels override; do not re-ask).
+Plan: `plans/xmasterplan-slideshow-fidelity.md` (v2.1 APPROVED+REVIEWED 2026-08-13 — §0
+defaults are SETTLED there incl. the operator's all-carousels override and §0.9–0.14;
+flag §0.9–0.14 once at dispatch, then proceed).
 
 ```
 /xecutor Read plans/SESSION-E-CLOSEOUT.md first, then execute SESSION F (Waves 0-2) of
 plans/xmasterplan-slideshow-fidelity.md.
 
-  W0  T0.1 conductor: apply §2 in full across prds/*.md (D46, FR-301..306, v2.1.0);
-      rebuild 00-overview diagram + amendment log; republish the PRD artifact (same URL);
-      barrier = sibling-consistency read + artifact renders (memory: diagram must draw).
-  W1  T1.1 sources/virlo.py window+gates+counters · T1.2 config keys + configs
-      · T1.3 sources/transcribe.py (FR-306 vision tier, analysis-only)
-  W2  T2.1 copywrite.py+models.py (description ban, panel mapping, budgets)
-      · T2.2 plan.py+generate/carousel.py (hard slideshow bind, source-driven deck length)
-      · T2.3 conductor: runner.py/previews.py/prompts_engine.py console + budget lockstep
+  W0  T0.1 conductor: apply §2 in full across prds/*.md (D46, FR-301..309, v2.1.0);
+      rebuild 00-overview mermaid + BOTH FR-range surfaces + amendment log; republish the
+      PRD artifact (same URL); barrier = sibling-consistency read + artifact RENDERS.
+  W1  T1.1 sources/virlo.py + models.py SourcePost block (window, triple gate, counters
+      incl. funnel lines, index-aligned panels) · T1.2 config.py+configs (keys, 30/30
+      invariant, §0.14e guard, budgets, all-carousels, t2i default) · T1.3
+      sources/slide_intel.py + prompts/slide_intel_question.md + packager store_source()
+  W2  T2.1 copywrite.py + models.py PlanEntry/AssetRecord (grammar-level description
+      removal, §0.14b, panel mapping, bound-post, reuse-index retirement) · T2.2
+      plan.py+carousel.py+budget.py (ASSIGN-time binding, deck length, estimator,
+      no_fresh_post_available) · T2.3 conductor: runner/previews/prompts_engine/menu +
+      parity-keeping template stubs; slide_intel wired POST-CONFIRM
 
-  Barriers: W1/W2 = full pytest green (expected breakage list is in the plan's recon —
-  fix or rewrite the named tests IN the wave that breaks them); line report w/ attribution.
+  Barriers: W1/W2 = full pytest green — each task updates the tests its change breaks
+  IN-WAVE (break-map in plan §4); line report w/ attribution.
 ```
 
 ---
@@ -318,14 +323,19 @@ plans/xmasterplan-slideshow-fidelity.md.
 /xecutor Read plans/SESSION-F-CLOSEOUT.md first, then execute SESSION G (Waves 3-5) of
 plans/xmasterplan-slideshow-fidelity.md.
 
-  W3  T3.1 refs.py/styles.py/preflight.py/gallery.py excision · T3.2 prompt-engineer:
-      styles.yaml re-author (text-only DNA, raised budgets) + template updates
-  W4  T4.1 tests rework (~14 files mapped in plan §recon) · T4.2 README+ACCEPTANCE
+  W3  T3.1 refs.py/styles.py/preflight.py excision · T3.2 prompt-engineer: styles.yaml
+      re-author (text-only DNA, raised caps — §0.5 becomes effective here) + full template
+      re-author · T3.3 gallery.py + generate/__init__.py (FR-309 provenance cards,
+      override fallback, _record() provenance join)
+  W4  T4.1 NEW regression tests only (no-repeat guard, invariant, §0.14 edges, gallery,
+      slide_intel mocked, panel-map E2E) · T4.2 README+ACCEPTANCE
       · conductor: NAVIGATION.md + CLAUDE.md merge
   W5  (operator present, cheapest first, per plan §5): --list-monitors → --preview-sources
-      ($0 — topics must mirror the Virlo UI grid; THE acceptance test) → --preview-analysis
-      (panel-mapped copy visible, no P*.description) → ONE paid run (all-carousels mix,
-      low cap) → byte-verify panel_map → closeout + PR.
+      ($0 — topics must mirror the Virlo UI grid; THE acceptance test; record the measured
+      supply figure into FR-307's placeholder) → --preview-analysis (panel-mapped copy +
+      visual briefs visible, no P*.description) → ONE paid run (all-carousels mix, low cap)
+      → byte-verify panel_map + source.yaml → NO-REPEAT PROOF (re-run --preview-sources,
+      quoted posts now under dropped_used) → closeout + PR.
 ```
 
 ---
