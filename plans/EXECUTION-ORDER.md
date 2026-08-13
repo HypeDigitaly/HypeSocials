@@ -284,6 +284,52 @@ Each session writes plans/SESSION-<X>-CLOSEOUT.md; the next session reads it fir
 
 ---
 
+# SESSION F — Slideshow Fidelity Waves 0–2 (D46 amendments + sources + copy)
+
+**Goal: PRD amendments per the APPROVED plan, then the fetch-window/slideshow-only source
+layer and the on-image/panel-mapped copy layer.**
+Plan: `plans/xmasterplan-slideshow-fidelity.md` (v1.1 APPROVED 2026-08-13 — §0 defaults are
+SETTLED there, including the operator's all-carousels override; do not re-ask).
+
+```
+/xecutor Read plans/SESSION-E-CLOSEOUT.md first, then execute SESSION F (Waves 0-2) of
+plans/xmasterplan-slideshow-fidelity.md.
+
+  W0  T0.1 conductor: apply §2 in full across prds/*.md (D46, FR-301..306, v2.1.0);
+      rebuild 00-overview diagram + amendment log; republish the PRD artifact (same URL);
+      barrier = sibling-consistency read + artifact renders (memory: diagram must draw).
+  W1  T1.1 sources/virlo.py window+gates+counters · T1.2 config keys + configs
+      · T1.3 sources/transcribe.py (FR-306 vision tier, analysis-only)
+  W2  T2.1 copywrite.py+models.py (description ban, panel mapping, budgets)
+      · T2.2 plan.py+generate/carousel.py (hard slideshow bind, source-driven deck length)
+      · T2.3 conductor: runner.py/previews.py/prompts_engine.py console + budget lockstep
+
+  Barriers: W1/W2 = full pytest green (expected breakage list is in the plan's recon —
+  fix or rewrite the named tests IN the wave that breaks them); line report w/ attribution.
+```
+
+---
+
+# SESSION G — Slideshow Fidelity Waves 3–5 (styles, tests/docs, live ladder)
+
+**Goal: style-ref excision + registry re-author; test/doc re-base; operator-present ladder.**
+
+```
+/xecutor Read plans/SESSION-F-CLOSEOUT.md first, then execute SESSION G (Waves 3-5) of
+plans/xmasterplan-slideshow-fidelity.md.
+
+  W3  T3.1 refs.py/styles.py/preflight.py/gallery.py excision · T3.2 prompt-engineer:
+      styles.yaml re-author (text-only DNA, raised budgets) + template updates
+  W4  T4.1 tests rework (~14 files mapped in plan §recon) · T4.2 README+ACCEPTANCE
+      · conductor: NAVIGATION.md + CLAUDE.md merge
+  W5  (operator present, cheapest first, per plan §5): --list-monitors → --preview-sources
+      ($0 — topics must mirror the Virlo UI grid; THE acceptance test) → --preview-analysis
+      (panel-mapped copy visible, no P*.description) → ONE paid run (all-carousels mix,
+      low cap) → byte-verify panel_map → closeout + PR.
+```
+
+---
+
 ## Standing rules for every session
 
 Restate these verbatim in every subagent prompt — they have been load-bearing on this project:
