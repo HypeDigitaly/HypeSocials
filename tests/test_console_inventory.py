@@ -601,6 +601,23 @@ def test_fr299_a_pulse_is_due_only_after_silence_AND_past_the_suppression_window
         "any printed line resets the quiet clock — that is what bounds the volume"
 
 
+def test_fr299_the_pulse_wrapper_actually_runs_and_returns_the_awaitables_result() -> None:
+    """W5 regression (2026-08-13): `_with_pulse` crashed every live COPY stage with
+    `NameError: name 'time' is not defined` — the W3.5 excision swept `import time` out of
+    runner.py with its other users, and no test ever EXECUTED the wrapper (Pulse arithmetic was
+    tested directly, the wrapper always faked). Caught live by `--preview-analysis`, after 761
+    green tests. This test is the execution the suite was missing: a real await through the real
+    wrapper, result passed through, no heartbeat needed on a fast path."""
+    live = session()
+
+    async def scenario() -> str:
+        async def quick() -> str:
+            return "copy result"
+        return await runner._with_pulse(live, quick(), lambda: "never printed", suppress_s=10.0)
+
+    assert asyncio.run(scenario()) == "copy result"
+
+
 def test_fr299_saying_anything_re_stamps_the_pulse(capsys: pytest.CaptureFixture[str]) -> None:
     """`say()` is the ONE console seam, and it stamps: a heartbeat is itself a printed line, so
     the cadence can never compound into a ticker."""
