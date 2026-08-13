@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>HypeSocials PRD — Lean Viral Content Engine (v2.0.0)</title>
+<title>HypeSocials PRD — Lean Viral Content Engine (v2.1.0)</title>
 <style>
   :root{
     --paper:#FBFAF7; --surface:#FFFFFF; --ink:#1D1F26; --muted:#6B6E78;
@@ -148,9 +148,9 @@
     <h1>HypeSocials — Lean Viral Content Engine</h1>
     <p class="sub">One command in, a folder of trend-derived social creatives out. Topic-first architecture with local style registry and verbatim copy selection. No vision analysis, no A/B mode, no motion references.</p>
     <div class="metaline">
-      <span class="chip">PRD <b>v2.0.0</b></span>
-      <span class="chip">2026-08-12</span>
-      <span class="chip">Post-pivot (<b>topics</b>, <b>registry</b>, <b>selection</b>)</span>
+      <span class="chip">PRD <b>v2.1.0</b></span>
+      <span class="chip">2026-08-13</span>
+      <span class="chip">Slideshow fidelity (<b>30-day window</b>, <b>panel-mapped carousels</b>, <b>slide intelligence</b>)</span>
       <span class="chip"><b>16,356 lines</b> Python (pre-pivot baseline, measured)</span>
       <span class="chip">Batch <b>~3 min</b> (images/carousels) · <b>~8–10 min</b> (with reels)</span>
     </div>
@@ -162,7 +162,7 @@
     <a href="#tldr">TL;DR</a>
     <a href="#diagram">Flow Diagram</a>
     <a href="#why">Why</a>
-    <a href="#decisions">Decisions (D41–D45)</a>
+    <a href="#decisions">Decisions (D41–D46)</a>
     <a href="#pipeline">Pipeline</a>
     <a href="#metrics">Metrics</a>
     <a href="#open">Open Qs</a>
@@ -175,7 +175,7 @@
     <div class="tldr">
       <h2>TL;DR — Plain English</h2>
       <p><strong>HypeSocials creates viral social media posts directly from trending topics.</strong> You pick how many images, slide-decks and short videos you want, set your budget, and press Enter. About three minutes later — eight to ten if you asked for videos — you have a folder of finished posts ready to publish.</p>
-      <p><strong>What happens in between:</strong> Virlo provides trending topics as text (captions, hooks, metadata). The engine screens for brand safety, picks the strongest topics, quotes exact words from the trending posts, applies one of eight defined visual styles (you control these via a YAML registry — colors, typography, references), optionally adds your wordmark, and generates images, slide-decks or videos. Style choices and which posts were quoted are all visible in the gallery so nothing is hidden.</p>
+      <p><strong>What happens in between:</strong> Virlo provides trending topics as text (captions, hooks, panel texts, metadata). The engine screens for brand safety, picks the strongest topics, quotes exact words from the trending posts' on-image text and captions, applies one of eight defined visual styles (you control these via a YAML registry — colors, typography, layout), optionally adds your wordmark, and generates images, slide-decks or videos. For slideshows, each source slide's text and visuals are analyzed and mapped to the output slides. Style choices and which posts were quoted are all visible in the gallery so nothing is hidden.</p>
       <p><strong>Key facts:</strong> Cost is estimated and confirmed before anything is billed. If the estimate is over budget and you're sitting there, it refuses and offers smaller numbers; if run unattended, it drops posts from the end until it fits. Every step is logged — if one post fails, the rest ship. You can stop at any time (Ctrl+C). You can preview trends and their verdicts for free. No quality gates — the engine makes it once and you decide what ships.</p>
     </div>
   </section>
@@ -184,7 +184,7 @@
     <h2>Pipeline Flow</h2>
     <p class="lede">The complete run from Virlo topics to finished outputs, showing the two-wave render dependency and the key decision points.</p>
     <div class="panel" style="overflow-x:auto">
-      <svg viewBox="0 0 900 800" xmlns="http://www.w3.org/2000/svg" style="min-width:600px">
+      <svg viewBox="0 0 920 900" xmlns="http://www.w3.org/2000/svg" style="min-width:600px">
         <defs>
           <marker id="arrowhead" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
             <polygon points="0 0, 10 3, 0 6" fill="#D93A4E"/>
@@ -203,114 +203,119 @@
         </style>
 
         <!-- Inputs -->
-        <rect class="subgraph" x="20" y="20" width="860" height="100"/>
+        <rect class="subgraph" x="20" y="20" width="880" height="100"/>
         <text class="label-small" x="40" y="40">INPUTS</text>
         <rect class="node" x="40" y="50" width="140" height="50" rx="4"/>
         <text class="label" x="110" y="80">Virlo Topics</text>
         <rect class="node" x="210" y="50" width="140" height="50" rx="4"/>
-        <text class="label" x="280" y="80">Style Registry</text>
+        <text class="label" x="280" y="80">Text-Only Styles</text>
         <rect class="node" x="380" y="50" width="140" height="50" rx="4"/>
         <text class="label" x="450" y="80">Branding Config</text>
         <rect class="node" x="550" y="50" width="140" height="50" rx="4"/>
-        <text class="label" x="620" y="80">Config &amp; Budget</text>
+        <text class="label" x="620" y="80">Budget &amp; Format</text>
+        <rect class="node" x="720" y="50" width="160" height="50" rx="4"/>
+        <text class="label" x="800" y="80">Confirm Gate</text>
 
-        <!-- Split -->
+        <!-- No-repeat gate -->
         <line class="edge" x1="620" y1="120" x2="620" y2="150"/>
-        <rect class="node" x="530" y="150" width="180" height="50" rx="4" fill="#FFF"/>
-        <text class="label" x="620" y="180">SPLIT · FILTER · SELECT</text>
+        <rect class="node" x="530" y="150" width="180" height="50" rx="4"/>
+        <text class="label" x="620" y="180">Drop Used Posts</text>
 
-        <!-- Assign -->
+        <!-- Split / Filter / Select -->
         <line class="edge" x1="620" y1="200" x2="620" y2="230"/>
         <rect class="node" x="530" y="230" width="180" height="50" rx="4"/>
-        <text class="label" x="620" y="260">ASSIGN Styles + Brand</text>
+        <text class="label" x="620" y="260">SPLIT · FILTER · SELECT</text>
 
-        <!-- Copy -->
+        <!-- Assign -->
         <line class="edge" x1="620" y1="280" x2="620" y2="310"/>
         <rect class="node" x="530" y="310" width="180" height="50" rx="4"/>
-        <text class="label" x="620" y="340">COPY: Select &amp; Resolve</text>
+        <text class="label" x="620" y="340">ASSIGN Styles + Brand</text>
+
+        <!-- Copy -->
+        <line class="edge" x1="620" y1="360" x2="620" y2="390"/>
+        <rect class="node" x="530" y="390" width="180" height="50" rx="4"/>
+        <text class="label" x="620" y="415">INTEL: Slide Analysis</text>
+        <text class="label-small" x="620" y="432">(Sonnet 5, text + visuals)</text>
+
+        <!-- Slide Intelligence -->
+        <line class="edge" x1="620" y1="440" x2="620" y2="470"/>
+        <rect class="node" x="530" y="470" width="180" height="50" rx="4"/>
+        <text class="label" x="620" y="495">COPY: Panel Texts + Captions</text>
+        <text class="label-small" x="620" y="510">(offers panels, hooks, captions)</text>
+
+        <!-- Store -->
+        <line class="edge" x1="620" y1="520" x2="620" y2="550"/>
+        <rect class="node" x="530" y="550" width="180" height="50" rx="4"/>
+        <text class="label" x="620" y="580">STORE Source Slides</text>
 
         <!-- Wave 1 -->
-        <rect class="subgraph" x="20" y="390" width="300" height="240"/>
-        <text class="label-small" x="40" y="410">WAVE 1 (Submitted First)</text>
+        <rect class="subgraph" x="20" y="630" width="300" height="200"/>
+        <text class="label-small" x="40" y="650">WAVE 1 (Submitted First)</text>
 
-        <line class="edge" x1="620" y1="360" x2="140" y2="430"/>
-        <rect class="node" x="40" y="430" width="200" height="50" rx="4"/>
-        <text class="label" x="140" y="460">IMAGE Render</text>
+        <line class="edge" x1="530" y1="575" x2="140" y2="670"/>
+        <rect class="node" x="40" y="670" width="200" height="50" rx="4"/>
+        <text class="label" x="140" y="700">IMAGE Render</text>
 
-        <line class="edge" x1="620" y1="360" x2="140" y2="510"/>
-        <rect class="node" x="40" y="510" width="200" height="50" rx="4"/>
-        <text class="label" x="140" y="535">CAROUSEL Slide 1</text>
-        <text class="label-small" x="140" y="555">(anchor)</text>
-
-        <line class="edge" x1="620" y1="360" x2="140" y2="590"/>
-        <rect class="node" x="40" y="590" width="200" height="50" rx="4"/>
-        <text class="label" x="140" y="615">REEL Seed Frame</text>
-        <text class="label-small" x="140" y="635">(text baked)</text>
+        <line class="edge" x1="530" y1="575" x2="140" y2="750"/>
+        <rect class="node" x="40" y="750" width="200" height="50" rx="4"/>
+        <text class="label" x="140" y="775">CAROUSEL Slide 1</text>
+        <text class="label-small" x="140" y="795">(anchor)</text>
 
         <!-- Wave 2 -->
-        <rect class="subgraph" x="340" y="390" width="300" height="240"/>
-        <text class="label-small" x="360" y="410">WAVE 2 (After Wave 1)</text>
+        <rect class="subgraph" x="360" y="630" width="300" height="200"/>
+        <text class="label-small" x="380" y="650">WAVE 2 (After Wave 1)</text>
 
-        <line class="edge" x1="240" y1="535" x2="340" y2="535"/>
-        <rect class="node" x="340" y="510" width="200" height="50" rx="4"/>
-        <text class="label" x="440" y="535">CAROUSEL Slides 2–N</text>
-        <text class="label-small" x="440" y="555">(chained to anchor)</text>
+        <line class="edge" x1="240" y1="775" x2="360" y2="775"/>
+        <rect class="node" x="360" y="750" width="200" height="50" rx="4"/>
+        <text class="label" x="460" y="775">CAROUSEL Slides 2–N</text>
+        <text class="label-small" x="460" y="795">(mapped to source, verbatim)</text>
 
-        <line class="edge" x1="240" y1="615" x2="340" y2="615"/>
-        <rect class="node" x="340" y="590" width="200" height="50" rx="4"/>
-        <text class="label" x="440" y="620">REEL Animation</text>
-        <text class="label-small" x="440" y="640">(seed only, no motion ref)</text>
+        <!-- Vision Check + Outputs -->
+        <rect class="subgraph" x="700" y="630" width="220" height="200"/>
+        <text class="label-small" x="720" y="650">CHECK &amp; OUTPUTS</text>
 
-        <!-- Vision Check -->
-        <rect class="subgraph" x="660" y="390" width="220" height="240"/>
-        <text class="label-small" x="680" y="410">VISION CHECK (Optional)</text>
+        <line class="edge" x1="240" y1="695" x2="700" y2="695"/>
+        <line class="edge" x1="240" y1="775" x2="700" y2="775"/>
+        <line class="edge" x1="460" y1="775" x2="700" y2="790"/>
 
-        <line class="edge" x1="240" y1="455" x2="660" y2="455"/>
-        <line class="edge" x1="240" y1="535" x2="660" y2="535"/>
-        <line class="edge" x1="240" y1="615" x2="660" y2="615"/>
-        <line class="edge" x1="440" y1="535" x2="660" y2="550"/>
-        <line class="edge" x1="440" y1="615" x2="660" y2="580"/>
+        <rect class="node" x="720" y="680" width="180" height="50" rx="4"/>
+        <text class="label" x="810" y="710">Vision Check</text>
 
-        <rect class="node" x="680" y="440" width="180" height="50" rx="4"/>
-        <text class="label" x="770" y="470">CHECK Images +</text>
-        <text class="label" x="770" y="485">Slide 1 + Seed</text>
-
-        <!-- Outputs -->
-        <line class="edge" x1="770" y1="490" x2="770" y2="680"/>
-        <rect class="node" x="660" y="680" width="220" height="80" rx="4"/>
-        <text class="label" x="770" y="705">GALLERY + LOGS</text>
-        <text class="label" x="770" y="730">Meta.yaml + Spend</text>
-        <text class="label" x="770" y="755">Trend History</text>
+        <line class="edge" x1="810" y1="730" x2="810" y2="780"/>
+        <rect class="node" x="720" y="780" width="180" height="80" rx="4"/>
+        <text class="label" x="810" y="800">Gallery + Logs</text>
+        <text class="label" x="810" y="820">Source + Our Renders</text>
+        <text class="label" x="810" y="840">(Provenance Card)</text>
       </svg>
     </div>
-    <p class="lede" style="margin-top:20px"><strong>Caveats:</strong> The diagram shows two logical waves. All jobs submit concurrently to Kie.ai via asynchronous polling. Vision checks run inside Create (a carousel's anchor is checked before slides 2–N are submitted; reel seed frames are checked before animation). Finished video clips are never vision-checked.</p>
+    <p class="lede" style="margin-top:20px"><strong>Caveats:</strong> "Slide Intelligence" runs after the Confirm gate (paid LLM) but before render submission; costs ~$0.01–0.03 per post if sourced from slideshows (charged to budget). The diagram shows two logical waves; all jobs submit concurrently to Kie.ai via asynchronous polling. Vision checks run inside Create (carousel's anchor checked before slides 2–N; reel seed frames checked before animation). Finished video clips are never vision-checked. The gallery includes source slides with extracted text/visuals aligned to our output slides for full provenance.</p>
   </section>
 
   <section id="why">
     <h2>Why: The Pivot</h2>
     <p class="lede">Three core inversions from the pre-pivot design:</p>
     <ul>
-      <li><strong>Visual authority:</strong> Was vision-analyzed Virlo images → Now a local, versioned <code>styles.yaml</code> registry (8 textual style definitions with their own 1–2 reference images each, stored in the repo, edited like code). This makes fidelity auditable and removes 262 lines of vision-analysis code.</li>
-      <li><strong>Copy:</strong> Was LLM-generated "our words" → Now verbatim quotes from trending posts, selected by an AI but resolved to bytes by the engine. Every rendered word is from a real post in its source language. Eliminates hallucination and removes 210 lines of copywrite code.</li>
+      <li><strong>Visual authority:</strong> Was vision-analyzed Virlo images → Now a local, versioned <code>styles.yaml</code> registry (8 textual style definitions: palette, typography, layout, stored in the repo, edited like code). No style reference images; rendering is driven by text-only metadata. For slideshows, source slides are analyzed post-Confirm (Sonnet 5) to extract on-image text and visual descriptions enriching render prompts. This makes fidelity auditable and removes 262 lines of vision-analysis code.</li>
+      <li><strong>Copy:</strong> Was LLM-generated "our words" → Now verbatim quotes from trending posts' on-image text (panel texts, hooks, overlays) and captions, selected by an AI but resolved to bytes by the engine. Descriptions never render. Every rendered word is from a real post in its source language. Eliminates hallucination and removes 210 lines of copywrite code.</li>
       <li><strong>Topics:</strong> Was monitor-based grouping → Now topics extracted per monitor (up to 9 each) with per-topic strength computed from their own posts' views. Unlocks post-level recency: fresh posts from the same monitor within the history window, breaking the old 2-reuse bottleneck (measured 30–39 sets now available).</li>
     </ul>
   </section>
 
   <section id="decisions">
-    <h2>Design Decisions — The Pivot (D41–D45)</h2>
-    <p class="lede"><strong>D1–D22, D25–D30</strong> are in the detailed PRD files. These five new decisions define the post-pivot architecture:</p>
+    <h2>Design Decisions — The Pivot (D41–D46)</h2>
+    <p class="lede"><strong>D1–D22, D25–D30</strong> are in the detailed PRD files. These six decisions define the post-pivot architecture and its slideshow-fidelity amendment:</p>
 
     <div class="decisions">
       <div class="dcard">
         <div class="id">D41</div>
-        <h4>Meta-style Registry</h4>
-        <p>Visual authority: eight textual style definitions in <code>styles.yaml</code> (colors, typography, layout, motion profile, with 1–2 reference images each). No vision analysis, no built-in fallback tier. Missing registry → exit 2. Deterministic rotation per creative on <code>entry.order</code>.</p>
+        <h4>Meta-style Registry (Text-Only)</h4>
+        <p>Visual authority: eight textual style definitions in <code>styles.yaml</code> (colors, typography, layout, motion profile). No reference images attached to styles; rendering driven by metadata only. No vision analysis, no built-in fallback tier. Missing registry → exit 2. Deterministic rotation per creative on <code>entry.order</code>.</p>
       </div>
 
       <div class="dcard">
         <div class="id">D42</div>
         <h4>Verbatim Copy via Selection</h4>
-        <p>Luna selects exact words from trending posts (captions, hooks, text overlays) that fit the style's budget and are free of @handles, URLs, emoji. Engine resolves to bytes verbatim, never re-typed. Source language kept, no translation. Degrade: caption-only or top-post fallback.</p>
+        <p>Luna selects exact words from trending posts: on-image panel texts and hooks first, then captions (never descriptions). Selections fit the style's budget and are free of @handles, URLs, emoji. Engine resolves to bytes verbatim, never re-typed. Source language kept, no translation. Degrade: caption-only or top-post fallback.</p>
       </div>
 
       <div class="dcard">
@@ -327,8 +332,14 @@
 
       <div class="dcard">
         <div class="id">D45</div>
-        <h4>Console Observability Mandate (v2.3)</h4>
+        <h4>Console Observability Mandate</h4>
         <p>Step-by-step visibility: stage narration with in→out counts (FR-296), topics table showing sort proof and per-post views (FR-297), per-creative provenance with copy source (FR-298), render heartbeats and verbosity tiers (FR-299), menu re-shape with runnability facts (FR-300).</p>
+      </div>
+
+      <div class="dcard">
+        <div class="id">D46</div>
+        <h4>Slideshow Fidelity (v2.1.0)</h4>
+        <p>Fixes from paid-run recon: fetch 30-day recent window ranked by views within pool (not all-time); quote on-image panel texts and hooks first, captions for captions, never descriptions; panel-mapped carousels (source slide N → output slide N verbatim); post-level never-repeat protection; slide intelligence analysis post-Confirm to extract text and visuals; provenance gallery showing source slides with extracted data aligned to our renders.</p>
       </div>
     </div>
   </section>
@@ -341,11 +352,12 @@
       <li><b>Collect:</b> Virlo MCP fetches trending topics (text, captions, metadata only; no image downloads).</li>
       <li><b>Split, Filter, Select:</b> Topics extracted from monitors; competitor filter screens for brand safety; strongest topics ranked and selected for requested creatives.</li>
       <li><b>Assign:</b> Deterministic style rotation assigns affine styles (format + brand compatible) per creative. Deterministic brand rotation applies wordmark to <code>brand_ratio</code> fraction.</li>
-      <li><b>Quote:</b> Luna selects exact words from the topic's top posts that fit the style's character budget and pass filters. Engine resolves to bytes verbatim.</li>
-      <li><b>Generate (Wave 1):</b> Images, carousel slide 1 (anchor), reel seed frames submitted concurrently. Style reference images uploaded once per run via Kie's file API.</li>
-      <li><b>Generate (Wave 2):</b> Carousel slides 2–N (chained to slide 1), reel animation (seed frame only, no motion reference) submitted after Wave 1 completes or pre-committed.</li>
+      <li><b>Quote:</b> Luna selects exact words from the topic's top posts (on-image text, captions) that fit the style's character budget and pass filters. Engine resolves to bytes verbatim. Never descriptions.</li>
+      <li><b>Analyze (if slideshows):</b> Claude Sonnet 5 reads each source slideshow, extracting on-image text verbatim and visual descriptions (charts, icons, composition) for each slide. Slides stored to gallery folder for provenance.</li>
+      <li><b>Generate (Wave 1):</b> Images, carousel slide 1 (anchor), reel seed frames submitted concurrently. Text-only style definitions drive rendering (no style reference images).</li>
+      <li><b>Generate (Wave 2):</b> Carousel slides 2–N mapped to source panels verbatim, reel animation (seed frame only, no motion reference) submitted after Wave 1 completes or pre-committed.</li>
       <li><b>Vision Check (optional):</b> Sonnet 5 checks images, carousel anchor, reel seed frame for broken text or fake UI. ≤1 retry with shorter text, then ships.</li>
-      <li><b>Package:</b> Per-asset folders, gallery.html, run log, trend history updated.</li>
+      <li><b>Package:</b> Per-asset folders, gallery.html with source slides and extracted data, run log, trend history updated (post-level never-repeat).</li>
     </ol>
 
     <h3>Preview Modes (No Generation)</h3>
@@ -395,9 +407,9 @@
           <td>Seedance 2.5, seed frame only; post-pivot removes motion-ref video</td>
         </tr>
         <tr>
-          <td>Fidelity (style adherence)</td>
+          <td>Fidelity (style + panel mapping)</td>
           <td>≥80% score 2+</td>
-          <td>1=poor, 2=acceptable, 3=strong; operator rates post-gallery per run</td>
+          <td>Operator rates style adherence, panel fidelity, and topical accuracy per run (1=poor, 2=acceptable, 3=strong)</td>
         </tr>
       </table>
     </div>
@@ -407,8 +419,8 @@
     <h2>Open Questions (Critical Path)</h2>
     <ul>
       <li><strong>OQ-2 — Reel pricing [operator]:</strong> Seedance 2.5 unit pricing entered in config as worst-case-honest scalar. Post-pivot: no motion-reference video, output seconds only.</li>
-      <li><strong>OQ-10 — Postiz API gating [build]:</strong> Confirm operator's hosted Postiz plan includes Public API access (Phase 2 blocker).</li>
       <li><strong>OQ-19 — Virlo metering [observation]:</strong> Per-call billing dashboard observation after first paid run.</li>
+      <li><strong>OQ-23 — Fidelity hold [v2.1.0 live verification]:</strong> Does text-only styling hold visual fidelity without style reference images? Answer expected from launch-week operator feedback.</li>
     </ul>
   </section>
 
@@ -424,28 +436,28 @@
         </tr>
         <tr>
           <td>10-pipeline.md</td>
-          <td>1–29, 90–109, 141–149, 200–209, 290–291, 294</td>
-          <td>Detailed run flow, topic extraction, filtering, copying, rendering, budget</td>
+          <td>1–29, 90–109, 141–149, 200–209, 290–291, 293, 302–304</td>
+          <td>Detailed run flow, topic extraction, filtering, copying, rendering, budget, panel mapping</td>
         </tr>
         <tr>
           <td>20-integrations.md</td>
-          <td>30–49, 110–129, 160–169, 240–249, 270–279, 293</td>
-          <td>MCP clients, OpenRouter, Kie.ai, render-provider interface</td>
+          <td>30–49, 110–129, 160–169, 240–249, 270–279, 293, 301, 305–306</td>
+          <td>MCP clients, OpenRouter, Kie.ai, render-provider interface, slide analysis</td>
         </tr>
         <tr>
           <td>30-configuration-and-run.md</td>
-          <td>50–69, 130–140, 170–177, 250–259, 280–289, 292, 295, 299–300</td>
-          <td>Config schema, run.bat, menu, CLI flags, branding, styles</td>
+          <td>50–69, 130–140, 170–177, 250–259, 280–289, 292, 299–300, 307</td>
+          <td>Config schema, run.bat, menu, CLI flags, branding, text-only styles</td>
         </tr>
         <tr>
           <td>40-outputs-and-logging.md</td>
-          <td>70–89, 150–159, 230–239, 296–298</td>
-          <td>Folder structure, gallery, run log, events, metadata, provenance</td>
+          <td>70–89, 150–159, 230–239, 296–298, 309</td>
+          <td>Folder structure, gallery, run log, events, metadata, provenance with source slides</td>
         </tr>
         <tr>
           <td>50-promptcraft.md</td>
-          <td>180–199, 260–269</td>
-          <td>Prompt design, template playbooks, registry, filter/copy/branding</td>
+          <td>180–199, 260–269, 294, 308</td>
+          <td>Prompt design, template playbooks, registry, filter/copy/branding, slide intelligence</td>
         </tr>
         <tr>
           <td>60-publishing-postiz.md</td>
@@ -454,12 +466,12 @@
         </tr>
       </table>
     </div>
-    <p style="margin-top:20px"><strong>Next block: FR-301+</strong> for future amendments.</p>
+    <p style="margin-top:20px"><strong>Next block: FR-310+</strong> for future amendments.</p>
   </section>
 
   <div class="foot">
-    <p><strong>Source of truth:</strong> <code>prds/*.md</code> files. This HTML is a current snapshot as of 2026-08-12 (v2.0.0, post-pivot). For the latest changes, see the amendment log in 00-overview.md or the individual PRD files.</p>
-    <p><strong>Built by:</strong> Technical Writer (T0.3), Topic-First Pivot amendment cycle.</p>
+    <p><strong>Source of truth:</strong> <code>prds/*.md</code> files. This HTML is a current snapshot as of 2026-08-13 (v2.1.0, slideshow fidelity). For the latest changes, see the amendment log in 00-overview.md or the individual PRD files.</p>
+    <p><strong>Built by:</strong> Technical Writer (T0.4), Slideshow Fidelity amendment cycle (D46).</p>
   </div>
 
 </main>
