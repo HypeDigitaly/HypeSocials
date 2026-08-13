@@ -1,9 +1,10 @@
-"""`hypesocials.styles` — the meta-style registry, its rotation and its reference windows.
+"""`hypesocials.styles` — the meta-style registry and its deterministic rotation.
 
 Post-pivot (v2.0.0) the look of a creative is no longer re-derived per trend by an LLM: it is
-AUTHORED once in `prompts/styles.yaml` and ASSIGNED by a deterministic scan (FR-290/291). That
-moves three failure modes out of the run and into pre-flight, and this suite is where each one is
-pinned:
+AUTHORED once in `prompts/styles.yaml` and ASSIGNED by a deterministic scan (FR-290/291). Since
+D46 (v2.1.0) that authored look is TEXT ONLY — the reference-image channel, its per-job window and
+its magic-byte reader are gone (FR-17/18), and the absence is pinned here too. That moves three
+failure modes out of the run and into pre-flight, and this suite is where each one is pinned:
 
 * an unusable registry must refuse the run at pre-flight (FR-295 exit 2) rather than degrade —
   there is no built-in third tier, so a missing file is an error, never a silent default;
@@ -21,7 +22,6 @@ written against the contract, in parallel with the module itself.
 from __future__ import annotations
 
 import math
-import os
 from pathlib import Path
 
 import pytest
@@ -29,14 +29,11 @@ import yaml
 
 from hypesocials import styles
 from hypesocials.config import BrandingConfig, Config, RunConfig
+from hypesocials.generate import refs as refs_module
 from hypesocials.models import LayoutZone, MetaStyle, PlanEntry
 from hypesocials.styles import StyleRegistry, StyleRegistryError
 
 REPO = Path(__file__).resolve().parents[1]
-#: Real magic bytes, because `_usable()` validates the CONTENT, not the name (a renamed .txt
-#: would fail the Kie upload and cost the job a reference for nothing).
-PNG = b"\x89PNG\r\n\x1a\n"
-JPEG = b"\xff\xd8\xff"
 
 
 # --------------------------------------------------------------------------- builders
@@ -77,29 +74,6 @@ def _entries(orders, fmt: str = "image") -> list[PlanEntry]:
 
 def _keys(entries) -> list[str]:
     return [entry.style_key for entry in entries]
-
-
-def _ref(path: Path) -> str:
-    """`reference_images` entries are REPO-ROOT-relative (§1.3), so a `tmp_path` fixture is
-    expressed as the relative hop out of the repo and back — the same string a shipped registry
-    holds, resolved by the same join."""
-    try:
-        return Path(os.path.relpath(path, REPO)).as_posix()
-    except ValueError:  # pragma: no cover - different drive; an absolute path joins the same way
-        return path.as_posix()
-
-
-def _image(folder: Path, name: str, body: bytes = PNG) -> Path:
-    folder.mkdir(parents=True, exist_ok=True)
-    path = folder / name
-    path.write_bytes(body + b"\x00" * 64)
-    return path
-
-
-def _names(paths) -> list[str]:
-    """Compare windows by file name: `ROOT / "../../tmp/x.png"` and `C:/tmp/x.png` are the same
-    file and different strings, so the path FORM must not decide whether a test passes."""
-    return [Path(path).name for path in paths]
 
 
 def _write_registry(folder: Path, entries: list[dict], *, version: int = 1) -> Path:
@@ -386,23 +360,16 @@ def test_an_unresolved_variant_in_a_render_prompt_warns(prompt: str) -> None:
     assert any("leaky" in warning for warning in warnings)
 
 
-def test_a_missing_or_unreadable_reference_image_warns_and_never_refuses(tmp_path: Path) -> None:
-    """The degrade is deliberate (§1.3): a style whose pictures went missing still has its
-    `render_prompt`, so it renders text-only and is tagged `style_refs_missing`. Making this an
-    error would let one moved file cost a whole run."""
-    good = _image(tmp_path, "good.png")
-    garbage = tmp_path / "garbage.png"
-    garbage.write_bytes(b"this is not an image at all")
+def test_validation_has_nothing_to_say_about_files_any_more() -> None:
+    """D46/FR-18: the registry declares no pictures, so FR-295's file-existence and magic-byte
+    clause has nothing to check — a clean three-style registry validates SILENTLY, and no finding
+    may mention a reference image. The tag `style_refs_missing` keeps its slot in FR-73's
+    vocabulary and is emitted by nothing; it is not this module's to raise."""
+    errors, warnings = styles.validate(
+        _registry(_style("a"), _style("b"), _style("c")), _config())
 
-    clean = _registry(_style("a", reference_images=[_ref(good)]), _style("b"), _style("c"))
-    assert styles.validate(clean, _config()) == ([], [])
-
-    for broken in (_ref(garbage), "Inspiration/definitely-not-here.png"):
-        errors, warnings = styles.validate(
-            _registry(_style("thin", reference_images=[broken]), _style("b"), _style("c")),
-            _config())
-        assert not errors, "a missing picture is a degrade, never an exit 2"
-        assert any("thin" in warning for warning in warnings)
+    assert (errors, warnings) == ([], [])
+    assert not any("reference" in line.lower() for line in errors + warnings)
 
 
 # --------------------------------------------------------------------------- assign_styles
@@ -558,60 +525,41 @@ def test_a_trim_never_re_brands_a_creative_that_survived_it() -> None:
     assert sum(entry.branded for entry in survivors) == 3 != math.floor(len(survivors) * 0.5)
 
 
-# --------------------------------------------------------------------------- reference windows
+# ------------------------------------------------------------------ the retired picture channel
 
 
-def test_the_window_rotates_by_reuse_index_and_wraps_around_the_usable_list(
+def test_the_module_offers_no_way_to_turn_a_style_into_a_picture(tmp_path: Path) -> None:
+    """D46/FR-18, asserted as absence: a meta-style is TEXT, and this module is the only place a
+    style could ever have handed a file path to an uploader. `pick_reference_window` and the
+    magic-byte reader behind it are gone, and the public surface must not grow either back — a
+    re-introduced window is a style picture in a render payload, which is the whole thing the
+    amendment removed.
+
+    `tmp_path` is unused on purpose: there is no file for this module to look at any more.
+    """
+    assert not hasattr(styles, "pick_reference_window")
+    assert "pick_reference_window" not in styles.__all__ and "UploadMemo" not in styles.__all__
+    # The upload memo went WITH the uploads, to the only module that still performs them.
+    assert isinstance(refs_module.UploadMemo, type(dict[Path, str]))
+
+
+def test_a_stale_registry_that_still_lists_pictures_loads_clean_and_ignores_them(
     tmp_path: Path,
 ) -> None:
-    """A17's mechanism, re-homed onto the style: `hypelead-brand-card` ships five pictures, and
-    without the turn every creative on that style would attach the same two forever."""
-    pictures = [_image(tmp_path, f"ref{index}.png") for index in range(5)]
-    style = _style("cards", reference_images=[_ref(path) for path in pictures])
+    """An operator's on-disk `styles.yaml` may predate D46. The dead key must not become a shape
+    error: the file loads, the style is assignable, and the pictures are simply never read."""
+    _write_registry(tmp_path, [
+        {"key": f"legacy-{index}",
+         "render_prompt": "Flat graphic card, centred subject, hard shadow.",
+         "format_affinity": ["image"],
+         "reference_images": ["Inspiration/definitely-not-here.png"]}
+        for index in range(3)])  # three, so the FR-291 thin-pool warning stays out of the way
 
-    assert _names(styles.pick_reference_window(style, 0, 2)) == ["ref0.png", "ref1.png"]
-    assert _names(styles.pick_reference_window(style, 1, 2)) == ["ref1.png", "ref2.png"]
-    assert _names(styles.pick_reference_window(style, 4, 2)) == ["ref4.png", "ref0.png"]
-    assert _names(styles.pick_reference_window(style, 6, 3)) == ["ref1.png", "ref2.png", "ref3.png"]
-    assert all(Path(path).is_file() for path in styles.pick_reference_window(style, 3, 2))
+    registry = styles.load_registry([tmp_path])
 
-
-def test_a_style_with_fewer_pictures_than_the_window_returns_them_whole(tmp_path: Path) -> None:
-    """Degenerate and NOT a bug: `refs_per_job` is a ceiling. Two pictures asked for four is two
-    pictures, each listed once — never a duplicate reference sent to Kie to pad the count."""
-    pictures = [_image(tmp_path, "one.png"), _image(tmp_path, "two.jpg", JPEG)]
-    style = _style("pair", reference_images=[_ref(path) for path in pictures])
-
-    window = styles.pick_reference_window(style, 3, 4)
-
-    assert _names(window) == ["one.png", "two.jpg"]
-    assert len(set(_names(window))) == len(window)
-
-
-def test_only_files_that_are_really_images_reach_the_window(tmp_path: Path) -> None:
-    """Ported from `inspiration._usable`: suffix, size and MAGIC BYTES. A renamed `.txt` passes a
-    name check and then fails the Kie upload, costing the job a reference for nothing — so
-    "validate" here means the bytes, and an empty file is not an image either."""
-    good_png = _image(tmp_path, "keep.png")
-    good_jpeg = _image(tmp_path, "keep.jpg", JPEG)
-    (tmp_path / "caption.txt").write_bytes(PNG + b"\x00" * 8)  # right bytes, wrong kind of file
-    (tmp_path / "empty.png").write_bytes(b"")
-    (tmp_path / "garbage.png").write_bytes(b"not an image, just some words")
-
-    style = _style("mixed", reference_images=[
-        _ref(tmp_path / "caption.txt"), _ref(good_png), _ref(tmp_path / "empty.png"),
-        _ref(tmp_path / "garbage.png"), _ref(good_jpeg), _ref(tmp_path / "gone.png")])
-
-    assert _names(styles.pick_reference_window(style, 0, 6)) == ["keep.png", "keep.jpg"]
-    assert _names(styles.pick_reference_window(style, 1, 1)) == ["keep.jpg"]
-
-
-def test_a_style_with_no_usable_picture_answers_an_empty_window(tmp_path: Path) -> None:
-    """The `style_refs_missing` degrade seen from the caller's side: text-only, never an
-    exception — `refs.attach` has a reference-free path and this is how it is reached."""
-    assert styles.pick_reference_window(_style("bare"), 0, 2) == []
-    assert styles.pick_reference_window(
-        _style("gone", reference_images=[_ref(tmp_path / "nope.png")]), 2, 3) == []
+    assert [style.key for style in registry.styles] == ["legacy-0", "legacy-1", "legacy-2"]
+    assert styles.validate(registry, _config(formats={"image": 1})) == ([], []), (
+        "a picture that cannot exist is not a finding: nothing reads the key")
 
 
 # --------------------------------------------------------------------------- style_for

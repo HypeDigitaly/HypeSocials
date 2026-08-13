@@ -231,9 +231,10 @@ async def _seed_frame(
     """Render the hook frame, keep its bytes, and check it before anything references it (FR-24)."""
     if env.halted:
         return None, VisionCheckResult.NOT_CHECKED  # the clip step packages the honest abandon
-    # FR-200/FR-244: the assigned style's reference window and a brief's own product photos are
-    # uploaded here, once per run — the seed frame is where a reel's look is decided, so it is the
-    # one job in this chain that carries pictures at all.
+    # FR-200/FR-244: a brief's own product photos are uploaded here, once per run (D46/F3 —
+    # the style picture channel is excised; the look rides the textual DNA). The seed frame is
+    # where a reel's look is decided, so it is the one job in this chain that carries pictures
+    # at all — and with no brief it correctly carries none.
     refs = await attach(entry, env, folder)
     prompt = _seed_prompt(entry, env, copyset, refs)
     if prompt is None:

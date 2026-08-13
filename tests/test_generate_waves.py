@@ -2,9 +2,14 @@
 
 Post-pivot (v2.0.0) `generate.Env` carries the run's STYLE REGISTRY and its BRANDING CONFIG, and
 no longer carries a style-brief book, a brand accent, brand product nouns or a video-reference
-prefetch (contracts item 11). Every `Env` here is built on the post-pivot field set — including
-the four fields the conductor deletes at this wave's wire-in, which are simply never passed, so
-this suite reads the same before and after that commit.
+prefetch (contracts item 11). Every `Env` here is built on that post-pivot field set.
+
+**Text-to-image is the default route (D46/F3, v2.1.0).** A meta-style ships no pixels: its
+`render_prompt` and DNA rows qualify the render in WORDS, so an ordinary style-driven creative
+submits with an EMPTY `image_urls` and that is the normal case, not a degradation. The only
+local files a job still uploads are a campaign BRIEF's own product photos (FR-144/145), which is
+why every reference assertion in this file is written against a brief rather than against a
+registry entry — the registry has no picture channel left to assert on.
 
 What did NOT change is the reason this file exists: ONE money door, the FR-106 a/b/c reservation
 kinds, the two-wave permit priorities (wave-1 = image and carousel anchor and reel seed frame;
@@ -15,22 +20,11 @@ No network and no money: `render.run` is monkeypatched, `render.upload_file` is 
 packager's download is faked, and the budget/ledger are the REAL ones so every assertion is
 against what actually lands on disk in `tmp_path`. The carousel and reel modules are faked where
 only the *dispatch* is under test — their own chains have their own suites.
-
-**Mid-wave note (W2, T2.8 — delete this paragraph at the wire-in).** This suite is written
-against the post-wire-in `generate/__init__.py` and every test that reaches `_assemble`,
-`_record` or the `Env` field set is RED until the conductor lands contracts item 11: the four
-dying `Env` fields plus `brief_for()`, `_assemble`'s call updated to the post-pivot
-`build_context` signature, and `_ref_source` re-based to
-`"style" if refs.style_of(entry, env) is not None else ("brief" if entry.brief_name else "")`.
-Nothing else in this file is expected to fail; `test_carousel.py` and `test_reel.py`, which
-cover the same wave engine's two chained formats, are already green because their modules were
-rewritten in-wave by T2.3.
 """
 
 from __future__ import annotations
 
 import asyncio
-import os
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -43,6 +37,7 @@ from hypesocials.config import BrandingConfig, Config
 from hypesocials.generate import refs as refs_module
 from hypesocials.models import (
     AssetStatus,
+    Brief,
     CopySet,
     DegradationTag,
     LayoutZone,
@@ -63,6 +58,7 @@ from hypesocials.prompts_engine import PromptEngine
 REPO = Path(__file__).resolve().parents[1]
 PNG = b"\x89PNG\r\n\x1a\n"
 STYLE_KEY = "platform-showcase-card"
+BRIEF_NAME = "product-shot"
 RESULT_URL = "https://tempfile.aiquickdraw.com/result.jpg"
 #: contracts item 11 — the four `Env` fields the W2 wire-in deletes, plus the method that dies
 #: with `style_briefs`. Named once so the "post-pivot shape" assertion reads as a list, not a
@@ -159,12 +155,18 @@ def downloads(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
 
 @pytest.fixture(autouse=True)
 def uploads(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
-    """`render.upload_file`, faked — plus a CLEARED upload memo around every test (FR-200/244)."""
+    """`render.upload_file`, faked — plus a CLEARED upload memo around every test (FR-200/244).
+
+    A file that is not on disk RAISES, exactly as the real uploader does when it opens it, so the
+    FR-18 loss path is exercised by deleting a brief's photos rather than by a second fake.
+    """
     control = SimpleNamespace(paths=[])
     refs_module.reset_uploads()
 
     async def _upload(path: Path) -> str:
         control.paths.append(Path(path))
+        if not Path(path).is_file():
+            raise FileNotFoundError(path)
         return f"https://kie.test/upload/{Path(path).name}"
 
     monkeypatch.setattr(render, "upload_file", _upload)
@@ -172,20 +174,15 @@ def uploads(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     refs_module.reset_uploads()
 
 
-def repo_relative(path: Path) -> str:
-    try:
-        return Path(os.path.relpath(path, REPO)).as_posix()
-    except ValueError:  # pragma: no cover - different drive; an absolute path joins the same way
-        return path.as_posix()
+def make_registry(_tmp_path: Path) -> styles.StyleRegistry:
+    """A one-entry TEXT-ONLY registry — the post-D46 shape (FR-17/18/290).
 
-
-def make_registry(tmp_path: Path) -> styles.StyleRegistry:
-    """A one-entry registry with a REAL reference file, so `refs.attach` uploads and attaches for
-    real — the post-pivot replacement for the trend's CDN images."""
-    folder = tmp_path / "style-refs"
-    folder.mkdir(parents=True, exist_ok=True)
-    path = folder / f"{STYLE_KEY}-01.png"
-    path.write_bytes(PNG + b"\x00" * 64)
+    There is no reference-image scaffolding to build any more: a style qualifies its render
+    through `render_prompt`, its zones and its five DNA rows, and `MetaStyle` has no
+    `reference_images` field to hand `refs.attach()` a picture through. A creative wearing this
+    style submits with an empty `image_urls`, which is what every reference assertion below is
+    measured against.
+    """
     style = MetaStyle(
         key=STYLE_KEY,
         render_prompt="Flat product card on a soft gradient ground, one hard shadow.",
@@ -194,11 +191,42 @@ def make_registry(tmp_path: Path) -> styles.StyleRegistry:
         max_onimage_chars={"headline": 100, "subline": 60, "slide": 100},
         palette=["#1B1F3B"], typography="bold condensed sans",
         text_placement="headline upper third", image_treatment="flat graphic",
-        visual_pacing="one idea per panel", exclusions=["platform UI"],
-        reference_images=[repo_relative(path)])
+        visual_pacing="one idea per panel", exclusions=["platform UI"])
     return styles.StyleRegistry(version=1, styles=[style],
                                 origin=str(REPO / "prompts" / "styles.yaml"),
                                 content_hash="0123456789ab")
+
+
+def give_brief(env: generate.Env, entries: list[PlanEntry], tmp_path: Path, *,
+               photos: int = 1) -> list[Path]:
+    """Point these entries at ONE campaign brief that ships `photos` real files (FR-144/145).
+
+    Post-D46 this is the only way a render job carries an attachment it did not make itself, so
+    it is the fixture behind every upload-memo, attachment-order and FR-97 assertion in this
+    file. The files are real bytes on disk because `refs.attach()` uploads what it is handed and
+    a missing file is a different test (the FR-18 loss path).
+    """
+    folder = tmp_path / "brief-photos"
+    folder.mkdir(parents=True, exist_ok=True)
+    paths: list[Path] = []
+    for index in range(1, photos + 1):
+        path = folder / f"{BRIEF_NAME}-{index:02d}.png"
+        path.write_bytes(PNG + b"\x00" * 64)
+        paths.append(path)
+    env.campaign_briefs = {BRIEF_NAME: Brief(
+        name=BRIEF_NAME, description="one product photo", influence="blend",
+        visual_directives={"scene": "the product on a bare desk"},
+        reference_image_paths=list(paths))}
+    env.local_refs = {entry.asset_id: tuple((path, "brief") for path in paths)
+                      for entry in entries}
+    for entry in entries:
+        entry.brief_name, entry.brief_influence = BRIEF_NAME, "blend"
+    return paths
+
+
+def brief_url(path: Path) -> str:
+    """The URL the faked `render.upload_file` hands back for one brief photo."""
+    return f"https://kie.test/upload/{path.name}"
 
 
 def make_entry(order: int = 0, fmt: str = "image", **overrides: Any) -> PlanEntry:
@@ -266,18 +294,31 @@ def test_the_env_is_the_post_pivot_field_set(tmp_path: Path) -> None:
     assert not hasattr(generate.Env, "brief_for"), "the pair-keyed brief lookup dies with the book"
 
 
-def test_ref_source_names_the_house_style_a_creative_actually_wore(tmp_path: Path) -> None:
-    """Contracts item 8/the W2 addendum: FR-73's provenance vocabulary is `style | brief` now.
-    "virlo" cannot be the answer any more — no Virlo pixel reaches a render job — and the honest
-    answer is the meta-style the creative wore, or the brief that suppressed it (M14)."""
-    entry = make_entry()
-    env = make_env(tmp_path, [entry])
+def test_ref_source_names_the_brief_whose_photos_a_creative_actually_uploaded(
+    tmp_path: Path,
+) -> None:
+    """FR-73's provenance vocabulary post-D46 is `brief | ""` — and nothing else.
 
-    assert generate._record(entry, env).ref_source == "style"
+    "virlo" died with the text-only pivot (no Virlo pixel reaches a render job) and `"style"`
+    died with the picture channel (D46/F3): a meta-style is words now, so a creative wearing one
+    uploaded NOTHING and the honest field is empty. `"brief"` is claimed only when the brief
+    actually SHIPS photos — a brief with directives and no images contributes no reference, and
+    naming one would make this field a second, wrong answer to "why does this look like this".
+    """
+    styled = make_entry()
+    env = make_env(tmp_path, [styled])
 
-    unassigned = make_entry(1, style_key="")
-    env.copy[unassigned.asset_id] = env.copy[entry.asset_id]
-    assert generate._record(unassigned, env).ref_source == ""
+    assert generate._record(styled, env).ref_source == "", \
+        "a text-only house style is not a reference source"
+
+    with_photos = make_entry(1)
+    env.copy[with_photos.asset_id] = env.copy[styled.asset_id]
+    give_brief(env, [with_photos], tmp_path)
+    assert generate._record(with_photos, env).ref_source == "brief"
+
+    # A brief that ships directives and no pictures uploads nothing, so it names nothing.
+    env.campaign_briefs[BRIEF_NAME].reference_image_paths = []
+    assert generate._record(with_photos, env).ref_source == ""
 
 
 # --------------------------------------------------------------------------- dispatch by format
@@ -366,31 +407,95 @@ async def test_real_carousel_and_reel_chains_land_through_the_wave_engine(
     assert len(ledger_lines(tmp_path)) == len(renders.calls)  # one terminal line per submission
 
 
-async def test_the_style_window_is_uploaded_once_for_the_whole_batch(
+async def test_a_briefs_photo_is_uploaded_once_for_the_whole_batch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, uploads: SimpleNamespace,
 ) -> None:
-    """FR-200/244: the upload memo is run-scoped, so three creatives sharing one assigned style
-    upload its reference window ONCE — and every job still attaches it."""
+    """FR-200/244: the upload memo is run-scoped, so three creatives sharing one campaign brief
+    upload its photo ONCE — and every job still attaches it.
+
+    Post-D46 a brief's photos are the ONLY files this memo ever holds (the style window it was
+    written for is excised, F3), which makes them the only fixture that can still prove the
+    memo's once-per-file-per-run rule end to end.
+    """
     entries = [make_entry(0, "image"), make_entry(1, "image"), make_entry(2, "image")]
     env = make_env(tmp_path, entries)
+    (photo,) = give_brief(env, entries, tmp_path)
     renders = Renders(rule=lambda _self: ok())
     monkeypatch.setattr(render, "run", renders)
 
     await generate.create(entries, env)
 
-    assert len(uploads.paths) == 1, "one file, one upload, three creatives"
+    assert uploads.paths == [photo], "one file, one upload, three creatives"
     assert len(renders.calls) == 3
-    assert all(call["refs"].image_urls == [f"https://kie.test/upload/{STYLE_KEY}-01.png"]
-               for call in renders.calls)
+    assert all(call["refs"].image_urls == [brief_url(photo)] for call in renders.calls)
+
+
+async def test_a_style_driven_creative_attaches_nothing_and_says_nothing_about_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, uploads: SimpleNamespace,
+) -> None:
+    """D46/FR-17/18: text-to-image is the DEFAULT route, not a degrade.
+
+    A creative wearing a house style and carrying no brief uploads nothing, submits with an
+    empty `image_urls`, and is neither tagged nor warned about it — it lost nothing, so there is
+    nothing to report. `reference_free` is reserved for the creative that EXPECTED pictures and
+    lost every one of them, and a warning here would train the operator to ignore the one line
+    that means something.
+    """
+    entry = make_entry()
+    env = make_env(tmp_path, [entry])
+    renders = Renders(rule=lambda _self: ok())
+    monkeypatch.setattr(render, "run", renders)
+
+    report = await generate.create([entry], env)
+
+    assert uploads.paths == [], "a meta-style ships no pixels (F3)"
+    assert renders.calls[0]["refs"].image_urls == []
+    record = report.records[entry.asset_id]
+    assert DegradationTag.REFERENCE_FREE not in record.degradations
+    assert DegradationTag.STYLE_REFS_MISSING not in record.degradations, \
+        "the tag survives for old meta.yaml files on disk; nothing emits it any more"
+    assert "reference_free" not in env.log.types()
+
+
+async def test_a_brief_whose_photos_all_vanished_is_the_one_reference_free_case(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FR-18's "an input, not a prerequisite", and the loss it is worth a word about.
+
+    The brief shipped two photos and neither could be attached (deleted off disk between the
+    plan and the render). The job still goes out on the style's written guidance — a lost
+    reference costs a reference, never a creative — but the absence is TAGGED and LOGGED,
+    because this creative expected pictures and reached the model without them.
+    """
+    entry = make_entry()
+    env = make_env(tmp_path, [entry])
+    for path in give_brief(env, [entry], tmp_path, photos=2):
+        path.unlink()
+    renders = Renders(rule=lambda _self: ok())
+    monkeypatch.setattr(render, "run", renders)
+
+    report = await generate.create([entry], env)
+
+    assert renders.calls[0]["refs"].image_urls == []
+    assert DegradationTag.REFERENCE_FREE in report.records[entry.asset_id].degradations
+    assert "reference_free" in env.log.types()
+    assert report.records[entry.asset_id].status is AssetStatus.SUCCESS, \
+        "a reference-free render is a degrade, not a failure"
 
 
 async def test_every_submission_is_billed_and_gets_one_terminal_ledger_line(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """FR-203: one `terminal` line per submission — including the moderation-refused attempt that
-    was billed and then retried (20 §8's tally-on-submission)."""
+    was billed and then retried (20 §8's tally-on-submission).
+
+    The refused job carries the brief's photo, because FR-97's remedy is DROPPING references and
+    a job that had none has no second submission to make (the settled reading of `and urls`,
+    pinned on its own below).
+    """
     entry = make_entry()
     env = make_env(tmp_path, [entry])
+    give_brief(env, [entry], tmp_path)
     monkeypatch.setattr(render, "run", Renders([refused(), ok(task="kie_retry")]))
 
     report = await generate.create([entry], env)
@@ -410,6 +515,7 @@ async def test_moderation_retry_declined_by_the_cap_is_a_skipped_budget_failure(
     the creative fails with the refusal it already paid for, never with an unbudgeted submission."""
     entry = make_entry()
     env = make_env(tmp_path, [entry], cap_usd=0.03)
+    give_brief(env, [entry], tmp_path)  # FR-97 only retries a job that HAD references
     monkeypatch.setattr(render, "run", Renders([refused(), ok()]))
 
     report = await generate.create([entry], env)
@@ -418,6 +524,31 @@ async def test_moderation_retry_declined_by_the_cap_is_a_skipped_budget_failure(
     assert "skipped_budget" in " ".join(env.log.types())
     assert report.records[entry.asset_id].status is AssetStatus.FAILED
     assert len(ledger_lines(tmp_path)) == 1  # only the refused job was ever submitted
+
+
+async def test_a_moderation_refusal_on_a_reference_free_job_is_a_straight_fail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FR-97's remedy is "resubmit once with every reference removed" — so a job that carried
+    NO references has no remedy left, and the refusal is terminal on the first attempt.
+
+    Post-D46 this is the common shape rather than the exotic one: an ordinary style-driven
+    creative attaches nothing (F3), and re-sending a byte-identical prompt to the same moderation
+    endpoint would buy a second refusal at full price and call it a retry.
+    """
+    entry = make_entry()
+    env = make_env(tmp_path, [entry])  # no brief: nothing to drop
+    renders = Renders([refused(), ok(task="kie_never_ordered")])
+    monkeypatch.setattr(render, "run", renders)
+
+    report = await generate.create([entry], env)
+
+    assert len(renders.calls) == 1, "a reference-free refusal buys no second submission"
+    assert entry.status is PlanEntryStatus.FAILED
+    record = report.records[entry.asset_id]
+    assert DegradationTag.REFS_DROPPED_MODERATION not in record.degradations
+    assert "moderation_retry" not in env.log.types()
+    assert "moderation" in (entry.skip_reason or "")
 
 
 # --------------------------------------------------------------------------- FR-27 / FR-105

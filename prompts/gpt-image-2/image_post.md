@@ -19,9 +19,10 @@ TEXT (locked asset — this is the exact content of the creative):
   {{onimage_text}}
 
   Render every quoted string above exactly as written: same characters, same
-  accents, same capitalisation, same punctuation. Add no words. Repeat no
-  words. Invent no caption, no tagline, no label, no signature, no sticker
-  text. Render no text that is not quoted above.
+  accents, same capitalisation, same punctuation. The string is quoted from a
+  real post and is never translated, re-worded, shortened or "corrected". Add
+  no words. Repeat no words. Invent no caption, no tagline, no label, no
+  signature, no sticker text. Render no text that is not quoted above.
   Where a string is echoed letter by letter (for example "R-y-c-h-l-e-j-š-í"),
   that echo is a spelling aid for you alone: read it, use it to get every
   accent right, and never draw the hyphenated form onto the image.
@@ -32,13 +33,12 @@ TEXT (locked asset — this is the exact content of the creative):
   TEXT PRECEDENCE — this block is the ONLY source of renderable words. Any
   string quoted, named or spelled out anywhere else in this instruction — in
   SUBJECT AND SCENE, in LAYOUT AND STYLE, in REFERENCES, in the exclusion
-  lines — is a DESCRIPTION of what the reference images already contain, never
-  content to render: do not letter it, echo it, shorten it or translate it. A
-  zone described with words in it (a kicker, a label, a badge, a sticker, a
-  wordmark) supplies its position, size, typeface, weight, colour and
-  alignment only; its words come from the block above, or that zone carries no
-  words at all. A named exclusion is a forbidden string, not an instruction to
-  draw it.
+  lines — is a DESCRIPTION of structure, never content to render: do not letter
+  it, echo it, shorten it or translate it. A zone described with words in it (a
+  kicker, a label, a badge, a sticker, a wordmark) supplies its position, size,
+  typeface, weight, colour and alignment only; its words come from the block
+  above, or that zone carries no words at all. A named exclusion is a forbidden
+  string, not an instruction to draw it.
 
 LAYOUT AND STYLE:
   {{layout_zones}}
@@ -46,16 +46,16 @@ LAYOUT AND STYLE:
   Reproduce these zones in the order given, top of frame to bottom. Keep the
   proportions, the margins and the text treatment of each zone. This is a
   description of STRUCTURE: reproduce each zone's geometry and typography, and
-  take its words only from the TEXT block. Where no zones are listed, take the
-  composition from the style description above and from the attached
-  references — grid, colour relationships, lettering character and weight,
-  image treatment, spacing rhythm, the way the eye is carried through the
-  frame — and build a NEW creative in that style about the subject above,
-  never a recreation of a reference.
-  If the target frame is a different shape from the reference images,
-  RE-COMPOSE the layout for this frame — re-flow the zones so they fit
-  natively. Never letterbox, never stretch, never bar-pad, never crop the
-  reference composition.
+  take its words only from the TEXT block.
+
+  The style description above and these zones are the WHOLE look: no style
+  photograph is attached to this job. Build the palette, the grid, the
+  lettering character and weight, the surface and lighting of the artwork and
+  the spacing rhythm from those words alone, and make a NEW creative in that
+  style about the subject above. Where no zones are listed, compose the frame
+  yourself from the style description.
+  Compose natively for the frame this request sets: re-flow the zones so they
+  fill it. Never letterbox, never stretch, never bar-pad, never crop.
 
   BRANDING (ignore if empty): {{branding_block}}
   These are accent colours, letterform character, a placement hint and colour
@@ -67,39 +67,38 @@ LAYOUT AND STYLE:
 
   NICHE VISUAL WORLD (ignore if empty): {{niche_visual_world}}
   When present, that line is standing art direction ranked BELOW the zones
-  above and the attached references: it biases palette, type character and
-  motif vocabulary where they leave a choice open, never layout or wording.
+  above: it biases palette, type character and motif vocabulary where they
+  leave a choice open, never layout or wording.
 
 REFERENCES:
   {{reference_roles}}
 
-  Every attached image is a style, layout, palette, typography and treatment
-  reference ONLY. Whatever else a reference contributes, none of them ever
-  contributes a legible string: not their headlines, captions or subtitles;
-  not their brand wordmarks, logotypes, product names, category or section
-  labels, button, chip or pill labels, kicker lines, badges or price tags; not
-  their watermarks or app marks; not their usernames, handles or profile
-  pictures; not their engagement counters; not their platform UI; not the
-  identity of any person shown in them.
-  Where two references disagree, follow the first one listed.
+  This job usually carries no attached image at all, and that is correct: the
+  look comes from the written style above. When an image IS attached it is a
+  campaign brief's own product photo, and the line naming it says so. Such a
+  photo gives the identity of the object it shows — shape, colour, finish,
+  proportions — and nothing else: not its background, not its lighting, not its
+  layout, and never a legible string, wordmark, logo, watermark, label, price
+  tag, username, counter, platform UI, or the identity of a person in it.
+  Where two attachments disagree, follow the first one listed.
 
 CONSTRAINTS:
   - The ONLY text anywhere in this image is the quoted string or strings in
     the TEXT block above. Every other legible character in the frame is a
     defect, no matter how well it fits the design.
   - Never reproduce platform UI, watermarks, app logos, usernames, handles,
-    follower or like or view counters, progress bars, play buttons, or any
-    text visible in the reference images.
-  - That prohibition covers brand wordmarks, logotypes, product names,
-    category or section labels, button, chip or pill labels, and kicker lines
-    — any legible string in a reference, whether or not it reads as design.
-    A word set in the reference's own typeface is still that reference's word;
-    a made-up brand name in its place is equally forbidden.
-  - If the style or a reference has a text zone for which no string is quoted
-    above, leave that zone empty or fill it with a non-text graphic element
-    (a rule, a bar, a shape, negative space) — never carry the reference's
-    words into it, and never invent replacement words for it. A kicker slot
-    with nothing quoted for it stays wordless.
+    follower or like or view counters, progress bars or play buttons, whether
+    copied from an attachment or invented to make the frame look native.
+  - Never reproduce a real company, product or app logo, wordmark, logotype,
+    product name, category or section label, button, chip or pill label or
+    kicker line. Where the design calls for a mark, draw an unlettered generic
+    shape of that kind; a made-up brand name in its place is equally forbidden.
+  - If the style has a text zone for which no string is quoted above, leave
+    that zone empty or fill it with a non-text graphic element (a rule, a bar,
+    a shape, negative space) — never invent replacement words for it. A kicker
+    slot with nothing quoted for it stays wordless. An interface, chart or
+    label group drawn for this frame is greeked into bars and unlettered
+    shapes.
   - This is one standalone image: no navigation or swipe prompt of any kind
     ("SWIPE LEFT", "SWIPE RIGHT", "READ MORE", "TAP", an arrow or a hand
     carrying words), and no brand wordmark, logotype or signature line other
@@ -107,7 +106,7 @@ CONSTRAINTS:
     this frame is unsigned. Nothing here is swiped.
   - No @handle, no URL, no emoji in the frame — not in the text block, not on
     a prop, not in a corner, not as decoration.
-  - The exclusions below concern the attached reference images. They never
+  - The exclusions below are this house style's own forbid-list. They never
     restrict the TEXT block above, whose strings are always rendered.
   - Additional exclusions for this house style — these are strings and marks
     forbidden in the frame, never strings to render: {{exclusions}}

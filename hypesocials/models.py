@@ -45,9 +45,10 @@ class DegradationTag(str, Enum):
     # filter's `strip` verdict). The copy is still sourced; it is simply no longer byte-identical,
     # which is exactly what the verifier above would otherwise report as a deviation.
     COMPETITOR_STRIPPED = "competitor_stripped"
-    # FR-295 — the assigned meta-style's `reference_images` were missing or failed the magic-byte
-    # check, so the style shipped as text-only (its prose still steers the render, its pictures do
-    # not). A warning at pre-flight, never an error: a style without its files is still a style.
+    # FR-295 — pre-D46: the assigned meta-style's reference images were missing or unusable, so
+    # the style shipped as text-only. D46/F3 removed the picture channel entirely, so nothing
+    # emits this any more; the member survives because FR-73's amended vocabulary still lists it
+    # and older meta.yaml files on disk still carry it (the gallery must keep rendering those).
     STYLE_REFS_MISSING = "style_refs_missing"
     # --- D46 / v2.1.0 (FR-73's amended vocabulary, four new spellings) ---
     # FR-306 — the slide-intelligence pass supplied on-image text Virlo had not transcribed: at
@@ -244,18 +245,16 @@ class PlanEntry:
     brief_name: str | None = None  # campaign brief (FR-143)
     brief_influence: InfluenceMode | None = None  # per-entry mode override (D26)
     trend_key: str | None = None  # assigned trend's history_key; None for override briefs (FR-144)
-    # §1.6's rotation index, re-scoped by the pivot: this creative's 0-based position among the
-    # creatives sharing its topic, set by `plan.assign` from the `use_index` it already counts.
-    # It turns the style reference window (`styles.pick_reference_window`) — sibling divergence on
-    # one topic is this one number. Every member of an atomic group shares one value: a carousel's
-    # slides must quote one post. 0 for override briefs, which quote nothing at all.
+    # §1.6's rotation index: this creative's 0-based position among the creatives sharing its
+    # topic, set by `plan.assign` from the `use_index` it already counts. Every member of an
+    # atomic group shares one value; 0 for override briefs, which quote nothing at all.
     #
-    # **DEPRECATED as a post picker (v2.1.0, D46 §0.10).** It used to ALSO choose which
-    # `SourcePost` a sibling quoted (`posts[i % len(posts)]`), and that modulo is what let a topic
-    # with one fresh post re-quote yesterday's exact post: a rotation over a list cannot know which
-    # of its members are burnt. `source_post_id` below replaces it — the plan binds a specific
-    # fresh post at ASSIGN and `copywrite` quotes THAT one. The field itself survives because
-    # `generate/refs.py` and `styles.pick_reference_window` still turn on it (retired in W3).
+    # **Legacy-only after D46 (v2.1.0, §0.10 + W3's F3 excision).** Its two rotation consumers
+    # are gone — the `posts[i % len(posts)]` post pick (replaced by `source_post_id` below: the
+    # plan binds a specific fresh post at ASSIGN and `copywrite` quotes THAT one) and the style
+    # reference window (`styles.pick_reference_window` died with the picture channel). What
+    # remains reads it only as a FALLBACK for unbound entries: the degrade-path modulo in
+    # `copywrite` and the post-roster `-> NN` mapping in `runner`.
     trend_reuse_index: int = 0
     # FR-304/FR-307 (v2.1.0) — the post this creative quotes, bound at ASSIGN by `plan.assign`
     # from the topic's FRESH posts (never a post `trend_history` records as used). It is the whole
@@ -308,8 +307,9 @@ class MetaStyle:
 
     `render_prompt` is the executable instruction (an either/or left unresolved here reaches the image
     model as a choice it will make differently on every slide, so M9 forbids it); the five DNA
-    fields feed `style_dna` byte-identically across a deck; `exclusions` are LITERAL strings quoted
-    from the reference files, because a described wordmark is a string nothing downstream can block.
+    fields feed `style_dna` byte-identically across a deck. D46/F3 removed `reference_images`
+    from the schema (FR-290 as amended): a style is words, its text alone carries the look, and
+    `exclusions` are self-contained rules rather than strings read off attached pictures.
     """
 
     key: str
@@ -335,8 +335,7 @@ class MetaStyle:
     # can never anchor a deck, and under anchor-chaining that means it never takes a carousel entry
     # at all. `styles.fmt_affine` owns that reading — no caller re-implements it.
     per_format_guidance: dict[str, str] = field(default_factory=dict)
-    exclusions: list[str] = field(default_factory=list)  # LITERAL strings from the refs (M8)
-    reference_images: list[str] = field(default_factory=list)  # REPO-ROOT-relative paths (§1.3)
+    exclusions: list[str] = field(default_factory=list)  # self-contained rules, file-free (D46/F3)
 
 
 @dataclass(slots=True)
@@ -407,7 +406,8 @@ class AssetRecord:
     creative_format: CreativeFormat
     # --- provenance & degradations ---
     source_hook: str = ""  # the topic's original hook line, verbatim — gallery card (FR-76, v1.6.4)
-    ref_source: str = ""  # "style" | "brief" (contracts item 8 — what the references came FROM)
+    ref_source: str = ""  # "brief" | "" — what the references came FROM; "style" died with the
+    #   D46/F3 picture-channel excision (a style is words, so it is never a reference source)
     # FR-73 (v2.0.0) — post-pivot identity: the assigned meta-style, the brand system and the
     # branding-rotation outcome, and the topic this creative came from (gallery + provenance
     # block read all four; T3.2's gallery re-base is their first consumer).

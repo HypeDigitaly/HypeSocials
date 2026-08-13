@@ -45,9 +45,12 @@ _ONE_K_ONLY_RATIOS = frozenset({"", "auto", "5:4", "4:5", "3:1", "1:3", "9:21"})
 _IMAGE_RESOLUTION_CEILING = "2K"
 
 #: 50 §7 states the truncation ORDER but no number, and no provider documents a prompt-length
-#: limit. 10 000 characters is therefore this ENGINE's bound, not a provider fact: generous for
-#: every shipped template, tight enough that a runaway style brief cannot buy a rejected job.
-MAX_PROMPT_CHARS = 10_000
+#: limit. 16 000 characters is therefore this ENGINE's bound, not a provider fact. Raised from
+#: 10 000 at W3 (D46): a slide-2+ carousel prompt now legitimately assembles ~13k — a 300-char
+#: verbatim panel, its English visual brief and the anchor block are all payload, not runaway —
+#: and under the ceiling the truncator was cutting content the operator paid the analysis call
+#: to produce. Still bounded, so a genuinely runaway template cannot buy a rejected job.
+MAX_PROMPT_CHARS = 16_000
 
 SEEDANCE_DURATION_RANGE = (4, 30)  # FR-164; the provider's `-1` auto value is never sent
 _SEEDANCE_DEFAULT_DURATION_S = 5

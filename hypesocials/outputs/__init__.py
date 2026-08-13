@@ -18,8 +18,8 @@ Append-only list: T2.5 adds the packager and gallery exports here; existing name
     AssetFolder     one asset folder + its meta.yaml lifecycle, pending -> terminal (FR-72–74,
                     NFR-21); `finish()` / `skip()` / `update()` / `mark()` / `store_render()`
     create_run_folder   output/<run_id>/ (+ its shared refs/), made at launch (FR-70)
-    save_reference  a style's attached reference stored at refs/<style_key>/image_1.png for the
-                    gallery's adherence comparison (FR-71/150, re-keyed trend->style in W3)
+    save_reference  a brief's attached reference stored at refs/<brief_name>/image_1.png (FR-71
+                    as amended by D46 — the style picture channel is excised, briefs only)
     read_meta / update_meta / set_marker / has_marker / clear_marker
                     path-based meta + marker mutators — also Phase 2 publishing's write path
                     (FR-88, FR-231, 60 FR-215)

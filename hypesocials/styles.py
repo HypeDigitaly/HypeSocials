@@ -1,18 +1,25 @@
-"""Meta-style registry — the post-pivot visual authority (FR-290/291/295).
+"""Meta-style registry — the post-pivot visual authority, TEXT-ONLY (FR-290/291/295, D46).
 
-Callers import `hypesocials.styles` and nothing under it. Six calls, one concept — which look
-each creative wears, and which pictures prove it:
+Callers import `hypesocials.styles` and nothing under it. Five calls, one concept — which look
+each creative wears, written down in words:
 
     registry = load_registry([config.prompts_dir, PROMPTS_DIR])   # once per run
     errors, warnings = validate(registry, config)                 # pre-flight; any error = exit 2
     assign_styles(live, registry, config.branding.brand)          # after plan.assign()
     assign_branding(live, config.branding.brand_ratio)
     style = style_for(registry, entry.style_key)                  # at assembly
-    refs = pick_reference_window(style, entry.trend_reuse_index, config.styles.refs_per_job)
 
 A style is authored once in `prompts/styles.yaml` and ASSIGNED, where the pre-pivot vision brief
 was re-derived per trend by an LLM from whatever pictures that trend happened to carry. That is
 the whole point of the pivot: the look is ours, the topic is theirs.
+
+**A style is words, never pictures (D46/FR-18).** The registry's PICTURE channel is withdrawn:
+there is no `reference_images` field, no per-job window, no rotation and no upload — a style
+qualifies its render through `render_prompt`, `layout_zones`, `palette`, `typography`,
+`text_placement`, `image_treatment` and `visual_pacing` alone (FR-17). The only images any render
+job still attaches are a campaign brief's own product photos (FR-144/145) and the chained
+artifacts the format modules produce themselves — the carousel anchor (FR-95) and the reel seed
+frame (FR-24). Nothing in this module reads, stats, sniffs or returns a file path.
 
 Invariants: the registry is resolved override-first through the FR-174 `prompts_dir` seam and has
 **no built-in third tier** — a missing, unreadable or invalid registry is a `StyleRegistryError`
@@ -20,21 +27,17 @@ and an FR-295 pre-flight exit 2, never a silent default (a built-in copy would b
 invisible drift against the file the operator is editing). Registry order is FILE order and the
 rotation depends on it. Every assignment is a pure function of `entry.order` over the
 brand-filtered pool — no cursor, no shared state — so a trimmed or dropped entry never reshuffles
-another entry's style, and a re-run of the same plan picks the same styles and the same pictures.
-`reference_images` resolve against the REPO ROOT, not against the registry's own folder (the
-briefs.py precedent), because one registry lists paths in two unrelated trees (`Inspiration/` and
-`hypedigitaly branding/`) — the deviation is documented in the PRD.
+another entry's style, and a re-run of the same plan picks the same styles.
 
 I/O: `load_registry` reads one small local YAML file synchronously at startup, exactly as
 `config.py` reads `configs/*.yaml` — that is the precedent, and neither runs on a hot event loop.
-`pick_reference_window` stats and sniffs a handful of local files per job; nothing here downloads,
-uploads or opens image pixels.
+That single read is the whole of this module's filesystem contact.
 
 Do not: key the `brand_slot` rule off a style name (an override registry with its own keys must
 keep the rule — B3); re-implement the `carousel_role` reading anywhere else (`fmt_affine` owns
 it); render anything (`prompts_engine` owns rendering and its no-filesystem contract, this module
-owns the files — §1.4 module split); upload the paths this module returns (`generate/refs.py`
-does that through the `UploadMemo`).
+owns the one file — §1.4 module split); reintroduce a style picture channel in any shape — the
+upload memo and the brief-photo attachment now live entirely in `generate/refs.py`.
 """
 
 from __future__ import annotations
@@ -49,7 +52,7 @@ from typing import Any
 
 import yaml
 
-from .config import ROOT, Config
+from .config import Config
 from .models import LayoutZone, MetaStyle, PlanEntry
 from .util import read_text
 
@@ -69,24 +72,6 @@ _MIN_USABLE_STYLES = 3
 # literal — §1.3's leak heuristic must match the word itself in an author's render_prompt, so the
 # excision grep records this one line and ignores it rather than obfuscating the string.
 _VARIANT_MARKERS = (" or ", "variant ", "either ")
-
-# --- reference-image validation, ported from the retired local-pool module (W3.5) --------------
-# Ported rather than imported: the source module was retired at W3.5 and this is the surviving reader
-# of local reference bytes. Same rules, same reason — "validate" has to mean the bytes ARE an
-# image, not just that the name says so (a renamed .txt fails the Kie upload and costs the job a
-# reference for nothing).
-_SUFFIXES = frozenset({".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"})
-_MAGIC: tuple[bytes, ...] = (b"\xff\xd8\xff", b"\x89PNG\r\n\x1a\n", b"GIF87a", b"GIF89a",
-                             b"RIFF", b"BM")
-_MAX_BYTES = 30 * 1024 * 1024  # Kie's documented per-image ceiling (20 §8b)
-
-#: Local file path -> the Kie URL it was uploaded to, built ONCE per run and thrown away with the
-#: run (FR-200/FR-244). Run-scoped on purpose: Kie's file host keeps an upload roughly 24 h, so a
-#: URL memoized across runs is a reference that silently 404s mid-batch. Within one run the memo
-#: is what makes a style's five brand cards upload once instead of once per job.
-#: `generate/refs.py` performs the uploads and fills the memo (W2 — T2.3); this module only owns
-#: the type and the discipline.
-UploadMemo = dict[Path, str]
 
 
 class StyleRegistryError(Exception):
@@ -197,7 +182,9 @@ def _style(item: Any, path: Path, index: int) -> MetaStyle:
         visual_pacing=str(item.get("visual_pacing") or "").strip(),
         per_format_guidance=_str_map(item.get("per_format_guidance")),
         exclusions=_strings(item.get("exclusions")),
-        reference_images=_strings(item.get("reference_images")),
+        # No `reference_images`: the picture channel is withdrawn (D46/FR-18/FR-290). A stale
+        # registry that still lists the key loads clean and the key is simply ignored — an
+        # operator editing an old file gets a run, not a shape error over a dead field.
     )
 
 
@@ -290,8 +277,11 @@ def validate(reg: StyleRegistry, config: Config) -> tuple[list[str], list[str]]:
 
     Any error is a pre-flight exit 2 (FR-295): the registry is the visual authority, and a run
     that cannot dress a requested format has nothing to render. Warnings are printed and the run
-    continues — notably a missing reference image, which only degrades its style to text-only
-    (tag `style_refs_missing`) and must never cost the operator a batch.
+    continues — a thin brand pool, an over-long `render_prompt`, an unresolved either/or choice.
+
+    Post-D46 there is no reference-image check left to make: the registry declares no pictures, so
+    FR-295's file-existence and magic-byte clause is moot (its wording still stands in
+    `30-configuration-and-run.md`, a documented tombstone against FR-290's amended schema).
     """
     errors: list[str] = []
     warnings: list[str] = []
@@ -332,7 +322,7 @@ def validate(reg: StyleRegistry, config: Config) -> tuple[list[str], list[str]]:
 
 
 def _style_warnings(style: MetaStyle, where: str) -> list[str]:
-    """Advisory findings: over-long prompt, unresolved variants, unusable reference images."""
+    """Advisory findings about the WORDS — an over-long prompt, an unresolved variant choice."""
     out: list[str] = []
     if (words := len(style.render_prompt.split())) > _MAX_RENDER_WORDS:
         out.append(f"{where}: `render_prompt` is {words} words — over the {_MAX_RENDER_WORDS}-word "
@@ -342,10 +332,6 @@ def _style_warnings(style: MetaStyle, where: str) -> list[str]:
         out.append(f"{where}: `render_prompt` still offers a choice ({', '.join(leaks)}) — the "
                    "image model resolves it differently on every slide of one deck; resolve it to "
                    "one value (M9)")
-    for path in _resolved(style):
-        if not _usable(path):
-            out.append(f"{where}: reference image {path} is missing or is not a usable image — "
-                       "this style degrades to text-only for this run (tag style_refs_missing)")
     return out
 
 
@@ -425,50 +411,12 @@ def style_for(reg: StyleRegistry, key: str) -> MetaStyle:
 
 
 # --------------------------------------------------------------------------------------------
-# Reference images — the A17 window rotation, re-homed from the Inspiration pool
+# Retired here (D46/FR-18): `pick_reference_window` and its magic-byte reader. A style declares no
+# pictures any more, so there is no window to rotate and nothing to sniff. The run-scoped
+# `UploadMemo` type moved WITH the uploads it disciplines, into `generate/refs.py`, which is now
+# the only module that turns a local file into a Kie URL (brief photos, FR-144/145).
 # --------------------------------------------------------------------------------------------
 
 
-def pick_reference_window(style: MetaStyle, reuse_index: int, refs_per_job: int) -> list[Path]:
-    """This job's slice of the style's own reference images, as local paths.
-
-    `reuse_index` is the creative's turn among the siblings sharing its topic
-    (`PlanEntry.trend_reuse_index`), so consecutive siblings drawing on one style get consecutive
-    windows instead of the same first two files — which is the whole reason a style may list five
-    (hypelead-brand-card does). Deterministic: same plan, same pictures.
-
-    Unusable entries (wrong suffix, empty/oversized, bytes that are not an image) are dropped
-    silently here; `validate()` is where the operator hears about them, once, at pre-flight. An
-    empty result is the legitimate text-only degrade (`style_refs_missing`), never an error.
-    """
-    usable = [path for path in _resolved(style) if _usable(path)]
-    width = min(refs_per_job, len(usable))
-    if width <= 0:
-        return []
-    if len(usable) <= width:
-        return usable
-    return [usable[(reuse_index + offset) % len(usable)] for offset in range(width)]
-
-
-def _resolved(style: MetaStyle) -> list[Path]:
-    """Registry paths against the REPO ROOT (§1.3) — the registry spans two unrelated trees."""
-    return [ROOT / raw for raw in style.reference_images]
-
-
-def _usable(path: Path) -> bool:
-    """Suffix, size and magic bytes — cheap enough per file, honest enough to call validation."""
-    if path.suffix.lower() not in _SUFFIXES:
-        return False
-    try:
-        if not 0 < path.stat().st_size <= _MAX_BYTES:
-            return False
-        with path.open("rb") as handle:
-            header = handle.read(8)
-    except OSError:
-        return False
-    return header.startswith(_MAGIC)
-
-
-__all__ = ["StyleRegistry", "StyleRegistryError", "UploadMemo", "assign_branding", "assign_styles",
-           "brand_ok", "fmt_affine", "load_registry", "pick_reference_window", "style_for",
-           "validate"]
+__all__ = ["StyleRegistry", "StyleRegistryError", "assign_branding", "assign_styles",
+           "brand_ok", "fmt_affine", "load_registry", "style_for", "validate"]

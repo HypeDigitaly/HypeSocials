@@ -1,12 +1,16 @@
-"""FR-155 — the Virlo funnel report, re-shaped for the topic pipeline (v2.0.0, T3.5).
+"""FR-155 — the Virlo funnel report, re-shaped for the topic pipeline (v2.0.0/v2.1.0).
 
 The block is now the end-of-run reconciliation of FIVE stages — input -> topics -> filter ->
-Select's verdicts -> the style-forecast render row — and it prints **exactly once, at DONE**
+Select's verdicts -> the render COVERAGE row — and it prints **exactly once, at DONE**
 (§1.10 rule 6). Three things about the old suite died with the media funnel:
 
 1. **The `sets` / `chosen` / `images` rows are gone.** Virlo is a text-only source (D41), so there
    are no reference sets to qualify, no motion tier to classify and no CDN pass to survive. The
-   render row counts STYLE references instead — the meta-style registry is the visual authority.
+   render row briefly counted STYLE references instead — and D46/F3 excised that channel too
+   (a meta-style is words, FR-17/18), so the row now states COVERAGE: how many jobs render,
+   wearing how many distinct styles, over how many topics. There is no attachment forecast left
+   in this block at all, and `style_refs_min` / `style_refs_max` / `refs_total` are gone from
+   `Counters` with the window they measured.
 2. **The funnel's three stage-gate placements are gone.** FR-296's stage headers carry the same
    counts the moment they become true, so a rollup printed three times would restate numbers the
    operator has already read; the block appears once, in `_package`, above the spend table.
@@ -127,20 +131,18 @@ def healthy() -> Counters:
         posts_in=278, topics_out=9, topics_synthesized=0, trends_returned=9,
         filter_kept=8, filter_stripped=1, filter_skipped=0,
         verdict_seen=True, eligible=6, excluded_by_history=2, unusable=1,
-        render_seen=True, jobs=6, jobs_dropped=0, topics_used=3, styles_used=3,
-        style_refs_min=2, style_refs_max=2, refs_total=12)
+        render_seen=True, jobs=6, jobs_dropped=0, topics_used=3, styles_used=3)
 
 
 def degraded() -> Counters:
     """Every post-pivot loss at once: a competitor promo skipped, the filter's LLM layer failed
-    open, one style shipped without its pictures (a 0-wide window), and two creatives found no
-    topic left."""
+    open, two creatives that found no topic left, and the thinner coverage that follows — four
+    jobs over two topics wearing two styles instead of six over three wearing three."""
     tally = healthy()
     tally.filter_kept, tally.filter_stripped, tally.filter_skipped = 6, 2, 1
     tally.filter_degraded = True
     tally.eligible, tally.excluded_by_history, tally.unusable = 1, 1, 1
     tally.jobs, tally.jobs_dropped = 4, 2
-    tally.style_refs_min, tally.style_refs_max, tally.refs_total = 0, 2, 6
     tally.topics_used, tally.styles_used = 2, 2
     return tally
 
@@ -159,8 +161,7 @@ def increment_b() -> Counters:
         posts_in=3_595_433, topics_out=198, topics_synthesized=4, trends_returned=198,
         filter_kept=1_234_567, filter_stripped=222_222, filter_skipped=33_333,
         verdict_seen=True, eligible=1_234_567, excluded_by_history=222_222, unusable=33_333,
-        render_seen=True, jobs=1_234_567, jobs_dropped=8_642, topics_used=22, styles_used=8,
-        style_refs_min=1, style_refs_max=3, refs_total=4_000_000)
+        render_seen=True, jobs=1_234_567, jobs_dropped=8_642, topics_used=22, styles_used=8)
 
 
 def nothing_returned() -> Counters:
@@ -222,33 +223,40 @@ def test_the_healthy_block_names_every_surviving_stage_and_reads_as_designed() -
     assert "278 post(s) split into 9 topic(s)" in block and "0 synthesized" in block
     assert "8 kept, 1 stripped, 0 skipped" in block
     assert "6 eligible, 2 excluded by history, 1 unusable" in block
-    assert "6 job(s) will attach 2 style ref(s) each" in block
+    # D46/F3: coverage, not attachments — a style ships no pictures, so there is nothing per-job
+    # left to forecast and the row answers "how widely was the registry actually used".
+    assert "6 job(s) will render" in block
     assert "3 style(s) over 3 topic(s)" in block
+    assert "style ref" not in block, "the attachment forecast retired with the picture channel"
     assert len(block.splitlines()) == 10, (
         "one block, ten lines — six stage rows plus the four always-printed gate rows "
         "(FR-305/307), no wrapping at this scale")
 
 
-def test_the_media_rows_died_with_the_media_funnel() -> None:
-    """D41: Virlo is a text feed, so the reference-set, motion-tier and CDN-download rows have no
-    subject. W3.5 conductor re-base: the fields themselves were EXCISED from `Counters` (this
-    test used to populate them to prove they could not resurrect a row; a slots dataclass now
-    rejects them outright, which is the stronger guarantee), so it asserts absence structurally
-    AND that no media clause survives in the printed block.
+def test_every_withdrawn_reference_counter_is_gone_from_the_object_and_the_block() -> None:
+    """Two excisions, one guarantee: no counter that measured a PICTURE survives anywhere.
+
+    D41 killed the media funnel (Virlo is a text feed — no reference sets to qualify, no motion
+    tier to classify, no CDN pass to survive) and D46/F3 killed the style reference window that
+    briefly replaced it (a meta-style is words, FR-17/18). Both are asserted structurally — a
+    slots dataclass rejects the field outright, which is stronger than populating it and proving
+    it prints nothing — AND on the printed block, because a clause can outlive its counter.
     """
     tally = healthy()
     for dead_field in ("slideshow_sets", "frame_sets", "slideshows_thin", "chosen_fresh",
                        "motion_tiers", "images_attempted", "images_downloaded", "images_dead",
-                       "trends_text_only", "trends_short", "rejection_reasons", "download_cap"):
+                       "trends_text_only", "trends_short", "rejection_reasons", "download_cap",
+                       # D46/F3: the style-reference forecast, excised with the window it sized.
+                       "style_refs_min", "style_refs_max", "refs_total"):
         assert not hasattr(tally, dead_field), \
-            f"withdrawn media counter survived the W3.5 excision: {dead_field!r}"
+            f"withdrawn reference counter survived the excision: {dead_field!r}"
 
     block = runner._funnel_block(tally)
 
     assert labels(block) == ["input", "dropped", "dropped", "dropped", "videos", "topics", "filter", "verdict", "render"]
     for dead in ("set(s)", "coherent", "motion", "downloaded", "dead URL", "text-only",
-                 "inspiration", "trend ref"):
-        assert dead not in block, f"a withdrawn media clause reached the funnel: {dead!r}"
+                 "inspiration", "trend ref", "style ref", "will attach"):
+        assert dead not in block, f"a withdrawn reference clause reached the funnel: {dead!r}"
 
 
 def test_the_degraded_shape_names_every_loss_it_carries() -> None:
@@ -260,8 +268,10 @@ def test_the_degraded_shape_names_every_loss_it_carries() -> None:
     assert "6 kept, 2 stripped, 1 skipped" in block
     assert "LLM layer degraded — blocklist only" in block
     assert "1 eligible, 1 excluded by history, 1 unusable" in block
-    assert "4 job(s) will attach 0-2 style ref(s)" in block, \
-        "a mixed window prints the range, never an invented average"
+    assert "4 job(s) will render" in block
+    assert "2 style(s) over 2 topic(s)" in block, (
+        "thinner coverage is itself a loss the operator is looking for — a batch drawn from two "
+        "topics wearing two styles repeats itself in a way six over three does not")
     assert "2 dropped, no topic left" in block
 
 
@@ -288,13 +298,16 @@ def test_a_healthy_zero_still_prints_its_row() -> None:
     tally.filter_stripped = tally.filter_skipped = 0
     tally.excluded_by_history = tally.unusable = 0
     tally.jobs_dropped = 0
-    tally.style_refs_min = tally.style_refs_max = 0
+    tally.topics_used = tally.styles_used = 0
 
     block = runner._funnel_block(tally)
 
     assert "0 stripped, 0 skipped" in block
     assert "0 excluded by history, 0 unusable" in block
-    assert "0 style ref(s)" in block  # a style whose files are all missing is still a style
+    # A registry-less preview records zero coverage honestly rather than omitting the clause —
+    # "0 style(s) over 0 topic(s)" beside a job count is a visible contradiction the operator can
+    # act on; a missing clause is one they cannot even see.
+    assert "0 style(s) over 0 topic(s)" in block
 
 
 @pytest.mark.parametrize("shape", ["healthy", "degraded", "nothing_returned", "untouched"])
@@ -567,20 +580,35 @@ def test_the_verdict_row_reconciles_with_the_three_buckets_select_actually_produ
     assert f"{tally.eligible} eligible" in runner._funnel_block(tally)
 
 
-def test_the_render_row_states_a_range_rather_than_an_average() -> None:
-    """Contracts item 13/15: `record_render` takes ONE window size per creative that will render —
-    the assigned style's usable reference images clipped to `styles.refs_per_job`, 0 under an
-    override brief (M14). So the block says "2 style ref(s)" when they agree and "0-2" when they
-    do not; an average would invent a number no job will ever attach."""
-    agreed, mixed = Counters(), Counters()
-    agreed.record_render(jobs=3, dropped=0, style_refs=[2, 2, 2], topics_used=2, styles_used=3)
-    mixed.record_render(jobs=3, dropped=1, style_refs=[0, 1, 2], topics_used=2, styles_used=3)
+def test_the_render_row_states_coverage_rather_than_attachments() -> None:
+    """D46/F3: `record_render` forecasts COVERAGE — jobs, distinct styles, distinct topics — and
+    the per-job attachment count it used to take is gone with the window it measured.
 
-    assert agreed.refs_total == 6 and agreed.style_refs_min == agreed.style_refs_max == 2
-    assert "3 job(s) will attach 2 style ref(s) each" in runner._funnel_block(agreed)
-    assert mixed.refs_total == 3 and (mixed.style_refs_min, mixed.style_refs_max) == (0, 2)
-    assert "3 job(s) will attach 0-2 style ref(s) each" in runner._funnel_block(mixed)
-    assert "1 dropped, no topic left" in runner._funnel_block(mixed)
+    The old contract (item 13/15) was a RANGE, never an average: "2 style ref(s)" when every
+    creative's window agreed, "0-2" when it did not, because an average invents a number no job
+    will ever attach. That rule died honestly rather than quietly — a meta-style ships no
+    pictures (FR-17/18), so there is no per-job count to average OR to range over, and the
+    parameter was removed rather than left accepting a list nothing can fill. What replaces it
+    answers the question the operator still has: how widely was the registry actually used?
+
+    Two shapes, because they read differently: full coverage says nothing more, and a run that
+    lost creatives to an exhausted topic pool prints the drop beside the narrower spread.
+    """
+    assert "style_refs" not in inspect.signature(Counters.record_render).parameters, \
+        "the attachment forecast retired with the picture channel (D46/F3)"
+
+    wide, narrow = Counters(), Counters()
+    wide.record_render(jobs=3, dropped=0, topics_used=2, styles_used=3)
+    narrow.record_render(jobs=3, dropped=1, topics_used=1, styles_used=1)
+
+    assert (wide.render_seen, wide.jobs, wide.topics_used, wide.styles_used) == (True, 3, 2, 3)
+    assert "3 job(s) will render" in runner._funnel_block(wide)
+    assert "3 style(s) over 2 topic(s)" in runner._funnel_block(wide)
+    assert "dropped, no topic left" not in runner._funnel_block(wide), \
+        "a run that dropped nothing must not print a drop clause of zero"
+
+    assert "1 style(s) over 1 topic(s)" in runner._funnel_block(narrow)
+    assert "1 dropped, no topic left" in runner._funnel_block(narrow)
 
 
 def test_absorbing_a_monitors_tally_sums_quantities_and_carries_the_ask() -> None:

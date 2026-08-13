@@ -80,21 +80,23 @@ _FENCE_RUN = re.compile(r"<{3,}|>{3,}")
 _FORMAT_KEYS = ("image", "carousel", "reel")  # the only dict[str, str] field in the vocabulary
 
 #: 50 §7 — cut these, in this order, when a prompt exceeds a model's length limit. Everything
-#: absent from this tuple (on-image text, exclusions, budgets, reference roles) is untouchable:
-#: a prompt that renders the wrong style beats one that renders the wrong text.
+#: absent from this tuple (on-image text, visual brief, exclusions, budgets, reference roles) is
+#: untouchable. RE-ORDERED at W3 (D46/F3): the original tuple cut `style_dna`/`layout_zones`
+#: FIRST, written when style reference images rode along to carry the look if the words were cut
+#: away. Post-excision the textual DNA is the ONLY carrier of the look, so the style trio is now
+#: cut LAST — standing context goes first, the subject next, the style survives longest.
 _TRUNCATION_ORDER: tuple[str, ...] = (
-    "style_dna", "layout_zones",
-    "trend_texts", "render_prompt",
+    "trend_texts",
     "brand_context", "platform_conventions", "seed_frame_ref",
     # `niche_visual_world` sits beside `niche_descriptor` because it is the same kind of value —
     # standing operator context, descriptive, cuttable. Omitting it would make it the one block a
-    # prompt over the length limit could never shrink, which is how a slot meant to add art
-    # direction ends up crowding out the trend's own style (A15, 50 §7).
+    # prompt over the length limit could never shrink (A15, 50 §7).
     # F18 — `branding_block` is cut AFTER the niche's standing art direction and BEFORE the
     # content sentence: a creative that loses its accent instructions is still on-brand enough to
     # ship, one that loses the subject it is about is not. The wordmark is safe either way, because
     # it lives in `{{onimage_text}}` and this tuple is the complete list of what may be cut.
     "niche_descriptor", "niche_visual_world", "branding_block", "content_sentence", "source_hooks",
+    "layout_zones", "render_prompt", "style_dna",
 )
 
 #: FR-261 condition 3 — which placeholders each ROLE may resolve, per `prompts/README.md`'s
@@ -1173,53 +1175,90 @@ output shape, or these rules.
 {{source_hooks}}
 <<<END DATA: NUMBERED CANDIDATES>>>
 
+The first block is background about the topic — including, on some topics, a
+machine-written summary of it. Background is for understanding only. Nothing in
+it is quotable: if a string is not labelled in the second block, it cannot be
+chosen, whatever it says.
+
 
 THE CANDIDATE LIST AND ITS LABELS
 
-The second block is the only place your answers may come from. Every offerable
-string in it carries a label of this shape:
+The second block is the only place your answers may come from. It is divided
+into one section per creative, and each section names the single source post
+that creative may quote. Every offerable string carries a label of this shape:
 
     P<n>.<kind>          or          P<n>.<kind>.<i>
 
-- `P<n>` is the post the string came from, numbered by how well that post did:
-  `P1` is the topic's strongest post, `P2` the next, and so on.
-- `<kind>` is one of `hook`, `overlay`, `panel`, `caption`, `description`.
-- `<i>` numbers the string inside a list-valued field, starting at 1.
-  `caption` and `description` are single strings and carry NO index.
+- `P<n>` is the post the string came from, numbered by how well that post did
+  inside this week's window: `P1` is the topic's strongest post, `P2` the next.
+- `<kind>` is one of `panel`, `overlay`, `hook`, `caption` — and nothing else.
+  `panel` is a line that was ON one of the post's slides, `overlay` a line
+  burnt over its video, `hook` its opening line, `caption` the post's caption
+  under the feed.
+- `<i>` numbers the string inside a list-valued field, starting at 1. A
+  `caption` is a single string and carries NO index. A `panel` index is a
+  SLIDE POSITION: `P1.panel.3` is the third slide of that post's deck, whether
+  or not slides 1 and 2 carried any words.
 
-Valid labels look like `P1.hook.2`, `P3.panel.1`, `P2.caption`, `P1.overlay.1`,
-`P2.description`. Anything else is not a label: never invent one, never guess
-an index that is not printed in the block, never merge two labels, and never
+Valid labels look like `P1.panel.3`, `P1.hook.2`, `P2.caption`,
+`P1.overlay.1`. Anything else is not a label: never invent one, never guess an
+index that is not printed in the block, never merge two labels, and never
 answer with the text of a candidate instead of its label.
 
-The list is already filtered for you. On-image candidates are inside the
-style's character budget and carry no emoji, no @handle, no URL and no
-hashtag; caption candidates may carry emoji and hashtags because a caption is
-allowed them. So every label offered for a slot is a legal answer for that
-slot — you are choosing the best one, not checking whether it is allowed.
+The list is already filtered for you:
+
+- Every on-image candidate already fits this creative's character budget, and
+  carries no @handle and no URL.
+- Panel text keeps its own voice. When a panel is offered for a deck's slide it
+  may contain emoji, line breaks and `#` words, because that is exactly how it
+  stood on the source slide. That is not a defect and never a reason to skip
+  it; the same string offered as a HEADLINE has been held to the stricter rule.
+- Caption candidates keep their emoji and their inline hashtags; a trailing
+  hashtag run has already been taken off and stored separately, and a
+  "caption" that was nothing but hashtags was never offered at all.
+
+So every label offered for a slot is a legal answer for that slot — you are
+choosing the best one, not checking whether it is allowed. Candidates are shown
+on one line and may be shown truncated or folded; the engine ships the original
+bytes, line breaks and all. Choose by label only.
 
 If genuinely nothing in the list fits a slot, return an empty string for it.
 An empty on-image slot ships a caption-only creative, which is a normal
 outcome. A wrong-but-filled slot is not.
 
 
+WHICH POST — ALREADY DECIDED
+
+You never choose the post. Each creative's section names the one post it may
+quote: that post was picked because it is fresh, because it is a slideshow with
+usable slides, and because no earlier run has already quoted it. A post that
+was used before is not in this list at all, and there is no way to ask for it.
+
+So: quote only from the section belonging to the creative you are answering
+for. A label from another creative's section is an invalid answer, even when
+the string is better.
+
+
 HOW TO CHOOSE
 
-- `headline_ref` — the line that carries the creative. Prefer a `hook`, then
-  an `overlay`, then a `panel`. Pick the one that lands hardest on its own,
-  with no context, at thumbnail size.
+- `headline_ref` — the line that carries the creative. Prefer a `panel`, then
+  an `overlay`, then a `hook`: the words that were already ON a winning image
+  are the words that already worked as an image. Pick the one that lands
+  hardest on its own, with no context, at thumbnail size.
 - `subline_ref` — only when the style asks for a second line and a candidate
-  genuinely continues the headline. Never a restatement of it, never a
-  candidate from a different post than the headline unless nothing else fits.
+  genuinely continues the headline. Never a restatement of it.
 - `overlay_ref` — the reel's burnt-in hook. Shortest, hardest, most legible.
-- `slide_refs` — one label per slide, in slide order, read as ONE sequence:
-  opening hook, escalation, payoff, close. Prefer consecutive `panel` strings
-  from a single post, because the person who wrote them already sequenced
-  them. Never repeat a label inside one deck.
+- `slide_refs` — usually LEAVE EMPTY. When a deck's section says its slides are
+  engine-mapped, that deck already has its text: our slide i renders their
+  panel i, verbatim and in the source's own order, and anything you answer here
+  is discarded. Answer `slide_refs` only for a deck whose section offers panels
+  as choosable candidates — then give one label per slide, in slide order, read
+  as ONE sequence: opening hook, escalation, payoff, close, with no label
+  repeated inside the deck.
 - `caption_ref` — the post caption that best carries the creative into the
-  feed. A caption is not the headline again: if the only good caption
-  candidate is the string you already used on the image, prefer a different
-  post's caption.
+  feed. A caption is not the headline again: when the only good caption
+  candidate is the string you already used on the image, leave `caption_ref`
+  empty rather than doubling it.
 
 Language follows the string you selected. A Czech candidate stays Czech, an
 English one stays English, and a mixed pair is deliberate, not an error to
@@ -1230,7 +1269,7 @@ THE THREE FREE-TEXT FIELDS
 
 - `through_line` — one plain sentence saying what the reel is about. It
   directs the video model and never appears on screen.
-- `narrative_arc` — one sentence summarising how the chosen slides move from
+- `narrative_arc` — one sentence summarising how the deck's slides move from
   the first to the last. A note for the log, never rendered.
 - `motion_beat` — ONE named physical action for the middle of the reel, in
   four to eight words: "hand lifts the mug and sets it down", "laptop lid
@@ -1249,12 +1288,13 @@ You are choosing for every creative in this block at once:
 {{sibling_list}}
 <<<END SIBLINGS>>>
 
-Each sibling line names its asset id, platform, format and language. Rules:
+Each sibling line names its asset id, platform, format and language, and — for
+a deck — whether its slides are engine-mapped. Rules:
 
 - Siblings share the topic, not the sentence. Two creatives from one topic
-  must not quote the same string. Which post each creative quotes is already
-  decided by the engine (each entry is bound to one source post — FR-304/307);
-  choose among that post's own candidates only.
+  must not quote the same string. Which post each one quotes is already fixed
+  by the engine, so this is a choice among that post's own candidates: a
+  different angle, not a different source.
 - If two siblings would land on the same label, change one of them — the
   weaker fit moves, the stronger one keeps its pick.
 - The caption and the on-image text of one creative are never the same label.
@@ -1301,8 +1341,9 @@ where invented lettering can go.
 WHAT TO CHOOSE PER FORMAT
 
 - image — `headline_ref`, optionally `subline_ref`, and `caption_ref`.
-- carousel — `slide_refs` (one label per slide, in order), `headline_ref` set
-  to the same label as the first slide, `narrative_arc`, and `caption_ref`.
+- carousel — `caption_ref`, `narrative_arc`, and `headline_ref` for the cover
+  slide; `slide_refs` only when this deck's section offers its panels as
+  choosable candidates.
 - reel — `overlay_ref`, `through_line`, `motion_beat`, and `caption_ref`.
 
 
@@ -1493,8 +1534,7 @@ list is discarded by the engine and defaults to `keep` — which loses the only
 thing this call is for, so count them before you answer.
 """,
 
-    "gpt-image-2/image_post.md":
-        """FORMAT: one single social-media post creative, rendered as a finished graphic.
+    "gpt-image-2/image_post.md": """FORMAT: one single social-media post creative, rendered as a finished graphic.
   The output frame is set by the request itself — never write, draw, letter or
   mention an aspect ratio, a resolution, a pixel size or a platform name
   anywhere inside the image.
@@ -1515,9 +1555,10 @@ TEXT (locked asset — this is the exact content of the creative):
   {{onimage_text}}
 
   Render every quoted string above exactly as written: same characters, same
-  accents, same capitalisation, same punctuation. Add no words. Repeat no
-  words. Invent no caption, no tagline, no label, no signature, no sticker
-  text. Render no text that is not quoted above.
+  accents, same capitalisation, same punctuation. The string is quoted from a
+  real post and is never translated, re-worded, shortened or "corrected". Add
+  no words. Repeat no words. Invent no caption, no tagline, no label, no
+  signature, no sticker text. Render no text that is not quoted above.
   Where a string is echoed letter by letter (for example "R-y-c-h-l-e-j-š-í"),
   that echo is a spelling aid for you alone: read it, use it to get every
   accent right, and never draw the hyphenated form onto the image.
@@ -1528,13 +1569,12 @@ TEXT (locked asset — this is the exact content of the creative):
   TEXT PRECEDENCE — this block is the ONLY source of renderable words. Any
   string quoted, named or spelled out anywhere else in this instruction — in
   SUBJECT AND SCENE, in LAYOUT AND STYLE, in REFERENCES, in the exclusion
-  lines — is a DESCRIPTION of what the reference images already contain, never
-  content to render: do not letter it, echo it, shorten it or translate it. A
-  zone described with words in it (a kicker, a label, a badge, a sticker, a
-  wordmark) supplies its position, size, typeface, weight, colour and
-  alignment only; its words come from the block above, or that zone carries no
-  words at all. A named exclusion is a forbidden string, not an instruction to
-  draw it.
+  lines — is a DESCRIPTION of structure, never content to render: do not letter
+  it, echo it, shorten it or translate it. A zone described with words in it (a
+  kicker, a label, a badge, a sticker, a wordmark) supplies its position, size,
+  typeface, weight, colour and alignment only; its words come from the block
+  above, or that zone carries no words at all. A named exclusion is a forbidden
+  string, not an instruction to draw it.
 
 LAYOUT AND STYLE:
   {{layout_zones}}
@@ -1542,16 +1582,16 @@ LAYOUT AND STYLE:
   Reproduce these zones in the order given, top of frame to bottom. Keep the
   proportions, the margins and the text treatment of each zone. This is a
   description of STRUCTURE: reproduce each zone's geometry and typography, and
-  take its words only from the TEXT block. Where no zones are listed, take the
-  composition from the style description above and from the attached
-  references — grid, colour relationships, lettering character and weight,
-  image treatment, spacing rhythm, the way the eye is carried through the
-  frame — and build a NEW creative in that style about the subject above,
-  never a recreation of a reference.
-  If the target frame is a different shape from the reference images,
-  RE-COMPOSE the layout for this frame — re-flow the zones so they fit
-  natively. Never letterbox, never stretch, never bar-pad, never crop the
-  reference composition.
+  take its words only from the TEXT block.
+
+  The style description above and these zones are the WHOLE look: no style
+  photograph is attached to this job. Build the palette, the grid, the
+  lettering character and weight, the surface and lighting of the artwork and
+  the spacing rhythm from those words alone, and make a NEW creative in that
+  style about the subject above. Where no zones are listed, compose the frame
+  yourself from the style description.
+  Compose natively for the frame this request sets: re-flow the zones so they
+  fill it. Never letterbox, never stretch, never bar-pad, never crop.
 
   BRANDING (ignore if empty): {{branding_block}}
   These are accent colours, letterform character, a placement hint and colour
@@ -1563,39 +1603,38 @@ LAYOUT AND STYLE:
 
   NICHE VISUAL WORLD (ignore if empty): {{niche_visual_world}}
   When present, that line is standing art direction ranked BELOW the zones
-  above and the attached references: it biases palette, type character and
-  motif vocabulary where they leave a choice open, never layout or wording.
+  above: it biases palette, type character and motif vocabulary where they
+  leave a choice open, never layout or wording.
 
 REFERENCES:
   {{reference_roles}}
 
-  Every attached image is a style, layout, palette, typography and treatment
-  reference ONLY. Whatever else a reference contributes, none of them ever
-  contributes a legible string: not their headlines, captions or subtitles;
-  not their brand wordmarks, logotypes, product names, category or section
-  labels, button, chip or pill labels, kicker lines, badges or price tags; not
-  their watermarks or app marks; not their usernames, handles or profile
-  pictures; not their engagement counters; not their platform UI; not the
-  identity of any person shown in them.
-  Where two references disagree, follow the first one listed.
+  This job usually carries no attached image at all, and that is correct: the
+  look comes from the written style above. When an image IS attached it is a
+  campaign brief's own product photo, and the line naming it says so. Such a
+  photo gives the identity of the object it shows — shape, colour, finish,
+  proportions — and nothing else: not its background, not its lighting, not its
+  layout, and never a legible string, wordmark, logo, watermark, label, price
+  tag, username, counter, platform UI, or the identity of a person in it.
+  Where two attachments disagree, follow the first one listed.
 
 CONSTRAINTS:
   - The ONLY text anywhere in this image is the quoted string or strings in
     the TEXT block above. Every other legible character in the frame is a
     defect, no matter how well it fits the design.
   - Never reproduce platform UI, watermarks, app logos, usernames, handles,
-    follower or like or view counters, progress bars, play buttons, or any
-    text visible in the reference images.
-  - That prohibition covers brand wordmarks, logotypes, product names,
-    category or section labels, button, chip or pill labels, and kicker lines
-    — any legible string in a reference, whether or not it reads as design.
-    A word set in the reference's own typeface is still that reference's word;
-    a made-up brand name in its place is equally forbidden.
-  - If the style or a reference has a text zone for which no string is quoted
-    above, leave that zone empty or fill it with a non-text graphic element
-    (a rule, a bar, a shape, negative space) — never carry the reference's
-    words into it, and never invent replacement words for it. A kicker slot
-    with nothing quoted for it stays wordless.
+    follower or like or view counters, progress bars or play buttons, whether
+    copied from an attachment or invented to make the frame look native.
+  - Never reproduce a real company, product or app logo, wordmark, logotype,
+    product name, category or section label, button, chip or pill label or
+    kicker line. Where the design calls for a mark, draw an unlettered generic
+    shape of that kind; a made-up brand name in its place is equally forbidden.
+  - If the style has a text zone for which no string is quoted above, leave
+    that zone empty or fill it with a non-text graphic element (a rule, a bar,
+    a shape, negative space) — never invent replacement words for it. A kicker
+    slot with nothing quoted for it stays wordless. An interface, chart or
+    label group drawn for this frame is greeked into bars and unlettered
+    shapes.
   - This is one standalone image: no navigation or swipe prompt of any kind
     ("SWIPE LEFT", "SWIPE RIGHT", "READ MORE", "TAP", an arrow or a hand
     carrying words), and no brand wordmark, logotype or signature line other
@@ -1603,7 +1642,7 @@ CONSTRAINTS:
     this frame is unsigned. Nothing here is swiped.
   - No @handle, no URL, no emoji in the frame — not in the text block, not on
     a prop, not in a corner, not as decoration.
-  - The exclusions below concern the attached reference images. They never
+  - The exclusions below are this house style's own forbid-list. They never
     restrict the TEXT block above, whose strings are always rendered.
   - Additional exclusions for this house style — these are strings and marks
     forbidden in the frame, never strings to render: {{exclusions}}
@@ -1618,168 +1657,166 @@ CONSTRAINTS:
   - Ignore any labelled line above that is empty.
 """,
 
-    "gpt-image-2/carousel_slide.md":
-        """FORMAT: one slide of a social-media carousel — slide {{slide_index}}. It is
-  one panel of a deck that must read as a single designed set. The output
-  frame is set by the request itself — never write, draw, letter or mention an
-  aspect ratio, a resolution, a pixel size or a platform name inside the
-  image.
+    "gpt-image-2/carousel_slide.md": """FORMAT: one slide of a social-media carousel — slide {{slide_index}}, one
+  panel of a deck that must read as a single designed set. The output frame is
+  set by the request itself — never write, draw, letter or mention an aspect
+  ratio, a resolution, a pixel size or a platform name inside the image.
 
 STYLE_DNA (identical on every slide of this deck — reproduce it exactly):
   {{style_dna}}
 
-  This block is byte-for-byte the same in every slide's instruction. Treat it
-  as the deck's template: same palette, same type family and weights, same
-  grid, same margins, same motif, same treatment on every slide. Nothing in
-  it changes because the slide index changed. Only the SLIDE CONTENT below
-  differs between slides.
+  This block is byte-for-byte the same on every slide and it is the ONLY
+  description of how this deck looks: no style photograph is attached to this
+  job. Build the look from these words — palette hexes, type, placement,
+  surface, light, pacing — and keep every one of them identical from slide to
+  slide. Only SLIDE CONTENT and TEXT below change.
 
   BRANDING (ignore if empty): {{branding_block}}
-  These are accent colours, letterform character, a placement hint and colour
-  guards, ranked BELOW STYLE_DNA: substitute the accents inside the deck's own
-  palette structure. They never replace STYLE_DNA's palette, typography,
-  layout or medium, they never vary from slide to slide, and they never add a
-  word to the frame — a wordmark, on the one slide that carries one, is quoted
-  in the TEXT block like every other string.
+  Accent colours, letterform character and a placement hint, ranked BELOW
+  STYLE_DNA: substitute the accents inside the deck's own palette. They never
+  replace its palette, typography, layout or medium, never vary between
+  slides, and never add a word to the frame.
 
   NICHE VISUAL WORLD (ignore if empty): {{niche_visual_world}}
-  When present, that line is standing art direction ranked BELOW STYLE_DNA and
-  the attached references: it biases palette, type character and motif
-  vocabulary only where they leave a choice open, never layout or wording, and
-  it never varies from slide to slide.
+  Standing art direction, ranked BELOW STYLE_DNA: it biases palette, type
+  character and motif only where they leave a choice open, never layout or
+  wording.
 
-SLIDE CONTENT:
+SLIDE CONTENT — what this slide shows, composed in the style above:
   {{render_prompt}}
 
   SOURCE PANEL (ignore if empty): {{slide_panel_source}}
   VISUAL BRIEF (ignore if empty): {{visual_brief}}
-  When present, the visual brief describes WHAT this slide shows — a chart, an
-  icon grid, a numbered list, a diagram — mirrored from the stated source
-  panel. Reproduce that CONTENT, composed entirely in STYLE_DNA's own palette,
-  typography and treatment: the brief never overrides the style, never names a
-  colour or typeface to copy, and any brand mark it mentions is rendered as a
-  generic shape of its kind, never as the real logo.
+  This deck mirrors a source slideshow one slide at a time. The line above
+  names which of its panels this slide corresponds to, and the brief describes
+  in English WHAT that panel showed — a chart and how many series, a
+  checklist, an icon grid, a table, a diagram, a photograph, and where the
+  blocks sat. Reproduce that content and that arrangement, drawn entirely in
+  STYLE_DNA's palette, typography, materials and treatment.
+  The brief is a CONTENT directive, never a style instruction: where it names
+  a colour, a typeface, a texture or a mood, ignore that word and use the
+  deck's own; where it names an object, a quantity, a direction or a position,
+  follow it exactly. A company, product or app mark it names is drawn as a
+  GENERIC unlettered shape of its kind — never the real mark, never its name,
+  never an invented substitute — and platform chrome, watermarks, usernames
+  and counters it describes are dropped outright.
 
   BRIEF OVERLAY: {{brief_directives}}
 
 TEXT (locked asset — this slide's exact content):
   {{onimage_text}}
 
-  Render every quoted string above exactly as written: same characters, same
-  accents, same capitalisation, same punctuation. Add no words. Repeat no
-  words. Render no text that is not quoted above — no invented body copy, no
-  invented label, no signature.
-  Where a string is echoed letter by letter (for example "V-ě-t-š-i-n-a"),
-  that echo is a spelling aid for you alone: use it to get every accent right
-  and never draw the hyphenated form onto the image.
-  If STYLE_DNA's layout includes a slide-position badge, that badge shows this
-  slide's position exactly as stated in the FORMAT line above, in the badge
-  style STYLE_DNA describes, and carries no other characters.
+  Every quoted string comes from the source deck's own panel and renders
+  exactly as written: same characters, accents, capitalisation, punctuation,
+  emoji, hashtag symbols, numbers and line breaks. Set it in the deck's
+  typeface; do not touch the words. Add none, repeat none, translate none — a
+  Czech panel stays Czech. An emoji renders as the glyph it is, never as an
+  illustration. Render no text that is not quoted above: no invented body
+  copy, no label, no caption, no signature.
+  A letter-by-letter echo ("V-ě-t-š-i-n-a") is a spelling aid for you alone;
+  never draw the hyphenated form onto the image.
+  If STYLE_DNA's layout includes a slide-position badge, it shows this slide's
+  position exactly as the FORMAT line states, in that badge style, and carries
+  no other characters.
+  Fit a long string by giving it room — more lines, tighter leading, a wider
+  block, the plate or card STYLE_DNA describes. A quoted string is never
+  shortened, re-worded, hyphenated, ellipsed or set below legible size.
 
   TEXT PRECEDENCE — this block is the ONLY source of renderable words on this
-  slide (the position badge above excepted). Any string quoted or named
-  anywhere else in this instruction — inside STYLE_DNA, in SLIDE CONTENT, in
-  REFERENCES, in the exclusion lines — is a DESCRIPTION of what the reference
-  material already contains, never content to render: do not letter it, echo it
-  or translate it. A zone STYLE_DNA describes with words in it (a kicker, a
-  label, a chip, a wordmark, a swipe sticker) supplies its position, size,
-  typeface, weight, colour and alignment only; its words come from the block
-  above, or that zone carries no words at all.
+  slide (the position badge excepted). Any string named anywhere else in this
+  instruction — in STYLE_DNA, in SLIDE CONTENT, in the visual brief, in
+  REFERENCES, in the exclusions — is a DESCRIPTION, never content to render. A
+  zone STYLE_DNA describes with words in it (a kicker, a label, a chip, a
+  wordmark, a swipe sticker) supplies its position, size, typeface, weight,
+  colour and alignment only; its words come from the block above, or that zone
+  carries none. A chart, table or interface drawn for the brief carries no
+  labels of its own: greek them into bars, blocks and unlettered shapes.
 
 REFERENCES:
   {{reference_roles}}
 
-  Whatever else a reference contributes, none of them ever contributes a
-  legible string: not their headlines, captions or subtitles; not their brand
-  wordmarks, logotypes, product names, category or section labels, button,
-  chip or pill labels, kicker lines, badges or price tags; not their
-  watermarks or app marks; not their usernames, handles or profile pictures;
-  not their engagement counters; not their platform UI; not the identity of
-  any person shown in them; not their focal subject.
-  Where references disagree, follow the first one listed.
+  Often there is no attachment at all, and that is normal: the look lives in
+  STYLE_DNA, in words. When one is attached its role line says what it gives —
+  slide 1 of this deck as the PRIMARY template, or a brief's product photo as
+  the identity of the object it shows. None of them ever gives a legible
+  string, a logo, a watermark, platform chrome, a username, a counter, or the
+  identity of a person in it. Where two disagree, the PRIMARY one wins.
 
 CONSTRAINTS:
   - Match STYLE_DNA exactly. A slide that drifts in palette, type or grid has
-    failed even if it looks good on its own.
+    failed even if it looks good alone — and so has a slide that looks right
+    but shows something other than the SLIDE CONTENT above.
   - Never reproduce platform UI, watermarks, app logos, usernames, handles,
-    follower or like or view counters, progress bars, play buttons, or any
-    text visible in the reference images.
-  - That prohibition covers brand wordmarks, logotypes, product names,
-    category or section labels, button, chip or pill labels, and kicker lines
-    — any legible string in a reference, whether or not it reads as design.
-    A word set in the deck's own typeface is still that reference's word.
-  - If STYLE_DNA or a reference has a text zone for which no string is quoted
-    above, leave that zone empty or fill it with a non-text graphic element
-    (a rule, a bar, a shape, negative space) — never carry the reference's
-    words into it, and never invent replacement words for it. A kicker slot
-    with nothing quoted for it stays wordless.
-  - A navigation or swipe prompt ("SWIPE LEFT", "SWIPE RIGHT", "READ MORE",
-    "TAP", an arrow or a hand carrying words) appears only if it is quoted in
-    the TEXT block above; it is never carried in from a reference. No brand
-    wordmark, logotype or signature line other than one quoted in the TEXT
-    block above; when the TEXT block quotes none, this slide is unsigned. In a
-    deck the signature belongs to slide 1 alone: a later slide whose TEXT
-    block quotes no wordmark carries none, however clearly slide 1 shows one.
-  - The exclusions below concern the attached reference images. They never
+    follower or like or view counters, progress bars or play buttons, whether
+    copied from an attachment or invented to look native.
+  - Never reproduce a real company, product or app logo or wordmark: draw an
+    unlettered generic shape of that kind instead. A made-up brand name in its
+    place is equally forbidden.
+  - Every legible character in this frame comes from the TEXT block. Charts,
+    cards, interfaces and icon grids are labelled with greeked bars and
+    unlettered shapes, never with words. A text zone with no string quoted
+    above renders empty or as a non-text graphic element (a rule, a bar, a
+    shape, negative space), never with invented words.
+  - A swipe prompt ("SWIPE LEFT", "READ MORE", "TAP", a worded arrow) appears
+    only if it is quoted in the TEXT block. No brand wordmark, logotype or
+    signature line other than one quoted there; when none is quoted, this slide
+    is unsigned. A deck is signed on slide 1 alone, however clearly slide 1
+    shows a signature.
+  - The exclusions below are this house style's own forbid-list. They never
     restrict the TEXT block above, whose strings are always rendered.
-  - Additional exclusions for this house style — these are strings and marks
-    forbidden in the frame, never strings to render: {{exclusions}}
+  - Additional exclusions for this house style — strings and marks forbidden in
+    the frame, never strings to render: {{exclusions}}
+  - No @handle and no URL anywhere in the frame.
   - All rendered text sits inside the central 80% of the frame, clear of every
     edge.
-  - If the references' frame shape differs from this slide's frame, RE-COMPOSE
-    the layout for this frame. Never letterbox, stretch, bar-pad or crop the
-    reference composition.
+  - Compose natively for the frame this request sets: re-flow the layout to
+    fill it. Never letterbox, stretch, bar-pad or crop a borrowed composition.
   - The text above is already within the budget in force for this render:
-    {{text_budgets}}
-    Render it large enough to stay legible at thumbnail scale.
+    {{text_budgets}}. Render it large enough to stay legible at thumbnail size.
   - One text block, one focal element. No duplicate subject, no duplicate
     headline, no mirrored copy of the text elsewhere in the frame.
   - Ignore any labelled line above that is empty.
 """,
 
-    "gpt-image-2/carousel_anchor_instruction.md":
-        """ANCHOR REFERENCE (Image 1 — PRIMARY, outranks every other reference):
-  Image 1 is the finished slide 1 of THIS deck. It is the template this slide
-  must match.
+    "gpt-image-2/carousel_anchor_instruction.md": """ANCHOR REFERENCE (Image 1 — PRIMARY, outranks every other attachment):
+  Image 1 is the finished slide 1 of THIS deck: STYLE_DNA already rendered, and
+  the only picture of this deck's look that exists.
 
-  It contributes, and must be reproduced exactly: the layout template, the
-  grid and column structure, the margins and padding, the background and its
-  treatment, the colour palette, the type family, weights, case and relative
-  sizes, the text zones and their positions, the badge style and position, and
-  every decorative motif (rules, bars, borders, corner marks).
+  Reproduce from it exactly: the layout template, the grid and column
+  structure, the margins and padding, the background and its treatment, the
+  colour palette, the type family, weights, case and relative sizes, the text
+  zones and their positions, the badge style and position, and every
+  decorative motif (rules, bars, borders, corner marks).
 
   Change only two things: the text, which comes from this slide's own locked
-  TEXT block, and the focal element it describes. Everything else on this
-  slide is Image 1, unchanged.
+  TEXT block, and the content this slide shows, which comes from its own SLIDE
+  CONTENT section and visual brief. Everything else is Image 1, unchanged.
 
   Image 1 must NOT contribute: its headline or any of its words, its focal
-  subject, or its slide-position badge value. Copying slide 1's text onto this
-  slide is a failed render.
+  subject, the chart, list, grid or artwork that filled its content area, or
+  its slide-position badge value. Copying slide 1's text onto this slide is a
+  failed render; so is repeating slide 1's picture when this slide's brief
+  describes a different one.
 
-  Image 1's text zones are STRUCTURE, not content — position, size, typeface,
-  weight, colour and alignment carry over; the characters inside them do not.
-  Any string quoted or named in this instruction, in STYLE_DNA or in a
-  reference role describes what is already on Image 1; it is never content to
-  render. A zone of Image 1 that this slide's TEXT block does not fill is
-  rendered empty or as a non-text graphic element (a rule, a bar, a shape,
-  negative space) — never refilled with Image 1's own wording, an invented
-  substitute, a wordmark or a swipe sticker.
+  Image 1's text zones and its content area are STRUCTURE, not content:
+  position, proportion, margins, size, typeface, weight, colour and alignment
+  carry over; the characters and the artwork inside them do not. A zone this
+  slide's TEXT block does not fill renders empty or as a non-text graphic
+  element (a rule, a bar, a shape, negative space) — never refilled with Image
+  1's own wording, an invented substitute, a wordmark or a swipe sticker.
 
   THE SIGNATURE IS SLIDE 1'S ALONE. If Image 1 carries a wordmark, a logotype
-  or a signature line, that zone is structure like every other: this slide
-  reproduces its position, its rules and its clear space as empty margin or a
-  non-text graphic element, and leaves it wordless unless this slide's own
-  TEXT block quotes a signature. A deck is signed once. A deck signed on every
-  slide reads as a watermark, and copying slide 1's signature down the deck is
-  a failed render exactly like copying its headline.
+  or a signature line, that zone is structure like every other: reproduce its
+  position and clear space as empty margin or a non-text graphic element and
+  leave it wordless unless this slide's own TEXT block quotes a signature. A
+  deck signed on every slide reads as a watermark, and copying slide 1's
+  signature down the deck is a failed render exactly like copying its headline.
 
-  Where Image 1 and any other attached reference disagree, Image 1 wins. Where
-  Image 1 and the STYLE_DNA block disagree, Image 1 wins — it is STYLE_DNA
-  already rendered.
+  Where Image 1 and any other attachment disagree, Image 1 wins. Where Image 1
+  and STYLE_DNA disagree, Image 1 wins — it is STYLE_DNA already rendered.
 """,
 
-    "gpt-image-2/reel_seed_frame.md":
-        """FORMAT: the opening still frame of a short vertical video — a tall upright
+    "gpt-image-2/reel_seed_frame.md": """FORMAT: the opening still frame of a short vertical video — a tall upright
   hook frame with the hook text already burnt into the picture. It is a
   finished image, not a storyboard and not a title card over black. The output
   frame is set by the request itself — never write, draw, letter or mention an
@@ -1789,14 +1826,20 @@ CONSTRAINTS:
 SUBJECT AND SCENE:
   {{render_prompt}}
 
+  That description is the whole look of this frame: no style photograph is
+  attached to this job. Build the palette, the light, the surface of the
+  artwork and the lettering character from those words, and compose a new
+  scene in that style.
+
   BRIEF OVERLAY: {{brief_directives}}
 
 TEXT (locked asset — the hook, burnt into the frame):
   {{onimage_text}}
 
   Render the quoted string exactly as written: same characters, same accents,
-  same capitalisation, same punctuation. Add no words. Repeat no words. Render
-  no other text anywhere in the frame — no subtitle, no caption bar, no
+  same capitalisation, same punctuation. It is quoted from a real post and is
+  never translated, re-worded or shortened. Add no words. Repeat no words.
+  Render no other text anywhere in the frame — no subtitle, no caption bar, no
   watermark, no call to action, no sticker.
   Where the string is echoed letter by letter (for example "T-o-t-o"), that
   echo is a spelling aid for you alone: use it to get every accent right and
@@ -1813,19 +1856,18 @@ TEXT (locked asset — the hook, burnt into the frame):
   TEXT PRECEDENCE — this block is the ONLY source of renderable words. Any
   string quoted or named anywhere else in this instruction — in SUBJECT AND
   SCENE, in LAYOUT AND STYLE, in the reference roles, in the exclusion lines —
-  is a DESCRIPTION of what the reference images already contain, never content
-  to render: do not letter it, echo it or translate it. A described zone that
-  holds words (a kicker, a label, a badge, a sticker, a wordmark) supplies its
-  position, size, typeface, weight, colour and alignment only; here every such
-  zone stays wordless, because the block above is the frame's only source of
-  words.
+  is a DESCRIPTION of structure, never content to render: do not letter it,
+  echo it or translate it. A described zone that holds words (a kicker, a
+  label, a badge, a sticker, a wordmark) supplies its position, size, typeface,
+  weight, colour and alignment only; here every such zone stays wordless,
+  because the block above is the frame's only source of words.
 
 LAYOUT AND STYLE:
   {{layout_zones}}
 
   These zones describe STRUCTURE — geometry, proportion and typography. Take
   the frame's only words from the TEXT block above; a zone the hook does not
-  fill is rendered as picture, shape or negative space, never as reference
+  fill is rendered as picture, shape or negative space, never as invented
   wording.
 
   BRANDING (ignore if empty): {{branding_block}}
@@ -1840,9 +1882,8 @@ LAYOUT AND STYLE:
 
   NICHE VISUAL WORLD (ignore if empty): {{niche_visual_world}}
   When present, that line is standing art direction ranked BELOW the zones
-  above, the attached references and the animation rules underneath: it biases
-  palette, type character and motif vocabulary where they leave a choice open,
-  never layout or wording.
+  above and the animation rules underneath: it biases palette, type character
+  and motif vocabulary where they leave a choice open, never layout or wording.
 
 BUILT TO BE ANIMATED — composition rules that outrank stylistic flourish:
   - One clear focal subject, centred or slightly low, with headroom above it
@@ -1863,38 +1904,39 @@ BUILT TO BE ANIMATED — composition rules that outrank stylistic flourish:
 
 CONSTRAINTS:
   - Never reproduce platform UI, watermarks, app logos, usernames, handles,
-    follower or like or view counters, progress bars, play buttons, or any
-    text visible in the reference images.
-  - That prohibition covers brand wordmarks, logotypes, product names,
-    category or section labels, button, chip or pill labels, and kicker lines
-    — any legible string in a reference, whether or not it reads as design.
+    follower or like or view counters, progress bars or play buttons, whether
+    copied from an attachment or invented to make the frame look native.
+  - Never reproduce a real company, product or app logo, wordmark, logotype,
+    product name, category or section label, button, chip or pill label or
+    kicker line. Where the scene calls for a mark, draw an unlettered generic
+    shape of that kind.
   - This is the first frame of one clip: no navigation or swipe prompt
     ("SWIPE LEFT", "SWIPE RIGHT", "READ MORE", "TAP", an arrow or a hand
     carrying words), and no brand wordmark, logotype or signature line other
     than one quoted in the TEXT block above; when the TEXT block quotes none,
     this frame is unsigned.
-  - The exclusions below concern the attached reference images. They never
+  - The exclusions below are this house style's own forbid-list. They never
     restrict the TEXT block above, whose strings are always rendered.
   - Additional exclusions for this house style — these are strings and marks
     forbidden in the frame, never strings to render: {{exclusions}}
-  - Reference roles, in the order attached:
+  - Attachments, in the order attached (this job usually has none — the style
+    above is written, not photographed):
     {{reference_roles}}
-    Every one of them is a style, layout, palette, typography and treatment
-    reference only; none contributes its text, wordmarks, logos, chrome,
-    counters, or the identity of anyone shown in it.
+    An attachment here is a brief's own product photo: it gives the identity of
+    the object it shows and nothing else — never its background, its lighting,
+    its layout, its text, wordmarks, logos, chrome, counters, or the identity
+    of anyone in it.
   - The hook sits inside the central 80% of the frame, well clear of the top
     and bottom bands where a player's controls and captions land.
   - The hook is already within the budget in force for this render:
     {{text_budgets}}
     It is read at thumb size on a phone — render it big.
-  - If the references' frame shape differs from this frame, RE-COMPOSE the
-    layout for this upright frame. Never letterbox, stretch, bar-pad or crop
-    the reference composition.
+  - Compose natively for the upright frame this request sets: re-flow the
+    layout so it fills the frame. Never letterbox, stretch, bar-pad or crop.
   - Ignore any labelled line above that is empty.
 """,
 
-    "seedance-2-5/reel_director.md":
-        """GOAL: A short vertical clip that opens on the still hook frame with its text
+    "seedance-2-5/reel_director.md": """GOAL: A short vertical clip that opens on the still hook frame with its text
   fully legible, then brings that same scene to life with real, physical
   motion. What the clip is about: {{through_line}}
   Brief overlay (ignore if empty): {{brief_directives}}
@@ -1909,8 +1951,10 @@ REFERENCES:
   it. It must not contribute a reason to re-compose: do not re-frame it, do
   not re-light it, do not restyle it, do not redraw its text, do not replace
   its subject.
-  There is no second reference. Nothing in this prompt names another image,
-  clip or sample, and no other source may enter the picture.
+  There is no second reference — no motion clip, no style sample, no sample
+  frame of any kind. Nothing in this prompt names another image, clip or
+  sample, and no other source may enter the picture. Everything about the look
+  that is not already in @Image1 is stated in words in LOOK below.
 
 CONTINUITY: The hook text from @Image1 is a fixed graphic layer, not a
   subtitle and not part of the scene. It stays identical for the whole clip —
@@ -1979,6 +2023,8 @@ RULES:
   - No NEW logos, watermarks or wordmarks; a wordmark already present in
     @Image1 persists unchanged. No app marks, product names, category labels,
     usernames, handles or engagement counters, invented or copied.
+  - No platform UI of any kind: no player chrome, no progress bar, no play
+    button, no like or view counter drawn into the picture.
   - Audio is exactly what the AUDIO section states and nothing more: no
     voice-over, no dialogue, no lyrics, no copyrighted music, no crowd, no
     stingers, no added ambience.

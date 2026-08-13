@@ -16,10 +16,12 @@ assertion disappeared" and "this behaviour disappeared" have to be told apart la
   (operator decision 1); `copy_exemplars` leaves `build_context` and `inspiration.py` is
   deleted at W3.5. Keeping the assertions would have made this whole module a collection-time
   ImportError the moment that file goes.
-- **A17 (Inspiration window rotation) — PRUNED, re-homed not lost.** The rotation mechanism
-  survives as `styles.pick_reference_window`, where it now rotates a META-STYLE's own reference
-  images; `tests/test_styles.py` asserts it there (T1.3). What is pruned is the *Inspiration
-  pool's* copy of it, for the same reason A16 goes: `inspiration.apply_mix` is W3.5 excision.
+- **A17 (Inspiration window rotation) — PRUNED TWICE, and now gone outright.** v2.0.0 re-homed
+  the rotation onto `styles.pick_reference_window`, where it turned a META-STYLE's own reference
+  images. **D46 (v2.1.0) removed the picture channel itself** (FR-17/18): a meta-style is text,
+  no style image is ever uploaded or attached, and the window function is deleted with the field
+  it read. `tests/test_styles.py` now asserts the ABSENCE. Nothing about A17 survives — not the
+  Inspiration pool's copy (W3.5), not the registry's (W3/T3.1).
 - **A20 / A21** never lived in this file; A20's polarity is reversed by D42 and re-asserted in
   `tests/test_copy_verbatim_filter.py`, and A21 (hook-pattern validation) is deleted outright.
 

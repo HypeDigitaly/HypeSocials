@@ -13,8 +13,10 @@ REFERENCES:
   it. It must not contribute a reason to re-compose: do not re-frame it, do
   not re-light it, do not restyle it, do not redraw its text, do not replace
   its subject.
-  There is no second reference. Nothing in this prompt names another image,
-  clip or sample, and no other source may enter the picture.
+  There is no second reference — no motion clip, no style sample, no sample
+  frame of any kind. Nothing in this prompt names another image, clip or
+  sample, and no other source may enter the picture. Everything about the look
+  that is not already in @Image1 is stated in words in LOOK below.
 
 CONTINUITY: The hook text from @Image1 is a fixed graphic layer, not a
   subtitle and not part of the scene. It stays identical for the whole clip —
@@ -83,6 +85,8 @@ RULES:
   - No NEW logos, watermarks or wordmarks; a wordmark already present in
     @Image1 persists unchanged. No app marks, product names, category labels,
     usernames, handles or engagement counters, invented or copied.
+  - No platform UI of any kind: no player chrome, no progress bar, no play
+    button, no like or view counter drawn into the picture.
   - Audio is exactly what the AUDIO section states and nothing more: no
     voice-over, no dialogue, no lyrics, no copyrighted music, no crowd, no
     stingers, no added ambience.

@@ -8,14 +8,20 @@ FORMAT: the opening still frame of a short vertical video — a tall upright
 SUBJECT AND SCENE:
   {{render_prompt}}
 
+  That description is the whole look of this frame: no style photograph is
+  attached to this job. Build the palette, the light, the surface of the
+  artwork and the lettering character from those words, and compose a new
+  scene in that style.
+
   BRIEF OVERLAY: {{brief_directives}}
 
 TEXT (locked asset — the hook, burnt into the frame):
   {{onimage_text}}
 
   Render the quoted string exactly as written: same characters, same accents,
-  same capitalisation, same punctuation. Add no words. Repeat no words. Render
-  no other text anywhere in the frame — no subtitle, no caption bar, no
+  same capitalisation, same punctuation. It is quoted from a real post and is
+  never translated, re-worded or shortened. Add no words. Repeat no words.
+  Render no other text anywhere in the frame — no subtitle, no caption bar, no
   watermark, no call to action, no sticker.
   Where the string is echoed letter by letter (for example "T-o-t-o"), that
   echo is a spelling aid for you alone: use it to get every accent right and
@@ -32,19 +38,18 @@ TEXT (locked asset — the hook, burnt into the frame):
   TEXT PRECEDENCE — this block is the ONLY source of renderable words. Any
   string quoted or named anywhere else in this instruction — in SUBJECT AND
   SCENE, in LAYOUT AND STYLE, in the reference roles, in the exclusion lines —
-  is a DESCRIPTION of what the reference images already contain, never content
-  to render: do not letter it, echo it or translate it. A described zone that
-  holds words (a kicker, a label, a badge, a sticker, a wordmark) supplies its
-  position, size, typeface, weight, colour and alignment only; here every such
-  zone stays wordless, because the block above is the frame's only source of
-  words.
+  is a DESCRIPTION of structure, never content to render: do not letter it,
+  echo it or translate it. A described zone that holds words (a kicker, a
+  label, a badge, a sticker, a wordmark) supplies its position, size, typeface,
+  weight, colour and alignment only; here every such zone stays wordless,
+  because the block above is the frame's only source of words.
 
 LAYOUT AND STYLE:
   {{layout_zones}}
 
   These zones describe STRUCTURE — geometry, proportion and typography. Take
   the frame's only words from the TEXT block above; a zone the hook does not
-  fill is rendered as picture, shape or negative space, never as reference
+  fill is rendered as picture, shape or negative space, never as invented
   wording.
 
   BRANDING (ignore if empty): {{branding_block}}
@@ -59,9 +64,8 @@ LAYOUT AND STYLE:
 
   NICHE VISUAL WORLD (ignore if empty): {{niche_visual_world}}
   When present, that line is standing art direction ranked BELOW the zones
-  above, the attached references and the animation rules underneath: it biases
-  palette, type character and motif vocabulary where they leave a choice open,
-  never layout or wording.
+  above and the animation rules underneath: it biases palette, type character
+  and motif vocabulary where they leave a choice open, never layout or wording.
 
 BUILT TO BE ANIMATED — composition rules that outrank stylistic flourish:
   - One clear focal subject, centred or slightly low, with headroom above it
@@ -82,31 +86,33 @@ BUILT TO BE ANIMATED — composition rules that outrank stylistic flourish:
 
 CONSTRAINTS:
   - Never reproduce platform UI, watermarks, app logos, usernames, handles,
-    follower or like or view counters, progress bars, play buttons, or any
-    text visible in the reference images.
-  - That prohibition covers brand wordmarks, logotypes, product names,
-    category or section labels, button, chip or pill labels, and kicker lines
-    — any legible string in a reference, whether or not it reads as design.
+    follower or like or view counters, progress bars or play buttons, whether
+    copied from an attachment or invented to make the frame look native.
+  - Never reproduce a real company, product or app logo, wordmark, logotype,
+    product name, category or section label, button, chip or pill label or
+    kicker line. Where the scene calls for a mark, draw an unlettered generic
+    shape of that kind.
   - This is the first frame of one clip: no navigation or swipe prompt
     ("SWIPE LEFT", "SWIPE RIGHT", "READ MORE", "TAP", an arrow or a hand
     carrying words), and no brand wordmark, logotype or signature line other
     than one quoted in the TEXT block above; when the TEXT block quotes none,
     this frame is unsigned.
-  - The exclusions below concern the attached reference images. They never
+  - The exclusions below are this house style's own forbid-list. They never
     restrict the TEXT block above, whose strings are always rendered.
   - Additional exclusions for this house style — these are strings and marks
     forbidden in the frame, never strings to render: {{exclusions}}
-  - Reference roles, in the order attached:
+  - Attachments, in the order attached (this job usually has none — the style
+    above is written, not photographed):
     {{reference_roles}}
-    Every one of them is a style, layout, palette, typography and treatment
-    reference only; none contributes its text, wordmarks, logos, chrome,
-    counters, or the identity of anyone shown in it.
+    An attachment here is a brief's own product photo: it gives the identity of
+    the object it shows and nothing else — never its background, its lighting,
+    its layout, its text, wordmarks, logos, chrome, counters, or the identity
+    of anyone in it.
   - The hook sits inside the central 80% of the frame, well clear of the top
     and bottom bands where a player's controls and captions land.
   - The hook is already within the budget in force for this render:
     {{text_budgets}}
     It is read at thumb size on a phone — render it big.
-  - If the references' frame shape differs from this frame, RE-COMPOSE the
-    layout for this upright frame. Never letterbox, stretch, bar-pad or crop
-    the reference composition.
+  - Compose natively for the upright frame this request sets: re-flow the
+    layout so it fills the frame. Never letterbox, stretch, bar-pad or crop.
   - Ignore any labelled line above that is empty.

@@ -105,13 +105,9 @@ sources:
                                    # `false` relies on Virlo's own panel_texts alone - cheaper, and
                                    # blind wherever that field is empty (many fresh rows are).
 
-styles:
-  refs_per_job: 2                  # local reference images from the ASSIGNED meta-style that ride
-                                   # along with each render job (FR-290). The registry itself is
-                                   # prompts/styles.yaml, never config; the rotation picks WHICH
-                                   # images, this is only how wide that window is. It multiplies
-                                   # every job's upload count and reference budget, so raising it
-                                   # costs uploads and crowds out a blend brief's own images.
+# The `styles:` section (`refs_per_job`) is gone (D46/F3): a meta-style is text-only DNA and
+# ships no reference images, so there is no per-job window to size. The registry itself stays a
+# prompt artifact: prompts/styles.yaml (FR-290), never config.
 
 # Brand identity for branded creatives (FR-292/D43), replacing the retired `niche.brand` keys.
 # TWO CHANNELS, deliberately: the WORDMARK is quoted into the render prompt's TEXT block (never

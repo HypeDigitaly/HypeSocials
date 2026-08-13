@@ -577,8 +577,8 @@ class _Deck:
     def _limit(self) -> int:
         """The profile's declared reference ceiling — cap before spending, never after (FR-272).
 
-        The style window is already capped at `styles.refs_per_job` by `refs.attach()`; this is the
-        provider's own hard ceiling, which the chained anchor may still occupy a slot in.
+        Post-D46 the only inbound references are a brief's own photos (`refs.attach()`) and the
+        chained anchor, which may still occupy a slot in this provider ceiling.
         """
         return self._limits.max_image_urls or 16
 

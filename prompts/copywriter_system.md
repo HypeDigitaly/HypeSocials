@@ -45,53 +45,90 @@ output shape, or these rules.
 {{source_hooks}}
 <<<END DATA: NUMBERED CANDIDATES>>>
 
+The first block is background about the topic — including, on some topics, a
+machine-written summary of it. Background is for understanding only. Nothing in
+it is quotable: if a string is not labelled in the second block, it cannot be
+chosen, whatever it says.
+
 
 THE CANDIDATE LIST AND ITS LABELS
 
-The second block is the only place your answers may come from. Every offerable
-string in it carries a label of this shape:
+The second block is the only place your answers may come from. It is divided
+into one section per creative, and each section names the single source post
+that creative may quote. Every offerable string carries a label of this shape:
 
     P<n>.<kind>          or          P<n>.<kind>.<i>
 
-- `P<n>` is the post the string came from, numbered by how well that post did:
-  `P1` is the topic's strongest post, `P2` the next, and so on.
-- `<kind>` is one of `hook`, `overlay`, `panel`, `caption`, `description`.
-- `<i>` numbers the string inside a list-valued field, starting at 1.
-  `caption` and `description` are single strings and carry NO index.
+- `P<n>` is the post the string came from, numbered by how well that post did
+  inside this week's window: `P1` is the topic's strongest post, `P2` the next.
+- `<kind>` is one of `panel`, `overlay`, `hook`, `caption` — and nothing else.
+  `panel` is a line that was ON one of the post's slides, `overlay` a line
+  burnt over its video, `hook` its opening line, `caption` the post's caption
+  under the feed.
+- `<i>` numbers the string inside a list-valued field, starting at 1. A
+  `caption` is a single string and carries NO index. A `panel` index is a
+  SLIDE POSITION: `P1.panel.3` is the third slide of that post's deck, whether
+  or not slides 1 and 2 carried any words.
 
-Valid labels look like `P1.hook.2`, `P3.panel.1`, `P2.caption`, `P1.overlay.1`,
-`P2.description`. Anything else is not a label: never invent one, never guess
-an index that is not printed in the block, never merge two labels, and never
+Valid labels look like `P1.panel.3`, `P1.hook.2`, `P2.caption`,
+`P1.overlay.1`. Anything else is not a label: never invent one, never guess an
+index that is not printed in the block, never merge two labels, and never
 answer with the text of a candidate instead of its label.
 
-The list is already filtered for you. On-image candidates are inside the
-style's character budget and carry no emoji, no @handle, no URL and no
-hashtag; caption candidates may carry emoji and hashtags because a caption is
-allowed them. So every label offered for a slot is a legal answer for that
-slot — you are choosing the best one, not checking whether it is allowed.
+The list is already filtered for you:
+
+- Every on-image candidate already fits this creative's character budget, and
+  carries no @handle and no URL.
+- Panel text keeps its own voice. When a panel is offered for a deck's slide it
+  may contain emoji, line breaks and `#` words, because that is exactly how it
+  stood on the source slide. That is not a defect and never a reason to skip
+  it; the same string offered as a HEADLINE has been held to the stricter rule.
+- Caption candidates keep their emoji and their inline hashtags; a trailing
+  hashtag run has already been taken off and stored separately, and a
+  "caption" that was nothing but hashtags was never offered at all.
+
+So every label offered for a slot is a legal answer for that slot — you are
+choosing the best one, not checking whether it is allowed. Candidates are shown
+on one line and may be shown truncated or folded; the engine ships the original
+bytes, line breaks and all. Choose by label only.
 
 If genuinely nothing in the list fits a slot, return an empty string for it.
 An empty on-image slot ships a caption-only creative, which is a normal
 outcome. A wrong-but-filled slot is not.
 
 
+WHICH POST — ALREADY DECIDED
+
+You never choose the post. Each creative's section names the one post it may
+quote: that post was picked because it is fresh, because it is a slideshow with
+usable slides, and because no earlier run has already quoted it. A post that
+was used before is not in this list at all, and there is no way to ask for it.
+
+So: quote only from the section belonging to the creative you are answering
+for. A label from another creative's section is an invalid answer, even when
+the string is better.
+
+
 HOW TO CHOOSE
 
-- `headline_ref` — the line that carries the creative. Prefer a `hook`, then
-  an `overlay`, then a `panel`. Pick the one that lands hardest on its own,
-  with no context, at thumbnail size.
+- `headline_ref` — the line that carries the creative. Prefer a `panel`, then
+  an `overlay`, then a `hook`: the words that were already ON a winning image
+  are the words that already worked as an image. Pick the one that lands
+  hardest on its own, with no context, at thumbnail size.
 - `subline_ref` — only when the style asks for a second line and a candidate
-  genuinely continues the headline. Never a restatement of it, never a
-  candidate from a different post than the headline unless nothing else fits.
+  genuinely continues the headline. Never a restatement of it.
 - `overlay_ref` — the reel's burnt-in hook. Shortest, hardest, most legible.
-- `slide_refs` — one label per slide, in slide order, read as ONE sequence:
-  opening hook, escalation, payoff, close. Prefer consecutive `panel` strings
-  from a single post, because the person who wrote them already sequenced
-  them. Never repeat a label inside one deck.
+- `slide_refs` — usually LEAVE EMPTY. When a deck's section says its slides are
+  engine-mapped, that deck already has its text: our slide i renders their
+  panel i, verbatim and in the source's own order, and anything you answer here
+  is discarded. Answer `slide_refs` only for a deck whose section offers panels
+  as choosable candidates — then give one label per slide, in slide order, read
+  as ONE sequence: opening hook, escalation, payoff, close, with no label
+  repeated inside the deck.
 - `caption_ref` — the post caption that best carries the creative into the
-  feed. A caption is not the headline again: if the only good caption
-  candidate is the string you already used on the image, prefer a different
-  post's caption.
+  feed. A caption is not the headline again: when the only good caption
+  candidate is the string you already used on the image, leave `caption_ref`
+  empty rather than doubling it.
 
 Language follows the string you selected. A Czech candidate stays Czech, an
 English one stays English, and a mixed pair is deliberate, not an error to
@@ -102,7 +139,7 @@ THE THREE FREE-TEXT FIELDS
 
 - `through_line` — one plain sentence saying what the reel is about. It
   directs the video model and never appears on screen.
-- `narrative_arc` — one sentence summarising how the chosen slides move from
+- `narrative_arc` — one sentence summarising how the deck's slides move from
   the first to the last. A note for the log, never rendered.
 - `motion_beat` — ONE named physical action for the middle of the reel, in
   four to eight words: "hand lifts the mug and sets it down", "laptop lid
@@ -121,11 +158,13 @@ You are choosing for every creative in this block at once:
 {{sibling_list}}
 <<<END SIBLINGS>>>
 
-Each sibling line names its asset id, platform, format and language. Rules:
+Each sibling line names its asset id, platform, format and language, and — for
+a deck — whether its slides are engine-mapped. Rules:
 
 - Siblings share the topic, not the sentence. Two creatives from one topic
-  must not quote the same string, and where the candidate list offers strings
-  from more than one post, prefer a different post per sibling.
+  must not quote the same string. Which post each one quotes is already fixed
+  by the engine, so this is a choice among that post's own candidates: a
+  different angle, not a different source.
 - If two siblings would land on the same label, change one of them — the
   weaker fit moves, the stronger one keeps its pick.
 - The caption and the on-image text of one creative are never the same label.
@@ -172,8 +211,9 @@ where invented lettering can go.
 WHAT TO CHOOSE PER FORMAT
 
 - image — `headline_ref`, optionally `subline_ref`, and `caption_ref`.
-- carousel — `slide_refs` (one label per slide, in order), `headline_ref` set
-  to the same label as the first slide, `narrative_arc`, and `caption_ref`.
+- carousel — `caption_ref`, `narrative_arc`, and `headline_ref` for the cover
+  slide; `slide_refs` only when this deck's section offers its panels as
+  choosable candidates.
 - reel — `overlay_ref`, `through_line`, `motion_beat`, and `caption_ref`.
 
 

@@ -2,8 +2,17 @@
 
 Post-pivot (v2.0.0) a deck's look is not analysed per trend any more: `styles.assign_styles` has
 already written a `style_key` on the entry, `refs.style_of` resolves it against the run's registry,
-and that single `MetaStyle` is what `{{style_dna}}`, `{{render_prompt}}`, `{{exclusions}}` and the
-attached reference images all come from (FR-290/291). Three consequences are pinned here:
+and that single `MetaStyle` is what `{{style_dna}}`, `{{render_prompt}}` and `{{exclusions}}` are
+built from (FR-290/291).
+
+**A style is words, never pictures (D46/F3, v2.1.0).** The registry's reference-image channel is
+excised: a deck qualifies its render through the style's prose, so an ordinary carousel submits
+slide 1 with an EMPTY `image_urls` and that is the intended route, not a degradation (FR-17/18).
+Exactly two kinds of picture can still reach a slide: a campaign BRIEF's own product photos
+(FR-144/145), and the chained artifact this deck made itself — the finished slide 1 that slides
+2–N reproduce (FR-95). Both are pinned below; nothing else may appear.
+
+Three consequences of the assigned-style design are pinned here:
 
 * **`{{style_dna}}` is built ONCE per deck and repeated byte for byte** (FR-189/M9) — and it is the
   FIVE DNA fields only, with the old zone-derived `layout_grid` row gone (contracts item 12);
@@ -24,7 +33,6 @@ must not care.
 
 from __future__ import annotations
 
-import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -62,9 +70,10 @@ from hypesocials.prompts_engine import PromptEngine, style_dna
 from hypesocials.render import KieOutOfCredits
 
 REPO = Path(__file__).resolve().parents[1]
-#: Real magic bytes: `styles._usable()` validates CONTENT, so a renamed `.txt` is not a reference.
+#: Real magic bytes for the brief photos this suite writes — the one picture channel D46 left.
 PNG = b"\x89PNG\r\n\x1a\n"
 STYLE_KEY = "editorial-voxel-carousel"
+BRIEF_NAME = "product-shot"
 #: Sentinels, so an assertion about WHICH guidance landed cannot be satisfied by prose that
 #: happens to appear in both halves of the registry entry.
 COVER_GUIDANCE = "ZZCOVER one full-bleed statement, no page number, no list."
@@ -220,12 +229,18 @@ def uploads(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     The memo is keyed by `run_dir` and lives for the process, which is exactly right for a run and
     exactly wrong for a suite: `tmp_path` differs per test, but a leaked memo would still let one
     test's assertion about "uploaded once" be satisfied by another test's upload.
+
+    A file that is not on disk RAISES, exactly as the real uploader does when it opens it — that
+    is what makes the FR-18 loss path testable by deleting a brief's photos rather than by
+    monkeypatching a second layer of fake on top of this one.
     """
     control = SimpleNamespace(paths=[])
     refs_module.reset_uploads()
 
     async def _upload(path: Path) -> str:
         control.paths.append(Path(path))
+        if not Path(path).is_file():
+            raise FileNotFoundError(path)
         return f"https://kie.test/upload/{Path(path).name}"
 
     monkeypatch.setattr(render, "upload_file", _upload)
@@ -233,30 +248,20 @@ def uploads(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     refs_module.reset_uploads()
 
 
-def style_url(name: str) -> str:
-    return f"https://kie.test/upload/{name}"
+def upload_url(path: Path) -> str:
+    """The URL the faked `render.upload_file` hands back for one local file."""
+    return f"https://kie.test/upload/{path.name}"
 
 
-def repo_relative(path: Path) -> str:
-    """`reference_images` entries are REPO-ROOT-relative (§1.3), so a `tmp_path` file is expressed
-    as the relative hop out of the repo and back — the same string a shipped registry holds."""
-    try:
-        return Path(os.path.relpath(path, REPO)).as_posix()
-    except ValueError:  # pragma: no cover - different drive; an absolute path joins the same way
-        return path.as_posix()
-
-
-def make_style(tmp_path: Path, *, images: int = 2, guidance: bool = True,
+def make_style(_tmp_path: Path | None = None, *, guidance: bool = True,
                key: str = STYLE_KEY) -> MetaStyle:
-    """One registry entry with REAL reference files on disk, so the window rotation and the
-    magic-byte check both run for real rather than against a mock."""
-    folder = tmp_path / "style-refs"
-    folder.mkdir(parents=True, exist_ok=True)
-    paths = []
-    for index in range(1, images + 1):
-        path = folder / f"{key}-{index:02d}.png"
-        path.write_bytes(PNG + b"\x00" * 64)
-        paths.append(path)
+    """One TEXT-ONLY registry entry — the post-D46 shape (FR-17/18/290).
+
+    `MetaStyle` has no `reference_images` field any more, so there is no file scaffolding to
+    build and no window to rotate: everything this style contributes to a slide is prose. The
+    `tmp_path` parameter is kept (unused) so every call site still reads as "a style built for
+    this run's folder" and the diff against the pre-D46 suite stays readable.
+    """
     return MetaStyle(
         key=key,
         render_prompt="Isometric voxel diorama on a flat teal ground, hard shadow, wide margins.",
@@ -273,8 +278,7 @@ def make_style(tmp_path: Path, *, images: int = 2, guidance: bool = True,
         visual_pacing="one idea per panel",
         per_format_guidance=({GUIDANCE_COVER: COVER_GUIDANCE, GUIDANCE_SLIDE: SLIDE_GUIDANCE}
                              if guidance else {}),
-        exclusions=["platform UI", "engagement counters"],
-        reference_images=[repo_relative(path) for path in paths])
+        exclusions=["platform UI", "engagement counters"])
 
 
 def make_registry(*entries: MetaStyle) -> styles.StyleRegistry:
@@ -340,9 +344,28 @@ def dna_block(prompt: str) -> str:
     return prompt.split("STYLE_DNA", 1)[1].split("SLIDE CONTENT", 1)[0]
 
 
-def style_urls(style: MetaStyle) -> list[str]:
-    """The URLs `refs.attach` produces for this style's whole reference window, in F19 order."""
-    return [style_url(Path(raw).name) for raw in style.reference_images]
+def give_brief(env: Env, entries: list[PlanEntry], tmp_path: Path, *,
+               photos: int = 1, influence: str = "blend") -> list[Path]:
+    """Point these entries at ONE campaign brief that ships `photos` real files (FR-144/145).
+
+    Post-D46 a brief's photos are the only files `refs.attach()` ever uploads, so this is the
+    fixture behind every attachment, ordering, upload-memo and FR-97 assertion in this file.
+    """
+    folder = tmp_path / "brief-photos"
+    folder.mkdir(parents=True, exist_ok=True)
+    paths: list[Path] = []
+    for index in range(1, photos + 1):
+        path = folder / f"{BRIEF_NAME}-{index:02d}.png"
+        path.write_bytes(PNG + b"\x00" * 64)
+        paths.append(path)
+    env.campaign_briefs = {BRIEF_NAME: Brief(
+        name=BRIEF_NAME, description="one product photo", influence=influence,
+        visual_directives={"scene": "ZZBRIEF the product on a bare desk"},
+        reference_image_paths=list(paths))}
+    env.local_refs = {entry.asset_id: [(path, "brief") for path in paths] for entry in entries}
+    for entry in entries:
+        entry.brief_name, entry.brief_influence = BRIEF_NAME, influence
+    return paths
 
 
 # ------------------------------------------------------- the assigned meta-style (FR-290/291)
@@ -440,12 +463,16 @@ async def test_a_style_that_declares_no_guidance_appends_nothing(tmp_path: Path)
         assert "ZZCOVER" not in call.prompt and "ZZBODY" not in call.prompt
 
 
-async def test_an_override_brief_suppresses_the_style_its_pictures_and_its_guidance(
-    tmp_path: Path,
-) -> None:
-    """FR-144/M14: an `override` brief replaces the assigned style ENTIRELY — the `render_prompt`
-    and the reference images both. So there is no `per_format_guidance` to append either: the
-    brief's own directives are the whole creative, on every slide."""
+async def test_an_override_brief_suppresses_the_style_and_its_guidance(tmp_path: Path) -> None:
+    """FR-144/M14: an `override` brief replaces the assigned style ENTIRELY. So there is no
+    `per_format_guidance` to append either: the brief's own directives are the whole creative, on
+    every slide.
+
+    Post-D46 there are no style pictures left for M14 to suppress — a style was already words —
+    so what this pins now is that a picture-less override deck says NOTHING about being
+    reference-free (FR-18): it expected no attachment and lost none. The anchor chain is
+    untouched either way, which is the half of M14 that always mattered.
+    """
     entry = make_entry(slides=2, brief_name="ai-audit-cta", brief_influence="override")
     env = make_env(tmp_path, entry, texts=["one", "two"])
     env.campaign_briefs = {"ai-audit-cta": Brief(
@@ -461,11 +488,11 @@ async def test_an_override_brief_suppresses_the_style_its_pictures_and_its_guida
     for call in submit.calls:
         assert "ZZBRIEF a laptop on a bare desk" in call.prompt
         assert "ZZCOVER" not in call.prompt and "ZZBODY" not in call.prompt
-    assert submit.slide(1).image_urls == [], \
-        "M14: an override brief attaches no style picture at all"
+    assert submit.slide(1).image_urls == [], "a brief with no photos attaches nothing"
     assert submit.slide(2).image_urls == [submit.slide(1).url], \
         "the anchor chain is untouched by M14 — the deck still reproduces its own slide 1"
-    assert DegradationTag.REFERENCE_FREE in record.degradations
+    assert DegradationTag.REFERENCE_FREE not in record.degradations, \
+        "nothing was expected and nothing was lost — silence is the honest answer (FR-18)"
     assert style_dna(None) == "" and "STYLE_DNA" in submit.slide(1).prompt, \
         "the block is empty, not missing — the scaffold is one shape for every case"
 
@@ -473,72 +500,109 @@ async def test_an_override_brief_suppresses_the_style_its_pictures_and_its_guida
 # ------------------------------------------------------------------ references (F19 / FR-200)
 
 
-async def test_style_references_lead_and_a_briefs_own_pictures_follow(tmp_path: Path) -> None:
-    """F19: every render scaffold tells the model to follow the FIRST reference listed, so the
-    attachment order IS the FR-145 precedence — the house style wins the look, the brief keeps its
-    subject. The two role lines are worded differently for the same reason."""
-    entry = make_entry(slides=2, brief_name="product", brief_influence="blend")
+async def test_a_style_driven_deck_attaches_nothing_and_says_nothing_about_it(
+    tmp_path: Path, uploads: SimpleNamespace,
+) -> None:
+    """D46/FR-17/18: text-to-image is the deck's DEFAULT route, not a degrade.
+
+    The style's `render_prompt` and DNA rows are the whole visual instruction, so slide 1 goes
+    out with an empty reference set, nothing is uploaded, and the record carries no tag about it.
+    `reference_free` is reserved for a creative that EXPECTED pictures and lost them; firing it
+    on the normal case would train the operator to ignore the one line that means something.
+    """
+    entry = make_entry(slides=2)
     style = make_style(tmp_path)
-    product = tmp_path / "product.png"
-    product.write_bytes(PNG + b"\x00" * 32)
     env = make_env(tmp_path, entry, texts=["one", "two"], style=style)
-    env.campaign_briefs = {"product": Brief(name="product", description="", influence="blend",
-                                            visual_directives={"scene": "the product on a desk"})}
-    env.local_refs = {entry.asset_id: [(product, "brief")]}
+    submit = FakeSubmit()
+
+    record = await render_carousel(entry, env, make_folder(tmp_path, entry), submit=submit)
+
+    assert uploads.paths == [], "a meta-style ships no pixels (F3)"
+    assert submit.slide(1).image_urls == []
+    assert style.render_prompt in submit.slide(1).prompt, "the look travels as PROSE"
+    assert DegradationTag.REFERENCE_FREE not in record.degradations
+    assert DegradationTag.STYLE_REFS_MISSING not in record.degradations, \
+        "the tag survives for old meta.yaml files on disk; nothing emits it any more"
+    assert "reference_free" not in env.log.types()
+    assert "house style reference" not in submit.slide(1).prompt, \
+        "the F19 style role line retired with the channel it introduced"
+
+
+async def test_a_briefs_own_pictures_are_the_only_attachments_a_slide_carries(
+    tmp_path: Path,
+) -> None:
+    """FR-144/145/191: what a brief ships is attached, in the brief's own order, and introduced
+    as the SUBJECT — "this product IS the subject; reproduce it faithfully".
+
+    Before D46 the house style's window led this list and the brief's photo followed it, which
+    is what made the ordering worth pinning. With the style channel excised the brief's photos
+    ARE the list, and the wording is the thing that still matters: a product photo introduced as
+    "layout, palette and treatment only" is a product that vanishes from its own ad.
+    """
+    entry = make_entry(slides=2)
+    style = make_style(tmp_path)
+    env = make_env(tmp_path, entry, texts=["one", "two"], style=style)
+    first, second = give_brief(env, [entry], tmp_path, photos=2)
     submit = FakeSubmit()
 
     await render_carousel(entry, env, make_folder(tmp_path, entry), submit=submit)
 
     anchor = submit.slide(1)
-    assert anchor.image_urls == [*style_urls(style), style_url("product.png")]
-    assert (f'Image 1 — house style reference "{STYLE_KEY}": layout, palette, typography and '
-            "treatment only; no words, no logos.") in anchor.prompt
-    assert "Image 3: brief subject" in anchor.prompt, "the brief's photo is the SUBJECT, not style"
+    assert anchor.image_urls == [upload_url(first), upload_url(second)], "the brief's own order"
+    assert "Image 1: brief subject" in anchor.prompt, "the brief's photo is the SUBJECT, not style"
+    assert "Image 2: brief subject" in anchor.prompt
+    assert "house style reference" not in anchor.prompt, "no style role line exists to write"
 
 
-async def test_each_style_file_is_uploaded_once_per_run_however_many_decks(
+async def test_each_brief_photo_is_uploaded_once_per_run_however_many_decks(
     tmp_path: Path, uploads: SimpleNamespace,
 ) -> None:
-    """FR-200/244: the upload memo is run-scoped, so a style's reference window costs one upload
-    per FILE per run — not one per job. A second deck on the same run re-uses the URLs; a second
-    run (a different `run_dir`) uploads again, because Kie keeps an upload about 24 h."""
-    style = make_style(tmp_path, images=2)
+    """FR-200/244: the upload memo is run-scoped, so a brief's photos cost one upload per FILE
+    per run — not one per job. A second deck on the same run re-uses the URLs; a second run (a
+    different `run_dir`) uploads again, because Kie keeps an upload about 24 h."""
+    style = make_style(tmp_path)
     first, second = make_entry(slides=2), make_entry(slides=2, asset_id="0002_carousel_linkedin")
     env = make_env(tmp_path, first, texts=["one", "two"], style=style)
     env.copy[second.asset_id] = env.copy[first.asset_id]
+    photos = give_brief(env, [first, second], tmp_path, photos=2)
 
     await render_carousel(first, env, make_folder(tmp_path, first), submit=FakeSubmit())
     after_first = list(uploads.paths)
     await render_carousel(second, env, make_folder(tmp_path, second), submit=FakeSubmit())
 
-    assert len(after_first) == 2, "the window is `styles.refs_per_job` wide, uploaded once each"
+    assert after_first == photos, "both of the brief's files, uploaded once each"
     assert uploads.paths == after_first, "the sibling deck uploaded nothing new (the memo)"
 
     later_run = tmp_path / "run-2"
     later_run.mkdir()
-    env.run_dir = later_run
-    await render_carousel(make_entry(slides=1, asset_id="0003_carousel_linkedin"),
-                          make_env(later_run, first, texts=["one"], style=style),
-                          make_folder(later_run, first), submit=FakeSubmit())
+    third = make_entry(slides=1, asset_id="0003_carousel_linkedin")
+    later_env = make_env(later_run, third, texts=["one"], style=style)
+    give_brief(later_env, [third], tmp_path, photos=2)
+    await render_carousel(third, later_env, make_folder(later_run, third), submit=FakeSubmit())
     assert len(uploads.paths) == 4, "a NEW run re-uploads: a memoized URL would 404 mid-batch"
 
 
-async def test_a_style_whose_pictures_are_all_gone_degrades_to_text_only(tmp_path: Path) -> None:
-    """FR-18/295: the written guidance is intact, so the deck still renders — but the operator
-    hears which CREATIVE lost its proof, and the record says so."""
+async def test_a_brief_whose_pictures_are_all_gone_degrades_to_text_only(tmp_path: Path) -> None:
+    """FR-18: brief images are an input, not a prerequisite — the deck still renders on the
+    style's written guidance. But this creative EXPECTED pictures and lost every one of them, so
+    the operator hears which CREATIVE lost its proof and the record says so.
+
+    This is the only shape that still earns `reference_free` post-D46: the pre-D46 version of
+    this test unlinked a STYLE's files, and the style has no files to unlink any more.
+    """
     entry = make_entry(slides=2)
-    style = make_style(tmp_path, images=1)
-    for raw in style.reference_images:
-        (REPO / raw).unlink()
-    env = make_env(tmp_path, entry, texts=["one", "two"], style=style)
+    env = make_env(tmp_path, entry, texts=["one", "two"])
+    for path in give_brief(env, [entry], tmp_path, photos=2):
+        path.unlink()
     folder = make_folder(tmp_path, entry)
 
     record = await render_carousel(entry, env, folder, submit=FakeSubmit())
 
-    assert DegradationTag.STYLE_REFS_MISSING in record.degradations
     assert DegradationTag.REFERENCE_FREE in record.degradations
-    assert "style_refs_missing" in env.log.types()
-    assert record.status is AssetStatus.SUCCESS, "a text-only style is a degrade, not a failure"
+    assert DegradationTag.STYLE_REFS_MISSING not in record.degradations
+    assert "reference_free" in env.log.types()
+    assert "style_refs_missing" not in env.log.types(), "nothing emits it post-D46"
+    assert record.status is AssetStatus.SUCCESS, "a text-only render is a degrade, not a failure"
 
 
 # ------------------------------------------------------------------- FR-292 / M12 the signature
@@ -652,8 +716,13 @@ async def test_vision_check_off_never_calls_the_model(tmp_path: Path) -> None:
 
 
 async def test_slides_two_onward_lead_with_the_finished_anchor(tmp_path: Path) -> None:
-    """FR-95: the finished slide 1 is the PRIMARY reference, ahead of the style references, and
-    it is introduced by the template-lock block rather than by a style role line."""
+    """FR-95: the finished slide 1 is the PRIMARY reference, and it is introduced by the
+    template-lock block rather than by a role line.
+
+    Post-D46 the anchor is also the ONLY reference an unbriefed deck carries — slide 1 itself
+    attaches nothing (F3) — so "the anchor leads" and "the anchor is the whole list" are the same
+    sentence here. A brief's photos following it are pinned in the sibling test below.
+    """
     entry = make_entry(slides=3)
     style = make_style(tmp_path)
     env = make_env(tmp_path, entry, texts=["one", "two", "three"], style=style)
@@ -663,13 +732,35 @@ async def test_slides_two_onward_lead_with_the_finished_anchor(tmp_path: Path) -
 
     anchor = submit.slide(1)
     assert anchor.kind == "projected" and anchor.priority is RenderPriority.WAVE1
-    assert anchor.image_urls == style_urls(style)
+    assert anchor.image_urls == [], "the anchor renders text-to-image (FR-17/18)"
     for number in (2, 3):
         call = submit.slide(number)
-        assert call.image_urls[0] == anchor.url, "the anchor leads the reference set"
-        assert call.image_urls[1:] == style_urls(style), "the style window follows it"
+        assert call.image_urls == [anchor.url], "the finished slide 1 and nothing else"
         assert "ANCHOR REFERENCE" in call.prompt, "the template-lock block is prepended"
         assert call.kind == "precommitted" and call.priority is RenderPriority.WAVE2
+
+
+async def test_the_anchor_leads_and_a_briefs_photos_follow_it_on_every_later_slide(
+    tmp_path: Path,
+) -> None:
+    """FR-95 + FR-145 in one list: the chained slide 1 is PRIMARY, and the brief's own subject
+    photo rides behind it so the deck reproduces its own template while keeping its product.
+
+    Every render scaffold tells the model to follow the FIRST reference listed, so this order IS
+    the precedence — swapping the two would make each body slide a fresh photo shoot rather than
+    a page of one deck.
+    """
+    entry = make_entry(slides=3)
+    env = make_env(tmp_path, entry, texts=["one", "two", "three"])
+    (photo,) = give_brief(env, [entry], tmp_path)
+    submit = FakeSubmit()
+
+    await render_carousel(entry, env, make_folder(tmp_path, entry), submit=submit)
+
+    anchor = submit.slide(1)
+    assert anchor.image_urls == [upload_url(photo)]
+    for number in (2, 3):
+        assert submit.slide(number).image_urls == [anchor.url, upload_url(photo)]
 
 
 def test_the_chained_anchor_carries_an_explicit_role_and_never_a_blank_line() -> None:
@@ -700,7 +791,8 @@ async def test_anchor_failure_falls_back_to_independent_slides_precommitted(
     assert [call.slide for call in fallback] == [1, 2, 3, 4]
     assert {call.kind for call in fallback} == {"precommitted"}, "never discretionary"
     assert {call.priority for call in fallback} == {RenderPriority.WAVE2}
-    assert all(call.image_urls == style_urls(style) for call in fallback), "no anchor reference"
+    assert all(call.image_urls == [] for call in fallback), \
+        "no anchor to chain to, and a style ships no pictures of its own (F3)"
     assert "carousel_anchor_fallback" in env.log.types()
     assert record.status is AssetStatus.SUCCESS and record.slide_count == 4
 
@@ -892,7 +984,12 @@ async def test_a_deck_that_delivers_nothing_keeps_its_paid_artifacts(tmp_path: P
 async def test_moderation_refusal_retries_reference_free_as_discretionary(
     tmp_path: Path,
 ) -> None:
-    """FR-97: one resubmission with every reference removed, marked `refs_dropped_moderation`."""
+    """FR-97: one resubmission with every reference removed, marked `refs_dropped_moderation`.
+
+    Slide 2 is the one refused because a body slide always HAS a reference — the chained anchor —
+    which is what there is to drop. The refusal on a job that carried nothing is the sibling case
+    below, and it does not retry at all.
+    """
     entry = make_entry(slides=3)
     env = make_env(tmp_path, entry, texts=["a", "b", "c"])
     refused: set[int] = set()
@@ -912,6 +1009,28 @@ async def test_moderation_refusal_retries_reference_free_as_discretionary(
     assert "refs_dropped_moderation" in [tag.value for tag in record.degradations]
     assert record.slide_count == 3, "the deck is whole; only the references were dropped"
     assert "moderation_retry" in env.log.types()
+
+
+async def test_a_refused_reference_free_slide_is_never_resubmitted(tmp_path: Path) -> None:
+    """FR-97's remedy is dropping references, so a job that carried NONE has no remedy left.
+
+    Post-D46 that is the ordinary anchor: an unbriefed slide 1 renders text-to-image, and a
+    moderation refusal on it must fail straight through to the independent-slide fallback rather
+    than buy a byte-identical resubmission at full price. Every fallback slide is likewise
+    reference-free, so not one of them retries either.
+    """
+    entry = make_entry(slides=3)
+    env = make_env(tmp_path, entry, texts=["a", "b", "c"])
+    submit = FakeSubmit(rule=lambda call: failed(RenderFailCause.MODERATION)
+                        if call.slide == 1 else ok(call))
+
+    record = await render_carousel(entry, env, make_folder(tmp_path, entry), submit=submit)
+
+    assert [call.kind for call in submit.calls] == ["projected", *["precommitted"] * 3], \
+        "one refused anchor, then the fallback deck — no discretionary retry anywhere"
+    assert "moderation_retry" not in env.log.types()
+    assert "refs_dropped_moderation" not in [tag.value for tag in record.degradations]
+    assert "carousel_anchor_fallback" in env.log.types()
 
 
 async def test_halt_before_the_deck_orders_nothing_and_packages_honestly(

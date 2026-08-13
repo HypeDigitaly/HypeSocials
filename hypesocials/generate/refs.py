@@ -1,33 +1,41 @@
 """One job's reference set: what is attached, and what each attachment is FOR (FR-18/191/200).
 
-Purpose: hand a render job the pictures that PROVE its assigned house style — the meta-style's own
-reference-window slice (FR-290/291), uploaded once per run (FR-200) — merged with a campaign
-brief's own product photos when it ships any (FR-144/145), and give every attachment its FR-191
-role line. All three format modules attach through this one function, so a brief's product photo is
-never introduced as "layout, palette and treatment only" — the wording that makes a product vanish
-from its own ad.
+Purpose: hand a render job the campaign brief's own product photos when it ships any
+(FR-144/145), uploaded once per run (FR-200), and give every attachment its FR-191 role line. All
+three format modules attach through this one function, so a brief's product photo is never
+introduced as "layout, palette and treatment only" — the wording that makes a product vanish from
+its own ad. The same module answers the three style/branding questions a format module asks while
+assembling a prompt (`style_of`, `branding_block`, `wordmark`), because they travel with the same
+entry and the same registry.
+
+**Text-to-image is the default route (D46/FR-18, v2.1.0).** A meta-style ships NO pixels: its
+textual DNA qualifies the render (FR-17), so most jobs attach nothing at all and that is the
+NORMAL case, not a degradation. The only images a job may carry are (a) a brief's own photos,
+attached here, and (b) chained artifacts a format module makes itself and passes in beside these —
+the carousel anchor slide (FR-95) and the reel's seed frame (FR-24).
 
 Public API: `await attach(entry, env, folder)` · `role_lines(refs)` · `provenance(refs)` ·
 `style_of(entry, env)` · `branding_block(entry, env, style)` · `wordmark(entry, env)` ·
-`reset_uploads()` · `Reference`.
+`reset_uploads()` · `Reference` · `UploadMemo`.
 
 Invariants:
-- **Style images come FIRST, brief images after** (F19). Every render scaffold tells the model to
-  follow the first reference listed, so ordering IS precedence: the house style wins the look and
-  the brief keeps its subject.
+- **Only `brief`-kinded local files are attached.** `env.local_refs` is the runner's brief-photo
+  channel and nothing else; any other kind is a stale caller, and it is dropped with a logged line
+  rather than silently uploaded as a look the style never asked for.
 - **One upload per file per run** (FR-200/244). Kie keeps an upload ~24 h, so the memo is created
   per run and thrown away with it — a URL memoized across runs is a reference that silently 404s
-  mid-batch. Within one run it is what makes a style's five brand cards upload once, not once
-  per job.
-- **An `override` brief suppresses the style entirely** (FR-144/M14): no `render_prompt`, no style
-  pictures — the brief's own directives and its own photos are the whole creative.
-- **A failed upload drops one reference, never the job** (FR-200, 20 §10's FR-244 row); absence is
-  marked AND logged, never silent (FR-18); nothing here raises.
+  mid-batch. Within one run it is what makes a brief's photo upload once, not once per creative.
+- **An `override` brief suppresses the style entirely** (FR-144/M14): no `render_prompt` — the
+  brief's own directives and its own photos are the whole creative. Its photos still attach.
+- **A failed upload drops one reference, never the job** (FR-200, 20 §10's FR-244 row); nothing
+  here raises. `reference_free` is marked only when references were EXPECTED AND LOST — a brief
+  shipped photos and not one of them could be attached (FR-18's "an input, not a prerequisite").
+  A style-driven creative that attaches nothing is silent, because it has lost nothing.
 
 Do not: select which topic a creative quotes (`copywrite` owns that), price anything, write the
 branding block's words (`prompts_engine` owns the wording — §1.4 module split; this module only
-decides WHICH creative gets one), or validate reference bytes (`styles.pick_reference_window`
-already dropped the unusable ones).
+decides WHICH creative gets one), or upload anything out of the run's `source/` folder (D46's
+carve-out boundary: no Virlo byte or URL may reach a render payload).
 """
 
 from __future__ import annotations
@@ -40,19 +48,23 @@ from typing import TYPE_CHECKING, Any
 
 from hypesocials import prompts_engine, render, styles
 from hypesocials.models import DegradationTag, MetaStyle, PlanEntry
-from hypesocials.styles import UploadMemo
 
 if TYPE_CHECKING:  # runtime import would be circular: `generate/__init__.py` imports this module
     from hypesocials.generate import Env
 
 logger = logging.getLogger(__name__)
 
-#: FR-191's two wordings, one per provenance. The style line is quoted verbatim from §1.9 F19 —
-#: including its em dash, which is why `role_lines` punctuates the two kinds differently.
+#: Local file path -> the Kie URL it was uploaded to, built ONCE per run and thrown away with the
+#: run (FR-200/FR-244). Run-scoped on purpose: Kie's file host keeps an upload roughly 24 h, so a
+#: URL memoized across runs is a reference that silently 404s mid-batch. The type lives HERE, with
+#: the only code that fills it, since D46 left this module the sole uploader of local files.
+UploadMemo = dict[Path, str]
+
+#: FR-191's brief wording — the one role line this module writes. The style role sentence retired
+#: with the channel it introduced (D46/FR-18): a house style contributes prose to the prompt now,
+#: never a picture to introduce.
 BRIEF_ROLE = ("brief subject — this product/object IS the subject; reproduce it faithfully; "
               "contribute style only where it does not alter the subject; no added text or logo")
-STYLE_ROLE = ("house style reference{label}: layout, palette, typography and treatment only; "
-              "no words, no logos.")
 
 #: run directory -> that run's `UploadMemo`. Run-scoped by construction: every run gets its own
 #: timestamped `run_dir`, so no URL can survive into a later run, which is the whole point of the
@@ -65,37 +77,43 @@ _MEMOS: dict[str, UploadMemo] = {}
 class Reference:
     """One attachment: the URL the job sends, the FR-191 line introducing it, its provenance.
 
-    `kind` is the provenance as a word (`style` / `brief`) rather than something a reader has to
-    infer from the role sentence. NFR-5 wants a creative's provenance reconstructable from the logs
-    alone, and "which of these pictures was the operator's own product photo" is exactly the
-    question a role sentence answers only by string-matching.
+    `kind` is the provenance as a word rather than something a reader has to infer from the role
+    sentence. Post-D46 the vocabulary is two words: `brief` (a photo the operator's campaign brief
+    shipped, the only kind `attach()` ever produces) and `chained` (an artifact this run generated
+    and passed back in — the carousel anchor slide, the reel seed frame). NFR-5 wants a creative's
+    provenance reconstructable from the logs alone, and "which of these pictures was the operator's
+    own product photo" is exactly the question a role sentence answers only by string-matching.
+
+    `chained` is the DEFAULT because the format modules construct those references positionally
+    (`Reference(anchor_url, ROLE)`), and it keeps their FR-191 punctuation unchanged.
     """
 
     url: str
     role: str = ""
-    kind: str = "style"
+    kind: str = "chained"
 
 
 def role_lines(refs: Sequence[Reference]) -> list[str]:
     """FR-191's `reference_roles` block — one line per attachment, in attachment order.
 
-    The style line follows §1.9 F19 verbatim (`Image 1 — house style reference "…": …`) and the
-    brief line keeps its existing `Image 2: …` shape; the punctuation difference is quoted, not
-    invented, and it also makes the two provenances scannable in a logged prompt.
+    A brief photo reads `Image 2: …` and a chained artifact reads `Image 1 — …`; the punctuation
+    difference is quoted from §1.9 F19, not invented, and it makes the two provenances scannable in
+    a logged prompt. The anchor's own line is re-rendered from `carousel_anchor_instruction.md`
+    over the top of this one (FR-190) — this is its floor, never its final wording.
     """
-    return [f"Image {index} — {ref.role}" if ref.kind == "style" else f"Image {index}: {ref.role}"
+    return [f"Image {index}: {ref.role}" if ref.kind == "brief" else f"Image {index} — {ref.role}"
             for index, ref in enumerate(refs, start=1)]
 
 
 def provenance(refs: Sequence[Reference]) -> dict[str, int]:
     """How many attachments came from each source, always both keys (FR-155/NFR-5).
 
-    Both, including the zeros: "0 style" is the answer to "did this creative's house style reach
-    the job", and an absent key is not. The counts are what the funnel's `render` row forecasts and
-    what `kie_job_submitted` records per job, so the forecast and the fact stay comparable after
-    the run rather than only in aggregate.
+    Both, including the zeros: "0 brief" is the answer to "did this creative's brief photos reach
+    the job", and an absent key is not. Post-D46 there is no `style` count to keep — FR-155's
+    amended `kie_job_submitted` shape drops style-reference entries outright and calls a
+    reference_count of 0 the normal case for a text-only render.
     """
-    counts = {"style": 0, "brief": 0}
+    counts = {"brief": 0, "chained": 0}
     for ref in refs:
         counts[ref.kind] = counts.get(ref.kind, 0) + 1
     return counts
@@ -167,78 +185,74 @@ def reset_uploads() -> None:
 
 
 async def attach(entry: PlanEntry, env: Env, folder: Any) -> list[Reference]:
-    """This job's finished reference set: uploaded, capped and role-labelled. Never raises."""
+    """This job's finished reference set: uploaded, capped and role-labelled. Never raises.
+
+    Post-D46 that set is the campaign brief's own photos and nothing else — an ordinary
+    style-driven creative attaches zero references and says nothing about it, because text-to-image
+    is the route the style was written for (FR-17/18). The one thing worth a word is a LOSS: a
+    brief shipped photos and not one of them survived the upload.
+    """
     style = style_of(entry, env)
     # The name this creative's look answers to in the log — M14's `brief_override` when a brief
     # took the style's place, so the line and the meta.yaml field say the same word.
     label = style.key if style is not None else (
         "brief_override" if _overridden(entry, env) else entry.style_key or "")
     memo = _MEMOS.setdefault(str(getattr(env, "run_dir", "")), {})
+    wanted = _wanted(entry, env)
     refs: list[Reference] = []
-    for path, kind in _wanted(entry, env, style):
+    for path in wanted:
         url = await _upload(path, memo, entry, env)
         if url:
-            refs.append(Reference(url, _style_role(label) if kind == "style" else BRIEF_ROLE,
-                                  kind=kind))
-    counts = provenance(refs)
-    if style is not None and style.reference_images and not counts["style"]:
-        # The style declared pictures and none of them made it — missing on disk, not an image, or
-        # the upload failed. A text-only style is a legitimate degrade (its written guidance is
-        # intact, FR-18), but the operator hears which creative lost its proof (FR-295's warning
-        # says which FILE, once, at pre-flight; this says which CREATIVE, here).
-        folder.mark(DegradationTag.STYLE_REFS_MISSING)
-        env.log.warn("style_refs_missing",
-                     f"{entry.asset_id}: no reference image of style {label!r} could be attached; "
-                     "the creative renders on the style's written guidance alone (FR-18/295)",
-                     asset_id=entry.asset_id, style_key=label)
-    if not refs:  # FR-18: metadata, log AND gallery — absence is visible, never silent
+            refs.append(Reference(url, BRIEF_ROLE, kind="brief"))
+    if wanted and not refs:
+        # FR-18: brief images are an input, not a prerequisite — the job proceeds on the style's
+        # written guidance alone. But this creative EXPECTED pictures and lost every one of them
+        # (missing on disk, or the upload failed), so the absence is marked AND logged, in metadata
+        # and in the gallery. A creative that expected none never reaches this branch.
         folder.mark(DegradationTag.REFERENCE_FREE)
         env.log.warn("reference_free",
-                     f"{entry.asset_id}: no reference image could be attached; the job renders on "
-                     "the style's written guidance and FR-96's content sentence alone (FR-18)",
+                     f"{entry.asset_id}: none of the {len(wanted)} brief reference image(s) could "
+                     "be attached; the job renders on the style's written guidance and FR-96's "
+                     "content sentence alone (FR-18)",
                      asset_id=entry.asset_id, style_key=label)
-    else:
-        # FR-155/NFR-5: the trim that happens here — the merged set hitting the profile's ceiling,
-        # a brief's photos arriving behind the style window — was the last silent one on this path.
+    elif refs:
+        # FR-155/NFR-5: the trim that happens here — a brief's photos hitting the profile's own
+        # ceiling — was the last silent one on this path.
+        counts = provenance(refs)
         env.log.event("reference_set",
-                      f"{entry.asset_id}: {len(refs)} reference(s) — {counts['style']} style, "
-                      f"{counts['brief']} brief",
+                      f"{entry.asset_id}: {len(refs)} reference(s) — {counts['brief']} brief",
                       asset_id=entry.asset_id, style_key=label,
-                      reference_count=len(refs), reference_sources=counts,
-                      reference_window=entry.trend_reuse_index)
+                      reference_count=len(refs), reference_sources=counts)
     return refs
 
 
-def _wanted(entry: PlanEntry, env: Env, style: MetaStyle | None) -> list[tuple[Path, str]]:
-    """The local files this job wants attached, in F19 order, already capped (FR-272).
+def _wanted(entry: PlanEntry, env: Env) -> list[Path]:
+    """The local files this job wants attached, de-duplicated and capped (FR-272).
 
-    Style first, brief after: the render scaffolds tell the model to follow the first reference
-    listed, so this order IS the FR-145 precedence — the house style wins the look, the brief keeps
-    its subject. Capped BEFORE the uploads rather than after, because an upload the job will not
-    attach is a second of somebody's run spent on nothing.
+    One channel only: the `brief`-kinded entries the runner pre-resolved into `env.local_refs`
+    (FR-144/145). The style channel is gone with the pictures it carried (D46/FR-18), so there is
+    no ordering rule left to enforce — a brief's photos are the whole list, in the brief's own
+    order. Capped BEFORE the uploads rather than after, because an upload the job will not attach
+    is a second of somebody's run spent on nothing.
 
-    Two channels feed the style half: the assigned style's own rotated window (`styles`, the
-    authority) and any `style`-kinded entry the run pre-resolved into `env.local_refs`. Paths are
-    de-duplicated, so a run that fills both channels attaches — and uploads — each file once. A
-    kind this vocabulary does not know is treated as a style reference: a pre-pivot kind label
-    pool WAS a folder of house-style pictures, and it retires with W3.5 rather than vanishing here.
+    Any other kind is DROPPED with a logged line. Post-pivot `runner._local_refs` emits `"brief"`
+    and nothing else, so a stray kind means a stale caller, and uploading it would attach a picture
+    no requirement asked for to a job the operator is paying for.
     """
     local = list(getattr(env, "local_refs", {}).get(entry.asset_id, ()))
-    wanted: list[tuple[Path, str]] = []
-    if style is not None:
-        wanted += [(path, "style")
-                   for path in styles.pick_reference_window(style, entry.trend_reuse_index,
-                                                            _cap(env))]
-    if not _overridden(entry, env):  # M14: an override brief attaches no style picture at all
-        wanted += [(Path(path), "style") for path, kind in local if kind != "brief"]
-    wanted += [(Path(path), "brief") for path, kind in local if kind == "brief"]
-    unique: list[tuple[Path, str]] = []
+    wanted: list[Path] = []
     seen: set[Path] = set()
-    for path, kind in wanted:
-        if path not in seen:
+    for raw, kind in local:
+        if kind != "brief":
+            env.log.warn("reference_kind_unknown",
+                         f"{entry.asset_id}: reference {Path(raw).name} arrived as kind {kind!r}; "
+                         "only brief photos are attached post-D46 (FR-18) — dropped",
+                         asset_id=entry.asset_id, reference=Path(raw).name)
+            continue
+        if (path := Path(raw)) not in seen:
             seen.add(path)
-            unique.append((path, kind))
-    return unique[:_ceiling(env)]
+            wanted.append(path)
+    return wanted[:_ceiling(env)]
 
 
 async def _upload(path: Path, memo: UploadMemo, entry: PlanEntry, env: Env) -> str:
@@ -272,20 +286,15 @@ def _overridden(entry: PlanEntry, env: Env) -> bool:
     return bool(brief and mode == "override" and brief.visual_directives)
 
 
-def _style_role(key: str) -> str:
-    """§1.9 F19's role sentence, naming the style when there is a name to give."""
-    return STYLE_ROLE.format(label=f' "{key}"' if key else "")
-
-
-def _cap(env: Env) -> int:
-    """The style window's width: `styles.refs_per_job`, never past the profile's own ceiling."""
-    return max(1, min(_ceiling(env), env.config.styles.refs_per_job or _ceiling(env)))
-
-
 def _ceiling(env: Env) -> int:
-    """The provider's hard reference ceiling for this run's image profile (FR-272)."""
+    """The provider's hard reference ceiling for this run's image profile (FR-272).
+
+    The only cap left: the retired `styles.refs_per_job` key sized a style window that no longer
+    exists (FR-17/18 tombstone both), and a brief ships the photos it ships — trimming those to a
+    house-style budget would drop the operator's own product from its own ad.
+    """
     return render.get_profile(env.config.models.image_profile).limits.max_image_urls or 16
 
 
-__all__ = ["BRIEF_ROLE", "Reference", "STYLE_ROLE", "attach", "branding_block", "provenance",
+__all__ = ["BRIEF_ROLE", "Reference", "UploadMemo", "attach", "branding_block", "provenance",
            "reset_uploads", "role_lines", "style_of", "wordmark"]

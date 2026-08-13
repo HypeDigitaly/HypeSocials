@@ -481,15 +481,11 @@ def assign(entries: Sequence[PlanEntry], selection: Selection, config: Config) -
       `platforms.<name>.carousel_slides` (§0.4′). Fixing it before the estimate is what keeps the
       Confirm gate honest — vision intelligence runs later and may never change a deck's length;
     - `trend_reuse_index` records this creative's 0-based position among the creatives sharing
-      that topic. Post-pivot that index is the **sibling-divergence key**: `copywrite` quotes
-      `posts[index % len(posts)]` (§1.6/§1.7.6), so two creatives on one topic quote two different
-      source posts instead of shipping the same caption twice, and `styles.pick_reference_window`
-      turns the same index into which slice of the assigned style's reference images this job
-      attaches (A17's window rotation, re-homed). **Deprecated as the post-pick key (§0.10):** the
-      bound `source_post_id` above says WHICH post a creative quotes, exactly and per creative, and
-      the modulo walk it replaces could hand a sibling a post the window had already burnt. The
-      index survives only until its two remaining consumers (`generate/refs.py`'s reference-window
-      rotation, `copywrite`'s fallback) are re-based in Wave 3, and nothing new may read it;
+      that topic. **Legacy-only after D46 (§0.10 + the W3/F3 excision):** the bound
+      `source_post_id` above says WHICH post a creative quotes, exactly and per creative, and
+      the style reference window that also turned on this index died with the picture channel.
+      What remains reads it only as a fallback for UNBOUND entries — `copywrite`'s degrade-path
+      modulo and the runner's post-roster `-> NN` mapping — and nothing new may read it;
     - `asset_id` is rewritten with the topic's slug (FR-71).
 
     Entries already terminal — budget-trimmed, say — are left alone, and an `override` brief entry

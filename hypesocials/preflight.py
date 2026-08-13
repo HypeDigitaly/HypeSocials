@@ -20,11 +20,18 @@ Invariants:
 - **The config is normalized here, in place, and says so**: the FR-103 clamp and FR-47's forced
   `notion_influence: off` are written onto the `Config` the rest of the run reads, so no later
   stage re-derives them.
-- **Profiles and styles are checked through their owners** — `render.get_profile()` for FR-281,
-  `prompts_engine.validate_template_set()` for FR-263, `styles.load_registry()` +
-  `styles.validate()` for FR-295. This module never re-derives a required template name or a
-  registry rule; a second registry is how they drift. What it DOES own is the grading: an error
-  from any of those owners is a refusal here, a warning is printed and the run proceeds.
+- **Profiles, styles and the cross-key config pairs are checked through their owners** —
+  `render.get_profile()` for FR-281, `prompts_engine.validate_template_set()` for FR-263,
+  `styles.load_registry()` + `styles.validate()` for FR-295, and `config.windows_violation()` +
+  `config.formats_sourcing_violation()` for FR-307/§0.14e. This module never re-derives a required
+  template name, a registry rule or a refusal sentence; a second copy is how they drift. What it
+  DOES own is the grading: an error from any of those owners is a refusal here, a warning is
+  printed and the run proceeds.
+- **The two config PAIRS are re-checked here because flags mutate the config after it loaded.**
+  `config._validate` runs at LOAD time; `--history-days 7` and `--images 4` are applied afterwards
+  (`cli.apply_overrides`), so a flag can walk a legal file into an illegal pair that the loader
+  has already waved through. FR-138 lists both among the things pre-flight validates before the
+  confirm prompt, and this is the only door left that both of them pass through.
 - **The style registry has no fallback tier** (D41/FR-295, unlike every other prompt artifact):
   missing, unreadable or unparseable is the same refusal as invalid, because the registry is the
   run's visual authority and a built-in copy would be silent drift against the file being edited.
@@ -47,7 +54,7 @@ from pathlib import Path
 
 from hypesocials import briefs, styles
 from hypesocials.util import wrapped
-from hypesocials.config import Config
+from hypesocials.config import Config, formats_sourcing_violation, windows_violation
 from hypesocials.models import PlanEntry
 from hypesocials.plan import BriefRequest
 from hypesocials.prompts_engine import PROMPTS_DIR, validate_template_set
@@ -195,6 +202,7 @@ def check(
 
     _check_secrets(config, action, errors, warnings)
     _check_sources(config, errors, warnings)
+    _check_config_pairs(config, action, entries, errors)
     _check_supply(config, action, entries, errors, warnings)
     _check_profiles(config, action, errors)
     _check_styles(config, action, errors, warnings)
@@ -242,6 +250,54 @@ def _check_sources(config: Config, errors: list[str], warnings: list[str]) -> No
         return
     errors.append(f"sources.active: {named} is named for a future adapter and is not built yet — "
                   "pick virlo (D20/FR-135)")
+
+
+def _check_config_pairs(config: Config, action: str, entries: Sequence[PlanEntry],
+                        errors: list[str]) -> None:
+    """FR-138/FR-307/§0.14e: re-run the two CROSS-KEY refusals against the FLAG-OVERRIDDEN config.
+
+    Both pairs are validated when the file loads, and both can be broken afterwards: `cli.py`
+    applies `--history-days`, `--images`, `--reels` and friends onto the `Config` object *after*
+    `load_config` returned, and nothing re-validates it. `--history-days 7` against a 30-day fetch
+    window is exactly the repeat FR-307 exists to prevent, and it would have loaded clean. So the
+    same two predicates run again here, on the object the run will actually use, and their wording
+    comes from `config.py` — one sentence, two doors.
+
+    The §0.14d carve-out for the formats guard: at LOAD time no plan exists, so the guard reads
+    `run.formats`; at PRE-FLIGHT the expanded plan is in hand, and an image or reel entry running
+    under an `override`-influence brief binds no source post at all (FR-144) — it needs no video
+    sourcing and must not refuse a run. So the counts handed to the predicate are the entries that
+    will really draw on the Virlo pool. An EMPTY `entries` (a caller that has no plan yet) falls
+    back to the raw config counts, which is exactly the load-time question.
+
+    Scope: `run` and `preview-analysis`. `--preview-analysis` reaches both stages the pairs govern
+    — the fetch gate's used-post drop (FR-305/307) and the affinity assignment §0.14e is about —
+    and it spends real OpenRouter money doing it, so it is not a free cure path. `--list-monitors`
+    and `--preview-sources` are exempt on FR-251's precedent: they are $0 diagnostics an operator
+    runs to FIX a config, and a config error must never disarm its own cure.
+    """
+    if action not in ("run", "preview-analysis"):
+        return
+    for violation in (windows_violation(config),
+                      formats_sourcing_violation(config, counts=_sourced_counts(entries))):
+        if violation:
+            errors.append(violation)
+
+
+def _sourced_counts(entries: Sequence[PlanEntry]) -> dict[str, int] | None:
+    """Image/reel creatives in this plan that will actually consume a topic — or `None`.
+
+    `None` means "no plan to speak of", and the formats guard then judges `run.formats` exactly as
+    the loader does. Override-brief entries are excluded per §0.14d/FR-144: they bind no source
+    post, so slideshow-only sourcing cannot starve them.
+    """
+    if not entries:
+        return None
+    counts = {"image": 0, "reel": 0}
+    for entry in entries:
+        if entry.creative_format in counts and entry.brief_influence != "override":
+            counts[entry.creative_format] += 1
+    return counts
 
 
 def _check_supply(config: Config, action: str, entries: Sequence[PlanEntry],
@@ -307,9 +363,9 @@ def _check_styles(config: Config, action: str, errors: list[str], warnings: list
 
     Grading is `styles.validate()`'s, not this module's (10 §FR-290's validation table): zero
     usable styles under the active brand or a requested format with no affine style are errors;
-    fewer than three usable styles, an over-long `render_prompt`, an unresolved "either/or" choice
-    and a missing reference image are warnings — the last of these degrades one style to text-only
-    (`style_refs_missing`) and must never cost a batch.
+    fewer than three usable styles, an over-long `render_prompt` and an unresolved "either/or"
+    choice are warnings. Post-D46 there is no reference-image finding at all — a meta-style is
+    text-only DNA (FR-17/18), declares no pictures, and therefore has none that can be missing.
 
     Skipped where no style is ever assigned: `--list-monitors` prints monitor ids (FR-251) and
     `--preview-sources` is the $0 blocklist preview (FR-139) — refusing either on a registry they

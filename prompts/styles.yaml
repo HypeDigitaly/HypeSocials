@@ -1,8 +1,12 @@
-# prompts/styles.yaml — the meta-style registry (FR-290/291, plan §1.3).
+# prompts/styles.yaml — the meta-style registry (FR-290/291, plan §1.3, D46 §0.5/F3).
 #
 # This file is the VISUAL AUTHORITY of the whole product. Eight textual style definitions,
-# deterministically rotated across the creatives of a run. Each one must be executable by
-# GPT Image 2 without ever seeing the images it was derived from.
+# deterministically rotated across the creatives of a run.
+#
+# **Text-only, since D46 (v2.1.0).** No style reference picture is ever attached to a render job:
+# the only images a job may carry are a campaign brief's own product photos, the finished carousel
+# anchor slide, and a reel's seed frame. Everything a style IS therefore has to be readable here,
+# in words, by a model that has never seen a single example of it. Write for that reader.
 #
 # Unlike the templates in this folder, the registry has NO built-in fallback tier: a missing,
 # unreadable or invalid `styles.yaml` is a pre-flight refusal (FR-295, exit 2), never a silent
@@ -11,18 +15,33 @@
 # Editing rules
 #   - `render_prompt` stays at or under 120 words and carries NO unresolved variant ("either
 #     A or B", "Variant A/B", "teal or cobalt"). Resolve the choice here, once; a render model
-#     handed a choice makes a different one every time.
+#     handed a choice makes a different one every time. Pre-flight warns on the three spellings.
+#   - `render_prompt` plus the five DNA fields (`palette`, `typography`, `text_placement`,
+#     `image_treatment`, `visual_pacing`) are the WHOLE look. Name hexes, name letterform
+#     character, name the light, name what the surface is made of. "Like the reference" is not a
+#     sentence any of these fields may contain any more — there is no reference.
 #   - Cover-versus-body divergence lives in `per_format_guidance`, never in `render_prompt` —
-#     `style_dna` must stay byte-identical across every slide of one deck.
-#   - `exclusions` are LITERAL strings read off the reference files, scoped to those attached
-#     references only. They never restrict the TEXT block: a wordmark quoted in the TEXT block
-#     is always rendered, even when the same word appears in the exclusions below (the render
+#     `style_dna` must stay byte-identical across every slide of one deck. The two reserved keys
+#     `carousel_cover` and `carousel_slide` are APPENDED to `render_prompt` for slide 1 and for
+#     slides 2–N respectively, so they are prompt text and must read as instructions.
+#   - `carousel_role: slides_only` removes the style from carousel assignment entirely (under
+#     anchor chaining slide 1 IS the deck's style). `cover_only` is a note to the author; such a
+#     style still takes whole decks, so it still needs a `carousel_slide` paragraph.
+#   - `exclusions` are SELF-CONTAINED forbid-rules, readable without any picture: platform chrome,
+#     watermarks, real company/product logos, real account names, faces, legible text outside the
+#     declared zones. They never restrict the TEXT block: a wordmark quoted in the TEXT block is
+#     always rendered, even when a similar word appears in the exclusions below (the render
 #     templates state this in one line of their own).
-#   - `reference_images` paths resolve against the REPO ROOT (the registry spans two unrelated
-#     trees, `Inspiration/` and `hypedigitaly branding/`).
-#   - `max_onimage_chars` is a hard per-style cap. The copy stage only offers source strings
-#     that already fit it, so a lower number here means a shorter quoted line, never a
-#     truncated one. `0` means "this style carries no text of that kind at all".
+#   - `max_onimage_chars` is this style's own ceiling per text kind. The EFFECTIVE limit is
+#     `min(config text_budgets, this cap)` — config ships headline 90, subline 160, slide 300,
+#     reel seed hook 60 (FR-259), so a cap lower than those is what actually binds, and the raised
+#     budgets of D46 §0.5 only reach the model through the numbers below. The copy stage offers
+#     only source strings that already fit, so a low number here means a shorter quoted line —
+#     never a truncated one, and on a panel-mapped deck (FR-304) a panel that does not fit leaves
+#     that slide WORDLESS. Keys: `headline`, `subline`, `slide`, `overlay` (the reel seed hook,
+#     which also obeys `headline` when this style names one).
+#   - A missing key, and a `0`, both mean "this style states no ceiling of its own" — the config
+#     budget then applies in full. Neither one suppresses a text kind; write a real number.
 #   - `brand_affinity: []` (or omitted) = brand-neutral, usable under every brand.
 #     `brand_slot: true` = this style IS a brand's own house style; the branding block
 #     collapses to nothing extra for it and only the TEXT-block wordmark remains.
@@ -37,50 +56,49 @@ styles:
       enough to feel present; the environment carries the message. Bright diffuse window daylight
       on pale walls, long soft shadows, no added fill light. The palette comes from the room
       itself: off-white plaster, warm grey, pale oak, one warm accent object. No graphic
-      elements, no frames, no stickers, no badges, no icons. Anyone in frame stays anonymous —
-      back turned, silhouetted, cropped away at the edge. One short caption in a
-      regular-to-semibold neutral grotesque sans, sentence case, white with a faint drop
-      shadow, set over low-detail negative space and covering under a tenth of the frame area.
-      Mood: quiet, aspirational, diaristic, unstaged.
+      furniture — no frames, stickers, badges, icons, arrows, gradients. Anyone in frame stays
+      anonymous: back turned, silhouetted, cropped away at the edge. Quoted text sets in a
+      regular-to-semibold neutral grotesque sans, sentence case, white, over low-detail negative
+      space; a long string breaks into as many as five tight lines on a soft charcoal plate at
+      low opacity. Mood: quiet, aspirational, diaristic, unstaged.
     subject_mode: scene_fixed
     layout_zones:
       - {position: "upper-left third, over an empty wall or an unbroken surface",
          content: headline,
-         text_treatment: "regular-to-semibold neutral grotesque sans, sentence case, white with a faint drop shadow, two lines maximum, always over low-detail negative space and never over the subject"}
+         text_treatment: "regular-to-semibold neutral grotesque sans, sentence case, white with a faint drop shadow, up to five tight lines, always over low-detail negative space and never over the subject"}
     format_affinity: [image, carousel, reel]
     brand_affinity: []
     brand_slot: false
-    text_density: minimal
-    max_onimage_chars: {headline: 34, subline: 0, slide: 0}
+    text_density: moderate
+    max_onimage_chars: {headline: 90, subline: 120, slide: 240, overlay: 60}
     motion_profile: photographic
     palette: ["off-white plaster #EDEAE4", "warm grey #B7B2AA", "pale oak #C2A278", "near-black shadow #14120F", "caption white #FFFFFF"]
-    typography: "one neutral grotesque sans only, regular to semibold, sentence case, normal tracking; no second family, no display face, no script"
-    text_placement: "a single caption block over low-detail negative space in the upper-left third; clear of the subject, clear of every edge, never more than a tenth of the frame"
-    image_treatment: "candid available-light photograph with natural sensor grain and honest lens character; no graphic overlay, no sticker, no frame, no colour grade that departs from the room"
-    visual_pacing: "one idea per frame; the room does the talking and the caption only names it"
+    typography: "one neutral grotesque sans only (Inter, Helvetica Now, or the same species), regular to semibold, sentence case, normal tracking, generous line spacing; no second family, no display face, no script, no all-caps"
+    text_placement: "a single caption block in the upper-left third over low-detail negative space; clear of the subject and of every edge; short strings float with a faint drop shadow, longer strings sit on a soft charcoal plate at roughly a quarter opacity with rounded corners and wide inner padding"
+    image_treatment: "candid available-light photograph with natural sensor grain and honest lens character — mild vignetting, gentle highlight roll-off, real depth of field; no graphic overlay, no sticker, no frame, no colour grade that departs from the room, no studio lighting, no styled flat lay"
+    visual_pacing: "one idea per frame; the room does the talking and the caption only names it — never more than one text block, never a second focal object"
     per_format_guidance:
-      carousel_cover: "The cover is the widest view of the room — establish the space first; the caption sits high-left over the emptiest wall."
-      carousel_slide: "Body slides move closer into the same space: one prop, one surface, one corner. Same light direction, same palette, same caption treatment as the cover."
+      carousel_cover: "Cover: the widest view of the room, establishing the space; the quoted text sits high-left over the emptiest wall at the largest size it will hold."
+      carousel_slide: "Body slide: move closer into the SAME space — one prop, one surface, one corner, same light direction, same palette, same caption treatment as the cover. A long quoted panel sets on the charcoal plate at reading size rather than shrinking the type past legibility."
     exclusions:
-      - 'the caption "5 apps I use to run my entire business." — it appears in both reference photographs and belongs to neither this frame nor any zone of it'
-      - 'the apple-shaped device mark on the desktop monitor in Informative_Photorealistic_Carousel_02.webp, and any other manufacturer logo on visible hardware'
-      - 'the face or identity of the person standing at the desk in Informative_Photorealistic_Carousel_02.webp'
-      - "platform UI, progress bars, player chrome, usernames, handles or engagement counters of any kind"
-    reference_images:
-      - "Inspiration/Tiktok and IG/Informative_Photorealistic_Carousel_02.webp"
-      - "Inspiration/Tiktok and IG/Informative_Photorealistic_Carousel_03.webp"
+      - "platform UI of any kind: player chrome, progress bars, play buttons, pagination dots, search fields, tab bars, share and like icons"
+      - "watermarks, app badges, usernames, @handles, profile pictures, follower, like, view or comment counters"
+      - "manufacturer logos and brand marks on visible hardware, appliances, packaging, clothing or stationery — every object in frame is unbranded"
+      - "identifiable faces: a person in frame is turned away, silhouetted, or cropped at the edge"
+      - "legible text anywhere outside the caption zone — signage, screen copy, book spines, printed matter and handwriting stay soft, out of focus or illegible"
+      - "graphic furniture: stickers, badges, chips, sparkles, drawn arrows, frames, borders, gradient meshes, lens flares"
 
   - key: editorial-voxel-carousel
     render_prompt: >-
       Magazine-cover slide on a flat warm-cream field. The headline is a high-contrast Didone
-      serif at very large size, stacked in two to three lines, near-black with one saturated
-      teal phrase; a small tracked-out uppercase sans kicker sits directly above it and a thin
-      teal double rule underneath. The hero object fills the lower half: one physically rendered
-      voxel toy figure with a matte moulded surface, lit like studio product photography with soft
-      contact shadows on the cream. Hand-drawn teal accents — four-point sparkles, motion
-      ticks, one script annotation with an arrow. Supporting graphics allowed: an
-      icon-and-label list column, a dark terminal-window card. Tolerates dense text. Energy:
-      playful-premium print editorial.
+      serif at very large size, stacked in two to three lines, near-black with one saturated teal
+      phrase; a small tracked-out uppercase sans kicker sits directly above it and a thin teal
+      double rule underneath. A longer quoted string continues under that rule as a left-aligned
+      deck of short serif lines, never as a grey paragraph. The hero object fills the lower half:
+      one physically rendered voxel toy figure, matte moulded surface, lit like studio product
+      photography, casting soft contact shadows on the cream. Hand-drawn teal accents:
+      four-point sparkles, motion ticks, one script annotation with an arrow. Supporting
+      graphics: an icon-and-label list column, a dark terminal-window card.
     subject_mode: scene_open
     layout_zones:
       - {position: "top-left corner", content: "slide-position badge",
@@ -97,35 +115,35 @@ styles:
     brand_affinity: []
     brand_slot: false
     text_density: high
-    max_onimage_chars: {headline: 90, subline: 60, slide: 90}
+    max_onimage_chars: {headline: 110, subline: 160, slide: 300}
     motion_profile: graphic
     palette: ["warm cream ground #F6F0E4", "near-black #14120F", "teal accent #0C8897", "paper shadow grey #CFC7B8", "white card #FFFFFF"]
-    typography: "high-contrast Didone serif for the headline (large, tightly leaded), tracked-out uppercase grotesque sans for kickers and labels, one handwritten script for annotations only"
-    text_placement: "kicker and headline stack in the upper 40 percent; supporting labels run down the left column; corner chips top-left and top-right; the hero object owns the lower half"
-    image_treatment: "physically rendered voxel or glossy 3D props photographed as studio product shots with soft contact shadows on a flat cream field; hand-drawn ink accents in the accent colour"
-    visual_pacing: "loud headline, quiet ground, one hero object; every slide repeats the same three-part rhythm of kicker, headline, object"
+    typography: "high-contrast Didone serif for the headline (large, tightly leaded, hairline-to-heavy stroke contrast), tracked-out uppercase grotesque sans for kickers, chips and labels, one handwritten script reserved for annotations; three families, never a fourth"
+    text_placement: "kicker and headline stack in the upper 40 percent with the teal double rule closing them; a long quoted string continues directly beneath that rule as short left-aligned lines; supporting labels run down the left column; corner chips top-left and top-right; the hero object owns the lower half"
+    image_treatment: "physically rendered voxel and glossy 3D props photographed as studio product shots — matte moulded surfaces, soft contact shadows, gentle specular highlights — floating on a flat cream field with no environment behind them; hand-drawn ink accents in the accent colour; no photography of real places, no gradient background"
+    visual_pacing: "loud headline, quiet ground, one hero object; every slide repeats the same three-part rhythm of kicker, headline, object, so the deck reads as one magazine"
     per_format_guidance:
-      carousel_cover: "The cover carries the full stacked headline with the teal payoff phrase and the largest hero object; the badge reads position 1."
-      carousel_slide: "Body slides shrink the headline by roughly a third, keep the kicker, and give the freed middle band to the icon-and-label list or the terminal card. Same cream, same rule, same corner chips."
+      carousel_cover: "Cover: the full stacked headline with the teal payoff phrase at maximum scale, the largest hero object, badge reading position 1."
+      carousel_slide: "Body slide: drop the headline by roughly a third, keep the kicker and the teal rule, and give the freed middle band to the quoted line, the icon-and-label list, or the terminal card. Same cream ground, same rule weight, same corner chips as the cover."
     exclusions:
-      - 'every legible string in Informative_Carousel_01.png: "GRILL-ME-CODEX", "TWO MODELS, ONE PLAN", "TWO IS BETTER THAN ONE", "How to Combine", "Claude Code", "Codex", "swipe", "01 / 10"'
-      - 'every legible string in Informative_Carousel_03.png: "THE 4-STEP BUILD", "Build Your", "JARVIS OS", "by the last step, it runs your whole day", "CLAUDE CODE", "The engine", "OBSIDIAN", "The memory", "LOCAL VOICE", "Ears + mouth", "ONE HUD", "The face", "> speak", "> route", "> remember", "> RUNS YOUR WHOLE DAY_"'
-      - "the real product icons on the reference list rows — the orange starburst, the violet gem, the blue voice-wave, the four-square grid — and any other identifiable app or company mark; invented abstract glyphs only"
-      - 'the Instagram overlay "Najdi podobný obsah", its search field, its play triangle and its pagination dots'
-    reference_images:
-      - "Inspiration/Tiktok and IG/Informative_Carousel_01.png"
-      - "Inspiration/Tiktok and IG/Informative_Carousel_03.png"
+      - "platform UI and overlays: pagination dots, search fields, play triangles, tab bars, share sheets, 'related content' banners"
+      - "watermarks, app badges, usernames, @handles, follower, like or view counters"
+      - "real company, product or app logos — list rows, chips and icon nodes carry invented abstract glyphs only, and a made-up brand name in their place is equally forbidden"
+      - "legible text inside a screenshot, terminal card, phone or device screen: interface copy is greeked into grey bars unless it is quoted in the TEXT block"
+      - "lettered navigation cues — the top-right swipe mark is a drawn arrow glyph and carries no words"
+      - "photographic environments, gradient meshes, lens flares, drop-shadowed glass panels: the ground is a flat cream field and stays flat"
 
   - key: letterpress-print-carousel
     render_prompt: >-
-      Risograph and letterpress poster grammar: one paper tone plus exactly two ink colours,
-      with visible paper grain, distressed ink texture inside the letterforms and slight
+      Risograph and letterpress poster grammar: one paper tone plus exactly two ink colours, with
+      visible paper grain, distressed ink texture inside the letterforms and slight
       misregistration at the edges of solids. Type does the work — a towering display face set
-      tight and huge, with one phrase set apart in the second ink; body copy in a lighter weight of the same family, left-aligned, four lines at
-      most. Hand-drawn marker underlines, circled cues and one small pixel-art mascot sit in
-      the accent ink. Any screenshot inset rides on a white card held by translucent tape
-      strips and shows invented, generic interface. Nothing glossy, nothing gradient. High
-      text tolerance.
+      tight and huge, with one phrase set apart in the second ink; a longer quoted string runs
+      underneath in a lighter weight of the same family, left-aligned, up to six lines with
+      generous leading. Hand-drawn marker underlines, circled cues and one small pixel-art mascot
+      sit in the accent ink. Any screenshot inset rides on a white card held by translucent tape
+      strips and shows invented, wordless interface. Nothing glossy, nothing gradient, nothing
+      photographic. High text tolerance.
     subject_mode: scene_open
     layout_zones:
       - {position: "top-left corner", content: "slide-position badge",
@@ -134,86 +152,84 @@ styles:
          content: headline,
          text_treatment: "towering display type set tight, one ink for the setup lines and the second ink (or a reversed black bar) for the payoff phrase"}
       - {position: "middle band, left-aligned", content: body,
-         text_treatment: "lighter weight of the headline family, two to four lines, generous leading, one hand-drawn marker underline allowed"}
+         text_treatment: "lighter weight of the headline family, two to six lines, generous leading, one hand-drawn marker underline allowed"}
       - {position: "lower-right, or top-right on a body slide", content: "swipe cue",
          text_treatment: "hand-drawn circled arrow in the accent ink — a drawn mark, never a lettered word, unless a swipe string is quoted in the TEXT block"}
     format_affinity: [carousel]
     brand_affinity: []
     brand_slot: false
     text_density: high
-    max_onimage_chars: {headline: 110, subline: 60, slide: 110}
+    max_onimage_chars: {headline: 110, subline: 160, slide: 300}
     motion_profile: graphic
     palette: ["aged cream paper #E8DCC3", "terracotta ground #B5573C", "black ink #1A1714", "vermilion ink #E2522B", "cream ink #F3E9D8"]
-    typography: "condensed woodtype-style uppercase display for covers, ultra-heavy geometric lowercase sans for body slides, one lighter weight of the same sans for paragraphs; hand-drawn marker for annotations"
-    text_placement: "headline owns the top two-thirds of a cover and the upper-left third of a body slide; paragraphs in the middle band, left-aligned; chips and cues in the corners"
-    image_treatment: "flat printed inks on textured paper with grain and distress; pixel-art mascot as the only illustration; screenshot insets taped onto white cards, never bleeding to the edge"
+    typography: "condensed woodtype-style uppercase display for covers, ultra-heavy geometric lowercase sans for body slides, one lighter weight of that same sans for paragraphs, hand-drawn marker for annotations; letterforms carry ink texture and slightly ragged edges, never clean vector outlines"
+    text_placement: "the headline owns the top two-thirds of a cover and the upper-left third of a body slide; the quoted paragraph fills the middle band, left-aligned, ragged right; position chip top-left, drawn cue in the opposite corner; wide paper margins on every side"
+    image_treatment: "flat printed inks on textured paper — visible tooth, grain, slight plate misregistration, ink density variation inside solids; a pixel-art mascot is the only illustration; screenshot insets are taped onto white cards and never bleed to the edge; no photograph, no gradient, no gloss, no drop shadow"
     visual_pacing: "one enormous typographic statement per slide, one supporting paragraph, one drawn mark — the paper is the ground and never a photograph"
     per_format_guidance:
-      carousel_cover: "Aged cream paper with visible grain. The headline is towering condensed woodtype-style uppercase filling two thirds of the frame: black ink for the setup lines, vermilion for the payoff line, distressed ink texture inside every letterform. A hand-circled swipe cue lower-right, the outlined slide-counter chip top-left."
-      carousel_slide: "Saturated terracotta ground with film grain. The headline is lowercase ultra-heavy geometric sans in cream with one phrase reversed inside a solid black highlight bar; the body paragraph sits in the middle band in a lighter cream weight. Insets ride on a taped white card. Slide-counter chip top-left in mono caps."
+      carousel_cover: "Cover: aged cream paper with visible grain. The headline is towering condensed woodtype-style uppercase filling two thirds of the frame — black ink for the setup lines, vermilion for the payoff line, distressed ink texture inside every letterform. Hand-circled cue lower-right, outlined position chip top-left."
+      carousel_slide: "Body slide: saturated terracotta ground with film grain. The headline is lowercase ultra-heavy geometric sans in cream with one phrase reversed inside a solid black highlight bar; a longer quoted string sets beneath it in the lighter cream weight across the middle band. Insets ride on a taped white card. Position chip top-left in mono caps."
     exclusions:
-      - 'every legible string in Informative_Carousel_05.png: "CLAUDE TOKENS", "USAGE HACKS", "01 / 10", "STOP BURNING YOUR LIMITS", "MAKE CLAUDE CODE", "20x CHEAPER", "5 usage hacks most people have never heard of", "SWIPE >>"'
-      - 'every legible string in Informative_Carousel_04.png: "JUN ©2026 · CHASE AI · 03 / 07", "PLUGIN 02 / IMPECCABLE", "impeccable kills the ai slop in your ui.", "Audits your frontend for the 24 design tells — purple gradients, bounce easing, cramped padding — and fixes them before they ship.", "03 / 07", "SWIPE"'
-      - 'the author signature "CHASE AI" in the top mono rule of Informative_Carousel_04.png — a real account name, never a footer to reproduce'
-      - 'the website mock-up inside the taped card of Informative_Carousel_04.png and every string on it: "NEO MIRAI AI DESIGN CONFERENCE", "Tokyo 2042", "01 · VISUALIZE", "02 · SHAPE", "03 · LIVE BUILD" — any inset interface must be invented and wordless or greeked'
-      - 'the Instagram overlay "Najdi podobný obsah", its search field, its play triangle and its pagination dots'
-    reference_images:
-      - "Inspiration/Tiktok and IG/Informative_Carousel_05.png"
-      - "Inspiration/Tiktok and IG/Informative_Carousel_04.png"
+      - "platform UI and overlays: pagination dots, search fields, play triangles, player chrome, 'related content' banners"
+      - "watermarks, app badges, usernames, @handles, real account names or author credits printed as a rule or footer"
+      - "real company, product or app logos and any invented substitute for one; marks in this style are drawn shapes without letters"
+      - "legible text inside a taped screenshot card, a mock website or a device screen — that interface is invented and either wordless or greeked"
+      - "lettered navigation cues: the swipe mark is a hand-drawn circled arrow and carries no words"
+      - "photographic imagery, glossy surfaces, gradients, soft drop shadows, 3D renders — every mark on the page is printed ink"
 
   - key: meme-caricature-panels
     render_prompt: >-
       Two stacked comic panels of equal height with thin black frames on a warm paper ground,
-      built as a before-and-after contrast: the top panel is chaotic and overloaded, the
-      bottom panel calm and smug. The technique is ink-outline caricature with gouache and
-      watercolour shading; exaggerated posture and accumulated clutter carry the joke. Warm
-      tungsten light, sepia-leaning palette in the top panel; one saturated violet-blue
-      character is the focal note in the bottom panel. Each panel is captioned by a single
-      heavy condensed sans headline in black, sentence case with a terminal period, set on the
-      paper margin above the artwork — never inside it. One short line per panel, nothing
-      more. Energy: dry, deadpan, shareable.
+      built as a before-and-after contrast: the top panel is chaotic and overloaded, the bottom
+      panel calm and smug. The technique is ink-outline caricature with gouache and watercolour
+      shading; exaggerated posture and clutter carry the joke. Warm tungsten light
+      and a sepia-leaning palette in the top panel; one saturated violet-blue character is the
+      focal note in the bottom panel. Each panel is captioned by a heavy condensed sans line in
+      black, sentence case with a terminal period, set on the paper margin above the artwork and
+      never inside it — one line per panel, two when the string is long. Energy: dry, deadpan,
+      shareable.
     subject_mode: scene_open
     layout_zones:
       - {position: "paper margin above each of the two panels, centred", content: headline,
-         text_treatment: "heavy condensed sans in black, sentence case with a terminal period, one line per panel, never overlapping the artwork"}
+         text_treatment: "heavy condensed sans in black, sentence case with a terminal period, one line per panel (two when the string is long), never overlapping the artwork"}
       - {position: "bottom paper margin, centred", content: "signature line", role: brand_slot,
          text_treatment: "tiny letterspaced uppercase sans in warm grey, one line, well clear of the lower panel frame"}
     format_affinity: [image, carousel]
     brand_affinity: []
     brand_slot: false
     text_density: minimal
-    max_onimage_chars: {headline: 38, subline: 38, slide: 38}
+    max_onimage_chars: {headline: 60, subline: 60, slide: 60, overlay: 60}
     motion_profile: graphic
     palette: ["warm paper #EFE6D2", "ink black #1B1815", "sepia shadow #8A6A46", "tungsten glow #E9B36A", "violet-blue focal #4A3FA8"]
-    typography: "one heavy condensed sans for the panel captions, sentence case with terminal periods; a tiny letterspaced uppercase cut for the footer; no third family"
-    text_placement: "captions live in the paper margin above each panel; the artwork itself carries no lettering at all; the footer line sits in the bottom margin"
-    image_treatment: "ink-outline caricature with gouache and watercolour shading, visible paper tooth, warm tungsten lighting; clutter in the top panel, clean space in the bottom"
-    visual_pacing: "two beats and a punchline: overloaded above, serene below, one line of copy each"
+    typography: "one heavy condensed sans for the panel captions, sentence case with terminal periods, tight tracking; a tiny letterspaced uppercase cut for the footer line; no third family, no script, no serif"
+    text_placement: "captions live in the paper margin ABOVE each panel, centred and clear of the frame rule; the artwork itself carries no lettering at all; the footer line sits alone in the bottom margin"
+    image_treatment: "ink-outline caricature with gouache and watercolour shading and visible paper tooth — confident varying line weight, flat washes, no digital gradient; warm tungsten lighting, clutter and paperwork in the top panel, clean empty space in the bottom"
+    visual_pacing: "two beats and a punchline: overloaded above, serene below, one line of copy each — the eye reads caption, picture, caption, picture, and stops"
     per_format_guidance:
       carousel_role: slides_only
-      carousel_slide: "Inside a deck this style is a body slide only — never the cover. Each slide is its own complete two-panel joke on the deck's shared paper ground, with the same frame weight and the same caption treatment as its neighbours."
+      carousel_slide: "Body slide only, never a cover. Each slide is its own complete two-panel joke on the deck's shared paper ground, with the same frame weight, the same margins and the same caption treatment as its neighbours."
     exclusions:
-      - 'both panel captions of SuperFunny_Polarizing_MemeStyle_Caricature_Promotional_01.png: "Your ops team at 11 PM." and "The AI agent at 11 PM."'
-      - 'the letterspaced footer wordmark "HYPEDIGITALY" printed at the bottom margin of the reference — the footer slot is filled from the TEXT block or left empty, never copied from the picture'
-      - "the likeness of the person drawn in the top panel, and any readable text on the sticky notes, papers or monitor inside either panel — paperwork stays illegible scrawl"
-    reference_images:
-      - "Inspiration/Tiktok and IG/SuperFunny_Polarizing_MemeStyle_Caricature_Promotional_01.png"
+      - "platform UI, watermarks, app badges, usernames, @handles, follower, like or view counters"
+      - "manufacturer and company logos on monitors, laptops, mugs, packaging or clothing inside either panel"
+      - "the likeness of any real, recognisable person — the characters are invented caricatures"
+      - "readable text inside the artwork: sticky notes, papers, whiteboards, screens and signage stay illegible scrawl, because the only words in this frame are the two panel captions"
+      - "a third panel, an inset, a speech balloon or a caption box inside the artwork — captions live in the paper margin and nowhere else"
 
   - key: anime-noir-statement
     render_prompt: >-
-      Cinematic anime key visual: a hooded figure seen from behind at a multi-monitor desk,
-      face never shown, dwarfed by a rain-streaked window onto a night-city bokeh skyline.
-      Painterly cel shading with heavy rim light from the screens, glowing abstract light
-      ribbons on the displays, one warm practical lamp against a cool blue-teal night palette;
-      the bottom quarter of the frame falls to near-black. Over that dark band sits a two-line
-      display serif headline at poster scale, white with exactly one word in saturated teal,
-      tight leading and a terminal period. Below it a thin hairline rule and a small
-      letterspaced uppercase footer slot. One statement sentence, nothing longer. Mood:
-      nocturnal, obsessive, quietly triumphant.
+      Cinematic anime key visual: a hooded figure seen from behind at a multi-monitor desk, face
+      never shown, dwarfed by a rain-streaked window onto a night-city bokeh skyline. Painterly
+      cel shading with heavy rim light from the screens, glowing abstract light ribbons on the
+      displays, one warm practical lamp against a cool blue-teal night palette; the bottom
+      quarter of the frame falls to near-black. Over that dark band sits a display serif
+      statement at poster scale, white with exactly one word in saturated teal, tight leading:
+      two lines by default, up to four tighter lines at reduced scale when the quoted string is
+      long. Below it a thin hairline rule closes the frame. Mood: nocturnal, obsessive, quietly
+      triumphant.
     subject_mode: scene_fixed
     layout_zones:
       - {position: "lower third, left-aligned over the darkened foreground band", content: headline,
-         text_treatment: "display serif at poster scale, two lines, tight leading, white with exactly one word in saturated teal, terminal period"}
+         text_treatment: "display serif at poster scale, two to four lines, tight leading, white with exactly one word in saturated teal, terminal period"}
       - {position: "very bottom, centred, flanked by hairline rules", content: "signature line",
          role: brand_slot,
          text_treatment: "small letterspaced uppercase sans in teal-tinted white, one line, hairline rule left and right"}
@@ -221,71 +237,70 @@ styles:
     brand_affinity: []
     brand_slot: false
     text_density: minimal
-    max_onimage_chars: {headline: 46, subline: 0, slide: 0}
+    max_onimage_chars: {headline: 90, subline: 90, slide: 180, overlay: 60}
     motion_profile: photographic
     palette: ["night blue-black #0B1016", "screen teal #17B7B0", "warm lamp amber #E8A64C", "city bokeh white #DCE7F2", "foreground near-black #05070A"]
-    typography: "one display serif for the statement, white with a single teal word; one small letterspaced uppercase sans for the footer; nothing else"
-    text_placement: "the statement occupies the lower third over the darkest band; the footer sits at the very bottom between hairline rules; the upper two thirds stay picture"
-    image_treatment: "painterly anime cel shading with heavy screen rim light, rain-streaked glass, deep bokeh city depth, abstract light ribbons instead of readable displays"
-    visual_pacing: "one figure, one window, one sentence — the frame darkens downward into the words"
+    typography: "one display serif for the statement — moderate stroke contrast, sharp entry serifs, set tight — white with a single teal word; one small letterspaced uppercase sans for the footer; nothing else, no script, no italic"
+    text_placement: "the statement occupies the lower third over the darkest band, left-aligned, never crossing the figure's silhouette; the footer sits at the very bottom between hairline rules; the upper two thirds stay picture"
+    image_treatment: "painterly anime cel shading with visible brushwork in the shadows, heavy screen rim light on the figure's edge, rain-streaked glass, deep bokeh city depth, volumetric haze; displays carry abstract light ribbons instead of readable interface; no photograph, no 3D render, no line-art outline look"
+    visual_pacing: "one figure, one window, one sentence — the frame darkens downward into the words, and nothing competes with them"
     per_format_guidance:
       carousel_role: cover_only
-      carousel_cover: "In a deck this style is the cover and only the cover: the widest night view, the statement in the lower third, the footer rule closing the frame. Later slides belong to the deck's other body grammar and never repeat this key visual."
+      carousel_cover: "Cover: the widest night view, the statement in the lower third at full poster scale, the hairline rule closing the frame."
+      carousel_slide: "Body slide: the same night, one step closer — a different angle on the same desk, window or skyline under the same rim light and the same palette. The dark lower band, the statement position and the type treatment are identical to the cover; only the picture behind them and the quoted words change. A long quoted panel sets in up to four tighter lines rather than spilling out of the band."
     exclusions:
-      - 'both headline lines of AnimeStyle_Polarizing_Captivating_Promotional_02.png: "Zatímco spíte," and "AI pracuje."'
-      - 'the letterspaced footer wordmark "HYPEDIGITALY" between the hairline rules of the reference — that slot is filled from the TEXT block or left empty, never copied from the picture'
-      - "readable interface content on the monitors — the screens carry abstract light ribbons only, no windows, no code, no dashboards, no logos"
-      - "any recognisable face; the figure is seen from behind and stays anonymous"
-    reference_images:
-      - "Inspiration/Tiktok and IG/AnimeStyle_Polarizing_Captivating_Promotional_02.png"
+      - "platform UI, player chrome, progress bars, watermarks, app badges, usernames, @handles, follower or view counters"
+      - "readable interface content on the monitors — the screens carry abstract light ribbons only: no windows, no code, no dashboards, no charts, no logos"
+      - "any recognisable face: the figure is seen from behind and stays anonymous"
+      - "company, product and app logos anywhere in the scene, including on the hardware, the hoodie and the city signage; distant signs stay illegible glow"
+      - "legible text outside the statement band and the footer — no titles, no subtitles, no captions burned over the picture"
 
   - key: ugc-tabletop-statement
     render_prompt: >-
       First-person photorealistic tabletop scene shot from roughly thirty degrees above the
-      surface: a worn wood table with everyday work props — a closed laptop, a speckled
-      ceramic mug, a paper notebook, a pen — arranged casually, shallow depth of field, a home
-      kitchen softly blurred behind. Golden-hour side light with long warm
-      shadows; a palette of honey wood, oat, cream and speckled ceramic neutrals. It reads as
-      an unstaged phone photo posted by a real person, not as product photography. Typography:
-      a heavy rounded-humanist sans in white, sentence case, two to three short lines with
-      tight leading, placed over the defocused upper region. Two sentences at most. Mood:
-      relieved, settled, an understated brag.
+      surface: a worn wood table with everyday work props — a closed laptop, a speckled ceramic
+      mug, a paper notebook, a pen — arranged casually, shallow depth of field, a home kitchen
+      softly blurred behind. Golden-hour side light with long warm shadows; a palette of honey
+      wood, oat, cream and speckled ceramic neutrals. It reads as an unstaged phone photo posted
+      by a real person, never as product photography. Quoted text sets in a heavy
+      rounded-humanist sans, white, sentence case, tight leading, two to four short lines over
+      the defocused upper region, with no backing plate. Mood: relieved, settled, an understated
+      brag.
     subject_mode: scene_fixed
     layout_zones:
       - {position: "upper third, left-aligned over the blurred background band", content: headline,
-         text_treatment: "heavy rounded-humanist sans in white, sentence case, two to three short lines with tight leading, no backing plate, no outline"}
+         text_treatment: "heavy rounded-humanist sans in white, sentence case, two to four short lines with tight leading, no backing plate, no outline"}
     format_affinity: [image, carousel, reel]
     brand_affinity: []
     brand_slot: false
     text_density: minimal
-    max_onimage_chars: {headline: 70, subline: 0, slide: 0}
+    max_onimage_chars: {headline: 90, subline: 90, slide: 120, overlay: 60}
     motion_profile: photographic
     palette: ["honey wood #B07C4A", "oat linen #DCCFB8", "cream ceramic #EFE7D8", "warm shadow #4A3624", "text white #FFFFFF"]
-    typography: "one heavy rounded-humanist sans in white, sentence case, tight leading; no second family, no all-caps, no script"
-    text_placement: "one statement block in the upper third over the defocused background, left-aligned, clear of every prop and every edge"
-    image_treatment: "photoreal phone-camera capture, golden-hour side light, shallow depth of field, honest lens softness; no studio lighting, no styled flat lay, no colour grade"
-    visual_pacing: "one table, one statement, one warm light — the props are lived-in, never arranged for the camera"
+    typography: "one heavy rounded-humanist sans in white, sentence case, tight leading, slightly loose word spacing; no second family, no all-caps, no script, no outline and no drop shadow"
+    text_placement: "one statement block in the upper third over the defocused background, left-aligned, clear of every prop and every edge; the block never crosses a sharp object and never sits over the table surface"
+    image_treatment: "photoreal phone-camera capture — golden-hour side light, shallow depth of field, honest lens softness, mild sensor noise, warm white balance; no studio lighting, no styled flat lay, no colour grade, no added graphic element"
+    visual_pacing: "one table, one statement, one warm light — the props are lived-in and never arranged for the camera"
     per_format_guidance:
       carousel_role: slides_only
-      carousel_slide: "Inside a deck this style is a body slide only — never the cover. Each slide is a different corner of the same table under the same light: one prop moves, the statement block keeps its position, size and treatment."
+      carousel_slide: "Body slide only, never a cover. Each slide is a different corner of the same table under the same light: one prop moves, the statement block keeps its position, size and treatment, and a longer quoted string adds lines downward rather than shrinking the type."
     exclusions:
-      - 'both statement lines of UGC_Style_Polarizing_Captivating_StrongStatement.png: "Monday without manual spreadsheet work." and "We got used to that fast."'
-      - "any readable handwriting in the notebook of the reference — writing on props stays illegible scrawl, never legible words"
-      - "manufacturer logos or brand marks on the laptop, the mug, the pen or any other prop"
-    reference_images:
-      - "Inspiration/Tiktok and IG/UGC_Style_Polarizing_Captivating_StrongStatement.png"
+      - "platform UI, watermarks, app badges, usernames, @handles, follower, like or view counters"
+      - "manufacturer logos and brand marks on the laptop, the mug, the pen, the notebook or any other prop"
+      - "readable handwriting or print on props — writing in the notebook and on any paper stays illegible scrawl"
+      - "legible text anywhere outside the statement block, including screens, packaging and signage in the blurred background"
+      - "graphic overlays: stickers, badges, chips, arrows, frames, emoji drawn as artwork, gradient scrims"
 
   - key: platform-showcase-card
     render_prompt: >-
-      Flat ecru canvas with generous whitespace and a strict vertical stack: a small
-      tracked-out uppercase kicker in teal; an oversized tight-tracking geometric sans
-      headline in near-black across two lines with one phrase switched to teal; then a large
-      centred browser-window mock-up — rounded corners, three traffic-light dots, pale chrome
-      bar — holding an invented interface rendered as a wireframe with greeked grey bars where
-      copy would sit; then a two-line explanatory caption in a regular sans; then a
+      Flat ecru canvas with generous whitespace and a strict vertical stack: a small tracked-out
+      uppercase kicker in teal; an oversized tight-tracking geometric sans headline in near-black
+      across two lines with one phrase switched to teal; then a large centred browser-window
+      mock-up — rounded corners, three traffic-light dots, pale chrome bar — holding an invented
+      interface rendered as a wireframe with greeked grey bars where copy would sit; then the
+      quoted explanatory text in a regular sans, two to four centred lines; then a
       hairline-flanked signature slot at the foot. Soft card shadow only, no gradient on the
-      canvas, no photography. High text tolerance. Mood: announcement, product-launch
-      clarity.
+      canvas, no photography, no 3D. Mood: announcement, product-launch clarity.
     subject_mode: scene_open
     layout_zones:
       - {position: "upper quarter, centred, kicker immediately above the headline",
@@ -294,7 +309,7 @@ styles:
       - {position: "centre of the frame", content: "browser-window mock-up",
          text_treatment: "no lettering inside the window — greeked grey bars and blocks stand in for every string"}
       - {position: "directly beneath the browser card, centred", content: body,
-         text_treatment: "regular sans, two lines, near-black at reading size"}
+         text_treatment: "regular sans, two to four lines, near-black at reading size"}
       - {position: "foot of the frame, centred between hairline rules", content: "signature line",
          role: brand_slot,
          text_treatment: "small letterspaced uppercase sans, one line, hairline rule left and right"}
@@ -302,35 +317,34 @@ styles:
     brand_affinity: []
     brand_slot: false
     text_density: high
-    max_onimage_chars: {headline: 100, subline: 60, slide: 100}
+    max_onimage_chars: {headline: 110, subline: 160, slide: 300}
     motion_profile: graphic
     palette: ["ecru canvas #F4EFE2", "near-black #16151A", "teal accent #0C8897", "card white #FFFFFF", "chrome grey #D6D2C8"]
-    typography: "one tight-tracking geometric sans across the whole card: tracked-out uppercase for the kicker and footer, oversized bold for the headline, regular for the caption"
-    text_placement: "strict vertical stack — kicker, headline, browser card, two-line caption, signature slot; everything centred, everything margined generously"
-    image_treatment: "flat vector-clean canvas with one soft card shadow; the only depth in the frame is the browser window floating over the ecru; no gradients, no photography, no 3D"
-    visual_pacing: "announcement rhythm: a whisper, a shout, a demonstration, a footnote"
+    typography: "one tight-tracking geometric sans across the whole card (Poppins, Gilroy, or the same species): tracked-out uppercase for the kicker and the footer, oversized bold for the headline, regular for the caption; no serif, no script, no second family"
+    text_placement: "strict vertical stack — kicker, headline, browser card, the quoted caption in two to four centred lines, signature slot; everything centred on one axis, everything margined generously, nothing touching the canvas edge"
+    image_treatment: "flat vector-clean canvas with exactly one soft card shadow; the only depth in the frame is the browser window floating over the ecru; wireframe interface inside it — grey bars, empty blocks, simple outlined shapes; no gradient, no photograph, no 3D render, no glass or glow effect"
+    visual_pacing: "announcement rhythm — a whisper, a shout, a demonstration, a footnote — repeated identically on every slide of a deck"
     per_format_guidance:
-      carousel_cover: "The cover shows the whole browser card at its largest, with the headline at full scale and the signature slot closing the frame."
-      carousel_slide: "Body slides keep the stack but shrink the browser card to make room for the caption; the kicker changes wording only through the TEXT block, never in size or colour."
+      carousel_cover: "Cover: the browser card at its largest, the headline at full scale, the signature slot closing the frame."
+      carousel_slide: "Body slide: keep the stack and shrink the browser card to make room for the quoted caption, which may run to four lines at reading size. The kicker keeps its size, colour and tracking on every slide; only the words below the card change."
     exclusions:
-      - 'every legible string in Informative_Single_Platform_Showcase.png: "NOVÝ TREND", "Firma bez webu?", "Do večera to jde.", "Claude napíše texty z vašich recenzí.", "Lovable z nich postaví web."'
-      - 'the third-party product name "Lovable" and its strings inside the browser mock-up: "Build apps and websites by chatting with AI", "Build something lovable" — the in-browser interface must be invented and greeked'
-      - 'the gradient heart logomark above the headline of the reference, and any other identifiable company or product logo'
-      - 'the two-weight footer wordmark "HYPEDIGITALY" at the foot of the reference — that slot is filled from the TEXT block or left empty, never copied from the picture'
-    reference_images:
-      - "Inspiration/Tiktok and IG/Informative_Single_Platform_Showcase.png"
+      - "platform UI outside the mock-up itself: no player chrome, no pagination dots, no search overlay, no share sheet, no tab bar"
+      - "watermarks, app badges, usernames, @handles, follower, like or view counters"
+      - "real company, product or app logos anywhere in the frame, including inside the browser mock-up and above the headline; an invented brand name in their place is equally forbidden"
+      - "legible text inside the browser window — every string in that interface is greeked into grey bars unless it is quoted in the TEXT block"
+      - "photography, gradient backgrounds, glassmorphism, neon glow, 3D perspective on the card: the canvas is flat ecru and the card is flat white"
 
   - key: hypelead-brand-card
     render_prompt: >-
-      Minimal premium SaaS brand card. Warm off-white ground (#FAFAF7) carrying a faint
-      dot-grid texture and one soft teal radial bloom in a corner. A massive tight-tracked
-      bold grotesque headline in near-black, sentence case, two to three lines, with the
-      payoff phrase set inside a rounded-rectangle teal gradient highlight pill (#57E6DC to
-      #0FCFC4) in dark-teal type with a soft glow beneath it. A monospace uppercase
-      letterspaced kicker with a small teal dot sits above the headline. White rounded cards
-      with gentle shadows hold checklists, numbered teal chips and clean invented interface
-      mock-ups. Dashed teal connector lines, circular icon nodes, one pill CTA bar at the
-      foot. Flat, crisp, airy. No photography, no 3D, no serif.
+      Minimal premium SaaS brand card. Warm off-white ground (#FAFAF7) carrying a faint dot-grid
+      texture and one soft teal radial bloom in a corner. A massive tight-tracked bold grotesque
+      headline in near-black, sentence case, two to three lines, with the payoff phrase set
+      inside a rounded-rectangle teal gradient highlight pill (#57E6DC to #0FCFC4) in dark-teal
+      type with a soft glow. A monospace uppercase letterspaced kicker with a small teal dot sits
+      above the headline. White rounded cards with gentle shadows hold checklists, numbered teal
+      chips and clean invented interface mock-ups; a longer quoted string sets as card rows.
+      Dashed teal connector lines, circular icon nodes, one pill CTA
+      bar at the foot. Flat, crisp, airy. No photography, no 3D, no serif.
     subject_mode: scene_open
     layout_zones:
       - {position: "top-left", content: "logo lockup", role: brand_slot,
@@ -345,27 +359,19 @@ styles:
     brand_affinity: [hypelead]
     brand_slot: true
     text_density: high
-    max_onimage_chars: {headline: 90, subline: 60, slide: 90}
+    max_onimage_chars: {headline: 110, subline: 160, slide: 300}
     motion_profile: graphic
     palette: ["off-white ground #FAFAF7", "teal bright #0FCFC4", "teal mid #57E6DC", "teal deep #0A7F78", "charcoal-green #14130F"]
-    typography: "Geist or an equally clean grotesque: tight-tracked bold for headlines, regular for card rows, Geist Mono uppercase letterspaced for kickers and CTA bars; never a serif, never handwriting, never all-caps headlines"
-    text_placement: "kicker and headline upper-left with the payoff phrase inside the teal pill; card rows through the middle band; the CTA pill at the foot; the logo lockup top-left"
-    image_treatment: "flat crisp vector surfaces — dot-grid ground, soft teal bloom, white rounded cards with gentle shadows, dashed teal connectors, circular icon nodes; no photography, no stock imagery, no 3D render, no busy gradient"
+    typography: "Geist or an equally clean grotesque: tight-tracked bold for headlines, regular for card rows, Geist Mono uppercase letterspaced for kickers and CTA bars; never a serif, never handwriting, never an all-caps headline"
+    text_placement: "kicker and headline upper-left with the payoff phrase inside the teal pill; quoted body text as card rows through the middle band, left-aligned inside their cards; the CTA pill at the foot; the logo lockup top-left with clear space around it"
+    image_treatment: "flat crisp vector surfaces — dot-grid ground, one soft teal radial bloom, white rounded cards with gentle shadows, dashed teal connectors, circular icon nodes with abstract glyphs; no photography, no stock imagery, no 3D render, no busy gradient, no glassmorphism"
     visual_pacing: "airy and orderly: one headline, one highlight pill, two to four card rows, one CTA — teal appears as accent only and never floods the canvas"
     per_format_guidance:
-      carousel_cover: "The cover runs the headline at full scale with the teal pill on the payoff line, one card row at most, and the CTA pill at the foot."
-      carousel_slide: "Body slides drop the headline to roughly half scale, keep the mono kicker, and give the middle band to the numbered cards. Dark mode (charcoal-green ground #14130F with vignette and teal glow) is allowed for a body slide only if the cover already used it."
+      carousel_cover: "Cover: the headline at full scale with the teal pill on the payoff line, one card row at most, the CTA pill at the foot."
+      carousel_slide: "Body slide: drop the headline to roughly half scale, keep the mono kicker, and give the middle band to the numbered cards, where a longer quoted string sets as rows at reading size. Dark mode (charcoal-green ground #14130F with vignette and teal glow) is allowed for a body slide only when the cover already used it."
     exclusions:
-      - 'the wordmark lockup "HypeLead.ai" printed in all five reference files, and the badge glyph beside it — a signature is rendered only when the TEXT block quotes one'
-      - 'every legible string in post-square-a-1080x1080.png: "MORE CLIENTS, LESS WORK", "Fill your sales pipeline", "on autopilot.", "Our omnichannel AI sales agent prospects, qualifies and books meetings for you, automated end-to-end, on every channel.", "Email", "LinkedIn", "Messenger", "SMS", "Instagram", "WhatsApp", "Meetings booked with your ideal clients - on autopilot"'
-      - 'every legible string in post-square-b-1080x1080.png: "One AI agent. Every channel.", "More clients, less work."'
-      - 'every legible string in lm-oldnew-1080x1350.png: "OUTBOUND, REWRITTEN", "Cold outreach is 90%", "guesswork.", "THE OLD WAY", "Copy-pasting profiles into a chatbot", "Exporting lead lists by hand", "Hey {first_name} template spam", "Blasting everyone with zero signals", "WITH HYPELEAD", "Buyers found by real buying intent", "Every account researched for you", "Messages that read genuinely human", "Follow-ups that never slip", "Comment SYSTEM for the playbook"'
-      - 'every legible string in feat-agent-1080x1350.png: "YOU STAY IN CONTROL", "Your AI agent acts.", "You approve.", "HypeLead agent", "2 actions proposed", "NEEDS YOU", "Send follow-up to 12 leads", "Book meeting with Jane", "Approve", "Review", "Uses your knowledge base + past replies"'
-      - 'every legible string in lm-agents-1080x1350.png: "YOUR OUTBOUND, ON AGENTS", "3 agents run your whole pipeline.", "Research agent", "Analyzes any account in seconds: news, pains, angle.", "Scoring agent", "Scores every lead on ICP fit and buying intent.", "Outreach agent", "Writes and sends in your voice, then follows up.", "You bring the offer. They handle the rest.", "Comment AGENTS"'
-      - "the third-party channel marks orbiting the reference cards — the LinkedIn, Messenger, Instagram and WhatsApp glyphs and their brand colours; icon nodes carry invented abstract symbols only"
-    reference_images:
-      - "hypedigitaly branding/HypeLead/post-square-a-1080x1080.png"
-      - "hypedigitaly branding/HypeLead/post-square-b-1080x1080.png"
-      - "hypedigitaly branding/HypeLead/lm-oldnew-1080x1350.png"
-      - "hypedigitaly branding/HypeLead/feat-agent-1080x1350.png"
-      - "hypedigitaly branding/HypeLead/lm-agents-1080x1350.png"
+      - "platform UI, watermarks, app badges, usernames, @handles, follower, like or view counters"
+      - "third-party channel marks and their brand colours — LinkedIn, Messenger, Instagram, WhatsApp, X, email-client glyphs: icon nodes carry invented abstract symbols only"
+      - "any company, product or app logo other than a wordmark quoted in the TEXT block; the badge beside the lockup is a plain geometric mark and carries no letters"
+      - "legible text inside a card's interface mock-up — those screens are wireframes of grey bars and blocks unless the string is quoted in the TEXT block"
+      - "photography, 3D renders, stock illustration, serif type, handwriting, neon glow and drop-shadowed glass panels"

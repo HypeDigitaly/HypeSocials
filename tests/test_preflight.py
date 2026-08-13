@@ -37,7 +37,9 @@ from pathlib import Path
 
 import pytest
 
-from hypesocials.config import Config, OutputConfig, RunConfig, SourcesConfig
+from hypesocials.config import (
+    Config, OutputConfig, RunConfig, SourcesConfig, formats_sourcing_violation, windows_violation,
+)
 from hypesocials.models import PlanEntry
 from hypesocials.preflight import EXIT_PREFLIGHT, Preflight, check
 
@@ -357,9 +359,13 @@ def test_fr295_a_requested_format_with_no_affine_style_refuses(tmp_path: Path) -
     assert _style_errors(check(config, action="run", entries=[_entry(0)])) == []
 
 
-def test_fr295_a_broken_reference_image_is_a_warning_and_the_run_proceeds(tmp_path: Path) -> None:
-    """"`reference_images` existence + magic-byte check (warning only — style degrades to
-    text-only, tag `style_refs_missing`)". Losing a picture must never cost the operator a batch.
+def test_d46_a_registry_that_still_lists_pictures_produces_no_finding_at_all(
+    tmp_path: Path,
+) -> None:
+    """D46/FR-17/18 replaced FR-295's reference-image clause with nothing: a meta-style is TEXT,
+    declares no pictures, and therefore has none that can be missing. A stale `styles.yaml` that
+    still carries the dead key must load, validate silently and cost the operator neither a
+    refusal nor a warning about a file no render job would have attached anyway.
     """
     config = _styled_config(tmp_path, registry=_BROKEN_REFERENCE)
     config.run.formats = {"image": 2, "carousel": 0, "reel": 0}
@@ -367,8 +373,8 @@ def test_fr295_a_broken_reference_image_is_a_warning_and_the_run_proceeds(tmp_pa
     verdict = check(config, action="run", entries=[_entry(0)])
 
     assert _style_errors(verdict) == [], verdict.report
-    refs = [line for line in verdict.warnings if "does-not-exist" in line]
-    assert len(refs) == 1 and "style_refs_missing" in refs[0]
+    assert [line for line in verdict.warnings if "does-not-exist" in line] == []
+    assert [line for line in verdict.warnings if "style_refs_missing" in line] == []
 
 
 def test_fr295_the_registry_is_not_read_where_no_style_is_ever_assigned(
@@ -483,6 +489,138 @@ def test_fr286_the_report_wraps_long_lines_instead_of_overflowing_the_console(
     assert continuations, "a wrapped grade must be visibly a continuation, not a new finding"
     # No word was cut in half by the wrap: rejoining the parts restores the original sentence.
     assert "consider --vision-check" in " ".join(line.strip() for line in lines)
+
+
+# ------------------------------------------- (f) FR-138: the two config PAIRS, re-run post-flags
+#
+# `config._validate` refuses both pairs when the FILE loads. `cli.apply_overrides` then mutates the
+# same object — `--history-days 7`, `--images 4` — and nothing re-validates it, so pre-flight is
+# the only door the overridden config still passes through before the confirm gate. These tests
+# build the mutated shape directly, which is exactly what a flag leaves behind.
+
+
+def _pair_errors(verdict: Preflight, needle: str) -> list[str]:
+    return [line for line in verdict.errors if needle in line]
+
+
+def test_fr307_a_history_window_narrowed_by_a_flag_is_refused_at_preflight(
+    tmp_path: Path,
+) -> None:
+    """The `--history-days 7` bypass: a 7-day memory over a 30-day fetch window leaves a band of
+    days in which a post is forgotten by history and still fetchable — the run re-quotes, word for
+    word, something it already published. The file loaded clean at 30/30; the flag broke the pair
+    afterwards, so the refusal has to be reachable here (FR-138/FR-307) and must name BOTH keys.
+    """
+    config = _styled_config(tmp_path, trend_history_days=7)  # what `--history-days 7` leaves
+    config.sources.max_post_age_days = 30
+
+    verdict = check(config, action="run", entries=[_entry(0)])
+
+    refusals = _pair_errors(verdict, "run.trend_history_days")
+    assert verdict.ok is False and len(refusals) == 1, verdict.report
+    assert "sources.max_post_age_days" in refusals[0] and "FR-307" in refusals[0]
+    assert "7" in refusals[0] and "30" in refusals[0]  # both VALUES, not just both key names
+
+
+def test_fr307_zero_history_and_a_wide_enough_window_are_both_silent(tmp_path: Path) -> None:
+    """`trend_history_days: 0` is the deliberate opt-out — the operator has said out loud that
+    repeats are acceptable — and any window at least as wide as the fetch is simply correct."""
+    for history in (0, 30, 45):
+        config = _styled_config(tmp_path, trend_history_days=history)
+        config.sources.max_post_age_days = 30
+
+        verdict = check(config, action="run", entries=[_entry(0)])
+
+        assert _pair_errors(verdict, "run.trend_history_days") == [], verdict.report
+
+
+def test_ss0_14e_image_entries_under_slideshow_only_sourcing_are_refused(tmp_path: Path) -> None:
+    """§0.14e/FR-132: with `include_videos: false` every topic is slideshow-majority, so an image
+    or reel creative can only rank-fallback onto a post it cannot quote properly — silently, and
+    forever. `--images 4` walks a carousel-only config into exactly that, after the load."""
+    config = _styled_config(tmp_path)
+    config.sources.include_videos = False
+    config.run.formats = {"image": 4, "carousel": 0, "reel": 0}
+
+    verdict = check(config, action="run", entries=[_entry(0), _entry(1)])
+
+    refusals = _pair_errors(verdict, "sources.include_videos")
+    assert verdict.ok is False and len(refusals) == 1, verdict.report
+    assert "2 image" in refusals[0], "the count comes from the PLAN, not from run.formats"
+    assert "§0.14e" in refusals[0] and "FR-132" in refusals[0]
+
+
+def test_ss0_14d_override_brief_image_entries_never_fire_the_formats_guard(
+    tmp_path: Path,
+) -> None:
+    """§0.14d's carve-out: an `override`-influence brief binds no source post at all (FR-144), so
+    slideshow-only sourcing cannot starve it. A plan of nothing but override-brief images is a
+    perfectly runnable run, and refusing it would delete the one route that needs no topic.
+    """
+    config = _styled_config(tmp_path)
+    config.sources.include_videos = False
+    config.run.formats = {"image": 2, "carousel": 0, "reel": 0}
+    overrides = [_entry(0, brief="ai-audit-cta"), _entry(1, brief="ai-audit-cta")]
+
+    verdict = check(config, action="run", entries=overrides)
+
+    assert _pair_errors(verdict, "sources.include_videos") == [], verdict.report
+
+    # ... and one blend brief among them is NOT exempt: FR-145 gives it a topic like anything else.
+    mixed = [*overrides, _entry(2, brief="webinar", influence="blend")]
+    assert len(_pair_errors(check(config, action="run", entries=mixed),
+                            "sources.include_videos")) == 1
+
+
+def test_ss0_14e_with_no_plan_at_all_the_guard_falls_back_to_the_configured_counts(
+    tmp_path: Path,
+) -> None:
+    """An empty `entries` is the load-time question asked one stage later — there is no plan to
+    read, so `run.formats` is the only statement of intent there is."""
+    config = _styled_config(tmp_path)
+    config.sources.include_videos = False
+    config.run.formats = {"image": 3, "carousel": 0, "reel": 0}
+
+    refusals = _pair_errors(check(config, action="run"), "sources.include_videos")
+
+    assert len(refusals) == 1 and "3 image" in refusals[0]
+
+
+def test_both_doors_speak_one_sentence_never_two_copies_of_it(tmp_path: Path) -> None:
+    """The refusal WORDING lives in `config.py` and is imported, never retyped: the load path
+    prefixes it with the file name and raises, pre-flight appends it to `errors`. Two copies of an
+    operator-facing sentence drift the moment one is edited, and the operator then gets different
+    advice depending on whether the mistake was in the file or in a flag."""
+    config = _styled_config(tmp_path, trend_history_days=7)
+    config.sources.max_post_age_days = 30
+    config.sources.include_videos = False
+    config.run.formats = {"image": 4, "carousel": 0, "reel": 0}
+
+    verdict = check(config, action="run", entries=[_entry(0)])
+
+    assert windows_violation(config) in verdict.errors
+    assert formats_sourcing_violation(config, counts={"image": 1, "reel": 0}) in verdict.errors
+
+
+def test_the_zero_dollar_cure_paths_are_never_refused_by_either_pair(tmp_path: Path) -> None:
+    """FR-251's precedent, applied to both guards: `--list-monitors` and `--preview-sources` are
+    the $0 diagnostics an operator runs to FIX a config, and a config error must never disarm its
+    own cure. `--preview-analysis` is NOT exempt — it reaches the fetch gate and the affinity
+    assignment both pairs govern, and it spends real OpenRouter money doing it.
+    """
+    config = _styled_config(tmp_path, trend_history_days=7)
+    config.sources.max_post_age_days = 30
+    config.sources.include_videos = False
+    config.run.formats = {"image": 4, "carousel": 0, "reel": 0}
+
+    for action in ("list-monitors", "preview-sources"):
+        verdict = check(config, action=action, entries=[_entry(0)])
+        assert _pair_errors(verdict, "run.trend_history_days") == [], action
+        assert _pair_errors(verdict, "sources.include_videos") == [], action
+
+    deep = check(config, action="preview-analysis", entries=[_entry(0)])
+    assert len(_pair_errors(deep, "run.trend_history_days")) == 1
+    assert len(_pair_errors(deep, "sources.include_videos")) == 1
 
 
 # --------------------------------------------------------------------------- refusal is free

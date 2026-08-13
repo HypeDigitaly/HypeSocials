@@ -12,6 +12,12 @@ meta-style and the SAME wordmark string the seed frame was built from, so Seedan
 signature it must preserve is already in `@Image1` instead of being handed a brand block it is not
 allowed to render. `reel_director.md` therefore allowlists no `{{branding_block}}` at all (§1.4).
 
+**And no STYLE reference either (D46/F3, v2.1.0).** The meta-style's picture channel is excised,
+so a seed frame renders text-to-image off the style's prose (FR-17/18) and an ordinary reel's
+whole chain carries no attachment at all until the frame itself becomes `@Image1`. The only
+pictures a reel can still carry are a campaign BRIEF's own product photos (FR-144/145) on the
+seed frame, and that chained frame on the clip.
+
 No network, no money: the injected `submit` is a recorder, `render.upload_file` hands back a
 deterministic URL per file, the vision call is a stub and the packager's download is faked — all
 inside `tmp_path`. `generate.Env` is deliberately NOT imported: `render_reel` must run against the
@@ -20,7 +26,6 @@ duck-typed surface, and the real dataclass loses four fields at this wave's wire
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
@@ -53,9 +58,11 @@ from hypesocials.outputs import AssetFolder, PackagingError, packager
 from hypesocials.prompts_engine import PromptEngine
 
 REPO = Path(__file__).resolve().parents[1]
+#: Real magic bytes for the brief photos this suite writes — the one picture channel D46 left.
 PNG = b"\x89PNG\r\n\x1a\n"
 ASSET_ID = "Tt_reel_ai-tools_01"
 STYLE_KEY = "anime-noir-statement"
+BRIEF_NAME = "product-shot"
 SEED_URL = "https://tempfile.aiquickdraw.com/seed.jpg"
 SEED_URL_2 = "https://tempfile.aiquickdraw.com/seed-retry.jpg"
 CLIP_URL = "https://tempfile.aiquickdraw.com/clip.mp4"
@@ -175,12 +182,18 @@ def _no_network(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture(autouse=True)
 def uploads(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
-    """`render.upload_file`, faked — plus a CLEARED upload memo around every test (FR-200/244)."""
+    """`render.upload_file`, faked — plus a CLEARED upload memo around every test (FR-200/244).
+
+    A file that is not on disk RAISES, exactly as the real uploader does when it opens it, so the
+    FR-18 loss path is exercised by deleting a brief's photos rather than by a second fake.
+    """
     control = SimpleNamespace(paths=[])
     refs_module.reset_uploads()
 
     async def _upload(path: Path) -> str:
         control.paths.append(Path(path))
+        if not Path(path).is_file():
+            raise FileNotFoundError(path)
         return f"https://kie.test/upload/{Path(path).name}"
 
     monkeypatch.setattr(render, "upload_file", _upload)
@@ -200,21 +213,14 @@ def failed(cause: RenderFailCause, message: str = "", *, task: str = "job_fail",
                          fail_message=message, cost_usd=cost)
 
 
-def repo_relative(path: Path) -> str:
-    try:
-        return Path(os.path.relpath(path, REPO)).as_posix()
-    except ValueError:  # pragma: no cover - different drive; an absolute path joins the same way
-        return path.as_posix()
+def make_style(_tmp_path: Path | None = None) -> MetaStyle:
+    """One TEXT-ONLY registry entry — the post-D46 shape (FR-17/18/290).
 
-
-def make_style(tmp_path: Path, *, images: int = 2) -> MetaStyle:
-    folder = tmp_path / "style-refs"
-    folder.mkdir(parents=True, exist_ok=True)
-    paths = []
-    for index in range(1, images + 1):
-        path = folder / f"{STYLE_KEY}-{index:02d}.png"
-        path.write_bytes(PNG + b"\x00" * 64)
-        paths.append(path)
+    `MetaStyle` has no `reference_images` field any more, so there are no files to write and no
+    window to rotate: everything this style contributes to the frame and the director is prose.
+    The `tmp_path` parameter is kept (unused) so the call sites still read as "a style built for
+    this run's folder".
+    """
     return MetaStyle(
         key=STYLE_KEY, render_prompt=STYLE_PROMPT, subject_mode="scene_fixed",
         layout_zones=[LayoutZone("upper third", "headline", "all caps, extra bold"),
@@ -224,12 +230,34 @@ def make_style(tmp_path: Path, *, images: int = 2) -> MetaStyle:
         palette=["#0B0B0C", "#E8552F"], typography="extra-bold condensed sans",
         text_placement="headline upper third", image_treatment="ink wash",
         visual_pacing="one beat per frame",
-        exclusions=["platform UI", "ZZEXCLUDE brand wordmark"],
-        reference_images=[repo_relative(path) for path in paths])
+        exclusions=["platform UI", "ZZEXCLUDE brand wordmark"])
 
 
-def style_urls(style: MetaStyle) -> list[str]:
-    return [f"https://kie.test/upload/{Path(raw).name}" for raw in style.reference_images]
+def give_brief(env: StubEnv, entry: PlanEntry, tmp_path: Path, *, photos: int = 1) -> list[Path]:
+    """Point this reel at a campaign brief that ships `photos` real files (FR-144/145).
+
+    Post-D46 a brief's photos are the only pictures the seed frame can carry, which makes them
+    the only fixture left that can prove FR-97's reference-drop retry actually drops something.
+    """
+    folder = tmp_path / "brief-photos"
+    folder.mkdir(parents=True, exist_ok=True)
+    paths: list[Path] = []
+    for index in range(1, photos + 1):
+        path = folder / f"{BRIEF_NAME}-{index:02d}.png"
+        path.write_bytes(PNG + b"\x00" * 64)
+        paths.append(path)
+    env.campaign_briefs = {BRIEF_NAME: Brief(
+        name=BRIEF_NAME, description="one product photo", influence="blend",
+        visual_directives={"scene": "the product on a bare desk"},
+        reference_image_paths=list(paths))}
+    env.local_refs = {entry.asset_id: [(path, "brief") for path in paths]}
+    entry.brief_name, entry.brief_influence = BRIEF_NAME, "blend"
+    return paths
+
+
+def upload_url(path: Path) -> str:
+    """The URL the faked `render.upload_file` hands back for one local file."""
+    return f"https://kie.test/upload/{path.name}"
 
 
 def make_entry(**overrides: Any) -> PlanEntry:
@@ -630,37 +658,91 @@ async def test_moderation_refusal_on_the_seed_frame_retries_reference_free(
     tmp_path: Path,
 ) -> None:
     """FR-97 still applies to the seed frame: one reference-free retry, then the chain continues.
-    The references it drops are the assigned STYLE's window — the only pictures a reel carries."""
-    style = make_style(tmp_path)
-    env = make_env(tmp_path, style=style)
+
+    Post-D46 the references it drops are a campaign BRIEF's own photos — the only pictures a
+    seed frame can carry now that a meta-style ships none (F3).
+    """
+    env = make_env(tmp_path)
     entry, folder = make_entry(), make_folder(tmp_path)
+    (photo,) = give_brief(env, entry, tmp_path)
     submit = Submitter([failed(RenderFailCause.MODERATION, "content policy"),
                         ok(SEED_URL, task="job_seed_retry"), ok(CLIP_URL, task="job_clip")])
 
     record = await reel.render_reel(entry, env, folder, submit=submit)
 
     seeds = submit.of("seed_frame")
-    assert seeds[0]["refs"].image_urls == style_urls(style)
+    assert seeds[0]["refs"].image_urls == [upload_url(photo)]
     assert seeds[1]["refs"].image_urls == [] and seeds[1]["kind"] == "discretionary"
     assert DegradationTag.REFS_DROPPED_MODERATION in record.degradations
     assert record.status is AssetStatus.SUCCESS
 
 
-async def test_a_style_with_no_usable_pictures_still_renders_the_reel(tmp_path: Path) -> None:
-    """FR-18/295: the written guidance is intact, so the frame still renders — text-only is a
-    legitimate degrade — but the operator hears which creative lost its proof."""
-    style = make_style(tmp_path, images=1)
-    for raw in style.reference_images:
-        (REPO / raw).unlink()
-    env = make_env(tmp_path, style=style)
+async def test_a_refused_reference_free_seed_frame_is_never_resubmitted(tmp_path: Path) -> None:
+    """FR-97's remedy is dropping references, so a frame that carried NONE has no remedy left.
+
+    Post-D46 that is the ordinary reel: no brief, a text-only style, an empty `image_urls`. A
+    second identical submission to the same moderation endpoint would buy a second refusal at
+    full price and call it a retry — so the refusal is terminal, and the chain degrades to the
+    in-model overlay path exactly as any other lost frame does (FR-24).
+    """
+    env = make_env(tmp_path)
+    entry, folder = make_entry(), make_folder(tmp_path)
+    submit = Submitter([failed(RenderFailCause.MODERATION, "content policy"),
+                        ok(CLIP_URL, task="job_clip", cost=2.85)])
+
+    record = await reel.render_reel(entry, env, folder, submit=submit)
+
+    assert len(submit.of("seed_frame")) == 1, "no second frame was ever ordered"
+    assert submit.of("seed_frame")[0]["refs"].image_urls == []
+    assert "moderation_retry" not in env.log.types()
+    assert DegradationTag.REFS_DROPPED_MODERATION not in record.degradations
+    assert DegradationTag.SEED_FRAME_RENDER_FAILED in record.degradations
+    assert record.status is AssetStatus.SUCCESS, "a lost frame costs legibility, not a clip"
+
+
+async def test_a_text_only_style_renders_the_reel_and_says_nothing_about_it(
+    tmp_path: Path, uploads: SimpleNamespace,
+) -> None:
+    """D46/FR-17/18: a meta-style is words, so the seed frame renders text-to-image and that is
+    the intended route rather than a degrade.
+
+    Nothing is uploaded, `image_urls` is empty, and the record carries NO tag about it — this
+    creative expected no picture and lost none. The style's own sentence still reaches the frame,
+    which is the whole point: the look travels as prose.
+    """
+    env = make_env(tmp_path, style=make_style(tmp_path))
     entry, folder = make_entry(), make_folder(tmp_path)
     submit = Submitter([ok(SEED_URL, task="job_seed"), ok(CLIP_URL, task="job_clip")])
 
     record = await reel.render_reel(entry, env, folder, submit=submit)
 
+    assert uploads.paths == [], "a meta-style ships no pixels (F3)"
     assert submit.of("seed_frame")[0]["refs"].image_urls == []
-    assert DegradationTag.STYLE_REFS_MISSING in record.degradations
+    assert STYLE_PROMPT in submit.of("seed_frame")[0]["params"].prompt
+    assert DegradationTag.STYLE_REFS_MISSING not in record.degradations, \
+        "the tag survives for old meta.yaml files on disk; nothing emits it any more"
+    assert DegradationTag.REFERENCE_FREE not in record.degradations
+    assert "reference_free" not in env.log.types()
+    assert record.status is AssetStatus.SUCCESS
+
+
+async def test_a_brief_whose_pictures_are_all_gone_still_renders_the_reel(tmp_path: Path) -> None:
+    """FR-18: brief images are an input, not a prerequisite — the frame still renders on the
+    style's written guidance. But this creative EXPECTED pictures and lost every one of them, so
+    the absence is tagged and logged, which is the one shape that still earns `reference_free`.
+    """
+    env = make_env(tmp_path)
+    entry, folder = make_entry(), make_folder(tmp_path)
+    for path in give_brief(env, entry, tmp_path, photos=2):
+        path.unlink()
+    submit = Submitter([ok(SEED_URL, task="job_seed"), ok(CLIP_URL, task="job_clip")])
+
+    record = await reel.render_reel(entry, env, folder, submit=submit)
+
+    assert submit.of("seed_frame")[0]["refs"].image_urls == []
     assert DegradationTag.REFERENCE_FREE in record.degradations
+    assert DegradationTag.STYLE_REFS_MISSING not in record.degradations
+    assert "reference_free" in env.log.types()
     assert STYLE_PROMPT in submit.of("seed_frame")[0]["params"].prompt
     assert record.status is AssetStatus.SUCCESS
 

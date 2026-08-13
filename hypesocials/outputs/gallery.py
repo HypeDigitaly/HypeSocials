@@ -18,13 +18,28 @@ Invariants:
   no pair badge and no row grouping — the ordinal in the asset id is the whole ordering. FR-231
   survives as the SELECTION artifact only (the header documents the marker file); its withdrawn
   half was the A/B integrity badge.
-- **The judging question lives in the footer** (FR-150 as amended): style adherence + topical
-  accuracy. Not fidelity to a trend's pixels — the run no longer has any.
+- **The judging question lives in the footer** (FR-150 as amended v2.1.0): style adherence,
+  topical accuracy AND panel fidelity. Not fidelity to a reference image — nothing here was
+  cloned from one.
 - **The card answers "where did this come from"** (FR-76 as amended, FR-298): topic name, the
   assigned style key, the brand and whether this one was signed, the post it quoted and the
   exact ref label it quoted (`quotes P1.hook.2 verbatim`), and the source Virlo URL. Every one
   of those is a `meta.yaml` field written by `generate._record` — this module reads, never
   derives.
+- **A panel-mapped carousel gets FR-309's three-part card** (v2.1.0): the source post's own
+  provenance (author, reach, date, permalink, original caption), the SOURCE panel strip with each
+  panel's extracted words and visual brief, and OUR slides laid against them BY INDEX, so slide
+  *i* sits beside source panel *i* and a fidelity judgement is a glance rather than a memory
+  exercise. The trigger is a non-empty `panel_map`; an override-brief carousel (§0.14d, empty
+  map, null `source_post`) and every image and reel keep the single-card layout unchanged — the
+  fallback IS today's card.
+- **`meta.yaml` is the only file this module opens** (module contract): `source_post`,
+  `panel_map`, `source_panel_count` and `degradations` are read as written. `source.yaml` in the
+  source store is provenance for humans and for `sources/slide_intel`, never a second input here
+  — two readers of one archive is two chances to disagree about what the run did.
+- **Source panels are LOCAL relative paths** (FR-75 as amended): `./source/<post_id>/slide_NN.jpg`,
+  written into `panel_map.source_image` upstream. Anything absolute, remote or traversing is
+  dropped at `_relative()` rather than rendered — one hotlink and the page stops being offline.
 - **Badges come from `models.DegradationTag`**, looped (FR-73). A new tag needs no change here;
   a hardcoded badge list would be a second vocabulary and would rot on the first new tag.
 - Reels use `<video preload="metadata">` with `seed_frame.*` as `poster` — the browser draws the
@@ -47,15 +62,25 @@ from hypesocials.outputs.packager import (
     REFS_DIR,
     SELECTED_MARKER,
     SKIP_REASON_FILE,
+    SOURCE_DIR,
     has_marker,
     read_meta,
 )
-from hypesocials.util import atomic_write, read_text, slugify
+from hypesocials.util import atomic_write, read_text
 
 GALLERY_FILE = "gallery.html"
 _VIDEO_EXTS = frozenset({".mp4", ".mov", ".webm"})
 _Meta = dict[str, Any]
 _Card = tuple[Path, _Meta]
+
+#: Run-level folders that are NOT assets: the brief-reference store (FR-71) and the source-slide
+#: store (FR-71 as amended v2.1.0 — `source/<post_id>/slide_NN.jpg` + `source.yaml`). Both live
+#: beside the asset folders and neither holds a `meta.yaml`, so skipping them is a statement of
+#: intent rather than an optimisation: a future store that DID hold one must not become a card.
+_NOT_ASSETS = frozenset({REFS_DIR, SOURCE_DIR})
+
+#: FR-73's `panels_truncated`, read as a string because that is what `meta.yaml` carries.
+_TRUNCATED = DegradationTag.PANELS_TRUNCATED.value
 
 #: `copy_source_refs` slots in the order a human reads the creative (FR-298): the words that
 #: became the biggest pixels first, the caption last. The first slot present is the one the
@@ -79,8 +104,9 @@ def write_gallery(
     """Rebuild `gallery.html` from what is on disk right now. Returns the path, or None (NFR-22).
 
     Call it as often as you like: after the first images land, after every wave, at run end.
-    Everything it needs — meta.yaml, caption.txt, the media files, `refs/` — is already written
-    by `packager.py`, so there is no state to thread and no ordering to respect.
+    Everything it needs — meta.yaml, caption.txt, the media files, the asset's `refs/`, and the
+    run-level `source/<post_id>/` slide store — is already on disk (written by `packager.py` and
+    `sources/slide_intel`), so there is no state to thread and no ordering to respect.
     """
     run = Path(run_dir)
     target = run / GALLERY_FILE
@@ -103,7 +129,7 @@ def _page(run: Path, title: str) -> str:
         float(meta.get("actual_cost_usd") or meta.get("estimated_cost_usd") or 0.0)
         for _, meta in cards
     )
-    body = "\n".join(_card_html(run, folder, meta) for folder, meta in cards)
+    body = "\n".join(_card_html(folder, meta) for folder, meta in cards)
     body = f'<div class="row">{body}</div>' if body else (
         '<p class="empty">No asset folders yet — this page refreshes as creatives land.</p>'
     )
@@ -119,27 +145,26 @@ def _page(run: Path, title: str) -> str:
 def _load(run: Path) -> list[_Card]:
     """Every asset folder with a meta.yaml, in folder-name order (= plan order via the ordinal)."""
     cards: list[_Card] = []
-    for folder in sorted(p for p in run.iterdir() if p.is_dir() and p.name != REFS_DIR):
+    for folder in sorted(p for p in run.iterdir() if p.is_dir() and p.name not in _NOT_ASSETS):
         meta = read_meta(folder)
         if meta:
             cards.append((folder, meta))
     return cards
 
 
-def _card_html(run: Path, folder: Path, meta: _Meta) -> str:
+def _card_html(folder: Path, meta: _Meta) -> str:
+    """One creative's card: FR-309's three-part deck when it is panel-mapped, today's card else.
+
+    The run folder is no longer a parameter: every path a card renders is now relative to the run
+    root and derivable from the asset folder's own name, because the last thing that needed the
+    run itself — the run-level style-reference store — died with the style channel (D46/F3).
+    """
     failed = meta.get("status") != "success"
+    rows = _panel_rows(meta)  # FR-309's routing signal: non-empty ⇒ this deck came from a deck
     parts = [f'<article class="card{" failed" if failed else ""}">',
              f'<h2>{html.escape(folder.name)}</h2>',
-             f'<div class="badges">{_badges(folder, meta)}</div>',
-             _media_html(folder, meta),
-             f'<div class="facts">{_facts(meta)}</div>']
-    # The topic this creative is about (FR-76). `source_name` is the topic's own name, not the
-    # monitor's; `topic_key` is its stable slug and stands in when a brief-driven creative or an
-    # older meta has no name to show.
-    topic = str(meta.get("source_name") or meta.get("topic_key") or "").strip()
-    if topic:
-        parts.append(f'<p class="prov">Topic: {html.escape(topic)}</p>')
-    parts.extend(_receipt_html(meta))
+             f'<div class="badges">{_badges(folder, meta)}</div>']
+    parts.extend(_deck_html(folder, meta, rows) if rows else _single_html(folder, meta))
     # The topic's own winning hook line, verbatim (`models.AssetRecord.source_hook`) — context for
     # the copy above it: this is what the trend sounded like, whether or not this creative quoted
     # that particular string.
@@ -152,13 +177,200 @@ def _card_html(run: Path, folder: Path, meta: _Meta) -> str:
     caption = _text(folder / "caption.txt")
     if caption:
         parts.append(f'<pre class="caption">{html.escape(caption)}</pre>')
-    parts.append(_refs_html(run, folder, meta))
+    parts.append(_refs_html(folder))
     url = str(meta.get("virlo_url") or "")
     if url:
         safe = html.escape(url, quote=True)
         parts.append(f'<p class="src"><a href="{safe}">source topic on Virlo</a></p>')
     parts.append("</article>")
     return "".join(part for part in parts if part)
+
+
+def _single_html(folder: Path, meta: _Meta) -> list[str]:
+    """The card body every image, reel and override-brief carousel keeps (FR-309's fallback).
+
+    Byte-for-byte the pre-D46 order — preview, facts, topic, receipt — because "the fallback IS
+    the current card" is the requirement, not a summary of it.
+    """
+    parts = [_media_html(folder, meta), f'<div class="facts">{_facts(meta)}</div>']
+    parts.extend(_topic_html(meta))
+    parts.extend(_receipt_html(meta))
+    return parts
+
+
+def _deck_html(folder: Path, meta: _Meta, rows: list[dict[str, Any]]) -> list[str]:
+    """FR-309's three parts, in its own order: provenance header, source strip, our slides.
+
+    The header comes first because it answers the question the strip below it raises ("whose
+    slides am I looking at?"), and the verbatim receipt (FR-298) belongs inside it: the ref labels
+    it names — `P1.panel.3` — are labels ON the panels the strip is showing.
+    """
+    parts = [_provenance_html(meta)]
+    parts.extend(_receipt_html(meta))
+    parts.append(_panels_html(folder, meta, rows))
+    parts.append(f'<div class="facts">{_facts(meta)}</div>')
+    parts.extend(_topic_html(meta))
+    return parts
+
+
+def _topic_html(meta: _Meta) -> list[str]:
+    """The topic this creative is about (FR-76). `source_name` is the topic's own name, not the
+    monitor's; `topic_key` is its stable slug and stands in when a brief-driven creative or an
+    older meta has no name to show."""
+    topic = str(meta.get("source_name") or meta.get("topic_key") or "").strip()
+    return [f'<p class="prov">Topic: {html.escape(topic)}</p>'] if topic else []
+
+
+# ------------------------------------------------------------------ FR-309: the provenance card
+
+
+def _panel_rows(meta: _Meta) -> list[dict[str, Any]]:
+    """`panel_map`'s rows, or `[]` — the one signal that routes a card to FR-309's layout.
+
+    Empty is a DECLARED shape, not missing data: an override-brief carousel binds no source post
+    (§0.14d) and nothing that is not a deck has panels at all. A malformed row (anything that is
+    not a mapping) is dropped rather than crashing the page — NFR-22 pays for a template error
+    with the whole gallery, and one bad row is not worth that.
+    """
+    raw = meta.get("panel_map")
+    return [row for row in raw if isinstance(row, dict)] if isinstance(raw, list) else []
+
+
+def _provenance_html(meta: _Meta) -> str:
+    """FR-309 part 1 — whose deck this is: author, reach, date, post id, permalink, caption.
+
+    Read straight off `meta.yaml`'s nested `source_post`, field by field, and every field is
+    optional: a post the run bound but could no longer resolve carries its id alone, and printing
+    the id alone is the honest rendering of that. The permalink is a LINK, never an embed — FR-75
+    bans loading a remote byte, not naming where the deck lives.
+    """
+    post = meta.get("source_post")
+    if not isinstance(post, dict) or not post:
+        return ""
+    facts: list[str] = []
+    if author := str(post.get("author") or "").strip():
+        facts.append(author if author.startswith("@") else f"@{author}")
+    if views := _int(post.get("views")):
+        facts.append(f"{views:,} views")
+    if published := str(post.get("published_at") or "").strip():
+        facts.append(published)
+    if post_id := str(post.get("post_id") or "").strip():
+        facts.append(f"post {post_id}")
+    parts = [f'<p class="prov">Source deck: {html.escape(" · ".join(facts))}</p>'] if facts else []
+    if url := str(post.get("url") or "").strip():
+        parts.append(f'<p class="src"><a href="{html.escape(url, quote=True)}">'
+                     "the original post</a></p>")
+    if caption := " ".join(str(post.get("caption") or "").split()):
+        # The creator's OWN caption, in its own language. Long by nature, so it is clamped by CSS
+        # (scrollable, not cut): a truncated caption would look like a quote we shortened.
+        parts.append(f'<p class="ocaption">Original caption: “{html.escape(caption)}”</p>')
+    return f'<div class="head">{"".join(parts)}</div>' if parts else ""
+
+
+def _panels_html(folder: Path, meta: _Meta, rows: list[dict[str, Any]]) -> str:
+    """FR-309 parts 2+3 — one tile PER PANEL: their slide above, ours below, index stated.
+
+    Pairing beats two independent strips here: two rows only line up while both are full, and the
+    first missing source image or undelivered slide would shift one of them by a tile and turn the
+    page into a lie that looks tidy. A pair holds its own alignment — a gap stays a gap, labelled
+    `slide i ← source panel j` on the tile itself, so the mapping never has to be counted.
+    """
+    ours = _our_slides(folder)
+    used: set[str] = set()
+    tiles = []
+    for row in rows:
+        slide = _int(row.get("slide"))
+        position = _int(row.get("source_position"))
+        pin = f"slide {slide or '?'} ← source panel {position or '?'}"
+        tiles.append(f'<div class="pair"><div class="pin">{html.escape(pin)}</div>'
+                     f'{_source_side(row)}{_our_side(folder, ours.get(slide), used)}</div>')
+    # Anything the deck delivered that no row claimed (a stray slide, an older meta) still shows:
+    # media on disk is never hidden by a mapping that did not mention it.
+    return (f'<div class="pairs">{"".join(tiles)}</div>{_panel_note(meta, rows)}'
+            f'{_media_html(folder, meta, exclude=frozenset(used))}')
+
+
+def _source_side(row: dict[str, Any]) -> str:
+    """One SOURCE panel: its picture (local copy), its extracted words, its visual brief."""
+    src = _relative(row.get("source_image"))
+    label = str(row.get("ref_label") or "").strip()
+    text = " ".join(str(row.get("source_text") or "").split())
+    brief = " ".join(str(row.get("visual_brief") or "").split())
+    parts = [f'<span class="tag">source{f" · {html.escape(label)}" if label else ""}</span>']
+    parts.append(f'<a href="{src}"><img loading="lazy" src="{src}" alt="source panel"></a>'
+                 if src else '<div class="gap">source slide not downloaded</div>')
+    parts.append(f'<p class="ptext">“{html.escape(text)}”</p>' if text else
+                 '<p class="ptext none">no words on this panel</p>')
+    if brief:
+        parts.append(f'<p class="brief">{html.escape(brief)}</p>')
+    return f'<div class="side">{"".join(parts)}</div>'
+
+
+def _our_side(folder: Path, item: Path | None, used: set[str]) -> str:
+    """OUR slide for that same index, or a stated gap when it never landed (FR-20/95)."""
+    if item is None:
+        return ('<div class="side"><span class="tag">ours</span>'
+                '<div class="gap">slide not delivered</div></div>')
+    used.add(item.name)
+    src = _href(folder.name, item.name)
+    return (f'<div class="side"><span class="tag">ours</span>'
+            f'<a href="{src}"><img loading="lazy" src="{src}" alt="{html.escape(item.name)}">'
+            "</a></div>")
+
+
+def _panel_note(meta: _Meta, rows: list[dict[str, Any]]) -> str:
+    """The truncation sentence — the operator must not have to count tiles to notice a cut.
+
+    `panels_truncated` (FR-304/§0.4′) means the tail was never ORDERED; a shorter deck without
+    that tag means something else took the slides away. Both are stated, and neither is inferred
+    from the other, because "we chose not to render panels 6–9" and "panels 6–9 failed" are
+    different facts about the same-looking page.
+    """
+    total, shown = _int(meta.get("source_panel_count")), len(rows)
+    if total <= shown:
+        return ""
+    line = (f"Showing the first {shown} of {total} source panels — the tail was never ordered "
+            f"(panels_truncated), not lost in rendering." if _TRUNCATED in _tags(meta) else
+            f"Our {shown} slide(s) against the source deck's {total} panels.")
+    return f'<p class="note">{html.escape(line)}</p>'
+
+
+def _our_slides(folder: Path) -> dict[int, Path]:
+    """`{slide number: file}` for the deck we delivered — `slide_03.jpg` is slide 3 (FR-72).
+
+    Parsed from the name rather than counted from a sorted list, so a deck missing slide 2 puts
+    slide 3 against source panel 3 instead of sliding the whole tail up by one.
+    """
+    found: dict[int, Path] = {}
+    for item in sorted(folder.glob("slide_*")):
+        digits = "".join(char for char in item.stem.removeprefix("slide_") if char.isdigit())
+        if digits:
+            found.setdefault(int(digits), item)
+    return found
+
+
+def _relative(value: Any) -> str:
+    """A run-relative media href, or `""` — FR-75's hotlink ban enforced at the last step.
+
+    `panel_map.source_image` is written upstream as `source/<post_id>/slide_NN.jpg`, already
+    relative to the run folder and forward-slashed. Anything else — an absolute URL, an absolute
+    path, a traversal, a drive letter — is DROPPED rather than rendered: one remote byte and the
+    page stops being the offline artifact FR-75 promises, and the tile degrades to exactly the
+    gap a failed download already leaves.
+    """
+    text = str(value or "").strip().replace("\\", "/")
+    if (not text or "://" in text or text.startswith("/")
+            or ".." in text.split("/") or ":" in text.split("/")[0]):
+        return ""
+    return _href(text)
+
+
+def _int(value: Any) -> int:
+    """A meta.yaml number as an int; anything unreadable is 0, never an exception (NFR-22)."""
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _receipt_html(meta: _Meta) -> list[str]:
@@ -245,14 +457,21 @@ def _facts(meta: _Meta) -> str:
     return " · ".join(html.escape(bit) for bit in bits)
 
 
-def _media_html(folder: Path, meta: _Meta) -> str:
+def _media_html(folder: Path, meta: _Meta, *, exclude: frozenset[str] = frozenset()) -> str:
+    """The creative's own media (FR-72's publishable set), minus anything already shown.
+
+    `exclude` is FR-309's hand-off: a panel-mapped deck renders its slides inside the aligned
+    pairs, so this block carries only what those did not claim — usually nothing, in which case it
+    is silent rather than repeating the deck under itself. Without an exclusion an empty folder
+    still SAYS it is empty: a card with no media and no sentence reads as a rendering bug.
+    """
     poster = next(iter(sorted(folder.glob("seed_frame.*"))), None)
-    files = (sorted(folder.glob("slide_*")) + sorted(folder.glob("image.*"))
-             + sorted(folder.glob("reel.*")))
-    if not files and poster:
+    files = [item for item in (sorted(folder.glob("slide_*")) + sorted(folder.glob("image.*"))
+                               + sorted(folder.glob("reel.*"))) if item.name not in exclude]
+    if not files and poster and poster.name not in exclude:
         files = [poster]
     if not files:
-        return '<div class="media empty">no media on disk</div>'
+        return "" if exclude else '<div class="media empty">no media on disk</div>'
     poster_attr = f' poster="{_href(folder.name, poster.name)}"' if poster else ""
     tiles = []
     for item in files:
@@ -265,37 +484,30 @@ def _media_html(folder: Path, meta: _Meta) -> str:
     return f'<div class="media">{"".join(tiles)}</div>'
 
 
-def _refs_html(run: Path, folder: Path, meta: _Meta) -> str:
-    """The references this creative was rendered from — FR-150 judges adherence by comparison.
+def _refs_html(folder: Path) -> str:
+    """The BRIEF photos this creative was rendered with, when it had any (FR-71, D26).
 
-    Two stores, both shown: the run-level `refs/<style_key>/` folder holding the house-style
-    images every creative on that style was given (post-pivot the store is keyed by STYLE, since
-    the style is the visual authority and one style serves many topics), and the asset's own
-    `refs/` holding an override brief's images (D26), which belong to this creative alone.
+    ONE store now, not two. D46/F3 excised the style reference channel: a meta-style is text-only
+    DNA, ships no picture to any render job, and the run-level `refs/<style_key>/` folder that
+    used to hold those pictures is no longer written at all — scanning for it would be a search
+    for something the run cannot produce. What remains is the asset's own `refs/`, holding an
+    override or blend brief's own images, which belong to this creative alone and ARE uploaded.
+    Silent for every creative without a brief, which post-pivot is most of them.
     """
-    key = str(meta.get("style_key") or "").strip()
-    # Registry keys are slug-shaped already, but `save_reference` slugifies before writing, so
-    # both spellings are tried rather than silently showing no references. A creative with no
-    # style key contributes no run-level path at all — `refs/` itself holds only folders, so an
-    # empty key would scan the whole store and quietly find nothing.
-    sources = [folder / REFS_DIR]
-    if key:
-        sources += [run / REFS_DIR / key, run / REFS_DIR / slugify(key)]
+    directory = folder / REFS_DIR
+    if not directory.is_dir():
+        return ""
     tiles: list[str] = []
-    for directory in dict.fromkeys(sources):
-        if not directory.is_dir():
+    for item in sorted(directory.iterdir()):
+        if not item.is_file():
             continue
-        rel = directory.relative_to(run).as_posix()
-        for item in sorted(directory.iterdir()):
-            if not item.is_file():
-                continue
-            src = "./" + quote(f"{rel}/{item.name}")
-            tiles.append(
-                f'<video controls preload="metadata" src="{src}"></video>'
-                if item.suffix.lower() in _VIDEO_EXTS
-                else f'<a href="{src}"><img loading="lazy" src="{src}" alt="reference"></a>'
-            )
-    return f'<div class="refs"><span>references</span>{"".join(tiles)}</div>' if tiles else ""
+        src = _href(folder.name, REFS_DIR, item.name)
+        tiles.append(
+            f'<video controls preload="metadata" src="{src}"></video>'
+            if item.suffix.lower() in _VIDEO_EXTS
+            else f'<a href="{src}"><img loading="lazy" src="{src}" alt="brief reference"></a>'
+        )
+    return f'<div class="refs"><span>brief images</span>{"".join(tiles)}</div>' if tiles else ""
 
 
 def _tags(meta: _Meta) -> set[str]:
@@ -348,6 +560,25 @@ code {{ background:var(--card); border:1px solid var(--line); border-radius:4px;
 .refs span {{ font-size:11px; color:var(--mut); text-transform:uppercase; letter-spacing:.06em; }}
 .facts, .hook, .prov, .src {{ font-size:12px; color:var(--mut); margin:9px 0 0; }}
 .prov {{ color:var(--fg); }}
+/* FR-309: source-deck provenance header, then one tile per panel — theirs above, ours below. */
+.head {{ border-left:3px solid var(--line); padding:2px 0 2px 10px; margin:0 0 10px; }}
+.head p {{ margin:3px 0 0; }}
+.ocaption {{ font-size:12px; color:var(--mut); margin:6px 0 0; max-height:6.5em; overflow:auto;
+  white-space:pre-wrap; }}
+.pairs {{ display:flex; flex-wrap:wrap; gap:10px; align-items:flex-start; }}
+.pair {{ flex:0 0 168px; border:1px solid var(--line); border-radius:8px; padding:7px;
+  background:var(--bg); }}
+.pin {{ font-size:11px; color:var(--mut); margin-bottom:5px; }}
+.side {{ margin-top:5px; }}
+.side img {{ max-width:100%; max-height:190px; border-radius:6px; display:block; }}
+.tag {{ font-size:10px; color:var(--mut); text-transform:uppercase; letter-spacing:.06em; }}
+.gap {{ font-size:11px; color:var(--mut); border:1px dashed var(--line); border-radius:6px;
+  padding:14px 8px; text-align:center; }}
+.ptext {{ font-size:12px; color:var(--fg); margin:5px 0 0; }}
+.ptext.none {{ color:var(--mut); font-style:italic; }}
+.brief {{ font-size:11px; color:var(--mut); margin:4px 0 0; max-height:7em; overflow:auto; }}
+.note {{ font-size:12px; color:var(--warn); background:var(--warnbg); border-radius:6px;
+  padding:6px 8px; margin:10px 0 0; }}
 .skip {{ font-size:12px; color:var(--warn); margin:9px 0 0; }}
 .caption {{ white-space:pre-wrap; font:13px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace;
   background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:10px;
@@ -366,10 +597,12 @@ With nothing selected, <code>--publish</code> sends every successfully packaged 
 </header>
 {body}
 <footer>
-<p class="howto">Rate this batch on <strong>style adherence</strong> and <strong>topical
-accuracy</strong>: does each creative look like the house style shown in its references, and is
-it about the topic and the post it quotes verbatim? Those two questions are the whole judgement
-— fidelity to a trend's own pixels is no longer what these are made from.</p>
+<p class="howto">Rate this batch on <strong>style adherence</strong>,
+<strong>topical accuracy</strong> and <strong>panel fidelity</strong>: does each creative look
+like its assigned house style, is it about the topic and the post it quotes verbatim, and does
+our slide <em>i</em> carry the words and the content of source panel <em>i</em>? Those three
+questions are the whole judgement. The slide texts and the visuals come from the original deck
+and are reproduced in our house style; nothing here is cloned from a reference image.</p>
 </footer>
 </body></html>
 """

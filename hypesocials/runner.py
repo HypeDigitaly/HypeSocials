@@ -717,39 +717,33 @@ def _restate(session: _Session, assignment: plan.Assignment, plan_estimate: Esti
 
 
 def _store_references(session: _Session, live: Sequence[PlanEntry]) -> None:
-    """Copy every STYLE reference window this run attaches into `refs/`, keyed by style (FR-71/150).
+    """Copy every BRIEF reference image this run attaches into `refs/`, keyed by brief (FR-71).
 
-    Post-pivot the visual authority is the registry, so the gallery's comparison folder shows the
-    style images the jobs really attached — every distinct file across every assigned style's
-    windows, deduplicated, indexed continuously per style so no window overwrites another
-    (`packager.save_reference` names files `image_<index>` inside a per-style folder). Override
-    briefs attach no style window (M14) and contribute nothing here; their own photos ship in
-    the asset folder's `refs/` via the packager, as before.
+    D46 excised the style picture channel (F3): a meta-style is words, so the run-level `refs/`
+    store holds brief reference images ONLY — `refs/<brief_name>/image_<index>` — deduplicated
+    across the entries that share a brief. The per-asset copy (`AssetFolder.add_reference`, D26)
+    still ships beside each creative; this run-level folder is the one place a reviewer can see
+    a brief's own photos without opening asset folders. Entries without a brief contribute
+    nothing, which post-pivot makes an empty `refs/` the normal case.
     """
-    if session.registry is None:
-        return
-    refs_per_job = session.config.styles.refs_per_job
-    windows: dict[str, list[Path]] = {}
+    stored: dict[str, list[Path]] = {}
     for entry in live:
-        if not entry.style_key or entry.brief_influence == "override":
+        brief = session.campaign_briefs.get(entry.brief_name or "")
+        if brief is None:
             continue
-        try:
-            style = styles.style_for(session.registry, entry.style_key)
-        except styles.StyleRegistryError:
-            continue
-        paths = windows.setdefault(entry.style_key, [])
-        for path in styles.pick_reference_window(style, entry.trend_reuse_index, refs_per_job):
-            if path not in paths:
+        paths = stored.setdefault(entry.brief_name or "", [])
+        for raw in brief.reference_image_paths:
+            if (path := Path(raw)) not in paths:
                 paths.append(path)
-    for key, paths in windows.items():
+    for key, paths in stored.items():
         for index, path in enumerate(paths, start=1):
             try:
                 save_reference(session.run_dir, key, path.read_bytes(), index=index,
                                suffix=path.suffix)
             except OSError as exc:
-                session.log.warn("reference_copy_failed", f"{key}: {exc}", style=key)
+                session.log.warn("reference_copy_failed", f"{key}: {exc}", brief=key)
             else:
-                session.note(f"          style ref stored  {key}  {path.name}")
+                session.note(f"          brief ref stored  {key}  {path.name}")
 
 
 async def _write(session: _Session, live: Sequence[PlanEntry], trends: dict[str, TrendItem],
@@ -1254,7 +1248,16 @@ def _post_roster(topics: Sequence[TrendItem], verdicts: Mapping[int, topic_filte
         topic = next((t for t in topics if t.history_key == entry.trend_key), None)
         if topic is None or not topic.posts:
             continue
-        index = max(int(entry.trend_reuse_index), 0) % len(topic.posts)
+        # D46 §0.10: the plan binds a specific fresh post at ASSIGN, so `-> NN` points at THAT
+        # row. An unbound entry (override brief never reaches here; a degrade path can) keeps
+        # the pre-D46 modulo so the roster still says who drew on the topic.
+        if entry.source_post_id:
+            index = next((i for i, post in enumerate(topic.posts)
+                          if str(post.post_id or "") == entry.source_post_id), None)
+            if index is None:
+                continue  # bound to a post outside the printed roster: claiming a row would lie
+        else:
+            index = max(int(entry.trend_reuse_index), 0) % len(topic.posts)
         quoted.setdefault((topic.history_key, index), []).append(
             entry.asset_id.rsplit("_", 1)[-1])
     lines: list[str] = []
@@ -1401,26 +1404,15 @@ async def _screen_topics(session: _Session, trends: Sequence[TrendItem]
 
 def _record_style_forecast(session: _Session, live: Sequence[PlanEntry], registry: Any, *,
                            dropped: int) -> None:
-    """The forecast end of FR-155's funnel, re-based on styles (contracts item 13).
+    """The forecast end of FR-155's funnel, re-based for text-only styles (D46/F3).
 
-    Per live entry the window is what `refs.attach` will really upload: the assigned style's
-    usable reference images clipped to `styles.refs_per_job` — 0 under an override brief (M14),
-    an unknown key, or no registry. Feeds `Counters.record_render`'s re-based shape (item 15).
+    The style reference-image window is excised, so the render forecast no longer counts
+    attachments — it states coverage: how many jobs render, over how many topics, wearing how
+    many distinct styles. `registry` stays in the signature because coverage is only meaningful
+    once assignment has run against one; a registry-less preview records zeros honestly.
     """
-    refs_per_job = session.config.styles.refs_per_job
-    counts: list[int] = []
-    for entry in live:
-        window = 0
-        if registry is not None and entry.style_key and entry.brief_influence != "override":
-            try:
-                style = styles.style_for(registry, entry.style_key)
-                window = len(styles.pick_reference_window(
-                    style, entry.trend_reuse_index, refs_per_job))
-            except styles.StyleRegistryError:
-                window = 0
-        counts.append(window)
     session.counters.record_render(
-        jobs=len(live), dropped=dropped, style_refs=counts,
+        jobs=len(live), dropped=dropped,
         topics_used=len({entry.trend_key for entry in live if entry.trend_key}),
         styles_used=len({entry.style_key for entry in live if entry.style_key}))
 
@@ -1432,11 +1424,9 @@ def _local_refs(session: _Session,
                 live: Sequence[PlanEntry]) -> dict[str, tuple[tuple[Path, str], ...]]:
     """Every BRIEF-owned file a job uploads before it can reference it (FR-200, kind `"brief"`).
 
-    Post-pivot the style channel does not travel here at all: `refs.attach()` resolves the
-    assigned style's reference window straight from the registry (`env.styles`) through the
-    run-scoped upload memo, style images FIRST, these brief photos after (F19 — "follow the
-    first listed" is what makes the style win). Each file still travels WITH its kind, because
-    the prompt names what each reference is (50 §3's `reference_roles`).
+    Post-D46 this is the ONLY channel that travels to `refs.attach()`: a meta-style is words
+    (F3), so a job's uploads are a brief's own photos — nothing else. Each file still travels
+    WITH its kind, because the prompt names what each reference is (50 §3's `reference_roles`).
     """
     refs: dict[str, tuple[tuple[Path, str], ...]] = {}
     for entry in live:
@@ -1681,11 +1671,8 @@ def _funnel_block(counters: sources.Counters) -> str:
             "verdict", f"{tally.eligible} eligible, {tally.excluded_by_history} excluded by "
                        f"history, {tally.unusable} unusable")
     if tally.render_seen:
-        refs = (str(tally.style_refs_min) if tally.style_refs_min == tally.style_refs_max
-                else f"{tally.style_refs_min}-{tally.style_refs_max}")
         lines += _funnel_row(
-            "render", f"{tally.jobs} job(s) will attach {refs} style ref(s)"
-                      + (" each" if tally.jobs > 1 else ""),
+            "render", f"{tally.jobs} job(s) will render",
             f"{tally.styles_used} style(s) over {tally.topics_used} topic(s)",
             f"{tally.jobs_dropped} dropped, no topic left" if tally.jobs_dropped else "")
     return "\n".join(lines)

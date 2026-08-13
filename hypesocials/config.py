@@ -11,7 +11,10 @@ loading has no interpolation and that absence is what makes a config file secret
 FR-130/177); `max_tokens` under its floor is clamped up with a warning (NFR-111). Two CROSS-KEY
 pairs are refused rather than clamped, each naming both keys and both values: the no-repeat history
 window against the fetch window (FR-307) and the image/reel counts against slideshow-only sourcing
-(D46 §0.14e) — see `_validate_windows` and `_validate_formats_sourcing`.
+(D46 §0.14e) — see `windows_violation` and `formats_sourcing_violation`. Both are PUBLIC pure
+predicates rather than load-time-only checks, because CLI overrides (`--history-days`, `--images`)
+mutate the `Config` AFTER the load path ran, and pre-flight re-runs the same two functions on the
+mutated object (FR-138) — one wording, two doors, never a second copy of the sentence.
 
 Do not: read env vars or `.env` here (config names variables, never values); clamp
 `reel_duration_s` here (pre-flight owns that, FR-103/138); import project modules besides `util`.
@@ -393,18 +396,10 @@ class BrandingConfig:
     profiles: dict[str, BrandProfile] = field(default_factory=_default_profiles)
 
 
-@dataclass(slots=True)
-class StylesConfig:
-    """`styles:` — run-side knobs for the meta-style registry (FR-290); the registry itself is a
-    prompt artifact (`prompts/styles.yaml`), never config.
-
-    One key so far: how many of a style's own reference images ride along with each render job.
-    The A17 window rotation picks WHICH ones (`styles.pick_reference_window`), so this is only how
-    wide that window is — and it is the multiplier on every job's upload and reference budget,
-    which is why it is a config key rather than a constant.
-    """
-
-    refs_per_job: int = 2
+# `StylesConfig` (`styles.refs_per_job`) was removed with D46/F3: a meta-style ships no
+# reference images, so there is no window to size. The registry itself was never config
+# (`prompts/styles.yaml`, FR-290); a stale `styles:` block in an operator file now earns the
+# ordinary unknown-key warning and is ignored.
 
 
 @dataclass(slots=True)
@@ -421,7 +416,6 @@ class Config:
     output: OutputConfig = field(default_factory=OutputConfig)
     niche: NicheConfig = field(default_factory=NicheConfig)
     branding: BrandingConfig = field(default_factory=BrandingConfig)  # FR-292
-    styles: StylesConfig = field(default_factory=StylesConfig)  # FR-290
     platforms: dict[str, PlatformConfig] = field(default_factory=dict)
     mcp_servers: McpConfig = field(default_factory=McpConfig)
     briefs_dir: str = "briefs"  # D26/D27; a niche config points this at its own folder
@@ -685,7 +679,6 @@ _BOUNDS: dict[str, tuple[float, float, str]] = {
     "run.text_budgets.reel_seed_headline": (1, 400, "a character count, 1–400"),
     "run.text_budgets.retry_reduction_pct": (1, 90, "a percentage, 1–90"),
     "branding.brand_ratio": (0.0, 1.0, "a ratio between 0 and 1"),
-    "styles.refs_per_job": (1, 16, "a whole number of references per job, 1–16"),
     "sources.virlo_session_pool": (1, 8, "a whole number of MCP sessions, 1–8"),
     # 0 is inside these bounds and is rejected by `_validate` instead, so the operator gets the
     # "-1 is the kill switch you meant" line rather than a bare range message.
@@ -908,8 +901,9 @@ def _validate(cfg: Config, ctx: _Ctx) -> None:
     if cfg.sources.virlo_topics_per_monitor == 0:  # in range, but it means "collect nothing"
         ctx.fail("sources.virlo_topics_per_monitor", 0,
                  _BOUNDS["sources.virlo_topics_per_monitor"][2])
-    _validate_windows(cfg, ctx)
-    _validate_formats_sourcing(cfg, ctx)
+    for violation in (windows_violation(cfg), formats_sourcing_violation(cfg)):
+        if violation:  # the wording lives in the predicate; the load path only grades it
+            ctx.refuse(violation)
     languages = list(cfg.run.languages.items()) + list(cfg.run.onimage_text_language.items())
     for platform, language in languages:
         if language not in _LANGUAGES:
@@ -960,8 +954,14 @@ def _validate(cfg: Config, ctx: _Ctx) -> None:
             "the analyze/copy/image stages")
 
 
-def _validate_windows(cfg: Config, ctx: _Ctx) -> None:
+def windows_violation(cfg: Config) -> str | None:
     """FR-307: the no-repeat memory must cover at least the window the fetch reaches back over.
+
+    Returns the whole refusal sentence, or `None` when the pair is legal. A pure predicate over a
+    `Config`, with no `_Ctx` and no raise, because it has TWO doors: the load path (which prefixes
+    the file name and raises `ConfigError`) and pre-flight, which re-runs it on the config a CLI
+    override such as `--history-days 7` mutated after the load-time validation had already passed
+    (FR-138). One wording, both doors — a second copy of this sentence is how the two doors drift.
 
     Both keys are individually legal at any value in their bounds; only the PAIR can be wrong. When
     the history window is narrower than the fetch window there is a band of days in which a post is
@@ -976,9 +976,9 @@ def _validate_windows(cfg: Config, ctx: _Ctx) -> None:
     warn about. It is exempt, not a violation.
     """
     history, fetch = cfg.run.trend_history_days, cfg.sources.max_post_age_days
-    if history != 0 and history < fetch:
-        ctx.refuse(
-            f"run.trend_history_days is {history} but sources.max_post_age_days is {fetch} — the "
+    if history == 0 or history >= fetch:
+        return None
+    return (f"run.trend_history_days is {history} but sources.max_post_age_days is {fetch} — the "
             "no-repeat history window must be at least as wide as the fetch window, or a post the "
             "run already used drops out of history while it is still being fetched and gets "
             f"quoted twice; raise run.trend_history_days to {fetch} or more, lower "
@@ -986,27 +986,40 @@ def _validate_windows(cfg: Config, ctx: _Ctx) -> None:
             "on purpose (FR-307)")
 
 
-def _validate_formats_sourcing(cfg: Config, ctx: _Ctx) -> None:
+def formats_sourcing_violation(cfg: Config, *,
+                               counts: Mapping[str, int] | None = None) -> str | None:
     """§0.14e: image and reel counts need video sourcing, because v1 fetches slideshows only.
+
+    Returns the whole refusal sentence, or `None` when the pair is legal. Same two-door reason as
+    `windows_violation`: `--images 4` mutates `run.formats` after the load path validated it.
 
     With `sources.include_videos: false` every topic in the pool is slideshow-majority, and a
     slideshow is a deck — the thing a CAROUSEL reproduces panel for panel (FR-304). An image or a
     reel planned against that pool cannot use the panels, so it falls back to a lower-ranked field
     of a post the run was never meant to quote that way, forever and silently. Refusing the pair
     makes that a visible either/or: turn video sourcing on, or plan carousels.
+
+    Args:
+        cfg: the config whose `sources.include_videos` decides whether the guard applies at all.
+        counts: image/reel counts to judge INSTEAD of `run.formats`. `None` (the load-time case)
+            reads `run.formats` directly, because at load time no plan exists yet. Pre-flight
+            passes the expanded plan's own counts, which is the §0.14d carve-out: an image or reel
+            entry running under an `override`-influence brief binds no source post at all (FR-144),
+            so it needs no video sourcing and must not fire this guard. Only entries that will
+            really reach the Virlo pool are counted.
     """
     if cfg.sources.include_videos:
-        return
-    images, reels = cfg.run.formats.get("image", 0), cfg.run.formats.get("reel", 0)
+        return None
+    table = cfg.run.formats if counts is None else counts
+    images, reels = int(table.get("image", 0)), int(table.get("reel", 0))
     if images + reels <= 0:
-        return
+        return None
     wanted = " + ".join(f"{count} {name}" for name, count in
                         (("image", images), ("reel", reels)) if count)
-    ctx.refuse(
-        f"run.formats asks for {wanted} while sources.include_videos is false — slideshow-first "
-        "sourcing makes every topic slideshow-majority, so image and reel creatives would "
-        "silently rank-fallback onto posts they cannot quote properly; set "
-        "sources.include_videos: true or set those counts to 0 (§0.14e, FR-132)")
+    return (f"run.formats asks for {wanted} while sources.include_videos is false — "
+            "slideshow-first sourcing makes every topic slideshow-majority, so image and reel "
+            "creatives would silently rank-fallback onto posts they cannot quote properly; set "
+            "sources.include_videos: true or set those counts to 0 (§0.14e, FR-132)")
 
 
 def _validate_branding(cfg: Config, ctx: _Ctx) -> None:
@@ -1051,6 +1064,6 @@ __all__ = [
     "CONFIGS_DIR", "DEFAULT_CONFIG_NAME", "LOGS_DIR", "BrandConfig", "BrandProfile",
     "BrandingConfig", "Config", "ConfigError", "ConfigSummary",
     "GalleryConfig", "McpConfig", "ModelsConfig", "NicheConfig", "OutputConfig", "PLATFORMS",
-    "PlatformConfig", "PriceTable", "RunConfig", "SourcesConfig", "StylesConfig", "TextBudgets",
-    "list_configs", "load_config",
+    "PlatformConfig", "PriceTable", "RunConfig", "SourcesConfig", "TextBudgets",
+    "formats_sourcing_violation", "list_configs", "load_config", "windows_violation",
 ]

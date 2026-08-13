@@ -22,10 +22,12 @@ Invariants:
   one whole state (NFR-21). A failed creative keeps its paid caption (FR-74).
 - **Nothing new is ordered once `env.halted` is true**, and what is already in flight gets ONE
   ~30 s grace window before it is abandoned honestly, with its taskId in the ledger (FR-108/201).
-- **References are the assigned meta-style's own images (FR-290/291, v2.0.0)** — `refs.attach()`
-  uploads the style's reference window through the run-scoped memo (one upload per file per run,
-  FR-200/244), style images first, a brief's own photos after; an `override` brief suppresses
-  the style channel entirely (M14). A failed upload drops that one reference, never the job.
+- **Text-to-image is the default route; a house style ships no pixels (D46/F3, v2.1.0)** — the
+  style reference channel is excised, so `refs.attach()` uploads only a brief's OWN photos (D26)
+  through the run-scoped memo (one upload per file per run, FR-200/244). The only other image a
+  job may carry is one we made ourselves and chained inside a single creative: the carousel
+  anchor slide (FR-94) and the reel's seed frame (FR-24). A failed upload drops that one
+  reference, never the job.
 - **A creative's visual authority is its `entry.style_key`** — `refs.style_of(entry, env)`
   resolves it against `env.styles` (the registry); the style's `render_prompt`/zones/DNA feed
   `build_context(style=...)` and the branding channels ride beside it (`branding_block` +
@@ -49,6 +51,7 @@ import time
 from collections.abc import Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass, field
+from datetime import datetime
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -134,8 +137,10 @@ class Env:
     #: the audit tags). ONE field rather than one frozenset per tag: the copy stage is
     #: free to grow a new degradation without a new field here and a new branch in `_record`.
     copy_tags: Mapping[str, Sequence[DegradationTag]] = field(default_factory=dict)
-    #: FR-200/191: `asset_id -> ((path, kind), …)`, kind in {"style", "brief"} — the provenance
-    #: that picks each attachment's role line (`refs.py`, contracts item 11).
+    #: FR-200/191: `asset_id -> ((path, kind), …)` — the provenance that picks each attachment's
+    #: role line (`refs.py`, contracts item 11). Post-D46 the only kind the runner produces is
+    #: `"brief"`: the style reference channel is excised (F3), so a meta-style contributes prose
+    #: to the prompt and nothing to the upload memo.
     local_refs: Mapping[str, Sequence[tuple[Path, str]]] = field(default_factory=dict)
     campaign_briefs: Mapping[str, Brief] = field(default_factory=dict)  # FR-144/145, by name
     niche_descriptor: str = ""  # copy-side (audience included): the analyst and copywriter only
@@ -610,11 +615,33 @@ def _assemble(entry: PlanEntry, env: Env, attached: Sequence[Reference], *,
 
 
 def _record(entry: PlanEntry, env: Env) -> AssetRecord:
-    """The `pending` meta.yaml this creative starts life with — FR-73 field for field."""
+    """The `pending` meta.yaml this creative starts life with — FR-73 field for field.
+
+    This is also the ONE place the three provenance stages are joined into a single document
+    (FR-73 as amended v2.1.0): the PLAN's bound source post (`entry.source_post_id`), the COPY
+    stage's panel map (`CopyProvenance` — which of our slides quoted which source panel, and under
+    which ref label), and the slide-INTELLIGENCE reading of that same deck (`env.slide_intel` —
+    what each source panel looked like, and where its downloaded picture lives). Each of the three
+    is independently optional and each absence degrades to the pre-D46 shape rather than costing
+    the creative: no bound post means `source_post: null` and no rows, no intelligence means every
+    row still exists with an empty `visual_brief` and a null `source_image`.
+
+    FR-309's gallery card is built from exactly these fields and nothing else, which is why the
+    join happens here, once, instead of in the page writer: the gallery reads `meta.yaml`, it does
+    not re-derive provenance and it never opens `source.yaml`.
+    """
     trend = env.trends.get(entry.trend_key or "")
-    copyset = env.copy.get(entry.asset_id)
     prov = env.copy_provenance.get(entry.asset_id)
+    # The bound post is the PLAN's (FR-304), not the copy stage's: an image or a reel may well
+    # quote a post without binding its deck, and those carry no `source_post` by contract. The
+    # provenance fallback is belt-and-braces for a panel map that arrived without the entry field.
+    post_id = str(entry.source_post_id or "").strip() or (
+        str(prov.post_id) if prov and prov.panel_map else "")
+    intel = env.slide_intel.get(post_id) if post_id else None
     degradations: list[DegradationTag] = list(env.copy_tags.get(entry.asset_id, ()))
+    for tag in _intel_tags(intel):  # FR-306: `vision_transcribed` / `vision_unavailable`
+        if tag not in degradations:  # the copy stage may already have carried one
+            degradations.append(tag)
     return AssetRecord(
         asset_id=entry.asset_id,
         source=entry.trend_key or (f"brief/{entry.brief_name}" if entry.brief_name else "none"),
@@ -630,7 +657,11 @@ def _record(entry: PlanEntry, env: Env) -> AssetRecord:
         topic_key=entry.topic_key or (trend.topic_key if trend else ""),
         copy_source_post_id=prov.post_id if prov else "",
         copy_source_refs=dict(prov.refs) if prov else {},
-        ref_source=_ref_source(entry, env, trend),
+        # FR-73 (v2.1.0) — the slideshow receipt FR-309's three-part card is drawn from.
+        source_post=_source_post(post_id, trend),
+        source_panel_count=prov.source_panel_count if prov else 0,
+        panel_map=_panel_map(prov, intel),
+        ref_source=_ref_source(entry, env),
         degradations=degradations,
         brief_name=entry.brief_name,
         brief_influence_mode=entry.brief_influence,
@@ -641,19 +672,124 @@ def _record(entry: PlanEntry, env: Env) -> AssetRecord:
     )
 
 
+# --------------------------------------------------------------------------- the FR-73 join
+
+
+def _panel_map(prov: CopyProvenance | None, intel: Any) -> list[dict[str, Any]]:
+    """FR-73/FR-304/FR-306: the copy stage's rows, each joined with what that source panel SHOWED.
+
+    The copy stage owns `{slide, source_position, source_text, ref_label}` — our slide's index,
+    the source panel it renders, the words it quotes and the label they were quoted under. This
+    adds the two the slide-intelligence pass owns: `visual_brief` (the English content directive
+    the slide prompt carried, FR-308) and `source_image` (the run-relative path of the downloaded
+    source panel, FR-309's strip; forward-slashed and already relative to the run folder, since
+    FR-75 forbids hotlinks and absolute paths alike).
+
+    ONE row schema, always: with no intelligence at all — vision off, a failed read, a preview,
+    a test — every row still gains both keys, empty and `None`. A consumer that had to ask
+    whether a key exists before reading it would be reading two schemas, and the gallery's
+    alignment loop is the last place that should have to branch.
+
+    Rows keep their position and their count: a slide whose source panel was empty, unusable or
+    over budget keeps its row with an empty `source_text` and an empty `ref_label`, because the
+    row IS the alignment — dropping it would silently re-map slide 3's words onto slide 2, which
+    is the exact defect FR-304 exists to prevent.
+    """
+    rows: list[dict[str, Any]] = []
+    for row in (prov.panel_map if prov else ()):
+        position = _int(row.get("source_position"))
+        slide = intel.slide(position) if intel is not None and position else None
+        # A COPY of the copy stage's row: `CopyProvenance` is the caller's data, and the meta
+        # writer is not entitled to mutate it (two sibling creatives may share one provenance).
+        rows.append({**dict(row),
+                     "visual_brief": str(getattr(slide, "visual_brief", "") or ""),
+                     "source_image": (intel.relative_image(position)
+                                      if intel is not None and position else None)})
+    return rows
+
+
+def _source_post(post_id: str, trend: TrendItem | None) -> dict[str, Any] | None:
+    """FR-73's nested `source_post`: whose deck this creative is a rendering OF, or `None`.
+
+    `None` is the honest answer wherever nothing was bound — an image, a reel, an override-brief
+    carousel (§0.14d), a degrade path — and the gallery falls back to its single-card layout on
+    exactly that signal (FR-309).
+
+    When a post IS bound but the topic roster can no longer resolve it (a trend dropped from
+    `env.trends`, a plan resurrected from an older run), the record carries `{post_id}` ALONE:
+    the id is a fact, and answering `author`/`views`/`caption` with blanks and zeros would be
+    inventing provenance rather than admitting a gap. Every value that is written is a STRING or
+    an int — never a `datetime` — because meta.yaml is a plain document a human reads and a
+    Phase-2 publisher parses.
+    """
+    if not post_id:
+        return None
+    post = next((item for item in (getattr(trend, "posts", ()) or ())
+                 if str(item.post_id) == post_id), None)
+    if post is None:
+        return {"post_id": post_id}
+    return {"post_id": post_id, "url": str(post.url or ""), "author": str(post.author or ""),
+            "views": _int(post.views), "published_at": _iso(post.published_at),
+            "caption": str(post.caption or "")}
+
+
+def _intel_tags(intel: Any) -> list[DegradationTag]:
+    """FR-306's degradations, in FR-73's enum — `vision_transcribed`, `vision_unavailable`.
+
+    `SlideIntel.degradations` answers in the meta.yaml vocabulary by contract, so this is a
+    lookup rather than a mapping table: one spelling, owned by `DegradationTag`. A value the enum
+    does not know is skipped rather than crashing the creative's meta — an unknown tag is a
+    version skew between two modules, and the render is already paid for.
+    """
+    tags: list[DegradationTag] = []
+    for value in (getattr(intel, "degradations", ()) or ()):
+        try:
+            tags.append(DegradationTag(str(value)))
+        except ValueError:
+            continue
+    return tags
+
+
+def _iso(value: Any) -> str | None:
+    """An ISO 8601 string, or `None` — FR-73 stores strings, never `datetime` objects.
+
+    Re-derived here rather than imported from `sources.slide_intel` (which keeps the identical
+    discipline for `source.yaml`): `generate` imports nothing from `sources`, and a four-line
+    formatter is not worth inverting that direction for.
+    """
+    if isinstance(value, datetime):
+        return value.isoformat()
+    text = str(value or "").strip()
+    return text or None
+
+
+def _int(value: Any) -> int:
+    """A source-controlled number as an int; anything unreadable is 0, never an exception."""
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 # --------------------------------------------------------------------------- small helpers
 
 
-def _ref_source(entry: PlanEntry, env: Env, trend: TrendItem | None) -> str:
-    """FR-73's honest provenance: what this job's references actually came FROM.
+def _ref_source(entry: PlanEntry, env: Env) -> str:
+    """FR-73's honest provenance: what this job's uploaded references actually came FROM.
 
-    Post-pivot vocabulary is `"style" | "brief"` (contracts item 8). Style refs come from the
-    REGISTRY, not `env.local_refs`, so the kind set alone cannot answer — `refs.style_of` is the
-    reliable test (None under an override brief, an unknown key, or no registry at all).
+    Post-D46 the vocabulary is `"brief" | ""`. `"style"` is dead with the channel it named (F3):
+    a meta-style is text-only DNA now, ships no picture to any render job, and a field still
+    claiming "style" would be the one place in the run that says the look was copied from images
+    the renderer never saw.
+
+    `"brief"` is claimed only when the brief actually SHIPS photos — a brief with directives and
+    no images contributes no reference, and naming one would make this field a second, wrong
+    answer to "why does this look like this". The anchor slide and the seed frame are excluded on
+    purpose: they are our own generated artifacts, chained inside one creative and already
+    enumerated as assets (FR-72), not a provenance an operator can go and look at.
     """
-    if style_of(entry, env) is not None:
-        return "style"
-    return "brief" if entry.brief_name else ""
+    brief = env.campaign_briefs.get(entry.brief_name or "")
+    return "brief" if brief is not None and brief.reference_image_paths else ""
 
 
 def _abandon(entry: PlanEntry, env: Env, folder: AssetFolder) -> AssetRecord:

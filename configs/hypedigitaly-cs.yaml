@@ -95,14 +95,8 @@ sources:
   # source language, so this does not turn an English deck Czech - see `languages` above.
   vision_transcribe: true
 
-styles:
-  # Run-side knob for the meta-style registry (FR-290); the registry ITSELF is prompts/styles.yaml
-  # (or a prompts_dir override), never config. This is how many of the assigned style's own local
-  # reference images ride along with each render job - the rotation picks WHICH ones, this is only
-  # how wide that window is. It multiplies every job's upload count and reference budget, which is
-  # why it is a config key: 2 keeps a job's references coherent (one layout exemplar plus one
-  # palette exemplar) without crowding out the brief's own images when a blend brief supplies any.
-  refs_per_job: 2
+# The `styles:` section (`refs_per_job`) is gone (D46/F3): a meta-style is text-only DNA and
+# ships no reference images. The registry itself stays prompts/styles.yaml (FR-290), never config.
 
 # Brand identity for this config (FR-292/D43) - which brand the run signs with, how often, and in
 # what shape. Only the branded fraction below carries the wordmark. The wordmark itself is NOT

@@ -774,13 +774,18 @@ def test_fr299_note_writes_the_log_always_and_the_console_only_when_verbose(
 
 
 def test_fr299_a_note_that_stays_silent_does_not_reset_the_heartbeat_clock() -> None:
-    """Silence-breaker semantics: only a line the OPERATOR saw counts as breaking the silence."""
+    """Silence-breaker semantics: only a line the OPERATOR saw counts as breaking the silence.
+
+    The sample line is `_store_references`' own wording — post-D46 the run-level `refs/` store
+    holds a campaign brief's photos and nothing else (F3 excised the style picture channel), so
+    the note it emits reads `brief ref stored`.
+    """
     quiet, loud = session(verbose=False), session(verbose=True)
     for live in (quiet, loud):
         live.pulse.last = time.monotonic() - 600.0
 
-    quiet.note("style ref stored")
-    loud.note("style ref stored")
+    quiet.note("brief ref stored")
+    loud.note("brief ref stored")
 
     assert quiet.pulse.due() is True, "nothing reached the console, so the console is still mute"
     assert loud.pulse.due() is False

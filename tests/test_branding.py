@@ -38,7 +38,6 @@ Everything here is offline and deterministic: no network, no API key, no spend, 
 from __future__ import annotations
 
 import math
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -51,7 +50,7 @@ from hypesocials import render, styles
 from hypesocials.config import BrandingConfig, BrandProfile, Config
 from hypesocials.generate import carousel as carousel_module
 from hypesocials.generate import refs as refs_module
-from hypesocials.models import CopySet, LayoutZone, MetaStyle, PlanEntry
+from hypesocials.models import CopySet, DegradationTag, LayoutZone, MetaStyle, PlanEntry
 from hypesocials.prompts_engine import PromptEngine
 
 # The style builder is REUSED from the registry suite rather than re-declared (Wave-4 brief): a
@@ -62,7 +61,9 @@ from tests.test_styles import _registry, _style
 
 REPO = Path(__file__).resolve().parents[1]
 CONFIGS = REPO / "configs"
-PNG = b"\x89PNG\r\n\x1a\n"  # real magic bytes: `styles._usable` validates content, not the name
+#: Real PNG magic bytes. Nothing sniffs them since D46 (the registry declares no pictures at all),
+#: but a brief photo that goes to Kie is a real file on disk in a live run and stays one here.
+PNG = b"\x89PNG\r\n\x1a\n"
 BRANDS = ("hypedigitaly", "hypelead")
 
 
@@ -110,19 +111,9 @@ def _image(folder: Path, name: str) -> Path:
     return path
 
 
-def _repo_relative(path: Path) -> str:
-    """`reference_images` resolve against the REPO ROOT (§1.3), so a `tmp_path` file is expressed
-    as the relative hop out of the repo and back — the same string a shipped registry holds."""
-    try:
-        return Path(os.path.relpath(path, REPO)).as_posix()
-    except ValueError:  # pragma: no cover - another drive; an absolute path joins the same way
-        return path.as_posix()
-
-
 def _names(paths) -> list[str]:
-    """Compare uploads by file NAME: the module joins registry paths onto the repo root, so
-    `ROOT / "../../tmp/card.png"` and `C:/tmp/card.png` are one file and two strings — the path
-    FORM must never decide whether an upload-count assertion passes."""
+    """Compare uploads by file NAME rather than by path string: an upload-count assertion is about
+    HOW MANY distinct files went to Kie, and the path FORM must never decide whether it passes."""
     return [Path(path).name for path in paths]
 
 
@@ -657,21 +648,29 @@ def test_an_unsigned_deck_reaches_the_model_with_neither_channel(tmp_path: Path)
 # ----------------------------------------------------- (8/9) the upload memo, per run
 
 
+def _brief_refs(entries, picture: Path) -> dict[str, list[tuple[Path, str]]]:
+    """`env.local_refs` as the runner builds it post-D46: one brief photo per creative, kind
+    `"brief"`. The STYLE channel is gone (FR-18) — a meta-style ships prose, never pixels — so this
+    is the only way a local file still reaches the upload memo."""
+    return {entry.asset_id: [(picture, "brief")] for entry in entries}
+
+
 async def test_one_local_file_is_uploaded_once_per_run_however_many_jobs_want_it(
     tmp_path: Path, uploads: list[Path],
 ) -> None:
-    """FR-200/244: a style's own reference pictures are attached to every creative wearing that
-    style, and uploading them per job would multiply a run's upload traffic by its batch size. The
-    memo is what makes a five-card brand style cost five uploads for the whole run instead of five
-    per job."""
-    picture = _image(tmp_path / "style-refs", "card.png")
-    style = _style("neutral-photoreal", reference_images=[_repo_relative(picture)])
-    env = Env(run_dir=tmp_path, styles=_registry(style))
+    """FR-200/244: one brief's product photo is attached to every creative that brief ordered, and
+    uploading it per job would multiply a run's upload traffic by its batch size. The memo is what
+    makes a four-creative brief cost one upload for the whole run instead of four."""
+    picture = _image(tmp_path / "brief-refs", "card.png")
+    entries = [_entry(order, style_key="neutral-photoreal", brief_name="launch")
+               for order in range(4)]
+    env = Env(run_dir=tmp_path, styles=_registry(_style("neutral-photoreal")),
+              local_refs=_brief_refs(entries, picture))
 
-    for order in range(4):
-        entry = _entry(order, style_key="neutral-photoreal")
+    for entry in entries:
         attached = await refs_module.attach(entry, env, Folder())
         assert [ref.url for ref in attached] == ["https://kie.test/upload/card.png"]
+        assert [ref.kind for ref in attached] == ["brief"], "the only provenance left (FR-18)"
 
     assert _names(uploads) == ["card.png"], "four jobs, one upload — the memo is what does that"
 
@@ -679,12 +678,14 @@ async def test_one_local_file_is_uploaded_once_per_run_however_many_jobs_want_it
 async def test_a_file_that_failed_to_upload_is_retried_rather_than_memoized_as_missing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Only SUCCESSES are memoized. A transient upload error must not cost a style its pictures for
+    """Only SUCCESSES are memoized. A transient upload error must not cost a brief its photos for
     the rest of the run — one retry per job is cheaper than teaching the memo to remember failures,
-    and a failed upload is one fewer reference, never a failed job."""
-    picture = _image(tmp_path / "style-refs", "card.png")
-    style = _style("neutral-photoreal", reference_images=[_repo_relative(picture)])
-    env = Env(run_dir=tmp_path, styles=_registry(style))
+    and a failed upload is one fewer reference, never a failed job (FR-18/200)."""
+    picture = _image(tmp_path / "brief-refs", "card.png")
+    first_entry = _entry(0, style_key="neutral-photoreal", brief_name="launch")
+    second_entry = _entry(1, style_key="neutral-photoreal", brief_name="launch")
+    env = Env(run_dir=tmp_path, styles=_registry(_style("neutral-photoreal")),
+              local_refs=_brief_refs([first_entry, second_entry], picture))
     attempts: list[Path] = []
 
     async def _upload(path: Path) -> str:
@@ -695,8 +696,8 @@ async def test_a_file_that_failed_to_upload_is_retried_rather_than_memoized_as_m
 
     monkeypatch.setattr(render, "upload_file", _upload)
 
-    first = await refs_module.attach(_entry(0, style_key="neutral-photoreal"), env, Folder())
-    second = await refs_module.attach(_entry(1, style_key="neutral-photoreal"), env, Folder())
+    first = await refs_module.attach(first_entry, env, Folder())
+    second = await refs_module.attach(second_entry, env, Folder())
 
     assert first == [] and "reference_upload_failed" in env.log.types()
     assert [ref.url for ref in second] == ["https://kie.test/upload/card.png"]
@@ -708,20 +709,80 @@ async def test_a_second_run_re_uploads_because_a_kie_url_does_not_outlive_its_ru
 ) -> None:
     """The memo is keyed by `run_dir` and thrown away with the run on purpose: Kie's file host keeps
     an upload roughly 24 h, so a URL carried into a later run is a reference that silently 404s
-    mid-batch — a job that renders without the proof of its own house style and reports success.
+    mid-batch — a job that renders without the operator's own product and reports success.
 
     Both seams are asserted, because a process can outlive a run either way: a NEW run directory,
     and `reset_uploads()` for anything that reuses one.
     """
-    picture = _image(tmp_path / "style-refs", "card.png")
-    style = _style("neutral-photoreal", reference_images=[_repo_relative(picture)])
-    entry = _entry(0, style_key="neutral-photoreal")
+    picture = _image(tmp_path / "brief-refs", "card.png")
+    entry = _entry(0, style_key="neutral-photoreal", brief_name="launch")
+    registry = _registry(_style("neutral-photoreal"))
+    local = _brief_refs([entry], picture)
+
+    def _env(run_dir: Path) -> Env:
+        return Env(run_dir=run_dir, styles=registry, local_refs=local)
 
     first_run, second_run = tmp_path / "run-2026-08-12-0900", tmp_path / "run-2026-08-12-1500"
-    await refs_module.attach(entry, Env(run_dir=first_run, styles=_registry(style)), Folder())
-    await refs_module.attach(entry, Env(run_dir=second_run, styles=_registry(style)), Folder())
+    await refs_module.attach(entry, _env(first_run), Folder())
+    await refs_module.attach(entry, _env(second_run), Folder())
     assert _names(uploads) == ["card.png"] * 2, "a new run re-uploads; the old URL is expiring"
 
     refs_module.reset_uploads()
-    await refs_module.attach(entry, Env(run_dir=first_run, styles=_registry(style)), Folder())
+    await refs_module.attach(entry, _env(first_run), Folder())
     assert _names(uploads) == ["card.png"] * 3, "the reset seam forgets every run's memo"
+
+
+async def test_a_style_driven_creative_attaches_nothing_and_is_not_degraded(
+    tmp_path: Path, uploads: list[Path],
+) -> None:
+    """D46/FR-18: text-to-image is the DEFAULT route, so a creative whose only visual authority is
+    its meta-style attaches no reference at all — and that is not a degradation. `reference_free`
+    is reserved for a loss (a brief shipped photos and none survived), which is why the tag and the
+    warning must both stay silent here."""
+    entry = _entry(0, style_key="neutral-photoreal")
+    env = Env(run_dir=tmp_path, styles=_registry(_style("neutral-photoreal")))
+    folder = Folder()
+
+    assert await refs_module.attach(entry, env, folder) == []
+    assert uploads == [], "nothing local was uploaded: a style is words now"
+    assert folder.tags == [] and env.log.types() == [], "no tag, no warning — nothing was lost"
+
+
+async def test_a_brief_that_loses_every_photo_is_marked_reference_free(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The other half of FR-18: brief images are an input, not a prerequisite — the job proceeds on
+    the style's written guidance — but a creative that EXPECTED pictures and got none has lost
+    something, and the loss is marked in metadata and logged by name."""
+    picture = _image(tmp_path / "brief-refs", "card.png")
+    entry = _entry(0, style_key="neutral-photoreal", brief_name="launch")
+    env = Env(run_dir=tmp_path, styles=_registry(_style("neutral-photoreal")),
+              local_refs=_brief_refs([entry], picture))
+    folder = Folder()
+
+    async def _upload(path: Path) -> str:
+        raise RuntimeError("kie upload timed out")
+
+    monkeypatch.setattr(render, "upload_file", _upload)
+
+    assert await refs_module.attach(entry, env, folder) == []
+    assert DegradationTag.REFERENCE_FREE in folder.tags
+    assert "reference_free" in env.log.types()
+
+
+async def test_a_local_reference_of_any_other_kind_is_dropped_with_a_line(
+    tmp_path: Path, uploads: list[Path],
+) -> None:
+    """`env.local_refs` is the BRIEF channel and nothing else post-D46. A stale caller handing back
+    a `style`-kinded file must not have it uploaded to a job the operator is paying for — it is
+    dropped, and the drop is logged rather than swallowed."""
+    picture = _image(tmp_path / "style-refs", "card.png")
+    entry = _entry(0, style_key="neutral-photoreal")
+    env = Env(run_dir=tmp_path, styles=_registry(_style("neutral-photoreal")),
+              local_refs={entry.asset_id: [(picture, "style")]})
+    folder = Folder()
+
+    assert await refs_module.attach(entry, env, folder) == []
+    assert uploads == [], "the kind vocabulary is the gate, not the file"
+    assert "reference_kind_unknown" in env.log.types()
+    assert folder.tags == [], "nothing was EXPECTED, so nothing was lost (FR-18)"

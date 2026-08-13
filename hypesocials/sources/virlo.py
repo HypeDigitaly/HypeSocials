@@ -243,18 +243,15 @@ class Counters:
     excluded_by_history: int = 0
     unusable: int = 0
 
-    # --- the render forecast. Recorded by the caller once assignment has run. Re-based at W3
-    # (contracts item 15): the jobs attach STYLE references now — `trends_used` became
-    # `topics_used`, `trend_refs_*` became `style_refs_*`, the local-pool channel died, and
-    # `styles_used` joined so the funnel can state rotation coverage.
+    # --- the render forecast. Recorded by the caller once assignment has run. Re-based twice:
+    # the topic-first pivot renamed `trends_used` to `topics_used` and added `styles_used`, and
+    # D46/F3 excised the style reference-image window, so the forecast no longer counts
+    # attachments at all — it states coverage (jobs, styles, topics) and what was dropped.
     render_seen: bool = False
     jobs: int = 0
     jobs_dropped: int = 0
     topics_used: int = 0
     styles_used: int = 0
-    style_refs_min: int = 0
-    style_refs_max: int = 0
-    refs_total: int = 0
 
     # ----------------------------------------------------------------- accumulation
 
@@ -350,21 +347,17 @@ class Counters:
         self.verdict_seen = True
         self.eligible, self.excluded_by_history, self.unusable = eligible, excluded, unusable
 
-    def record_render(self, *, jobs: int, dropped: int, style_refs: Sequence[int],
+    def record_render(self, *, jobs: int, dropped: int,
                       topics_used: int, styles_used: int) -> None:
-        """The forecast end of the funnel: how many jobs attach how much STYLE material (item 15).
+        """The forecast end of the funnel: coverage, not attachments (D46/F3).
 
-        `style_refs` is one window size per creative that will render — the assigned style's
-        usable reference images clipped to `styles.refs_per_job`, 0 under an override brief —
-        so the block can say "2 style ref(s)" when they agree and "1-2" when they do not,
-        instead of inventing an average.
+        The style reference-image window is excised, so there is no per-job attachment count
+        left to forecast — the row states how many jobs render, wearing how many distinct
+        styles, over how many topics, and how many entries were dropped with no topic left.
         """
         self.render_seen = True
         self.jobs, self.jobs_dropped = jobs, dropped
         self.topics_used, self.styles_used = topics_used, styles_used
-        self.style_refs_min = min(style_refs) if style_refs else 0
-        self.style_refs_max = max(style_refs) if style_refs else 0
-        self.refs_total = sum(style_refs)
 
     # ----------------------------------------------------------------- derived views
 
