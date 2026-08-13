@@ -489,6 +489,34 @@ def test_fr297b_a_paid_run_shows_three_topics_by_three_posts_and_a_preview_shows
     assert "Theme 0" in paid and "Theme 3" not in paid, "the three STRONGEST, not the first three"
 
 
+def test_fr297b_a_topic_after_a_skip_prints_its_OWN_verdict_not_its_predecessors() -> None:
+    """W5 live regression (2026-08-13): verdict ordinals are assigned by the SCREEN over the
+    pre-filter list, but the paid pipeline handed `_post_roster` the post-filter `kept` list —
+    so after a `skip` every later topic printed the verdict of the topic above it (the paid run
+    showed `skip:PROMO` on a kept-and-quoted topic). The pipeline now passes the screened list
+    (runner.py `_pipeline`); this pins the roster's half of the contract: with the SAME sequence
+    the screen numbered, a kept topic that FOLLOWS a skipped one still reads `keep`."""
+    screened = [topic("Kept leader", strength=0.9, posts=1),
+                topic("Skipped promo", strength=0.7, posts=1),
+                topic("Kept follower", strength=0.5, posts=1)]
+    verdicts = {2: topic_filter.Verdict(ordinal=2, verdict="skip",
+                                        brands_to_strip=[], reason="PROMO: launch post"),
+                3: topic_filter.Verdict(ordinal=3, verdict="keep",
+                                        brands_to_strip=[], reason="")}
+    live = [entry(0, trend=screened[0]), entry(1, trend=screened[2])]
+
+    block = runner._post_roster(screened, verdicts, live,
+                                topics_limit=None, posts_limit=None)
+
+    console_safe(block)
+    heads = [line for line in block.splitlines() if line.startswith("Topic ")]
+    assert len(heads) == 2, "an unassigned (skipped) topic never makes the roster on a paid run"
+    assert heads[0].endswith("keep") and "Kept leader" in heads[0]
+    assert heads[1].endswith("keep") and "Kept follower" in heads[1], \
+        "the follower must not inherit the skipped topic's verdict"
+    assert "skip:PROMO" not in block
+
+
 def test_fr297b_an_unassigned_run_still_lists_the_material_it_could_have_used() -> None:
     """Previews assign nothing, so every topic prints and every post reads `unused` — the honest
     answer when no creative has claimed a post yet."""

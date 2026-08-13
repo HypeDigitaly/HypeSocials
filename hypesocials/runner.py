@@ -398,8 +398,13 @@ async def _pipeline(session: _Session, overrides: Sequence[str]) -> int:
     # FR-155's forecast end: after assign, before any spend — the last moment Ctrl+C is free.
     _record_style_forecast(session, live, session.registry, dropped=len(assignment.dropped))
     if kept and not brief_only:  # FR-297b: WHICH posts, and who quotes them — after assignment
+        # W5 live finding (2026-08-13): the roster must receive the SAME sequence the screen
+        # numbered — `verdicts` keys on ordinals over `trends`, and passing the post-filter
+        # `kept` list re-numbered it, so every topic after a skip printed its predecessor's
+        # verdict (the paid run showed `skip:PROMO` on a kept-and-quoted topic). The roster's
+        # own `chosen` filter keeps unassigned (hence skipped) topics out of the printout.
         session.say(_post_roster(
-            kept, verdicts, live,
+            trends, verdicts, live,
             topics_limit=None if session.verbose else _DETAIL_TRENDS,
             posts_limit=None if session.verbose else _DETAIL_TRENDS))
     _store_references(session, live)
