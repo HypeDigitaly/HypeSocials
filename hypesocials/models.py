@@ -436,13 +436,15 @@ class AssetRecord:
     # 0 on every non-carousel and on override briefs.
     #
     # `panel_map` is one row per OUR slide, in slide order and position-preserving:
-    # `{slide, source_position, source_text, ref_label, visual_brief, source_image}`. The first
-    # four are the copy stage's (`copywrite.CopyProvenance.panel_map`), the last two are joined in
-    # by `generate.__init__._record()` from the slide-intelligence result (FR-306/FR-308). A slide
-    # whose source panel was empty, unusable or over budget keeps its row with an empty
-    # `source_text` and an empty `ref_label` — the row is the alignment, so dropping it would
-    # silently re-map slide 3's words onto slide 2, which is exactly the defect FR-304 exists to
-    # prevent. Empty list for override-brief carousels and for everything that is not a deck.
+    # `{slide, source_position, source_text, source_text_original, drop_reason, ref_label,
+    # visual_brief, source_image}`. The first six are the copy stage's
+    # (`copywrite.CopyProvenance.panel_map`), the last two are joined in by
+    # `generate.__init__._record()` from the slide-intelligence result (FR-306/FR-308). A slide
+    # whose source panel was empty, chrome-poisoned or over the 1500-char sanity ceiling keeps its
+    # row with an empty `source_text`, the pre-gate text in `source_text_original` and the cause
+    # in `drop_reason` — the row is the alignment, so dropping it would silently re-map slide 3's
+    # words onto slide 2, which is exactly the defect FR-304 exists to prevent. Empty list for
+    # override-brief carousels and for everything that is not a deck.
     source_post: dict | None = None
     source_panel_count: int = 0
     panel_map: list = field(default_factory=list)
@@ -464,6 +466,13 @@ class AssetRecord:
     status: AssetStatus = AssetStatus.PENDING
     skip_reason: str | None = None  # also appears as a DegradationTag
     slide_count: int | None = None  # --- format-specific: carousel slides delivered ---
+    # FR-321 (v2.1.3) — the deck length ORDERED at ASSIGN (FR-95), recorded beside the delivered
+    # count so partial delivery is machine-readable without re-deriving it from
+    # `missing_slide_numbers`. `slide_count < slides_ordered` IS the partial-deck predicate, and it
+    # is what the spend table's `7/8` cell and the gallery header's partial count both read.
+    # `None` on every non-carousel and on any deck packaged before this field existed — readers
+    # treat a missing/None value as "no claim", never as zero.
+    slides_ordered: int | None = None
     missing_slide_numbers: list[int] = field(default_factory=list)  # 1-indexed; marks `incomplete`
     reel_audio: bool | None = None
     reel_video_reference_url: str | None = None
@@ -698,6 +707,19 @@ PLACEHOLDERS: frozenset[str] = frozenset(
         #   never a style command, never competitor marks (§0.12). Empty when vision degraded.
         "slide_panel_source",  # the FR-304 position line — "source panel i of N" — so the model
         #   knows this slide mirrors one specific slide of the source deck, not a free layout.
+        # v2.1.2 visual-fidelity round (D-A/D-D) — carousel_slide.md only, both empty by default:
+        "tool_marks",  # D-A: the SANCTIONED marks line. Every mark named on it renders as the REAL
+        #   logo in its true brand colours, exempt from the style's palette discipline and placed
+        #   where the source panel put it (an icon beside its list row). It is the ONE narrow hole
+        #   in the "draw a generic unlettered shape" rule, which still governs every competitor,
+        #   creator and platform mark, and it never sanctions platform chrome, watermarks,
+        #   usernames or engagement counters.
+        "slide_counter",  # D-D: the deck's own position badge STRING ("3/7"), never derived from
+        #   `slide_index` (which is orientation metadata the templates forbid drawing). It reaches
+        #   the model as a locked `counter` entry inside `{{onimage_text}}` plus the `counter_slot`
+        #   layout zone, so the shipped template names no slot of its own for it; the name lives
+        #   here because `build_context` carries the value (FR-261 condition 2) and an override
+        #   template may name it.
         "niche_visual_world",  # `niche.visual_world` ALONE — the operator's standing art direction
         #   in the only shape a render prompt may carry it. Deliberately NOT `niche_descriptor`,
         #   which also carries `audience`: copy-side context must not leak into a render prompt,

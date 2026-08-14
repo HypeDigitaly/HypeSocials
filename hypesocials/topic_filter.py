@@ -5,6 +5,7 @@ creative on, and if so which strings must never reach the pixels:
 
     verdicts = await screen(topics, session.config, llm)   # {ordinal: Verdict}, ALWAYS total
     clean = apply_blocklist(text, session.config.branding.competitors)   # pure, sync, $0
+    clean, hits = fuzzy_strip(caption, author_identifiers)   # pure, sync, $0 — CAPTIONS ONLY
 
 Verdicts key on an ENGINE-ASSIGNED ordinal (1..N in input order), never on `topic_key`: the topic
 names come from a competitor's own posts, and a crafted name must not be able to address another
@@ -36,10 +37,18 @@ level (it renders its own system prompt through the one template door), and `pro
 imports `apply_blocklist` from here LAZILY, inside its M6 strip pass, so the two never close a
 cycle at import time. `apply_blocklist` is the single implementation of the strip policy for the
 whole codebase — copy, render prompts and previews all resolve "was it stripped" the same way.
+
+`collapse` and `fuzzy_strip` live here for the same reason: they are strip MECHANICS, they are
+pure, and `copywrite` is already downstream of this module. `fuzzy_strip` is FR-312's v2.1.3
+caption layer and it is caption-scoped BY CONTRACT — never call it on panel, hook or overlay text.
+Panel text becomes pixels and stays byte-verbatim under full-line collapse-equality alone; a fuzzy
+matcher loose enough to catch a truncated handle is loose enough to eat a legitimate slide word,
+and the PRD pins the panel side as unchanged.
 """
 
 from __future__ import annotations
 
+import difflib
 import functools
 import logging
 import re
@@ -77,6 +86,20 @@ _STOPWORDS = frozenset({
     "online", "free", "how", "why", "what", "when", "who", "not", "all", "one", "two", "more",
     "pro", "plus", "premium", "official", "trend", "trending", "viral",
 })
+
+#: FR-312 layer 3b (v2.1.3) — the fuzzy caption strip's two dials, both PRD-pinned.
+#:
+#: `0.85` on `difflib.SequenceMatcher.ratio()` is the similarity a truncated or re-cased handle
+#: keeps and an unrelated word does not: measured on the run that motivated the amendment, the
+#: caption token "ScaleWithOma" scores 0.96 against the author handle `scalewithomaa`, while
+#: "scalewith" scores 0.82, "community" 0.27 and "scale" 0.56. The gap between 0.82 and 0.96 is
+#: where the threshold sits, and it is wide enough that a caption's ordinary vocabulary survives.
+#:
+#: `5` collapsed characters is the shortest token worth judging. Below it the ratio's own
+#: arithmetic turns hostile — a four-character token needs only three matching characters to clear
+#: 0.85 — and a caption is full of four-letter words that are nobody's brand.
+_FUZZY_THRESHOLD = 0.85
+_FUZZY_MIN_CHARS = 5
 
 
 @dataclass(slots=True)
@@ -166,7 +189,104 @@ def apply_blocklist(text: str, competitors: Sequence[str]) -> str:
             out = _pattern(term).sub("", out)
     if out == text:
         return text
-    out = re.sub(r"[^\S\n]{2,}", " ", out)
+    return _reflow(out)
+
+
+def collapse(text: str) -> str:
+    """`" EMIR AI LAB "` -> `"emirailab"` — casefolded, alphanumerics only, pure.
+
+    The one comparison key every identity check in this codebase uses. Everything that is not a
+    letter or a digit goes: spaces, `@`, `|`, `·`, the arrow glyphs a swipe cue is drawn with,
+    emoji. That is what makes a handle (`emirailab`), a display name (`EMIR AI LAB`) and a
+    watermark (`Emir | AI Lab`) one string to compare, and what makes `"SWIPE ❮❮"` and `"SWIPE <<"`
+    the same cue.
+
+    `str.isalnum()` rather than an ASCII class on purpose: `casefold()` + `isalnum()` keep `ř`, `ä`
+    and `ω`, so a Czech or Greek line collapses to its own letters instead of to a mangled ASCII
+    skeleton that could collide with an unrelated identifier.
+
+    It lives here rather than in `copywrite` so that the equality layer (`copywrite._collapse`,
+    which delegates to this) and the fuzzy layer below can never drift into two different notions
+    of "the same name". `copywrite` keeps its private alias for its own callers and tests.
+    """
+    return "".join(char for char in text.casefold() if char.isalnum())
+
+
+def fuzzy_strip(text: str, identifiers: Sequence[str], threshold: float = _FUZZY_THRESHOLD,
+                min_chars: int = _FUZZY_MIN_CHARS) -> tuple[str, list[tuple[str, str, float]]]:
+    """FR-312 layer 3b (v2.1.3) — `(caption without its near-miss creator tokens, what went)`.
+
+    **Captions only.** This is the one strip in the codebase that removes a string which is not
+    byte-equal to anything we were given, and that is only tolerable where nothing becomes pixels.
+    Panel text keeps the full-line collapse-equality rule and nothing else (PRD FR-312 pins it
+    "UNCHANGED — no fuzzy matching on panels"); calling this on a panel would put a similarity
+    score in charge of the verbatim contract.
+
+    What it is for. Layer 3's caption half removes the author's name at WORD BOUNDARIES, so it
+    needs the caption to spell the handle the way the handle is spelled. Run 20260813 shipped
+    "ScaleWithOma" in a caption whose author is `@scalewithomaa`: one dropped character, and a
+    whole-term regex cannot see it. Similarity can — "ScaleWithOma" collapses to `scalewithoma`
+    and scores 0.96 against `scalewithomaa`, while "community" scores 0.27.
+
+    Mechanics, deliberately small:
+
+    - the caption is split on whitespace with the whitespace RUNS preserved, so what survives
+      survives byte for byte and a caption's line breaks (part of its shape) are not flattened;
+    - each token is collapsed by `collapse` above, which peels every leading and trailing quote,
+      bracket, `@`, `#` and comma on the way — `"@ScaleWithOma,"` and `"Scale-With-Oma"` both
+      reduce to the same 12 characters;
+    - tokens (and identifiers) collapsing shorter than `min_chars` are not judged at all;
+    - the WHOLE token goes when it scores `threshold` or better against any identifier — its
+      punctuation with it, because `"(@ScaleWithOma)"` minus the name is a pair of empty brackets;
+    - the doubled whitespace a removal leaves behind is collapsed horizontally only.
+
+    Pure and total: no logging, no config, no I/O. The caller decides how loudly to report the
+    hits it gets back, and every hit carries `(the token as it was written, the identifier it
+    matched, the ratio)` so the operator can see the judgement rather than just its result.
+
+    Args:
+        text: the caption, AFTER the deterministic strips (layers 1–3a) have run.
+        identifiers: the author's own strings — handle, display name, the display form found on
+            the deck. Never chrome cues: "swipe" is an ordinary word in a caption.
+        threshold: minimum `difflib.SequenceMatcher` ratio, 0.85 by PRD.
+        min_chars: shortest collapsed token (and identifier) worth judging, 5 by PRD.
+    """
+    if not text or not identifiers:
+        return text, []
+    #: collapsed key -> the identifier as the caller wrote it (what the operator will read).
+    keys: dict[str, str] = {}
+    for raw in identifiers:
+        if len(key := collapse(str(raw or ""))) >= min_chars:
+            keys.setdefault(key, str(raw).strip())
+    if not keys:
+        return text, []
+    parts = re.split(r"(\s+)", text)  # even indices are tokens, odd ones the whitespace between
+    hits: list[tuple[str, str, float]] = []
+    for index in range(0, len(parts), 2):
+        token = parts[index]
+        if len(probe := collapse(token)) < min_chars:
+            continue
+        best, matched = 0.0, ""
+        for key, identifier in keys.items():
+            ratio = difflib.SequenceMatcher(None, probe, key).ratio()
+            if ratio > best:
+                best, matched = ratio, identifier
+        if best >= threshold:
+            hits.append((token, matched, best))
+            parts[index] = ""
+    if not hits:
+        return text, []
+    return _reflow("".join(parts)), hits
+
+
+def _reflow(text: str) -> str:
+    """The whitespace a removal left behind, closed up — horizontal runs only.
+
+    A caption's line breaks are part of its shape, so only spaces and tabs collapse; each line is
+    then trimmed at its own edges. Shared by `apply_blocklist` and `fuzzy_strip` so that "the text
+    after a strip" means one thing in this codebase.
+    """
+    out = re.sub(r"[^\S\n]{2,}", " ", text)
     return "\n".join(line.strip() for line in out.split("\n")).strip()
 
 
@@ -413,4 +533,4 @@ def _dedup(values: Sequence[str]) -> list[str]:
     return out
 
 
-__all__ = ["Verdict", "apply_blocklist", "screen"]
+__all__ = ["Verdict", "apply_blocklist", "collapse", "fuzzy_strip", "screen"]

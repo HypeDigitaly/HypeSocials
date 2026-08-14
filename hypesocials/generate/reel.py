@@ -32,9 +32,11 @@ Invariants enforced here, once:
 - **A content-security audit failure is not a moderation refusal (FR-141, v1.6.6).** Its remedy is
   silencing the clip, never stripping references — one retry with `generate_audio: false` plus the
   explicit silent-clip clause, same references, the failed attempt billed $0 (RESULTS.md §C).
-- **One retry per class (NFR-4).** Three separate single retries live here and none of them stacks:
-  the seed frame's moderation retry (FR-97), its vision-check re-render (FR-105), and the clip's
-  content-audit silent retry — 20 §8's whole sanctioned list. There is no fourth.
+- **One retry per class (NFR-4).** Four separate single retries live here and none of them stacks:
+  the seed frame's moderation retry (FR-97), its vision-check re-render (FR-105), its FR-317
+  resubmit (v2.1.3/D48 — a timeout or a non-moderation failure, the same request once more), and
+  the clip's content-audit silent retry — 20 §8's whole sanctioned list. There is no fifth, and
+  FR-317 reaches the FRAME only: the Seedance clip is a video job and is never resubmitted (FR-44).
 - **9:16 always.** A reel's seed frame inherits the reel's ratio, never the platform's image ratio
   (FR-21), and the clip passes 9:16 explicitly — the provider's `adaptive` is never used.
 
@@ -244,6 +246,7 @@ async def _seed_frame(
                                      job="seed_frame", priority=RenderPriority.WAVE1,
                                      kind="projected",
                                      label=f"reel seed frame · {entry.asset_id}"))
+    seed_refs = _urls(refs)
     if outcome is not None and outcome.fail_cause is RenderFailCause.MODERATION and refs:
         env.log.warn("moderation_retry",
                      f"{entry.asset_id}: seed-frame content-policy refusal; one reference-free "
@@ -253,7 +256,26 @@ async def _seed_frame(
                                        label=f"seed-frame moderation retry · {entry.asset_id}"))
         if retry is not None:
             folder.mark(DegradationTag.REFS_DROPPED_MODERATION)
-            outcome = retry
+            outcome, seed_refs = retry, []
+    # FR-317 (v2.1.3, D48): the seed frame is an IMAGE job, so a timeout or an ordinary provider
+    # failure earns exactly one resubmit of the same request. It is worth a great deal here — the
+    # whole reel is built on this frame, and losing it degrades every later step to in-model
+    # overlay text (FR-24). The clip below is a VIDEO job and is never resubmitted (FR-44): that
+    # rule survives D48 untouched, which is why this lives in the frame's chain and not the clip's.
+    if _resubmittable(outcome) and not env.halted and not env.credits_exhausted:
+        cause = outcome.fail_cause.value if outcome.fail_cause else outcome.kind.value
+        env.log.warn("image_job_resubmit",
+                     f"{entry.asset_id}: seed frame {cause} "
+                     f"({outcome.fail_message or 'no usable result'}) — resubmitting the SAME job "
+                     "once (FR-317, attempt 2 of 2); a second failure degrades the reel to "
+                     "in-model overlay text (FR-24)", asset_id=entry.asset_id, cause=cause,
+                     attempt=2, task_id=outcome.task_id, detail=outcome.fail_message)
+        again = spend.add(await submit(entry, params, RenderRefs(image_urls=seed_refs),
+                                       job="seed_frame", priority=RenderPriority.WAVE1,
+                                       kind="discretionary",
+                                       label=f"seed-frame resubmit · {entry.asset_id}"))
+        if again is not None:
+            outcome = again
     if outcome is None or outcome.kind is not RenderOutcomeKind.SUCCESS or not outcome.result_urls:
         cause = (outcome.fail_message or outcome.kind.value) if outcome else "declined by the cap"
         return _seed_failed(entry, env, folder, cause)
@@ -279,16 +301,20 @@ async def _check_seed(
     """
     if not env.config.run.vision_check or env.llm_call is None:
         return url, VisionCheckResult.NOT_CHECKED
-    first = await _verdict(entry, env, seed or url)
+    first = await _verdict(entry, env, seed or url, _expected(entry, env, copyset))
     if first is None or not first.flagged:
         return url, vision_check.verdict_result(first)
     env.log.warn("vision_check_flagged",
                  f"{entry.asset_id}: seed frame flagged ({first.detail}); one re-render with "
                  "shorter, larger text before the clip is submitted (FR-105)",
-                 asset_id=entry.asset_id)
+                 asset_id=entry.asset_id, text_broken=first.text_broken, fake_ui=first.fake_ui,
+                 text_mismatch=first.text_mismatch)
+    # D-F (v2.1.2): the first verdict travels into the plan, so the re-render is told which defect
+    # was seen — invented words and fake platform chrome are each forbidden by name, and "shorter
+    # and larger" stays the remedy for the broken glyphs it actually fixes.
     plan = vision_check.retry_plan(copyset or CopySet(asset_id=entry.asset_id,
                                                       language=entry.language),
-                                   "reel", env.config.run.text_budgets)
+                                   "reel", env.config.run.text_budgets, verdict=first)
     prompt = _seed_prompt(entry, env, plan.copy, refs, budget_scale=plan.budget_scale,
                           extra=plan.instruction)
     if prompt is None or env.halted:
@@ -304,14 +330,44 @@ async def _check_seed(
                      asset_id=entry.asset_id)
         return url, VisionCheckResult.RETRIED_FAILED
     replaced = await _store_seed(entry, env, folder, retry.result_urls[0])  # new poster on disk
-    after = await _verdict(entry, env, replaced or retry.result_urls[0])
+    # The second verdict is asked about the words the RETRY carried — the −40% hook — not the
+    # longer one the first frame was flagged on.
+    after = await _verdict(entry, env, replaced or retry.result_urls[0],
+                           _expected(entry, env, plan.copy))
+    # FR-321d: the second verdict on the record, so `retried_passed` is evidence rather than a
+    # claim. The clip that references this frame is submitted next whatever it says — one
+    # re-render, one re-check, then the frame ships (FR-105/NFR-4).
+    env.log.event("vision_recheck",
+                  f"{entry.asset_id} seed frame re-checked after its one re-render: "
+                  + ("clean" if after is not None and not after.flagged else
+                     "still flagged" if after is not None else "no verdict returned"),
+                  asset_id=entry.asset_id, attempt=2, checked=after is not None,
+                  flagged=bool(after is not None and after.flagged),
+                  text_broken=bool(after is not None and after.text_broken),
+                  fake_ui=bool(after is not None and after.fake_ui),
+                  text_mismatch=bool(after is not None and after.text_mismatch),
+                  detail=(after.detail if after is not None else ""))
     return retry.result_urls[0], vision_check.verdict_result(first, after, retried=True)
 
 
-async def _verdict(entry: PlanEntry, env: Env, image: Path | str) -> vision_check.ImageVerdict | None:
+async def _verdict(entry: PlanEntry, env: Env, image: Path | str,
+                   expected: str = "") -> vision_check.ImageVerdict | None:
     """One FR-105 pass over one seed frame; `None` when the check could not run (ships anyway)."""
-    report = await vision_check.check([image], call=env.llm_call, engine=env.engine, log=env.log)
+    report = await vision_check.check([image], expected=[expected], call=env.llm_call,
+                                      engine=env.engine, log=env.log)
     return report.verdict_for(1)
+
+
+def _expected(entry: PlanEntry, env: Env, copyset: CopySet | None) -> str:
+    """The seed frame's LOCKED words — the check's referent (FR-105 v2.1.1).
+
+    Legible burnt-in text is the entire reason the seed frame exists (FR-24/D18), so "is it the
+    RIGHT text" is not a bonus question here: a frame that renders clean invented copy is chained
+    straight into a paid Seedance clip. The wordmark is included on a branded reel because it
+    renders through the same TEXT block the hook does (B1) — unlisted, it would read as an
+    invented word.
+    """
+    return vision_check.expected_text(copyset, "reel", wordmark=wordmark(entry, env))
 
 
 def _seed_failed(
@@ -374,6 +430,20 @@ async def _submit_clip(
     return spend.add(await submit(entry, params, refs, job="clip", priority=RenderPriority.WAVE2,
                                   kind="precommitted",  # FR-106b: every clip this chain orders
                                   label=f"reel clip · {entry.asset_id}"))
+
+
+def _resubmittable(outcome: RenderOutcome | None) -> bool:
+    """FR-317: does this SEED-FRAME job's ending sanction exactly one more attempt (D48)?
+
+    Re-derived here rather than imported from `generate/__init__.py`, which imports this module at
+    runtime — the same reason every other shared shape in this package is duplicated at the seam.
+    A moderation refusal is excluded by name (FR-97 owns it and would get the identical refusal
+    back) and so is a declined submission (nothing was ordered). The CLIP never asks this question:
+    a timed-out Seedance job is never resubmitted (FR-44), and at ~$1.60 a render that is a
+    deliberate asymmetry, not an oversight.
+    """
+    return (outcome is not None and outcome.kind is not RenderOutcomeKind.SUCCESS
+            and outcome.fail_cause is not RenderFailCause.MODERATION)
 
 
 def _seed_url_rejected(outcome: RenderOutcome) -> bool:
@@ -485,13 +555,13 @@ def _render(
     try:
         prompt = env.engine.render(  # 50 §7: over the bound, descriptive slots are cut in order
             role, context, profile=profile,
-            max_chars=render.get_profile(profile).limits.max_prompt_chars)
+            max_chars=render.get_profile(profile).limits.max_prompt_chars,
+            suffix=extra)  # counted INSIDE the budget — appending after truncation re-opened
+        #                   the provider-ceiling hole the glz0 hotfix closed for image paths
     except (UnresolvedPlaceholderError, MissingTemplateError, ValueError, LookupError) as exc:
         env.log.error("prompt_assembly_failed", f"{entry.asset_id}: {exc}",
                       asset_id=entry.asset_id, role=role)
         return None
-    if extra:
-        prompt = f"{prompt}\n\n{extra}"
     env.log.event("render_prompt_assembled", f"{entry.asset_id} {role} ready", verbose_only=True,
                   asset_id=entry.asset_id, role=role, prompt=prompt)
     return prompt

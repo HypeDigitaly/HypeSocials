@@ -50,7 +50,14 @@ from hypesocials import render, styles
 from hypesocials.config import BrandingConfig, BrandProfile, Config
 from hypesocials.generate import carousel as carousel_module
 from hypesocials.generate import refs as refs_module
-from hypesocials.models import CopySet, DegradationTag, LayoutZone, MetaStyle, PlanEntry
+from hypesocials.models import (
+    CopySet,
+    DegradationTag,
+    LayoutZone,
+    MetaStyle,
+    PlanEntry,
+    TrendItem,
+)
 from hypesocials.prompts_engine import PromptEngine
 
 # The style builder is REUSED from the registry suite rather than re-declared (Wave-4 brief): a
@@ -645,6 +652,58 @@ def test_an_unsigned_deck_reaches_the_model_with_neither_channel(tmp_path: Path)
         assert "HypeLead" not in prompt and "#0FCFC4" not in prompt
 
 
+# ------------------------------------------ (7a) FR-318's master switch, at the render prompt
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_fr318_the_competitor_strip_reaches_the_render_prompt_in_both_switch_states(
+    tmp_path: Path, enabled: bool,
+) -> None:
+    """The safety carve-out at the level that actually spends money (§1.5 layer 1, M6).
+
+    `branding.enabled` and `branding.competitors` live in the same config block, which is exactly
+    why this is worth an explicit pin in both states: an operator who switches self-branding off to
+    try a neutral batch must not thereby ship a competitor's brand name inside a frame they paid
+    for. The switch is about how WE sign a creative; the blocklist is about what may never appear
+    on one, and `build_context`'s strip pass never consults the first on its way to the second.
+    """
+    deck = _deck(tmp_path, branded=enabled)
+    deck.env.branding.enabled = enabled
+    deck.env.branding.competitors = ["Zzqcorp"]
+    deck.env.trends = {"t1": TrendItem(
+        history_key="t1", monitor_id="m1", topic_key="zzqcorp-stacks",
+        name="Zzqcorp tool stacks", why_it_works="Zzqcorp keeps raising its prices",
+        hook_texts=["Zzqcorp raised prices again"])}
+
+    prompt = deck._prompt(1, anchor=False, refs=[], plan=None)
+
+    assert prompt is not None and "Wired backwards" in prompt, "the slide really assembled"
+    assert "Zzqcorp" not in prompt, "layer 1 is unguarded and untouched by FR-318"
+    assert ("HypeLead" in prompt) is enabled, "the SELF-branding half is what the switch moves"
+
+
+def test_fr318_an_unsigned_run_carries_neither_channel_through_the_caller_gate() -> None:
+    """`assign_branding(..., enabled=False)` writes `entry.branded = False` on every entry, and
+    these two functions read exactly that — so with the switch off the wordmark channel and the
+    accent block are both empty at the seam, before any prompt is assembled.
+
+    Asserted at the GATE rather than only in the prompt because that is where a future caller
+    would reintroduce the leak: `refs.wordmark` is the one signal that says "this creative is
+    signed", and a non-empty string here would sign a run that asked for none however carefully
+    the template behaved.
+    """
+    style = _style("neutral-photoreal")
+    entries = _entries(range(4))
+    env = Env(branding=_branding("hypelead", enabled=False))
+
+    styles.assign_branding(entries, env.branding.brand_ratio, enabled=env.branding.enabled)
+
+    assert [entry.branded for entry in entries] == [False] * 4
+    for entry in entries:
+        assert refs_module.wordmark(entry, env) == ""
+        assert refs_module.branding_block(entry, env, style) == ""
+
+
 # ----------------------------------------------------- (8/9) the upload memo, per run
 
 
@@ -786,3 +845,122 @@ async def test_a_local_reference_of_any_other_kind_is_dropped_with_a_line(
     assert uploads == [], "the kind vocabulary is the gate, not the file"
     assert "reference_kind_unknown" in env.log.types()
     assert folder.tags == [], "nothing was EXPECTED, so nothing was lost (FR-18)"
+
+
+# --------------------------------- (10) `upload_local`: the source store's ONE sanctioned door
+#
+# FR-244 as amended v2.1.3/D48. `output/<run>/source/` is analysis-and-display-only (D46) and
+# `upload_local` is the single opening in it: an FR-315 logo patch, written by `logo_crops` into
+# the post's own `marks/` subfolder. The gate is on the PATH, not on the bytes, so a caller cannot
+# smuggle a full slide through by renaming its variable — and it is the same public seam a format
+# module uses for any local file it made itself, so the memo and the failure posture come with it.
+
+
+def _patch(tmp_path: Path, post_id: str = "p1", name: str = "notion.png") -> Path:
+    """One cropped logo patch where `logo_crops` writes it: `source/<post_id>/marks/<slug>.png`."""
+    return _image(tmp_path / "source" / post_id / "marks", name)
+
+
+def _slide(tmp_path: Path, post_id: str = "p1", name: str = "slide_01.webp") -> Path:
+    """One stored SOURCE slide — the archived original, which may never reach a render payload."""
+    return _image(tmp_path / "source" / post_id, name)
+
+
+async def test_a_logo_patch_used_on_eight_slides_is_uploaded_once_for_the_whole_run(
+    tmp_path: Path, uploads: list[Path],
+) -> None:
+    """FR-200/FR-244: `upload_local` shares `attach()`'s run memo by construction.
+
+    A mark boxed on every panel of a deck is one logo, cropped once by `logo_crops` and then asked
+    for once per slide by `carousel._patch_refs`. Uploading it per slide would multiply a deck's
+    upload traffic by its length for pixels Kie already holds, so the memo is what makes the
+    per-slide call cheap enough for the format module to make it without thinking about it.
+    """
+    patch = _patch(tmp_path)
+    env = Env(run_dir=tmp_path)
+
+    urls = [await refs_module.upload_local(patch, env, label=f"deck slide {n}") for n in range(8)]
+
+    assert urls == [f"https://kie.test/upload/{patch.name}"] * 8
+    assert _names(uploads) == ["notion.png"], "eight slides, one upload — the memo does that"
+
+
+async def test_a_patch_upload_that_fails_costs_the_mark_its_pixels_and_nothing_else(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FR-315d: `""` plus a warned line, never an exception and never a lost slide.
+
+    The empty string is the whole contract with the caller — it reads as "this reference does not
+    exist" and the mark then renders from its name and the template's written description, which
+    is the documented fallback. Anything that raised here would take a deck down for a failed
+    upload of an optional upgrade.
+    """
+    patch = _patch(tmp_path)
+    env = Env(run_dir=tmp_path)
+
+    async def _upload(path: Path) -> str:
+        raise RuntimeError("kie upload timed out")
+
+    monkeypatch.setattr(render, "upload_file", _upload)
+
+    assert await refs_module.upload_local(patch, env, label="0001_carousel mark patch Notion") == ""
+    assert "reference_upload_failed" in env.log.types()
+
+
+async def test_the_source_store_refuses_everything_that_is_not_a_mark_patch(
+    tmp_path: Path, uploads: list[Path],
+) -> None:
+    """The carve-out's width, asserted as a path rule: `marks/` passes, the rest of `source/` does
+    not, and the refusal happens BEFORE anything is sent.
+
+    D46 made the source store analysis-and-display-only because a Virlo slide reaching a render
+    payload is the failure the whole boundary exists to prevent — the gallery may show it, the
+    vision pass may read it, nothing may upload it. D48 opened one door for small logo patches and
+    no more: a full slide, a panel crop, or a patch written beside `marks/` instead of inside it
+    is refused, and the refusal names why.
+    """
+    env = Env(run_dir=tmp_path)
+    slide, patch = _slide(tmp_path), _patch(tmp_path)
+
+    assert await refs_module.upload_local(slide, env, label="0001_carousel") == ""
+    assert uploads == [], "refused UNSENT — the check is on the path, before the transport"
+    assert "reference_source_store_refused" in env.log.types()
+
+    assert await refs_module.upload_local(patch, env) == f"https://kie.test/upload/{patch.name}"
+    assert _names(uploads) == ["notion.png"], "the one sanctioned class of file went"
+
+
+@pytest.mark.parametrize(
+    ("parts", "sanctioned"),
+    [
+        # Inside a `source/` tree, only `marks/` passes.
+        (("source", "p1", "marks", "notion.png"), True),
+        (("source", "p1", "slide_01.webp"), False),
+        (("source", "p1", "slide_01.jpg"), False),
+        (("source", "p1", "source.yaml"), False),
+        # Deeper nesting on either side of the rule changes nothing: the test is on the segments.
+        (("output", "20260813_r1", "source", "p1", "marks", "figma.png"), True),
+        (("output", "20260813_r1", "source", "p1", "slide_03.jpg"), False),
+        # Outside a `source/` tree everything is ordinary — a brief photo, a rendered artifact,
+        # and a file that merely has "source" in its NAME rather than as a path segment.
+        (("brief-photos", "card.png"), True),
+        (("0001_carousel_linkedin", "slide_01.jpg"), True),
+        (("refs", "source-material.png"), True),
+    ])
+async def test_the_sanction_gate_reads_path_segments_not_filenames(
+    tmp_path: Path, uploads: list[Path], parts: tuple[str, ...], sanctioned: bool,
+) -> None:
+    """One table for the gate, because it is the boundary the whole D46 carve-out rests on.
+
+    `marks/` and `source/` are matched as PATH SEGMENTS, case-folded — so a run folder nested any
+    number of levels deep behaves identically, and a file called `source-material.png` outside the
+    store is an ordinary local file rather than a near-miss the gate has to guess about.
+    """
+    path = _image(tmp_path.joinpath(*parts[:-1]), parts[-1])
+    env = Env(run_dir=tmp_path)
+
+    url = await refs_module.upload_local(path, env)
+
+    assert bool(url) is sanctioned
+    assert bool(uploads) is sanctioned
+    assert ("reference_source_store_refused" in env.log.types()) is not sanctioned

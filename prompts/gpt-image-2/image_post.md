@@ -104,8 +104,10 @@ CONSTRAINTS:
     carrying words), and no brand wordmark, logotype or signature line other
     than one quoted in the TEXT block above; when the TEXT block quotes none,
     this frame is unsigned. Nothing here is swiped.
-  - No @handle, no URL, no emoji in the frame — not in the text block, not on
-    a prop, not in a corner, not as decoration.
+  - No @handle, no social-platform URL, no emoji in the frame — not in the
+    text block, not on a prop, not in a corner, not as decoration. A technical
+    URL (code host, docs site, package registry) quoted in the TEXT block is
+    content and renders verbatim, byte-exact.
   - The exclusions below are this house style's own forbid-list. They never
     restrict the TEXT block above, whose strings are always rendered.
   - Additional exclusions for this house style — these are strings and marks

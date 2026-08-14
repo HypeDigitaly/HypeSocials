@@ -20,7 +20,7 @@ Project configuration and agent coordination guide for HypeSocials MVP (Phase 1)
 
 **External services:** OpenRouter REST (LLM), Kie.ai REST (renders), Virlo REST (via MCP wrapper), Notion MCP
 
-**No media libraries.** The topic-first pivot (D41–D45, 2026-08-12) removed Pillow and yt-dlp: Virlo contributes text only, reels use no video references, and reference images are registry-declared local files uploaded as-is.
+**Media libraries: Pillow for logo-patch cropping ONLY (D48).** The topic-first pivot (D41–D45, 2026-08-12) removed Pillow and yt-dlp; D48 (2026-08-13) reinstated Pillow with a single sanctioned use — cropping tool-logo patches out of downloaded source slides for FR-315 pixel references. No other image processing, no compositing, no resizing pipelines, and yt-dlp stays gone (reels use no video references).
 
 **No database.** State is files: config YAML, trend_history.json, run logs, asset metadata (meta.yaml per creative).
 
@@ -40,7 +40,7 @@ Project configuration and agent coordination guide for HypeSocials MVP (Phase 1)
 
 **MCP clients:** One shared async MCP client (`mcp_client.py`) with per-server launch/env/timeout config, bounded session pools (Virlo pool default 3 per PRD FR-246/FR-259), per-server environment dicts (only the keys each server needs), and Windows-safe `.cmd`/`.exe` shim resolution.
 
-**Reference images (D46/F3):** The style picture channel is EXCISED — a meta-style is text-only DNA and `styles.yaml` declares no images. The only inbound render references are a campaign brief's own product photos (uploaded to Kie via the file-upload API, host `kieai.redpandaai.co`, ~24 h retention; an upload memo guarantees each distinct file uploads once per run, URLs never persisted across runs) and the chained artifacts the pipeline itself rendered (carousel anchor, reel seed frame). Virlo media IS downloaded post-Confirm — but for ANALYSIS AND DISPLAY ONLY (D41 carve-out as amended by D46): slide intelligence reads the bytes and the gallery shows them from `output/<run>/source/<post_id>/`; nothing from `source/` may reach `render.upload_file` or any render payload, and no Virlo CDN host may appear in one.
+**Reference images (D46/F3):** The style picture channel is EXCISED — a meta-style is text-only DNA and `styles.yaml` declares no images. The only inbound render references are a campaign brief's own product photos (uploaded to Kie via the file-upload API, host `kieai.redpandaai.co`, ~24 h retention; an upload memo guarantees each distinct file uploads once per run, URLs never persisted across runs) and the chained artifacts the pipeline itself rendered (carousel anchor, reel seed frame). Virlo media IS downloaded post-Confirm — but for ANALYSIS AND DISPLAY ONLY (D41 carve-out as amended by D46): slide intelligence reads the bytes and the gallery shows them from `output/<run>/source/<post_id>/`; nothing from `source/` may reach `render.upload_file` or any render payload — with ONE narrow D48 exception: tool-logo patches cropped from source slides (FR-315, `source/<post_id>/marks/`) may upload as render references; full slides and every other source byte remain forbidden, and no Virlo CDN host may ever appear in a render payload.
 
 **Style registry has NO fallback (FR-295):** a missing, unparseable, or invalid `styles.yaml` — including a registry left with zero styles usable under the active brand/format — is a pre-flight refusal: exit 2, $0 spent. There is no built-in default style set to fall back to.
 
@@ -101,9 +101,9 @@ See CODING_GUIDELINES.md §18 (Code Quality). Pointer:
 
 **MCP session pools:** Virlo default 3 concurrent sessions (bounded, per PRD FR-246), Notion 1 (per spec), Postiz 1 (Phase 2). Unbounded subprocess spawning is a defect.
 
-**Subprocess timeouts:** MCP server startup `mcp_startup_timeout_s` (default 20 s), per-tool-call `mcp_call_timeout_s` (default 30 s), render job timeout `video_job_timeout_s` (default 300 s). Timeouts never resubmit — a timed-out job is a failed job (20-integrations §8).
+**Subprocess timeouts:** MCP server startup `mcp_startup_timeout_s` (default 20 s), per-tool-call `mcp_call_timeout_s` (default 30 s), render job timeouts `image_job_timeout_s` (default 600 s, D48) and `video_job_timeout_s`. Timed-out IMAGE jobs are resubmitted exactly once on their own ledger (FR-317, D48); a second timeout is final. Video timeouts never resubmit, and no job ever gets a second poll window for the same task id (20-integrations §8).
 
-**Run deadline:** `run_deadline_min` (default 25 min, measured on monotonic clock — never wall-clock, because sleep/NTP steps corrupt wall-clock timing). Soft ceiling; grace-poll aftermath may exceed it if the batch is already submitted.
+**Run deadline:** `run_deadline_min` (default 45 min since v2.1.3/D48 — sized so the 600 s image timeout plus the FR-317 single resubmit fit inside it; measured on monotonic clock — never wall-clock, because sleep/NTP steps corrupt wall-clock timing). Soft ceiling; grace-poll aftermath may exceed it if the batch is already submitted.
 
 **State files:** `output/latest.txt` (canonical run pointer, atomic temp+rename), `output/latest/` (convenience junction, best-effort), `logs/trend_history.json` (append-only + pruning per window), per-run `meta.yaml` (written pending → terminal via temp+rename).
 
@@ -208,7 +208,7 @@ End every task with:
 - **Verbatim copy:** The copy LLM returns *references* (`P1.hook.2`, …) into a topic's source posts; the engine resolves them to bytes. Never retyped, trimmed, or translated — source language kept; free text is allowed only where nothing becomes pixels (`through_line`, `narrative_arc`, `motion_beat`).
 - **Panel map (FR-304):** The deterministic, position-preserving mapping from a bound slideshow post's panels onto OUR deck: source panel *i*'s text becomes our slide *i*'s text, verbatim; an empty/unusable/over-budget panel yields a wordless slide that KEEPS its position (the row is the alignment). Persisted per creative in `meta.yaml.panel_map`.
 - **Slide intelligence (FR-306):** The post-Confirm Sonnet-5 vision pass over each assigned carousel's source slides — verbatim `onimage_text` transcription (fills empty Virlo panels, never overwrites them), an English `visual_brief` per slide (content directive for FR-308 rendering), `brand_marks` for §0.12 safety. Fail-open (§0.14c); one call per post.
-- **Source store (§0.13):** Run-level `output/<run>/source/<post_id>/` — the bound posts' slides downloaded once (`slide_NN.jpg`) plus `source.yaml` provenance. Feeds vision analysis and the offline gallery; never published, never uploaded to Kie.
+- **Source store (§0.13):** Run-level `output/<run>/source/<post_id>/` — the bound posts' slides downloaded once (`slide_NN.jpg`) plus `source.yaml` provenance. Feeds vision analysis and the offline gallery; never published. Never uploaded to Kie except the D48 carve-out: cropped tool-logo patches (`marks/`, FR-315).
 - **Provenance gallery (FR-309):** The per-carousel three-part card — source-post provenance header, ORIGINAL slide strip with extracted text + visual briefs, OUR slides aligned index by index; judged on style adherence, topical accuracy and panel fidelity (FR-150).
 - **Branding rotation:** `entry.branded` is set by the floor predicate `floor((order+1)·ratio) > floor(order·ratio)` at `branding.brand_ratio`; a full plan of N carries exactly `floor(N·ratio)` branded entries. The wordmark renders through the TEXT block (never the branding block); a carousel is signed on the anchor slide only.
 - **Anchor chaining:** Carousel slide 1 renders first, becomes primary reference for slides 2–N.
@@ -221,4 +221,4 @@ End every task with:
 
 ---
 
-**Last updated:** 2026-08-13 (Slideshow-fidelity Wave 4, SESSION G — conductor merge: style picture channel excised (text-only registry), D41 analysis carve-out for the source store, D46 glossary entries)
+**Last updated:** 2026-08-13 (v2.1.3/D48 conductor merge: Pillow reinstated for logo-patch cropping only, D46 upload boundary gains the FR-315 marks carve-out, FR-317 single image resubmit, 600 s image timeout)

@@ -18,6 +18,11 @@ dependencies = [
     "mcp==2.0.0",              # official MCP Python SDK: Virlo wrapper + Notion stdio client
     "python-dotenv==1.2.2",    # .env loading; secrets never leave headers/env dicts (D30)
     "pywin32==312; sys_platform == 'win32'",  # win32job kill-on-close job objects (FR-111)
+    # Reinstated v2.1.3/D48 after the topic-first pivot removed it (D41–D45). ONE consumer,
+    # `sources/logo_crops.py`, and ONE operation: cropping a tool mark's pixels out of a stored
+    # source slide so FR-315 can attach the patch instead of a name the model hallucinates from.
+    # No resizing, no thumbnails, no compositing — any other pixel work is a new decision.
+    "Pillow==12.3.0",
 ]
 
 [project.optional-dependencies]

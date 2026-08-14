@@ -1,74 +1,58 @@
-# HypeDigitaly - AI-agency marketing niche (CS/Czech output, LinkedIn-led)
-# The EN sibling is configs/hypedigitaly.yaml; this file differs from it in exactly one
-# behavioural line - `run.languages` below - which is what makes the picker `label:` load-bearing.
-# See prds/30-configuration-and-run.md §2 for the full field reference
+﻿# HypeDigitaly - AI-agency marketing niche (EN, LinkedIn-led); the shipped default selection
+# See prds/30-configuration-and-run.md Â§2 for the full field reference
 
 # A niche is an ordinary config file (D27, v1.6.1): this `niche:` block plus the two ordinary path
 # keys below (briefs_dir, prompts_dir) IS the whole mechanism. Picking this file is switching the
 # niche. Only overrides appear below - every key not listed here inherits its documented default
-# from §2, not from default.yaml - with one deliberate exception: the `branding:` block spells out
+# from Â§2, not from default.yaml - with one deliberate exception: the `branding:` block spells out
 # the compiled default profiles in full, because brand facts an operator cannot see are brand facts
 # an operator cannot correct.
 
 # FR-173: the config picker prints this line verbatim. It MUST name the caption language in
-# words, because this file and configs/hypedigitaly.yaml differ in exactly one behavioural line
-# (`run.languages`) and their `niche:` blocks are otherwise near-identical - a derived picker
-# line cannot tell them apart. Budget: <= 55 chars, ASCII only (legacy cp437/cp852 console),
-# no box drawing, no check marks, no colour.
-label: "AI-agency niche - CZECH captions and on-image text"
+# words, because this file and configs/hypedigitaly-cs.yaml differ in exactly one behavioural
+# line (`run.languages`) and their `niche:` blocks are otherwise near-identical - a derived
+# picker line cannot tell them apart. Budget: <= 55 chars, ASCII only (legacy cp437/cp852
+# console), no box drawing, no check marks, no colour.
+label: "AI-agency FRESH POOL - 90d window, one-off test"
 
 niche:
-  # `run.languages` below sets cs on all three platforms, so this descriptor - which is injected
-  # verbatim into the copy and render prompts (FR-147) - must say CS, not EN. It said EN until
-  # 2026-08-10. Post-pivot the descriptor is the ONLY place this file still states its language to
-  # the copy model, because the copy itself is no longer written - see `languages` below.
-  audience: "founders, marketing leads and ops people at SMBs and agencies evaluating AI automation - CS (Czech-speaking), LinkedIn-led, Instagram/TikTok secondary"
+  audience: "founders, marketing leads and ops people at SMBs and agencies evaluating AI automation - EN, LinkedIn-led, Instagram/TikTok secondary"
   vibe: "no-fluff practitioner proof: specific numbers, real workflows, contrarian takes on AI hype; we ship the thing, we don't theorise about it"
   visual_world: "dark UI and dashboard screenshots, terminal/automation-graph fragments, one electric accent on near-black, heavy geometric sans headlines, numbered playbook cards, whiteboard-style arrows"
 
 run:
   formats: { image: 0, carousel: 6, reel: 0 }
-  # ALL-CAROUSELS since 2026-08-13 (v2.1.0/D46 §0.3, operator decision; was 4/2/0). v1 of the
+  # ALL-CAROUSELS since 2026-08-13 (v2.1.0/D46 Â§0.3, operator decision; was 4/2/0). v1 of the
   # slideshow pivot fetches SLIDESHOWS only (sources.include_videos below), and a slideshow is a
   # deck: a carousel is the only format that can quote one panel for panel (FR-304). Raising image
-  # or reel here without also setting sources.include_videos: true is REFUSED at load (§0.14e).
+  # or reel here without also setting sources.include_videos: true is REFUSED at load (Â§0.14e).
   # Post-pivot (v2.0.0, D44) a reel is a seed frame plus Seedance with NO video reference, so it
   # bills at the plain no-reference per-second rate set under price_per_unit.reel_second below:
   # ~$1.58 for a 5 s 720p clip, where the withdrawn motion-reference path cost ~$2.85-$4.75.
   # formats.reel still ships 0 as the everyday default - a reel is ~15x an image even now -
   # so enable it per run with --reels N (and video sourcing) when a reel is actually wanted.
   platforms: [linkedin, instagram, tiktok]
-  # READ THIS BEFORE TRUSTING THE `cs`: since D42 (2026-08-12) topic-driven copy is SELECTED
-  # VERBATIM from the source post and is never translated - "a Czech candidate stays Czech, an
-  # English one stays English". For those creatives `cs` no longer commissions Czech writing; it
-  # declares the language slot the creative is planned for, groups siblings for the copy call
-  # (FR-99), and drives that platform's tone/length conventions and the on-image text language.
-  # With the English-only monitor configured below, this file therefore ships ENGLISH strings
-  # inside a Czech-audience plan. `cs` still fully governs the FREE-TEXT creatives - override
-  # briefs and the post-less degrade path - which are the only copy still written rather than
-  # quoted, so briefs from niches/hypedigitaly/briefs/ do come out Czech here. To get Czech
-  # topic-driven creatives, point sources.virlo_monitor_ids at a monitor that collects Czech posts
-  # (the old "CZ coverage probe" was the only one, and it is frozen - see the note there).
-  languages: { linkedin: cs, instagram: cs, tiktok: cs }
+  languages: { linkedin: en, instagram: en, tiktok: en }
   # 45 min (operator decision 2026-08-10, default is 25). This is a REEL-CAPABLE config, so the
   # deadline MUST exceed models.video_job_timeout_s (1800 s = 30 min) plus the topic-filter, copy
   # and image stages that run ahead of it - otherwise the run is abandoned before a slow reel can
   # reach its own timeout and the 30 min ceiling is decorative. Still a soft ceiling on the
   # monotonic clock (FR-108).
   run_deadline_min: 45
+  trend_history_days: 90   # FR-307 invariant: must be >= sources.max_post_age_days (90 below)
 
 sources:
-  # ONE monitor by operator decision (2026-08-11) - see the same note in hypedigitaly.yaml. Read the
-  # trade-off here before changing this file: the dropped "CZ coverage probe" was the ONLY Virlo
-  # source with english_only: false, so this config reads ENGLISH-language posts. That was already
-  # a compromise - the probe was a one-shot frozen at 2026-08-06 and would only have gone staler -
-  # but D42 sharpened it: the copy is now quoted verbatim from those posts instead of rewritten, so
-  # what ships is English text under a Czech language slot (see `languages` above). Point this key
-  # at a Czech-collecting monitor when you want Czech creatives; nothing else in this file can
-  # produce them.
+  # ONE monitor by operator decision (2026-08-11). GET /v1/agents returns three ids for this key,
+  # but only this one was created in Virlo's web app (source: web_app, team_id: null) and so is the
+  # only one the operator can see and manage on the Agents page. The other two were created through
+  # the API on 2026-08-06/07 into team 5b21bafd-...: "AI Trends Tracker v2" (the only id with
+  # data_intelligence_enabled) and "CZ coverage probe", a ONE-SHOT whose next_run_at is null and
+  # whose last collection was 2026-08-06 - it can never return anything newer. Dropping both trades
+  # the richer intelligence payload for a source the operator actually controls. Restore them by
+  # running `run.bat --list-monitors`, which still prints all three.
   virlo_monitor_ids:
-    - "9c96fddf-dc35-4be0-bbd9-12f4d22aea12"   # AI Trends Tracker - weekly, english_only: true
-  # How many TOPICS this one monitor may contribute (FR-293/FR-170, 30 §2 Sources). Post-pivot
+    - "9c96fddf-dc35-4be0-bbd9-12f4d22aea12"   # AI Trends Tracker - weekly, analysis_data populated
+  # How many TOPICS this one monitor may contribute (FR-293/FR-170, 30 Â§2 Sources). Post-pivot
   # Virlo is a TEXT-ONLY feed: one monitor's analysis is split into several themes, each becoming
   # its own topic with its own view-ranked posts and its own strength. 9 is the default and, with a
   # single monitor configured above, it IS this run's whole candidate pool - lower it only to make
@@ -76,23 +60,24 @@ sources:
   # switch: one topic per monitor, i.e. the pre-pivot cardinality. `0` is a config error, not a
   # setting - a monitor that contributes nothing should be removed from the list instead.
   virlo_topics_per_monitor: 9
-  # The v2.1.0 fetch window (D46/FR-301), spelled out here because these four keys decide WHICH
-  # posts a paid run may quote. false = the fetch gate skips Virlo's video rows and yields
-  # slideshows only; a slideshow is a deck, which is what a carousel reproduces panel for panel
-  # (FR-304). It also gates run.formats image/reel counts above (§0.14e).
+  # The v2.1.0 fetch window (D46/FR-301). Spelled out here rather than inherited because these four
+  # keys decide WHICH posts a paid run may quote, and this is the file that actually runs.
+  # false = the fetch gate skips Virlo's video rows and yields slideshows only; a slideshow is a
+  # deck, which is what a carousel reproduces panel for panel (FR-304). It also gates run.formats
+  # image/reel counts above (Â§0.14e).
   include_videos: false
   # Result pages per monitor at `created_at desc` - ~100 posts a page, so 3 is roughly this
   # monitor's last week. Bounds 1-10, REFUSED out of range rather than clamped (FR-285).
-  fetch_pages: 3
-  # Posts older than this are dropped pre-rank as stale (publish_date), which is what ends the
-  # views-over-all-time ranking that quoted posts from 2023. Must be <= run.trend_history_days
-  # (30 by default) or the load is refused (FR-307): a post must not fall out of the no-repeat
-  # memory while it is still being fetched.
-  max_post_age_days: 30
+  fetch_pages: 7
+  # Posts older than this are dropped pre-rank as stale (publish_date). The run this file produced
+  # on 2026-08-13 quoted posts from 2023 because ranking was views-over-all-time; this is the cap
+  # that ends that. Must be <= run.trend_history_days (30 by default) or the load is refused
+  # (FR-307) - a post must not fall out of the no-repeat memory while it is still being fetched.
+  max_post_age_days: 90
   # After the Confirm gate, download the assigned carousel source posts' slides and have the
   # analysis model transcribe their on-image text and describe their visuals (FR-306), so our
-  # slides reproduce the CONTENT in our own style. The transcription is VERBATIM and keeps the
-  # source language, so this does not turn an English deck Czech - see `languages` above.
+  # slides reproduce the CONTENT in our own style. Paid LLM spend, estimated before Confirm.
+  # `false` relies on Virlo's own panel_texts alone, which many fresh rows leave empty.
   vision_transcribe: true
 
 # Style selection (v2.1.2/FR-314/D-E): which of the authored meta-styles this config's runs may
@@ -114,8 +99,6 @@ sources:
 # mechanism as every other rendered string. Everything else here (accent colours, font character,
 # placement, background hint, the `never:` guards) reaches the prompt through the branding block,
 # ranked BELOW the assigned meta-style - branding tints and signs a style, it never replaces one.
-# The wordmark is a NAME, not a caption: it stays "HypeLead"/"HypeDigitaly" in a Czech creative
-# exactly as it is here, and is never localised.
 branding:
   # SELECTOR, never a mix (operator decision 6, 2026-08-12): one run is one brand. It also filters
   # the style rotation - a style whose `brand_affinity` names the other brand is simply not
@@ -152,7 +135,7 @@ branding:
         gradient: ["#34288B", "#2B3F8E", "#0C8897", "#00A59A"]   # indigo -> blue -> teal, L to R
       fonts: { brand: "Montserrat", web: "Geist" }
       # A render model cannot install a font, so the font is described, not named at it (F21).
-      font_character: "Montserrat — geometric grotesque, near-circular bowls, medium x-height, uniform stroke"
+      font_character: "Montserrat â€” geometric grotesque, near-circular bowls, medium x-height, uniform stroke"
       background_hint: "flat royal-indigo field, gradient arrow glyphs sweeping the right half, vast negative space"
       # COLOUR guards - injected into EVERY branded prompt under this brand, whatever style was
       # assigned. Orange #F97316 is a website-only accent and appears in no brand asset, so it is
@@ -162,8 +145,7 @@ branding:
       # the corporate system has no medium of its own to defend.
       never_style: []
       # Our own product names: the copy may use them, and the topic filter must never "strip a
-      # competitor brand" that is one of these (M15). Czech-market names belong here too - the list
-      # is matched case-insensitively and is the reason "AI Automatizace" is spelled out.
+      # competitor brand" that is one of these (M15).
       product_nouns: ["AI Audit", "HypeLead", "AI Chatbot", "AI Voicebot", "AI Agent", "AI Automatizace"]
     hypelead:                      # product: teal-only, Geist, pill grammar - never mixed with the above
       wordmark: "HypeLead"
@@ -175,7 +157,7 @@ branding:
         dark: "#14130F"            # reads as charcoal-GREEN under teal glow, not neutral black
         offwhite: "#FAFAF7"
       fonts: { primary: "Geist", mono: "Geist Mono" }
-      font_character: "Geist — clean grotesque, tight tracking, even color"
+      font_character: "Geist â€” clean grotesque, tight tracking, even color"
       # ONE resolved variant on purpose (conductor decision, 2026-08-12 / M9): the brand kit also
       # has a charcoal-green dark mode, but a hint that offers the model a choice is a hint that
       # makes two different-looking posts from one setting. Swap the whole string for
@@ -189,26 +171,26 @@ branding:
       product_nouns: ["HypeLead"]
 
 # Niche asset paths (D27). A missing folder is not an error - the contribution is simply absent
-# for that run, logged once at info level (30 §8).
+# for that run, logged once at info level (30 Â§8).
 briefs_dir: niches/hypedigitaly/briefs   # holds ai-audit-cta/ (shipped first brief, W5 T5.3)
 prompts_dir: null                        # set to niches/hypedigitaly/prompts once that folder exists
 
 models:
   # 30 min (operator decision 2026-08-10, was 600). The W6 acceptance run declared a Seedance reel
   # failed at the 600 s ceiling and wasted ~$4.78 - a timed-out job is paid and never resubmitted
-  # (20 §8), so the ceiling only ever discards work already bought. Measured renders took 302 s
+  # (20 Â§8), so the ceiling only ever discards work already bought. Measured renders took 302 s
   # and 378 s; 1800 is headroom for the slow tail. Needs run_deadline_min: 45 above to be reachable.
   video_job_timeout_s: 1800
 
   price_per_unit:
     reel_second:
       # ---------------------------------------------------------------------------------------
-      # MEASURED NO-REFERENCE reel pricing for THIS config's reel shape (30 §2 price block,
+      # MEASURED NO-REFERENCE reel pricing for THIS config's reel shape (30 Â§2 price block,
       # FR-131/FR-258, amended v2.0.0). The estimator multiplies the scalar for the configured
       # run.reel_resolution by run.reel_duration_s; an unset scalar means reels are not planned
       # at all rather than guessed at (FR-131).
       #
-      # Kie's published Seedance 2.5 formula (spikes/RESULTS.md §C, confirmed to the credit):
+      # Kie's published Seedance 2.5 formula (spikes/RESULTS.md Â§C, confirmed to the credit):
       #     no video reference   ->  cost = unit x  output_s
       #     with video reference ->  cost = unit x (input_s + output_s)      <- the ref is BILLED
       #     720p: 63 credits/s without a video ref | 38 with   ($0.005 per credit)
@@ -229,3 +211,5 @@ models:
       # ---------------------------------------------------------------------------------------
       480p: 0.140
       720p: 0.315
+
+

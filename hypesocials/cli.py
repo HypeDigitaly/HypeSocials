@@ -67,6 +67,9 @@ class Options:
     config_name: str | None = None
     counts: dict[str, int] = field(default_factory=dict)  # only the formats a flag named
     platforms: list[str] | None = None
+    styles: list[str] | None = None  # `--styles` (FR-314): the meta-style keys this run may use.
+    #   `None` = the flag was not passed, which is NOT the same as `[]` — an empty selection means
+    #   "every style", so only a real list may overwrite what the config file chose.
     budget_usd: float | None = None
     notion: str | None = None
     vision_check: bool = False
@@ -102,6 +105,7 @@ def parse_args(argv: Sequence[str] | None = None) -> Options:
         config_name=ns.config,
         counts=counts,
         platforms=ns.platforms,  # already the checked, deduped list (`_platforms`)
+        styles=ns.styles,  # deduped here, checked against the registry at pre-flight (FR-314)
         budget_usd=ns.budget,
         notion=ns.notion,
         vision_check=bool(ns.vision_check),
@@ -136,6 +140,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--reels", type=int, metavar="N", help="override the reel count")
     parser.add_argument("--platforms", type=_platforms, metavar="LIST",
                         help="comma-separated platform list (FR-137)")
+    parser.add_argument("--styles", type=_styles, metavar="LIST",
+                        help="comma-separated meta-style keys from prompts/styles.yaml to rotate "
+                             "over this run; omit for all of them (FR-314)")
     parser.add_argument("--budget", type=float, metavar="USD", help="override the spend cap")
     parser.add_argument("--notion", choices=_NOTION, help="Notion influence level (D7)")
     parser.add_argument("--vision-check", action="store_true", help="enable the vision check (D3)")
@@ -210,6 +217,26 @@ def _platforms(value: str) -> list[str]:
     return names
 
 
+def _styles(value: str) -> list[str]:
+    """`--styles brand-card,letterpress` → the FR-314 selection for this run, deduped in order.
+
+    Deliberately NOT checked against the registry here, which is the one place this flag differs
+    from `--platforms` beside it: platforms are a closed vocabulary this module already knows
+    (`config.PLATFORMS`), while style keys live in whichever `styles.yaml` the run resolves —
+    override-first through `prompts_dir` (FR-174), so which keys are legal depends on the config
+    that has not been loaded yet at parse time. Pre-flight owns that check and refuses with the
+    registry's real keys in the line (`styles.validate`, exit 2 before any spend). What IS refused
+    here is the shape: an empty `--styles ""` or `--styles ,,` would silently mean "all styles",
+    the exact opposite of what someone typing the flag wants.
+    """
+    names = list(dict.fromkeys(name.strip() for name in str(value).split(",") if name.strip()))
+    if not names:
+        raise argparse.ArgumentTypeError(
+            f"--styles {value!r} — expected a comma-separated list of style keys from "
+            "prompts/styles.yaml; omit the flag entirely to use every style")
+    return names
+
+
 def _brief(value: str) -> tuple[str, int]:
     name, _, raw = str(value).partition(":")
     count = raw.strip() or "1"
@@ -233,6 +260,11 @@ def apply_overrides(config: Config, opts: Options) -> list[str]:
         for name in opts.platforms:
             config.run.languages.setdefault(name, "en")
         applied.append(f"run.platforms={','.join(opts.platforms)}")
+    if opts.styles:  # FR-314: replaces the file's selection outright, never merges into it —
+        # "these styles, this run" is the whole point, and a union with the file would make the
+        # flag unable to narrow anything a niche config had already narrowed.
+        config.styles.enabled = list(opts.styles)
+        applied.append(f"styles.enabled={','.join(opts.styles)}")
     if opts.budget_usd is not None:
         config.run.spend_cap_usd = float(opts.budget_usd)
         applied.append(f"run.spend_cap_usd={format_usd(config.run.spend_cap_usd)}")

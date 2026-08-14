@@ -483,11 +483,12 @@ def test_fr304_a_carousel_binds_the_viewiest_fresh_slideshow_post_and_its_deck_l
 
     `TrendItem.posts` arrives view-ranked, so "first bindable" IS "viewiest bindable" — and the
     deck length is that post's own `panel_count`, fixed here so the Confirm gate prices the deck
-    the run will actually render rather than a flat platform ceiling.
+    the run will actually render rather than a flat platform number.
     """
     cfg = _config(formats={"image": 0, "carousel": 1, "reel": 0}, platforms=["linkedin"])
     plan = build_plan(cfg)
-    assert plan.entries[0].slide_count == 5, "the config ceiling stands in until ASSIGN binds"
+    assert plan.entries[0].slide_count == 5, \
+        "DEFAULT_UNBOUND_DECK_SLIDES stands in until ASSIGN binds — never the 20-slide max"
     topic = _deck_topic("decks", _deck("post-top", panels=3, views=9000),
                         _deck("post-second", panels=4, views=100))
 
@@ -495,7 +496,7 @@ def test_fr304_a_carousel_binds_the_viewiest_fresh_slideshow_post_and_its_deck_l
 
     entry = plan.entries[0]
     assert entry.source_post_id == "post-top"
-    assert entry.slide_count == 3, "the bound post's panel count, not the platform ceiling"
+    assert entry.slide_count == 3, "the bound post's panel count, not the platform max"
     assert result.decisions[0].source_post_id == "post-top"
     assert "post post-top · 3 slide(s) of 3 source panel(s)" in result.decisions[0].detail
     assert result.carousel_posts_available == 2 and result.carousel_posts_bound == 1
@@ -610,10 +611,38 @@ def test_fr307_the_supply_figure_counts_each_post_once_however_many_topics_carry
     assert result.carousel_posts_bound == 2 and result.no_fresh_post_skips == 0
 
 
+def test_fr304_the_platform_max_caps_a_deck_it_never_sets_one() -> None:
+    """The 2026-08-13 repurposing, end to end: `carousel_slides` is a platform HARD MAX and the
+    SOURCE decides the length under it.
+
+    Run 20260813_143420_oyo4 shipped every deck at exactly 5 slides — 5- to 8-panel sources all
+    cut to the old flat ceiling — which is the defect this pins. Instagram's max is the tightest
+    of the three (10), so it is the one where truncation is still reachable at all.
+    """
+    cfg = _config(formats={"image": 0, "carousel": 3, "reel": 0}, platforms=["instagram"])
+    assert cfg.platform("instagram").carousel_slides == 10, "the platform's own published ceiling"
+    plan = build_plan(cfg)
+    assert [e.slide_count for e in plan.entries] == [5, 5, 5], \
+        "before ASSIGN a deck is the provisional length, NOT the 10-slide max"
+    topic = _deck_topic("decks", _deck("post-tall", panels=12, views=9000),
+                        _deck("post-short", panels=3, views=500),
+                        _deck("post-thin", panels=1, views=100))
+
+    result = assign(plan.entries, select([topic], cfg), cfg)
+
+    assert plan.entries[0].slide_count == 10, "12 panels truncated to Instagram's max"
+    assert "post post-tall · 10 slide(s) of 12 source panel(s)" in result.decisions[0].detail
+    assert plan.entries[1].slide_count == 3, "3 panels ship 3 slides — not padded up to anything"
+    assert plan.entries[2].status is PlanEntryStatus.SKIPPED, "a 1-panel post is not a deck"
+    assert result.decisions[2].reason == NO_FRESH_POST_AVAILABLE
+    assert deck_length(_deck("post-tall", panels=12), cfg, "linkedin") == 12, \
+        "and on a platform whose max is 20, the same source ships all 12"
+
+
 def test_fr304_the_deck_is_clamped_into_two_and_the_platform_ceiling() -> None:
-    """§0.4′/FR-257's clamp, both ends. A source deck longer than the ceiling ships its first N
+    """§0.4′/FR-257's clamp, both ends. A source deck longer than the max ships its first N
     panels (the cut is tagged `panels_truncated` at generate time); a one-panel post is not a
-    carousel source at all, so the floor is only ever reached through the ceiling."""
+    carousel source at all, so the floor is only ever reached through the max."""
     cfg = _config(formats={"image": 0, "carousel": 2, "reel": 0}, platforms=["linkedin"])
     cfg.platforms["linkedin"] = PlatformConfig(formats=["carousel"], carousel_slides=4)
     plan = build_plan(cfg)
@@ -666,9 +695,10 @@ def test_fr304_usable_panel_slots_follow_the_vision_switch() -> None:
     assert fresh_source_post(_deck_topic("wordy", pictureless), cfg) is pictureless
 
 
-def test_fr144_an_override_brief_carousel_binds_no_post_and_keeps_the_config_ceiling() -> None:
+def test_fr144_an_override_brief_carousel_binds_no_post_and_keeps_the_default_length() -> None:
     """§0.14d: FR-304 does not apply to an `override` brief. It quotes no source, so it has no
-    panel map, no bound post and no source-driven length — the config ceiling stays its deck."""
+    panel map, no bound post and no source-driven length — `DEFAULT_UNBOUND_DECK_SLIDES` stays its
+    deck for good, which is why that constant is not the platform hard max."""
     cfg = _config(formats={"image": 0, "carousel": 0, "reel": 0}, platforms=["linkedin"])
     plan = build_plan(cfg, briefs=[BriefRequest(_brief("ai-audit-cta", formats=("carousel",)), 1)])
 

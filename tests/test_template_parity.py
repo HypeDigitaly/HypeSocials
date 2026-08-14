@@ -91,6 +91,132 @@ def test_a_built_in_names_exactly_the_placeholders_its_on_disk_template_names() 
     assert not drift, "FR-183 built-in defaults drifted from their templates:\n" + "\n".join(drift)
 
 
+def test_the_slide_intel_built_in_is_byte_identical_to_its_file() -> None:
+    """The one role where parity can be checked in full, so it is (FR-306).
+
+    `slide_intel_question.md` carries ZERO placeholders — the images are the whole variable input —
+    so the placeholder-set check above passes vacuously for it and would have kept passing while
+    the two copies asked for different things. They did: the file gained item 2, CHROME TEXT, and
+    the built-in went on asking for three items, which matters because `sources.slide_intel` sends
+    a STRICT schema that REQUIRES `chrome_text` on every slide. A fallback that asks for the wrong
+    shape loses the whole vision pass at the one moment its file is already broken.
+    """
+    on_disk = _on_disk("", "slide_intel_question.md").read_text(encoding="utf-8")
+
+    assert pe._BUILT_INS["slide_intel_question.md"] == on_disk
+    assert "chrome_text" in on_disk, "the strict schema requires it; the prompt must ask for it"
+
+
+def test_the_vision_check_built_in_is_byte_identical_to_its_file() -> None:
+    """The second placeholder-free role, held to the same full parity (FR-105, v2.1.1).
+
+    `vision_check_question.md` names ZERO placeholders — the images and the carrier turn are the
+    whole variable input — so the placeholder-set check above passes vacuously for it, and the two
+    copies drifted for three waves under that cover (SESSION C and SESSION G both noted it, and
+    nothing failed). It stopped being cosmetic when the question grew its third defect: the
+    built-in went on asking two questions while `vision_check._SCHEMA` began REQUIRING
+    `text_mismatch` on every verdict, so the fallback would lose the whole check at the one moment
+    its file is already broken.
+    """
+    on_disk = _on_disk("", "vision_check_question.md").read_text(encoding="utf-8")
+
+    assert pe._BUILT_INS["vision_check_question.md"] == on_disk
+    assert "TEXT MISMATCH" in on_disk, "the strict schema requires it; the prompt must ask for it"
+    assert "(none)" in on_disk, "the carrier sends that token for a wordless-by-design image"
+
+
+def test_the_carousel_copies_both_teach_the_panel_text_label() -> None:
+    """B6 (2026-08-13) at the parity level: `_onimage_text` emits a `panel_text` block for a mapped
+    slide, and a template that never names that label leaves the model to guess what it is.
+
+    Prose is not diffed here (see the module docstring), but a LABEL is not prose — it is the
+    contract between `prompts_engine._onimage_text` and the template, exactly the kind of drift a
+    placeholder-set check cannot see. Both copies must also keep the TEXT-block contract intact.
+    """
+    for origin, text in ((str(_on_disk("gpt-image-2", "carousel_slide.md")),
+                          _on_disk("gpt-image-2", "carousel_slide.md").read_text(encoding="utf-8")),
+                         ("built-in gpt-image-2/carousel_slide.md",
+                          pe._BUILT_INS["gpt-image-2/carousel_slide.md"])):
+        assert "panel_text" in text, f"{origin}: never names the label the TEXT block emits"
+        assert "no character budget" in text, f"{origin}: still prices the panel text"
+        assert "ONLY source of renderable words" in text, f"{origin}: TEXT-block contract lost"
+
+
+def _carousel_slide_copies() -> tuple[tuple[str, str], ...]:
+    """The on-disk slide template and its built-in twin, as (origin, text) pairs."""
+    path = _on_disk("gpt-image-2", "carousel_slide.md")
+    return ((str(path), path.read_text(encoding="utf-8")),
+            ("built-in gpt-image-2/carousel_slide.md",
+             pe._BUILT_INS["gpt-image-2/carousel_slide.md"]))
+
+
+def test_both_carousel_copies_sanction_tool_marks_and_state_the_counter_absence() -> None:
+    """v2.1.2 (D-A/D-D) at the parity level — two contracts a placeholder-set check cannot see.
+
+    D-A: `{{tool_marks}}` is worthless without the rule attached to it, so both copies must carry
+    the block AND the sentence that makes a named mark render for real. D-D: the conditional badge
+    instruction is DELETED, and a template that still tells the model to letter this slide's
+    position "exactly as the FORMAT line states" re-opens the invented-counter defect the moment
+    its file goes unreadable. The absence line is asserted against the engine's own constant, so
+    the prompt and `_style_zones` cannot describe an uncounted deck in two different ways.
+    """
+    absence = 'no position badge, no "N of M", no page number anywhere in the frame.'
+    assert pe._NO_COUNTER_LINE.endswith(absence)
+    for origin, text in _carousel_slide_copies():
+        # The templates are hand-wrapped prose, so every phrase is matched against the flattened
+        # text: a sentence that survives a re-wrap is the thing worth pinning, not its line breaks.
+        flat = " ".join(text.split())
+        assert "{{tool_marks}}" in text, f"{origin}: the sanctioned-marks slot is missing"
+        assert "TOOL MARKS (sanctioned real logos — ignore if empty):" in flat, \
+            f"{origin}: the slot arrived without its labelled block"
+        assert "in its own true brand colours" in flat, f"{origin}: the D-A rule is not attached"
+        assert "renders as the real logo" in flat, f"{origin}: the D-A exception is not stated"
+        assert absence in flat, f"{origin}: an uncounted deck is not told the counter is absent"
+        assert "counter (render verbatim)" not in flat, \
+            f"{origin}: the label belongs to the TEXT block the engine builds, not to the prose"
+        assert "exactly as the FORMAT line states" not in flat, \
+            f"{origin}: the deleted badge instruction came back (D-D)"
+        assert "position badge excepted" not in flat, \
+            f"{origin}: the TEXT block is the only source of renderable words, full stop (D-D)"
+
+
+def test_the_two_carousel_built_ins_are_byte_identical_to_their_files() -> None:
+    """Both carousel copies are maintained as one text, so the cheap check is the full one.
+
+    Nothing forces a built-in to be byte-identical to its file (FR-183 allows a compact copy), but
+    these two ARE, and a wave that edits the slide template without re-syncing the twin ships a
+    fallback describing a different deck — one that still letters a position badge, or one that
+    knows nothing about sanctioned marks. Byte identity is the cheapest way to keep the two copies
+    honest, and re-syncing is a copy-paste.
+    """
+    for profile, role in (("gpt-image-2", "carousel_slide.md"),
+                          ("gpt-image-2", "carousel_anchor_instruction.md")):
+        key = _built_in_key(profile, role)
+        assert pe._BUILT_INS[key] == _on_disk(profile, role).read_text(encoding="utf-8"), \
+            f"{key}: the built-in drifted from its file — re-sync it"
+
+
+def test_the_anchor_instruction_locks_the_scene_not_only_the_layout() -> None:
+    """v2.1.2 task 2: Image 1 is the deck's SCENE as well as its grid.
+
+    The anchor slide is the only picture of this deck that exists, and a body slide that kept the
+    palette but moved to another room read as a different deck. The visual brief describes the
+    SOURCE deck's slide, so it may name a scene this deck never had — hence the explicit
+    precedence rather than a general "Image 1 wins".
+    """
+    for origin, text in ((str(_on_disk("gpt-image-2", "carousel_anchor_instruction.md")),
+                          _on_disk("gpt-image-2", "carousel_anchor_instruction.md")
+                          .read_text(encoding="utf-8")),
+                         ("built-in gpt-image-2/carousel_anchor_instruction.md",
+                          pe._BUILT_INS["gpt-image-2/carousel_anchor_instruction.md"])):
+        flat = " ".join(text.split())
+        for phrase in ("the same room", "the same camera position", "the same background",
+                       "this slide's text block sits exactly where Image 1's text block sits",
+                       "THE SCENE IS IMAGE 1'S", "CONTENT ELEMENTS only",
+                       "Image 1 wins; where they disagree about which content elements"):
+            assert phrase in flat, f"{origin}: the scene lock is missing ({phrase!r})"
+
+
 def test_every_placeholder_in_either_copy_is_in_vocabulary_and_in_that_roles_allowlist() -> None:
     """Both copies obey FR-260/261, checked together.
 

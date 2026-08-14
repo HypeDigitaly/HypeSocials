@@ -494,7 +494,13 @@ async def test_the_delivered_event_names_whether_a_seed_frame_was_paid_for(
     tmp_path: Path,
 ) -> None:
     """FR-298's receipt half: `creative_delivered` says `seed_frame=` so a reel's cost can be
-    reconciled from the event stream alone — one render or two."""
+    reconciled from the event stream alone — one render or two.
+
+    The degraded half scripts TWO frame failures, not one: the seed frame is an image job, so
+    FR-317 (v2.1.3/D48) spends one automatic resubmit on it before the reel gives up. Scripting a
+    single failure would have the resubmit consume the CLIP's queued outcome and deliver a frame,
+    which is a different test.
+    """
     env = make_env(tmp_path)
     entry, folder = make_entry(), make_folder(tmp_path)
     submit = Submitter([ok(SEED_URL, task="job_seed"), ok(CLIP_URL, task="job_clip", cost=2.85)])
@@ -505,11 +511,14 @@ async def test_the_delivered_event_names_whether_a_seed_frame_was_paid_for(
     degraded_env = make_env(tmp_path / "second")
     (tmp_path / "second").mkdir(exist_ok=True)
     degraded = Submitter([failed(RenderFailCause.PROVIDER_FAIL, "renderer exploded", cost=0.03),
+                          failed(RenderFailCause.PROVIDER_FAIL, "renderer exploded again",
+                                 cost=0.03),
                           ok(CLIP_URL, task="job_clip", cost=2.85)])
 
     await reel.render_reel(make_entry(), degraded_env, make_folder(tmp_path / "second"),
                            submit=degraded)
     assert degraded_env.log.payload("creative_delivered")["seed_frame"] is False
+    assert len(degraded.of("seed_frame")) == 2, "one resubmit, and a second failure is final"
 
 
 async def test_flagged_seed_frame_is_re_rendered_and_re_checked_once(tmp_path: Path) -> None:
@@ -606,23 +615,35 @@ async def test_seed_frame_render_failure_degrades_to_in_model_overlay_text(
     tmp_path: Path,
 ) -> None:
     """FR-24 / 10 §10: a lost seed frame costs legibility, not a clip. The hook moves into the
-    video model, the clip is still ordered on the SAME copy and the SAME style, and the failed
-    frame is still billed."""
+    video model, the clip is still ordered on the SAME copy and the SAME style, and every failed
+    frame attempt is still billed.
+
+    "Lost" now means lost TWICE. FR-317 (v2.1.3/D48) gives the frame one automatic resubmit
+    because the whole reel is built on it, so the degradation this test is about only happens
+    after the second attempt fails as well — and that is the intent preserved, not weakened: the
+    script fails both so the in-model overlay path is still what gets exercised.
+    """
     env = make_env(tmp_path)
     entry, folder = make_entry(), make_folder(tmp_path)
     submit = Submitter([failed(RenderFailCause.PROVIDER_FAIL, "renderer exploded", cost=0.03),
+                        failed(RenderFailCause.PROVIDER_FAIL, "renderer exploded again",
+                               cost=0.03),
                         ok(CLIP_URL, task="job_clip", cost=2.85)])
 
     record = await reel.render_reel(entry, env, folder, submit=submit)
 
     assert DegradationTag.SEED_FRAME_RENDER_FAILED in record.degradations
+    frames = submit.of("seed_frame")
+    assert [call["kind"] for call in frames] == ["projected", "discretionary"], \
+        "FR-317's resubmit is discretionary spend the cap may decline (FR-106c)"
+    assert "image_job_resubmit" in env.log.types()
     clip = submit.of("clip")[0]
     assert clip["refs"].image_urls == [] and clip["refs"].video_urls == []
     assert "hook text" in clip["params"].prompt  # the overlay moved into the video model
     assert MOTION_PROFILE in clip["params"].prompt, "the style survives its frame"
     assert record.status is AssetStatus.SUCCESS
     assert (folder.path / "reel.mp4").is_file()
-    assert record.actual_cost_usd == pytest.approx(2.88)  # the failed frame was still billed
+    assert record.actual_cost_usd == pytest.approx(2.91)  # both dead frames were still billed
 
 
 async def test_seed_url_rejection_is_named_but_never_buys_a_second_clip(tmp_path: Path) -> None:

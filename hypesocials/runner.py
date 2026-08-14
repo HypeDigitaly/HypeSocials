@@ -455,11 +455,19 @@ def _assign_visuals(session: _Session, live: Sequence[PlanEntry],
     suppresses the style channel entirely (M14; its `style_key` stays "" and meta.yaml records
     `brief_override`). `assign_branding` covers EVERY entry: a brief creative can still be
     branded. One detail line per creative is the determinism receipt (§1.10).
+
+    FR-318's master switch rides both calls. With `branding.enabled` false the pool loses its
+    `brand_slot` house cards and the rotation predicate never runs, so the receipt below prints
+    `plain` on every line and the ASSIGN header prints `0 branded` — the switch is visible in the
+    same place the rotation always was, rather than in a separate announcement.
     """
+    branding = session.config.branding
     styled = [entry for entry in live if entry.brief_influence != "override"]
     if session.registry is not None and styled:
-        styles.assign_styles(styled, session.registry, session.config.branding.brand)
-    styles.assign_branding(live, session.config.branding.brand_ratio)
+        styles.assign_styles(styled, session.registry, branding.brand,
+                             enabled=session.config.styles.enabled,  # FR-314 selector
+                             branding_enabled=branding.enabled)  # FR-318 master switch
+    styles.assign_branding(live, branding.brand_ratio, enabled=branding.enabled)
     topic_count = len({entry.trend_key for entry in live if entry.trend_key})
     used = len({entry.style_key for entry in live if entry.style_key})
     branded = sum(1 for entry in live if entry.branded)
@@ -541,6 +549,7 @@ def _configure_providers(session: _Session) -> None:
         http_max_attempts=config.models.http_max_attempts,
         model_ids={config.models.image_profile: config.models.image,
                    config.models.video_profile: config.models.video},
+        edit_model_ids={config.models.image_profile: config.models.image_edit},
         on_intent=on_intent, on_submitted=on_submitted),
         log=session.log)  # FR-77: submit/poll/download narrate into the run's own log
     session.render_ready = True
@@ -774,7 +783,11 @@ async def _write(session: _Session, live: Sequence[PlanEntry], trends: dict[str,
     result = await _with_pulse(session, copywrite.write_copy(
         live, trends=trends, styles=styles_by_key, call=_metered(session), engine=session.engine,
         campaign_briefs=session.campaign_briefs,  # FR-146: the brief's directives steer the copy
-        brand_context=session.brand.text,  # FR-109: Notion text reaches the copywriter only
+        # FR-109: Notion text reaches the copywriter only — and FR-318 gates it here, at the one
+        # place that holds both the config and the call: with `branding.enabled` false the copy
+        # LLM is given no brand facts at all, so nothing it writes can be about us. The gate is a
+        # caller's job because `copywrite` receives a plain string and has no config to consult.
+        brand_context=session.brand.text if config.branding.enabled else "",
         text_budgets=config.run.text_budgets,
         conventions={name: config.platform(name).conventions for name in config.run.platforms},
         onimage_languages={entry.asset_id: config.onimage_language_for(entry.platform)
@@ -785,6 +798,12 @@ async def _write(session: _Session, live: Sequence[PlanEntry], trends: dict[str,
         # siblings on one post see one reading) and the burnt set for the pick-time guard.
         merged_panels={pid: list(intel.panel_texts)
                        for pid, intel in session.slide_intel.items()} or None,
+        # FR-312 (§1.5 layer 3): the same decks' CHROME, per post — watermarks, counters and
+        # swipe cues the vision pass kept out of the panel words. A panel line that merely
+        # echoes one of them is the creator's furniture, and copywrite drops it.
+        chrome_lines={pid: [slide.chrome_text for slide in intel.slides
+                            if str(slide.chrome_text or "").strip()]
+                      for pid, intel in session.slide_intel.items()} or None,
         burnt_post_ids=sorted(session.used_post_ids),
         progress=progress,
         niche_descriptor=config.niche.as_text(), log=session.log), heartbeat, suppress_s=10.0)
@@ -965,13 +984,23 @@ def _check_rollup(session: _Session, report: generate.Report) -> None:
     outcomes = {record.asset_id: record.vision_check_result
                 for record in report.records.values()}
     checked = [v for v in outcomes.values() if v is not VisionCheckResult.NOT_CHECKED]
-    retried = [v for v in checked if v in (VisionCheckResult.RETRIED_PASSED,
-                                           VisionCheckResult.RETRIED_FAILED)]
+    # DISJOINT categories (v2.1.4). `retried` overlapped `passed` — a deck that was flagged,
+    # re-rendered and came back clean counted in both — so glz0 printed "6 checked -> 4 pass, 3
+    # retried" and the operator got to do arithmetic that does not add up. A creative is now in
+    # exactly one bucket: it passed, or it is still flagged. How many of the passes needed a
+    # re-render is a parenthetical on the pass count, which is what that number always meant.
     passed = [v for v in checked if v in (VisionCheckResult.PASSED,
                                           VisionCheckResult.RETRIED_PASSED)]
+    after_retry = sum(1 for v in checked if v is VisionCheckResult.RETRIED_PASSED)
+    # The unchecked ones are stated as the DENOMINATOR rather than as a third count: `6 of 7
+    # checked` is the same fact in fewer characters, and FR-286 leaves this line about 52 (§1.10's
+    # flexing body width). All-checked is the ordinary case and says so plainly.
+    head = (f"{len(checked)} checked" if len(checked) == len(outcomes)
+            else f"{len(checked)} of {len(outcomes)} checked")
     _stage(session, "CHECK",
-           f"{len(checked)} checked -> {len(passed)} pass, {len(retried)} retried, "
-           f"{len(outcomes) - len(checked)} not checked", elapsed_s=None)
+           f"{head} -> {len(passed)} pass"
+           + (f" ({after_retry} retried)" if after_retry else "")
+           + f", {len(checked) - len(passed)} flagged", elapsed_s=None)
     for asset_id, verdict in sorted(outcomes.items()):
         if verdict is VisionCheckResult.RETRIED_FAILED:
             session.say(f"          {asset_id.rsplit('_', 1)[-1]:>2} retried and still flagged "
@@ -1029,7 +1058,10 @@ async def _package(session: _Session, entries: Sequence[PlanEntry], plan_estimat
     # `skip_reason` (the deck DID ship — `carousel.package()` marks `incomplete` instead).
     degradations: DegradationMap = {asset_id: record.degradations
                                     for asset_id, record in report.records.items()}
-    summary = session.budget.summary(entries, plan_estimate)
+    # FR-321: the records carry `slide_count`/`slides_ordered`, so the spend table can say `7/8`
+    # where it used to say `yes`. They are passed rather than merged into the plan because
+    # delivery completeness is a packaging fact — `budget` reports it, `carousel.package()` owns it.
+    summary = session.budget.summary(entries, plan_estimate, records=report.records)
     delivered = sum(1 for row in summary.rows if row.delivered)
     _stage(session, "DONE",
            f"{delivered} delivered, {len(summary.rows) - delivered} skipped, "
@@ -1545,17 +1577,24 @@ def _launch_summary(session: _Session, overrides: Sequence[str]) -> str:
     §1.10 added the two fact lines that now decide a run's shape: the registry (version, style
     count, hash, how many styles the active brand can use — FR-290/295) and the branding dial
     (selector, ratio, mode, placement — FR-292). The pre-pivot `mode` clause died with A/B.
+
+    FR-318 rewrites the branding line rather than qualifying it: with the master switch off, the
+    brand, the ratio, the mode and the placement are all inert, and printing four settings that
+    do nothing is how an operator concludes the run WILL sign its creatives. What the line states
+    instead is the switch, the key that flips it, and the one thing the switch does NOT touch —
+    the competitor blocklist, which is safety and stays on.
     """
     config = session.config
     registry = session.registry
+    branding = config.branding
     if registry is None:
         styles_line = "  styles      registry unavailable — pre-flight will refuse (FR-295)"
     else:
         usable = sum(1 for style in registry.styles
-                     if styles.brand_ok(style, config.branding.brand))
+                     if styles.brand_ok(style, branding.brand,
+                                        branding_enabled=branding.enabled))
         styles_line = (f"  styles      registry v{registry.version} · {len(registry.styles)} "
                        f"styles · sha {registry.content_hash[:8]} · {usable} usable here")
-    branding = config.branding
     return "\n".join([
         f"HypeSocials run {session.run_id}",
         # FR-286: the niche descriptor behind `description` ran to 400 chars and produced a
@@ -1566,8 +1605,11 @@ def _launch_summary(session: _Session, overrides: Sequence[str]) -> str:
         f"  platforms   " + ", ".join(
             f"{name}/{config.language_for(name)}" for name in config.run.platforms),
         styles_line,
-        f"  branding    {branding.brand} · brand_ratio {branding.brand_ratio:.2f} · "
-        f"{branding.mode} · {branding.placement}",
+        (f"  branding    {branding.brand} · brand_ratio {branding.brand_ratio:.2f} · "
+         f"{branding.mode} · {branding.placement}" if branding.enabled else
+         # 72 chars — FR-286's 78-column ceiling holds; the two facts that fit are the ones the
+         # operator needs: the switch (with its key) and the carve-out that safety is still on.
+         "  branding    off (branding.enabled: false) · competitor filter still on"),
         f"  checks      notion {config.run.notion_influence} · "
         f"vision_check {str(config.run.vision_check).lower()}",
         f"  spend cap   {format_usd(config.run.spend_cap_usd)} · deadline "
@@ -1696,13 +1738,19 @@ def _spend_table(summary: SpendSummary) -> str:
     The pre-pivot single-chain `virlo` row is gone (§1.10 rule: a number appears in exactly ONE
     of {stage header, table, funnel, spend row} — the funnel now prints directly above this
     table at DONE, so repeating its chain here would double every count it carries).
+
+    FR-321 gives the `ok` column a third value. A deck that shipped seven of the eight slides it
+    was ordered to have prints `7/8` where a complete one prints `yes`: this table is where the
+    operator first scans the result, and a missing slide that reads as an unqualified success is
+    a loss they only find by opening the folder. `no` still means nothing shipped at all.
     """
     # FR-286: asset ids run to ~46 chars, so a fixed 40-wide column both overflowed 78 AND ran
     # into the format column with no space (`..._04image`). Fit the one variable column instead.
     lines = [summary.headline]
     lines.append(f"  {'asset':<38} {'format':<9}{'est':>9}{'billed':>10} ok")
     for row in summary.rows:
-        mark = "yes" if row.delivered else "no"
+        mark = (f"{row.slides_delivered or 0}/{row.slides_ordered}" if row.partial
+                else "yes" if row.delivered else "no")
         billed = format_usd(row.billed_usd) + (" est" if row.estimated_only else "")
         lines.append(f"  {fit(row.asset_id, 38):<38} {row.creative_format:<9}"
                      f"{format_usd(row.estimated_usd):>9}{billed:>10} {mark}")
@@ -1721,10 +1769,17 @@ def _spend_table(summary: SpendSummary) -> str:
 
 def _final_line(session: _Session, entries: Sequence[PlanEntry], summary: SpendSummary,
                 code: int) -> str:
-    """FR-232's one-line close: cost, wall clock, counts, skip reasons, status and the exit code."""
+    """FR-232's one-line close: cost, wall clock, counts, skip reasons, status and the exit code.
+
+    FR-321: `generated` counts the creatives that shipped, and a deck that shipped SHORT is named
+    separately (`generated 6 · 1 partial`). Folding partial decks into `generated` would make the
+    closing line the one surface that still calls a truncated deck a whole one, right after the
+    spend table above it said `7/8`.
+    """
     status = {EXIT_OK: "success", EXIT_PARTIAL: "partial-success",
               EXIT_INTERRUPTED: "interrupted"}.get(code, "failed")
     delivered = sum(1 for row in summary.rows if row.delivered)
+    partial = f" · {summary.partial} partial" if summary.partial else ""
     reasons = sorted({str(entry.skip_reason).split(":", 1)[0].split(" ", 1)[0]
                       for entry in entries if entry.skip_reason})
     skipped = len(summary.rows) - delivered
@@ -1734,7 +1789,8 @@ def _final_line(session: _Session, entries: Sequence[PlanEntry], summary: SpendS
     metered = " + Virlo metering" if session.virlo_contacted else ""
     return "\n".join([
         f"run {session.run_id} · total {_money(summary.total_usd)} (Kie/OpenRouter){metered}",
-        f"  {session.clock.elapsed_s:.1f}s · generated {delivered} · skipped {skipped}{detail}",
+        f"  {session.clock.elapsed_s:.1f}s · generated {delivered}{partial} · "
+        f"skipped {skipped}{detail}",
         f"  status {status} · exit code {code} ({_EXIT_LEGEND[code]})",
         f"  folder    {fit(str(session.run_dir), 65)}",
         # FR-297f: the gallery path in the exit block — until now it was never printed at all.

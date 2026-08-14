@@ -134,6 +134,18 @@ def refused() -> RenderOutcome:
                          fail_message="content policy", cost_usd=0.03)
 
 
+def timed_out() -> RenderOutcome:
+    """Exactly what `render/kie.py::_classify` builds when `recordInfo` never went terminal.
+
+    The pairing is fixed at the seam — `kind=STUCK` with `fail_cause=TIMEOUT` — and `cost_usd` is
+    0.0 because the record it was built from was EMPTY, not because Kie reported a zero. That is
+    the ambiguity `generate._billed_usd` exists to resolve, so the double is written to carry it.
+    """
+    return RenderOutcome(kind=RenderOutcomeKind.STUCK, task_id="kie_stuck", request_token="tok",
+                         fail_cause=RenderFailCause.TIMEOUT,
+                         fail_message="no terminal state within 300s", cost_usd=0.0)
+
+
 # --------------------------------------------------------------------------------- fixtures
 
 
@@ -736,6 +748,98 @@ async def test_every_submission_is_billed_and_gets_one_terminal_ledger_line(
     assert env.budget.spent_usd == pytest.approx(0.06)  # both attempts billed, failures included
 
 
+async def test_a_timed_out_job_is_billed_at_zero_not_at_the_full_estimate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The `20260813_143420_oyo4` over-report, pinned: a timeout is a KNOWN cost, not a missing one.
+
+    `outcome.cost_usd if outcome.cost_usd else None` could not tell "the provider billed nothing"
+    from "the provider reported nothing", so every timed-out job took FR-85's estimated path and
+    booked its whole per-job projection as billed. That run reported $1.27 against $0.94 of real
+    Kie spend, on rows the summary then labelled `estimated_only` — an inflated total wearing the
+    badge that says "trust the estimate here".
+
+    A timed-out job delivered nothing, so it reconciles at a measured 0.0 and its row carries a
+    real figure rather than a flagged one.
+
+    Since v2.1.3/D48 the dead attempt is followed by FR-317's one automatic resubmit, so the two
+    halves of the money line are asserted separately: the timed-out ATTEMPT bills $0, the
+    surviving attempt bills what it really cost, and the run's total is the survivor alone. That
+    is precisely the arithmetic that makes a resubmit affordable — the pair costs one render, not
+    two — and it only holds while the dead attempt keeps reconciling at zero.
+    """
+    entry = make_entry()
+    env = make_env(tmp_path, [entry])
+    monkeypatch.setattr(render, "run", Renders([timed_out(), ok(cost=0.07)]))
+
+    report = await generate.create([entry], env)
+
+    # The per-ATTEMPT half, at the one function that decides it: a timeout reconciles at a
+    # measured 0.0, a delivered render at its reported figure, and neither takes FR-85's
+    # estimated path (`None`) — which is the branch that booked the whole projection.
+    assert generate._billed_usd(timed_out()) == 0.0
+    assert generate._billed_usd(ok(cost=0.07)) == pytest.approx(0.07)
+    assert [line.split(",")[-1] for line in ledger_lines(tmp_path)[-2:]] == ["timeout", "success"], \
+        "FR-203 still names the dead job, and the resubmit is its own terminal line"
+    # The RUN half: entry estimate is $0.10, the dead attempt contributed nothing, so the total is
+    # the survivor's $0.07 exactly — neither doubled nor rounded up to an estimate.
+    assert env.budget.spent_usd == pytest.approx(0.07), "the survivor alone, not two renders"
+    (row,) = env.budget.summary([entry]).rows
+    assert row.billed_usd == pytest.approx(0.07) and row.estimated_usd == pytest.approx(0.10)
+    assert not row.estimated_only, "0.0 here is measured, not assumed — FR-85's badge is a lie now"
+    assert entry.status is PlanEntryStatus.SUCCESS, "FR-317 healed it"
+    assert report.records[entry.asset_id].actual_cost_usd == pytest.approx(0.07)
+
+
+async def test_a_job_that_times_out_twice_bills_nothing_at_all_and_fails_honestly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The other half of the same discrimination, and FR-317's ceiling: a SECOND timeout is final.
+
+    Both attempts produced nothing, so both reconcile at a measured 0.0 and the run's total spend
+    for this creative is exactly zero — no estimate, no `estimated_only` badge, and no third
+    attempt. The creative FAILS and keeps its paid caption (FR-74): this is about what the money
+    line says, not about laundering the outcome.
+    """
+    entry = make_entry()
+    env = make_env(tmp_path, [entry])
+    renders = Renders([timed_out(), timed_out(), ok()])  # the third must stay in the queue
+    monkeypatch.setattr(render, "run", renders)
+
+    report = await generate.create([entry], env)
+
+    assert len(renders.calls) == 2, "one resubmit, never two (FR-317)"
+    assert env.budget.spent_usd == 0.0, "two jobs that produced nothing billed nothing"
+    (row,) = env.budget.summary([entry]).rows
+    assert row.billed_usd == 0.0 and not row.estimated_only
+    assert entry.status is PlanEntryStatus.FAILED
+    assert "timeout" in (entry.skip_reason or "")
+    assert report.records[entry.asset_id].actual_cost_usd == 0.0
+    assert "image_job_resubmit" in env.log.types()
+    assert [line.split(",")[-1] for line in ledger_lines(tmp_path)[-2:]] == ["timeout", "timeout"]
+
+
+async def test_a_success_that_reports_no_billing_data_still_books_the_estimate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FR-85 unchanged for everything that is not a timeout — the other half of the discrimination.
+
+    A job that COMPLETED and came back without a `creditsConsumed` field really did work we cannot
+    price: the estimate stands and the row says `estimated_only`. Booking that one at 0.0 would
+    under-report a delivered render, which is the mirror-image defect of the one above.
+    """
+    entry = make_entry()
+    env = make_env(tmp_path, [entry])
+    monkeypatch.setattr(render, "run", Renders([ok(cost=0.0)]))
+
+    await generate.create([entry], env)
+
+    assert env.budget.spent_usd > 0.0, "the estimate stands where no figure was reported"
+    (row,) = env.budget.summary([entry]).rows
+    assert row.billed_usd > 0.0 and row.estimated_only
+    assert entry.status is PlanEntryStatus.SUCCESS
+
+
 async def test_moderation_retry_declined_by_the_cap_is_a_skipped_budget_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -809,10 +913,18 @@ async def test_standalone_image_is_vision_checked_re_rendered_once_and_re_checke
 async def test_vision_check_off_leaves_a_standalone_image_not_checked(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """D3: the check is off by default — one render, one verdict of `not_checked`, no LLM call."""
+    """`run.vision_check: false` — one render, one verdict of `not_checked`, no LLM call.
+
+    The default flipped to `true` (v2.1.1), so the flag is set DOWN here rather than assumed: run
+    `20260813_143420_oyo4` delivered eight creatives all reading `vision_check_result:
+    not_checked` purely because the switch was off, which is a check the estimate priced and the
+    run never took. What survives the flip is D3's half of the contract — a check the operator
+    declined must cost nothing and produce the honest `not_checked`, never a silent pass.
+    """
     entry = make_entry()
     env = make_env(tmp_path, [entry])
-    env.llm_call = vision(True)  # present, but `run.vision_check` is off
+    env.config.run.vision_check = False
+    env.llm_call = vision(True)  # a call is available; the flag is what declines it
     renders = Renders(rule=lambda _self: ok())
     monkeypatch.setattr(render, "run", renders)
 
@@ -962,3 +1074,111 @@ async def test_kie_out_of_credits_latches_and_skips_every_later_creative(
     assert len(renders.calls) == 1  # the latch, not a second 402
     assert second.status is PlanEntryStatus.FAILED
     assert report.records[second.asset_id].status is AssetStatus.FAILED
+
+
+# ------------------------------- v2.1.4: honest meta for a standalone image (glz0 audit R2/R4)
+
+
+def _png_bytes(width: int, height: int) -> bytes:
+    """A PNG header of these dimensions — the bytes `generate.pixels` measures.
+
+    Hand-assembled (IHDR is fixed-layout and its CRC is not read by anything here) so this file
+    stays free of an image library: the point is the HEADER, and the parser under test reads
+    nothing past byte 24.
+    """
+    ihdr = b"IHDR" + width.to_bytes(4, "big") + height.to_bytes(4, "big") + b"\x08\x02\x00\x00\x00"
+    return (b"\x89PNG\r\n\x1a\n" + len(ihdr[4:]).to_bytes(4, "big") + ihdr
+            + b"\x00\x00\x00\x00" + b"IEND")
+
+
+async def test_a_reference_free_image_records_the_route_it_actually_took(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FR-270/FR-241 (audit R2): `model_ids` names the route this creative used, not both halves.
+
+    A style is words (D46), so an ordinary image submits with no references at all and goes to the
+    text-to-image route — which is what `models.image` names.
+    """
+    entry = make_entry()
+    env = make_env(tmp_path, [entry])
+    monkeypatch.setattr(render, "run", Renders(rule=lambda _self: ok()))
+
+    report = await generate.create([entry], env)
+
+    assert report.records[entry.asset_id].model_ids == [env.config.models.image,
+                                                        env.config.models.image_profile]
+
+
+async def test_an_image_carrying_a_briefs_photo_records_the_image_to_image_route(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The other half of FR-241, and the one glz0 got wrong on every reference-bearing render.
+
+    A campaign brief's own product photo is a reference, so the job goes to the image-to-image
+    route (`models.image_edit`). Recording `models.image` for it — as every creative in that run
+    did — claims a route the job never touched, in the document the operator audits a render with.
+    """
+    entry = make_entry()
+    env = make_env(tmp_path, [entry])
+    give_brief(env, [entry], tmp_path)
+    monkeypatch.setattr(render, "run", Renders(rule=lambda _self: ok()))
+
+    report = await generate.create([entry], env)
+
+    assert report.records[entry.asset_id].model_ids == [env.config.models.image_edit,
+                                                        env.config.models.image_profile]
+
+
+async def test_an_image_records_the_pixel_size_it_really_got_and_warns_on_the_ratio(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, downloads: SimpleNamespace,
+) -> None:
+    """FR-98 (audit R4): `native_size_rendered` is measured off the delivered file, not restated.
+
+    glz0 recorded `native_size_rendered: '1:1'` for a picture that came back 1536x1024. The field
+    is documented as "what came back", the gallery prints it as `ratio 1:1 -> …`, and a Phase-2
+    publisher will read it as fact — so it is now the file's own header, with one warning when the
+    provider's answer is more than 2% off the shape that was ordered. Nothing re-renders.
+    """
+    async def _wide(url: str) -> bytes:
+        return _png_bytes(1536, 1024)
+
+    monkeypatch.setattr(packager, "_download", _wide)
+    entry = make_entry()
+    env = make_env(tmp_path, [entry])
+    monkeypatch.setattr(render, "run", Renders(rule=lambda _self: ok()))
+
+    report = await generate.create([entry], env)
+
+    record = report.records[entry.asset_id]
+    assert record.native_size_rendered == "1536x1024 (3:2)"
+    assert record.aspect_ratio_requested == "1:1", "what was ASKED for stands beside it"
+    assert "aspect_mismatch" in env.log.types()
+
+
+async def test_a_vision_re_render_is_measured_on_the_file_that_actually_ships(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The re-render REPLACES the delivered file, so it is the second picture that gets measured.
+
+    The first download is square and the second is not; recording the first would describe a file
+    that is no longer on disk, which is the same class of untruth as recording the requested ratio.
+    """
+    sizes = [(1024, 1024), (1536, 1024)]
+    seen: list[str] = []
+
+    async def _two(url: str) -> bytes:
+        seen.append(url)
+        return _png_bytes(*sizes[min(len(seen) - 1, 1)])
+
+    monkeypatch.setattr(packager, "_download", _two)
+    entry = make_entry()
+    env = make_env(tmp_path, [entry])
+    env.config.run.vision_check = True
+    env.llm_call = vision(True, False)  # flagged, then clean after the one re-render
+    monkeypatch.setattr(render, "run", Renders([ok(task="kie_first"), ok(task="kie_retry")]))
+
+    report = await generate.create([entry], env)
+
+    record = report.records[entry.asset_id]
+    assert record.vision_check_result is VisionCheckResult.RETRIED_PASSED
+    assert record.native_size_rendered == "1536x1024 (3:2)", "the SECOND file is the one on disk"

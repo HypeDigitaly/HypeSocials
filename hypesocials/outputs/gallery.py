@@ -125,6 +125,7 @@ def write_gallery(
 def _page(run: Path, title: str) -> str:
     cards = _load(run)
     delivered = sum(1 for _, meta in cards if meta.get("status") == "success")
+    partial = sum(1 for _, meta in cards if _is_partial(meta))
     spend = sum(
         float(meta.get("actual_cost_usd") or meta.get("estimated_cost_usd") or 0.0)
         for _, meta in cards
@@ -136,10 +137,32 @@ def _page(run: Path, title: str) -> str:
     return _TEMPLATE.format(
         title=html.escape(title),
         run_id=html.escape(run.name),
-        summary=f"delivered {delivered} of {len(cards)} · ${spend:.2f} spent",
+        # FR-321: a deck that shipped short is counted inside `delivered` — it DID ship — and then
+        # named, so the opening summary of the page an operator reviews cannot present "delivered
+        # 6 of 6" over a deck that is missing a slide.
+        summary=(f"delivered {delivered} of {len(cards)}"
+                 + (f" ({partial} partial)" if partial else "")
+                 + f" · ${spend:.2f} spent"),
         selected=SELECTED_MARKER, publish_list=PUBLISH_LIST,
         body=body,
     )
+
+
+def _is_partial(meta: _Meta) -> bool:
+    """FR-321: did this creative ship successfully but SHORT of the deck it was ordered to be?
+
+    `status == "success"` with `slide_count < slides_ordered` — the pair `carousel.package()`
+    writes. Both must be present: a meta with no `slides_ordered` was packaged before FR-321 and
+    makes no claim either way, and inferring one from `missing_slide_numbers` here would be a
+    second implementation of the same predicate, free to disagree with the spend table's.
+    """
+    if meta.get("status") != "success":
+        return False
+    try:
+        delivered, ordered = int(meta.get("slide_count") or 0), int(meta.get("slides_ordered") or 0)
+    except (TypeError, ValueError):
+        return False
+    return bool(ordered and delivered < ordered)
 
 
 def _load(run: Path) -> list[_Card]:
@@ -417,9 +440,15 @@ def _badges(folder: Path, meta: _Meta) -> str:
     # brief, not the registry, was the visual authority for this creative (M14).
     if style_key := str(meta.get("style_key") or "").strip():
         labels.append(f"style: {style_key}")
-    if brand := str(meta.get("brand") or "").strip():
-        labels.append(f"brand: {brand}")
-        labels.append("signed" if meta.get("branded") else "unsigned")
+    # FR-318: the brand chip appears only on a SIGNED creative. With branding off (or on an
+    # unsigned sibling) the brand selector still filtered the style pool, but naming it here
+    # would wave a brand name at an operator who just disabled branding — provenance keeps the
+    # selector in meta.yaml; the gallery states only "unsigned".
+    if str(meta.get("brand") or "").strip() and meta.get("branded"):
+        labels.append(f"brand: {meta['brand']}")
+        labels.append("signed")
+    elif str(meta.get("brand") or "").strip():
+        labels.append("unsigned")
     if meta.get("brief_name"):
         labels.append(f"brief: {meta['brief_name']}")
     labels.append(f"status: {meta.get('status', 'pending')}")

@@ -105,6 +105,20 @@ sources:
   virlo_monitor_ids: []
 briefs_dir: "{briefs}"
 """
+#: FR-314 at pick time: a config that curated its own rotation down to two of the shipped styles.
+#: Both keys are real and both are carousel-affine, so the row is RUNNABLE — the only thing that
+#: must change is the number the picker prints.
+_CURATED = """label: "two styles only, curated"
+branding:
+  brand: hypelead
+styles:
+  enabled: [editorial-voxel-carousel, letterpress-print-carousel]
+run:
+  formats: {{ image: 0, carousel: 6, reel: 0 }}
+sources:
+  virlo_monitor_ids: ["623203a9-1111-2222-3333-444455556666"]
+briefs_dir: "{briefs}"
+"""
 #: FR-295 at pick time: monitor ids are fine, but `prompts_dir` resolves to a registry that will
 #: not parse — the run would refuse with exit 2 after four more prompts.
 _NO_STYLES = """label: "monitors fine, registry broken"
@@ -364,6 +378,25 @@ def test_fr300_a_picker_row_states_language_monitors_counts_brand_and_styles(
     assert menu._runnable(next(row for row in list_configs(configs) if row.name == "ready"))
 
 
+def test_fr314_the_picker_counts_the_styles_this_config_selected_not_the_registrys_total(
+    tmp_path: Path,
+) -> None:
+    """The style count is a prediction of the run, so it has to see `styles.enabled` (FR-314).
+
+    A config that curated its rotation down to two would otherwise be advertised as an eight-style
+    run at the exact moment the operator is choosing between configs — the row would be predicting
+    a rotation that cannot happen. Two real, carousel-affine keys, so the row stays runnable and
+    the only difference from its uncurated sibling is the number.
+    """
+    configs = _configs(tmp_path, curated=_CURATED, ready=_READY)
+
+    curated, uncurated = _facts(configs, "curated"), _facts(configs, "ready")
+
+    assert curated[4] == "2 styles"
+    assert int(uncurated[4].split()[0]) > 2, "the same registry, uncurated, is the whole pool"
+    assert menu._runnable(next(row for row in list_configs(configs) if row.name == "curated"))
+
+
 def test_fr295_a_registry_that_will_not_serve_this_run_reads_NO_STYLES_at_pick_time(
     tmp_path: Path,
 ) -> None:
@@ -535,16 +568,49 @@ def test_fr284_a_zero_monitor_config_is_flagged_not_runnable_and_action_4_is_off
 
 def test_fr300_brand_and_ratio_are_SHOWN_at_confirm_and_asked_nowhere(tmp_path: Path) -> None:
     """FR-300d: the operator's direction was fewer inputs, so the brand system, its ratio and its
-    mode are run-wide config facts printed once — not three more prompts."""
+    mode are run-wide config facts printed once — not three more prompts.
+
+    FR-318 (v2.1.3/D48) made `branding.enabled` default to FALSE, and the confirm step REPLACES
+    the brand line rather than annotating it: this is the last screen before money moves, and
+    "brand hypelead · ratio 0.50" over a run that will sign nothing is a false statement about the
+    creatives the operator is about to buy. The key name is printed because it is the cure.
+    """
     configs = _configs(tmp_path, ready=_READY)
     wizard = _wizard()
 
     result = run_menu(cli.Options(), console=wizard.console, configs_dir=configs)
 
     assert result is not None
+    line = next(line for line in wizard.printed if "branding:" in line)
+    assert line.strip() == "branding: off (branding.enabled: false) · no wordmark on any creative"
+    assert len(line) <= WIDTH
+    assert not any("brand hypelead" in printed for printed in wizard.printed), \
+        "an unsigned run may not name a brand at the gate (FR-318)"
+    assert not any("brand" in question.lower() or "ratio" in question.lower()
+                   for question in wizard.asked)
+
+
+def test_fr318_switching_branding_on_brings_the_brand_ratio_and_mode_line_back(
+    tmp_path: Path,
+) -> None:
+    """The other state of the same switch: with `branding.enabled: true` the confirm step prints
+    FR-300d's original brand/ratio/mode fact, because now it is true again.
+
+    Both halves are pinned deliberately — a switch tested in one state only is a switch that can
+    silently become a constant, and the fact this line states is the one an operator uses to
+    decide whether the batch they are buying will carry their wordmark.
+    """
+    configs = _configs(tmp_path, ready=_READY.replace("  brand: hypelead\n",
+                                                      "  brand: hypelead\n  enabled: true\n"))
+    wizard = _wizard()
+
+    result = run_menu(cli.Options(), console=wizard.console, configs_dir=configs)
+
+    assert result is not None and result.config.branding.enabled is True
     line = next(line for line in wizard.printed if "brand hypelead" in line)
     assert line.strip() == "brand hypelead · ratio 0.50 · overlay · config, not asked"
     assert len(line) <= WIDTH
+    assert not any("branding: off" in printed for printed in wizard.printed)
     assert not any("brand" in question.lower() or "ratio" in question.lower()
                    for question in wizard.asked)
 

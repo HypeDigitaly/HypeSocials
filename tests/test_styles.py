@@ -28,7 +28,7 @@ import pytest
 import yaml
 
 from hypesocials import styles
-from hypesocials.config import BrandingConfig, Config, RunConfig
+from hypesocials.config import BrandingConfig, Config, RunConfig, StylesConfig
 from hypesocials.generate import refs as refs_module
 from hypesocials.models import LayoutZone, MetaStyle, PlanEntry
 from hypesocials.styles import StyleRegistry, StyleRegistryError
@@ -58,9 +58,11 @@ def _registry(*entries: MetaStyle, origin: str = "prompts/styles.yaml") -> Style
                          content_hash="0123456789ab")
 
 
-def _config(*, brand: str = "hypedigitaly", formats: dict[str, int] | None = None) -> Config:
+def _config(*, brand: str = "hypedigitaly", formats: dict[str, int] | None = None,
+            enabled: list[str] | None = None) -> Config:
     return Config(run=RunConfig(formats=formats or {"image": 4, "carousel": 2, "reel": 0}),
-                  branding=BrandingConfig(brand=brand))
+                  branding=BrandingConfig(brand=brand),
+                  styles=StylesConfig(enabled=list(enabled or [])))
 
 
 def _entry(order: int, fmt: str = "image") -> PlanEntry:
@@ -459,6 +461,153 @@ def test_an_empty_pool_raises_rather_than_assigning_nothing() -> None:
         styles.assign_styles(_entries([0]), reg, "hypedigitaly")
 
 
+# ---------------------------------------------------- FR-314: the operator's style selection
+#
+# `styles.enabled` is a SELECTOR over the registry, never registry content (D47/D-E). Everything
+# below is about that distinction holding: the selector narrows the pool the rotation draws on and
+# changes nothing else — not the file, not the order, not the determinism, not what a style says.
+
+
+def test_fr314_an_empty_selection_is_every_style_and_assigns_exactly_what_it_did_before() -> None:
+    """The compatibility clause, pinned as an equality rather than described: `enabled=[]` (the
+    shipped default, and what every pre-FR-314 config means) must produce byte-identical
+    assignments to the call that had no selector at all — otherwise the key's default would be a
+    silent behaviour change for every existing config."""
+    reg = _registry(_style("s0"), _style("s1"), _style("s2"))
+    without, empty, twice = _entries(range(6)), _entries(range(6)), _entries(range(6))
+
+    styles.assign_styles(without, reg, "hypedigitaly")
+    styles.assign_styles(empty, reg, "hypedigitaly", enabled=[])
+    styles.assign_styles(twice, reg, "hypedigitaly", enabled=[])
+    styles.assign_styles(twice, reg, "hypedigitaly", enabled=[])  # still idempotent
+
+    assert _keys(without) == ["s0", "s1", "s2", "s0", "s1", "s2"]
+    assert _keys(empty) == _keys(twice) == _keys(without)
+    assert styles.validate(reg, _config(enabled=[])) == ([], [])
+
+
+def test_fr314_a_two_key_selection_assigns_only_those_two_and_stays_deterministic() -> None:
+    """The selector's actual job: a batch wearing only the looks the operator picked.
+
+    The reduced pool keeps FILE order, so the rotation over it is the same order-indexed scan —
+    which is what makes a curated run as re-previewable as an uncurated one. `s2` is named first
+    in the selection on purpose: the list is a membership test, not a running order, and letting a
+    typed order re-sequence the registry would make the same selection two different rotations.
+    """
+    reg = _registry(_style("s0"), _style("s1"), _style("s2"), _style("s3"))
+    first, second = _entries(range(6)), _entries(range(6))
+
+    styles.assign_styles(first, reg, "hypedigitaly", enabled=["s2", "s1"])
+    styles.assign_styles(second, reg, "hypedigitaly", enabled=["s2", "s1"])
+
+    assert set(_keys(first)) == {"s1", "s2"}, "nothing outside the selection may be assigned"
+    assert _keys(first) == ["s1", "s2", "s1", "s2", "s1", "s2"]  # file order, not typed order
+    assert _keys(first) == _keys(second)
+
+
+def test_fr314_the_selection_composes_with_the_brand_filter_rather_than_replacing_it() -> None:
+    """Order of operations from the amendment: brand first (B3), then the selection, then FR-291's
+    format scan. Selecting the other brand's style must not smuggle it into the rotation — a
+    wrong-brand post is the one output no later step can rescue."""
+    reg = _registry(_style("neutral"), _style("lead", brand_affinity=["hypelead"]))
+
+    assert [style.key for style in styles.usable_styles(reg, "hypedigitaly", ["neutral", "lead"])] \
+        == ["neutral"]
+    assert [style.key for style in styles.usable_styles(reg, "hypelead", ["lead"])] == ["lead"]
+    assert styles.selected(_style("neutral"), []) is True  # empty selection = everything
+    assert styles.selected(_style("neutral"), ["other"]) is False
+
+    entries = _entries(range(4))
+    styles.assign_styles(entries, reg, "hypedigitaly", enabled=["neutral", "lead"])
+    assert _keys(entries) == ["neutral"] * 4
+
+
+def test_fr314_an_unknown_key_in_the_selection_is_an_error_naming_it_and_the_real_keys() -> None:
+    """A mistyped selector is refused, never silently skipped: skipping it would thin the rotation
+    by an amount the operator cannot see, and "that key is spelled wrong" would be indistinguishable
+    from "that style is not brand-affine". The line carries the registry's actual keys because an
+    override `prompts_dir` (FR-174) may define a completely different set from the shipped tree."""
+    reg = _registry(_style("alpha"), _style("beta"), _style("gamma"))
+
+    errors, _ = styles.validate(reg, _config(enabled=["alpha", "betta", "delta"]))
+
+    unknown = [error for error in errors if "styles.enabled" in error]
+    assert len(unknown) == 1, errors
+    assert "betta" in unknown[0] and "delta" in unknown[0]
+    assert "alpha" in unknown[0] and "beta" in unknown[0] and "gamma" in unknown[0]
+    assert "FR-314" in unknown[0]
+    # ... and a selection that is entirely real says nothing at all.
+    assert styles.validate(reg, _config(enabled=["alpha", "gamma"]))[0] == []
+
+
+def test_fr314_a_wholly_unknown_selection_reports_the_typo_once_and_not_its_consequences() -> None:
+    """One mistyped `--styles` is ONE defect. Its empty pool and its empty per-format rotations are
+    consequences of it, and printing all three would bury the only sentence that names the typo
+    under two that merely repeat it. The moment any named key is real the selection is a genuine
+    (if wrong) choice again, and the pool findings come back — they are then telling the operator
+    something the unknown-key line does not."""
+    reg = _registry(_style("alpha", format_affinity=["image"]), _style("beta"))
+
+    only_typos, _ = styles.validate(reg, _config(enabled=["alfa"]))
+    assert len(only_typos) == 1 and "alfa" in only_typos[0], only_typos
+
+    mixed, _ = styles.validate(reg, _config(formats={"image": 0, "carousel": 0, "reel": 2},
+                                            enabled=["alpha", "alfa"]))
+    assert len(mixed) == 2, mixed  # the typo, AND the reel rotation the real key cannot serve
+    assert any("alfa" in error for error in mixed)
+    assert any("reel" in error for error in mixed)
+
+
+def test_fr314_a_selection_that_empties_a_formats_pool_refuses_and_blames_itself() -> None:
+    """FR-314's own refusal, and the reason it is worded separately from FR-295's: the registry is
+    fine, the brand is fine, and the cure is a config line the operator just typed. The message has
+    to say WHICH filter emptied the pool and name the keys that would fill it again — "no style is
+    affine to carousel" would send someone to author a style that already exists."""
+    reg = _registry(_style("shot", format_affinity=["image"]),
+                    _style("deck", format_affinity=["carousel"]),
+                    _style("both", format_affinity=["image", "carousel"]))
+    config = _config(formats={"image": 4, "carousel": 2, "reel": 0}, enabled=["shot"])
+
+    errors, _ = styles.validate(reg, config)
+
+    carousel = [error for error in errors if "carousel" in error]
+    assert len(carousel) == 1, errors
+    assert "styles.enabled" in carousel[0] and "shot" in carousel[0]
+    assert "deck" in carousel[0] and "both" in carousel[0]  # what to add back
+    assert "run.formats.carousel" in carousel[0]  # FR-69: name the other line to edit
+    # Widening the selection cures it without touching the registry.
+    assert styles.validate(reg, _config(formats={"image": 4, "carousel": 2, "reel": 0},
+                                        enabled=["shot", "deck"]))[0] == []
+
+
+def test_fr314_a_selection_that_empties_the_whole_pool_names_what_the_brand_could_have_worn(
+) -> None:
+    """The pool-level twin of the format refusal. `assign_styles` must refuse the same run for the
+    same reason if a caller ever skips validation — pre-flight is the door, not the only lock."""
+    reg = _registry(_style("neutral"), _style("lead", brand_affinity=["hypelead"]))
+
+    errors, _ = styles.validate(reg, _config(brand="hypedigitaly", enabled=["lead"]))
+
+    assert any("styles.enabled" in error and "neutral" in error for error in errors), errors
+
+    with pytest.raises(StyleRegistryError) as caught:
+        styles.assign_styles(_entries([0]), reg, "hypedigitaly", enabled=["lead"])
+    assert "styles.enabled" in str(caught.value) and "FR-314" in str(caught.value)
+
+
+def test_fr314_the_thin_pool_warning_counts_the_selected_styles_not_the_authored_ones() -> None:
+    """FR-291's "<3 usable styles repeats the same look" warning is about what the run will WEAR,
+    so it has to see the selection: an eight-style registry narrowed to two is a two-style
+    rotation, and the operator hears it before the batch, not after."""
+    reg = _registry(_style("a"), _style("b"), _style("c"), _style("d"))
+
+    assert styles.validate(reg, _config())[1] == []  # four usable, nothing to say
+
+    errors, warnings = styles.validate(reg, _config(enabled=["a", "b"]))
+    assert errors == []
+    assert len(warnings) == 1 and "styles.enabled" in warnings[0], warnings
+
+
 # --------------------------------------------------------------------------- assign_branding
 
 
@@ -523,6 +672,173 @@ def test_a_trim_never_re_brands_a_creative_that_survived_it() -> None:
     # orders satisfy the predicate. Asserting a bare count over delivered meta.yaml would fail
     # here for the right reason, which is why §1.4 asserts the predicate instead.
     assert sum(entry.branded for entry in survivors) == 3 != math.floor(len(survivors) * 0.5)
+
+
+# ------------------------------------------- FR-318: the branding master switch (v2.1.3, D48)
+#
+# `branding.enabled` ships FALSE (operator decision, 2026-08-13). Two things narrow when it is off
+# and exactly two: `assign_branding` marks nothing, and `brand_ok` drops every `brand_slot: true`
+# house-card style from the pool — a style whose whole grammar is a logo lockup and a CTA bar would
+# otherwise render the brand's furniture around an empty slot, which is both M11's hallucination
+# site and a self-branded creative on a run that asked for none.
+#
+# What does NOT narrow is the safety half. `branding.competitors` and every strip built on it
+# (FR-294/FR-312) are about what may never appear in OUR frame; the switch is about how we sign it.
+# That carve-out is pinned explicitly below, in both states, because it is the one place where
+# "turn branding off" could be misread as "turn the blocklist off".
+
+
+@pytest.mark.parametrize("ratio", [0.0, 0.3, 0.5, 1.0])
+def test_fr318_with_the_switch_off_no_entry_is_branded_whatever_the_ratio_says(
+    ratio: float,
+) -> None:
+    """The switch short-circuits the floor predicate entirely, and it WRITES `False` rather than
+    skipping the loop.
+
+    `entry.branded` has to be a stated fact on every entry: `refs.wordmark` and the render prompt's
+    branding block both read it, and an unwritten value left over from an earlier pass would sign a
+    creative on a run that asked for none.
+    """
+    entries = _entries(range(10))
+    for entry in entries:
+        entry.branded = True  # a stale value from an earlier pass
+
+    styles.assign_branding(entries, ratio, enabled=False)
+
+    assert [entry.branded for entry in entries] == [False] * 10
+    assert all(entry.branded is False for entry in entries), "written, not merely falsy"
+
+
+def test_fr318_switching_the_branding_on_restores_the_floor_predicate_exactly() -> None:
+    """The default of `enabled=True` on the function is what keeps every pre-FR-318 caller and
+    every test above this line meaningful — and the ON state has to be the SAME rotation it always
+    was, not a re-derived one, or a config edit would move the wordmark between two runs of the
+    same plan."""
+    off, on = _entries(range(8)), _entries(range(8))
+
+    styles.assign_branding(off, 0.5, enabled=False)
+    styles.assign_branding(on, 0.5, enabled=True)
+
+    assert sum(entry.branded for entry in off) == 0
+    assert sum(entry.branded for entry in on) == math.floor(8 * 0.5) == 4
+    for entry in on:
+        assert entry.branded is (math.floor((entry.order + 1) * 0.5)
+                                 > math.floor(entry.order * 0.5))
+
+
+def test_fr318_a_house_card_style_leaves_the_pool_while_nothing_is_being_signed() -> None:
+    """`brand_slot: true` means "this style IS a brand's own house card" — its layout is a logo
+    lockup and its whole grammar is the signature.
+
+    The drop happens in `brand_ok`, one filter, so the menu's count, the pre-flight refusal, the
+    preview and the paid run all narrow identically. A second implementation at assignment time
+    would let the picker promise eight styles for a run that can wear seven.
+    """
+    house = _style("hypelead-brand-card", brand_affinity=["hypelead"], brand_slot=True)
+    neutral = _style("photoreal-ambient-caption")
+    registry = _registry(neutral, house)
+
+    assert styles.brand_ok(house, "hypelead", branding_enabled=True) is True
+    assert styles.brand_ok(house, "hypelead", branding_enabled=False) is False
+    assert styles.brand_ok(neutral, "hypelead", branding_enabled=False) is True, \
+        "a brand-neutral style is unaffected — the switch drops house cards, not the pool"
+
+    off = styles.usable_styles(registry, "hypelead", branding_enabled=False)
+    on = styles.usable_styles(registry, "hypelead", branding_enabled=True)
+    assert [style.key for style in off] == ["photoreal-ambient-caption"]
+    assert [style.key for style in on] == ["photoreal-ambient-caption", "hypelead-brand-card"], \
+        "FILE order, both ways — the rotation depends on it"
+
+
+def test_fr318_the_house_card_is_never_assigned_while_the_switch_is_off() -> None:
+    """The pool narrowing has to reach ASSIGNMENT, not just the count the picker prints. A run
+    that assigned the brand card anyway would render a logo lockup with `wordmark=""`, which is
+    the exact frame M11 exists to prevent: a described-but-unfilled signature zone."""
+    house = _style("hypelead-brand-card", brand_affinity=["hypelead"], brand_slot=True)
+    registry = _registry(_style("neutral-a"), house, _style("neutral-b"))
+    off, on = _entries(range(6)), _entries(range(6))
+
+    styles.assign_styles(off, registry, "hypelead", branding_enabled=False)
+    styles.assign_styles(on, registry, "hypelead", branding_enabled=True)
+
+    assert "hypelead-brand-card" not in _keys(off)
+    assert set(_keys(off)) == {"neutral-a", "neutral-b"}
+    assert "hypelead-brand-card" in _keys(on), "the card is back the moment signing is back"
+
+
+def test_fr318_a_pool_emptied_by_the_switch_refuses_at_preflight_and_names_the_switch() -> None:
+    """FR-295's refusal SHAPE is unchanged — exit 2 at $0 — and only the cure differs.
+
+    Naming the wrong dial sends the operator to edit `brand_affinity` in a registry that was never
+    the problem, so the line says `branding.enabled is false` and lists the house card(s) it
+    removed. The switch is deliberately named only when it REALLY removed something: a registry
+    with no house cards at all would otherwise be told to flip a dial that changes nothing.
+    """
+    only_house = _registry(_style("hypelead-brand-card", brand_affinity=["hypelead"],
+                                  brand_slot=True))
+    config = _config(brand="hypelead")
+
+    config.branding.enabled = False
+    errors, _ = styles.validate(only_house, config)
+    assert errors, "an empty pool is a refusal, not a warning (FR-295)"
+    assert "branding.enabled is false" in errors[0], errors
+    assert "hypelead-brand-card" in errors[0] and "FR-318" in errors[0]
+
+    config.branding.enabled = True
+    assert styles.validate(only_house, config)[0] == [], "switch it on and the pool is fine"
+
+
+def test_fr318_a_pool_emptied_by_the_brand_alone_does_not_blame_the_switch() -> None:
+    """The complement, and the reason the naming is conditional: a registry of the OTHER brand's
+    styles is empty under this brand whether anything is being signed or not. Telling the operator
+    to flip `branding.enabled` there would send them to change a setting that cannot help."""
+    other_brand = _registry(_style("hd-only", brand_affinity=["hypedigitaly"]))
+    config = _config(brand="hypelead")
+    config.branding.enabled = False
+
+    errors, _ = styles.validate(other_brand, config)
+
+    assert errors and "brand_affinity" in errors[0]
+    assert not any("branding.enabled" in line for line in errors), \
+        "the switch removed nothing here, so it is named nowhere"
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_fr318_the_competitor_blocklist_is_identical_in_both_states(enabled: bool) -> None:
+    """THE safety carve-out, pinned in both states because it is the misreading that would hurt.
+
+    "Turn branding off" means "do not sign our creatives"; it has never meant "stop filtering
+    competitors". `branding.competitors` is FR-294/FR-312's layer-1 blocklist — a fact about what
+    may never appear in our frame — and nothing in `styles.py` reads `enabled` on its way to it.
+    An operator disabling self-branding to try a neutral batch must not thereby ship a competitor's
+    brand name on it.
+    """
+    registry = _registry(_style("neutral-a"), _style("neutral-b"), _style("neutral-c"))
+    blocklist = ["Zzqcorp", "Jasper"]
+
+    def graded(competitors: list[str]) -> tuple[list[str], list[str], list[str]]:
+        config = _config(brand="hypelead")
+        config.branding.enabled = enabled
+        config.branding.competitors = list(competitors)
+        entries = _entries(range(6))
+        styles.assign_styles(entries, registry, config.branding.brand,
+                             branding_enabled=config.branding.enabled)
+        styles.assign_branding(entries, config.branding.brand_ratio,
+                               enabled=config.branding.enabled)
+        errors, warnings = styles.validate(registry, config)
+        assert config.branding.competitors == list(competitors), "nothing here edits the list"
+        return _keys(entries), errors, warnings
+
+    # The blocklist changes NOTHING about the pool, the rotation or the refusals — in either
+    # switch state — because it is not a fact about styles at all. That is the separation: this
+    # module owns which look a creative wears and whether it is signed; §1.5's strip layers own
+    # which words may appear on it, and they are consulted where text is assembled, not here.
+    assert graded(blocklist) == graded([])
+    # And the switch really is doing its one job in this run, so the equality above is not
+    # holding because nothing was exercised.
+    entries = _entries(range(6))
+    styles.assign_branding(entries, 0.5, enabled=enabled)
+    assert any(entry.branded for entry in entries) is enabled
 
 
 # ------------------------------------------------------------------ the retired picture channel

@@ -14,9 +14,9 @@ NORMAL case, not a degradation. The only images a job may carry are (a) a brief'
 attached here, and (b) chained artifacts a format module makes itself and passes in beside these —
 the carousel anchor slide (FR-95) and the reel's seed frame (FR-24).
 
-Public API: `await attach(entry, env, folder)` · `role_lines(refs)` · `provenance(refs)` ·
-`style_of(entry, env)` · `branding_block(entry, env, style)` · `wordmark(entry, env)` ·
-`reset_uploads()` · `Reference` · `UploadMemo`.
+Public API: `await attach(entry, env, folder)` · `await upload_local(path, env)` · `role_lines(refs)`
+· `provenance(refs)` · `style_of(entry, env)` · `branding_block(entry, env, style)` ·
+`wordmark(entry, env)` · `reset_uploads()` · `Reference` · `UploadMemo`.
 
 Invariants:
 - **Only `brief`-kinded local files are attached.** `env.local_refs` is the runner's brief-photo
@@ -32,10 +32,16 @@ Invariants:
   shipped photos and not one of them could be attached (FR-18's "an input, not a prerequisite").
   A style-driven creative that attaches nothing is silent, because it has lost nothing.
 
+- **The source store's ONE sanctioned upload** (FR-244 as amended v2.1.3/D48). `output/<run>/source/`
+  is analysis-and-display-only, with a single door: a small logo patch cropped from a source slide
+  by `sources.logo_crops` (FR-315), which rides as a render reference because a mark named in words
+  alone comes back hallucinated. `upload_local()` is that door and it is guarded — a path inside a
+  `source/` tree that is not under its `marks/` subfolder is refused, not uploaded. Full slides,
+  panels, any other crop and every Virlo CDN URL stay forbidden.
+
 Do not: select which topic a creative quotes (`copywrite` owns that), price anything, write the
 branding block's words (`prompts_engine` owns the wording — §1.4 module split; this module only
-decides WHICH creative gets one), or upload anything out of the run's `source/` folder (D46's
-carve-out boundary: no Virlo byte or URL may reach a render payload).
+decides WHICH creative gets one), or upload anything else out of the run's `source/` folder.
 """
 
 from __future__ import annotations
@@ -65,6 +71,13 @@ UploadMemo = dict[Path, str]
 #: never a picture to introduce.
 BRIEF_ROLE = ("brief subject — this product/object IS the subject; reproduce it faithfully; "
               "contribute style only where it does not alter the subject; no added text or logo")
+
+#: The source store's folder names, mirrored from `outputs.packager.SOURCE_DIR` and
+#: `sources.logo_crops.MARKS_DIR` rather than imported: `generate` depends on neither package
+#: today, and a boundary CHECK is not worth inverting the dependency graph for. Two literals, one
+#: rule — inside a `source/` tree, only what sits under `marks/` may be uploaded (FR-244/D48).
+_SOURCE_SEGMENT = "source"
+_MARKS_SEGMENT = "marks"
 
 #: run directory -> that run's `UploadMemo`. Run-scoped by construction: every run gets its own
 #: timestamped `run_dir`, so no URL can survive into a later run, which is the whole point of the
@@ -197,11 +210,11 @@ async def attach(entry: PlanEntry, env: Env, folder: Any) -> list[Reference]:
     # took the style's place, so the line and the meta.yaml field say the same word.
     label = style.key if style is not None else (
         "brief_override" if _overridden(entry, env) else entry.style_key or "")
-    memo = _MEMOS.setdefault(str(getattr(env, "run_dir", "")), {})
+    memo = _memo(env)
     wanted = _wanted(entry, env)
     refs: list[Reference] = []
     for path in wanted:
-        url = await _upload(path, memo, entry, env)
+        url = await _upload(path, memo, entry.asset_id, env)
         if url:
             refs.append(Reference(url, BRIEF_ROLE, kind="brief"))
     if wanted and not refs:
@@ -255,7 +268,58 @@ def _wanted(entry: PlanEntry, env: Env) -> list[Path]:
     return wanted[:_ceiling(env)]
 
 
-async def _upload(path: Path, memo: UploadMemo, entry: PlanEntry, env: Env) -> str:
+async def upload_local(path: str | Path, env: Env, *, label: str = "") -> str:
+    """A local file's Kie URL, uploaded at most once per run. `""` when it could not be (FR-244).
+
+    The public seam for the pixel references this module does not assemble itself — today, FR-315's
+    cropped logo patches, which a format module cuts per deck and attaches per slide. It shares
+    `attach()`'s memo by construction, so a patch used on eight slides of a carousel is ONE upload
+    (FR-200/FR-244), and it shares its posture: a failed upload is one fewer reference, never a
+    failed job, so the answer is `""` plus a warned line rather than an exception.
+
+    Args:
+        path: the file to upload. It must be a real local file the run produced or the operator
+            supplied — inside a `source/` tree, only a patch under `marks/` is sanctioned, and
+            anything else there is refused unsent (D46 as amended by D48).
+        env: the run environment; supplies `run_dir` (which memo) and `log` (where a failure goes).
+        label: what to call this upload in the log — an `asset_id` when a creative asked for it.
+            Defaults to the file's own name, which is enough to identify a patch.
+
+    Returns:
+        The Kie URL, or `""`. Callers treat `""` as "this reference does not exist" and proceed;
+        for a logo patch that is FR-315d's documented fallback (render the mark from its name and
+        its written description), not a degradation of the creative.
+    """
+    target = Path(path)
+    name = label or target.name
+    if not _sanctioned(target):
+        env.log.warn("reference_source_store_refused",
+                     f"{name}: {target.name} sits in the run's source store outside its "
+                     f"{_MARKS_SEGMENT}/ folder; only cropped logo patches may be uploaded from "
+                     "there (FR-244/FR-315) — refused, nothing was sent",
+                     asset_id=name, reference=target.name)
+        return ""
+    return await _upload(target, _memo(env), name, env)
+
+
+def _sanctioned(path: Path) -> bool:
+    """May this local file be uploaded at all? (FR-244's amended carve-out, the one hard gate.)
+
+    Everything outside a `source/` tree is ordinary — a brief photo, a rendered artifact — and
+    passes. Inside one, only a file under `marks/` passes, because that is where `logo_crops`
+    writes the patches and nothing else is sanctioned. The check is on the PATH, not on the bytes,
+    so a caller cannot smuggle a full slide through by renaming its variable.
+    """
+    parts = {part.lower() for part in path.parts}
+    return _SOURCE_SEGMENT not in parts or _MARKS_SEGMENT in parts
+
+
+def _memo(env: Env) -> UploadMemo:
+    """This run's upload memo, created on first use and thrown away with the run (FR-200)."""
+    return _MEMOS.setdefault(str(getattr(env, "run_dir", "")), {})
+
+
+async def _upload(path: Path, memo: UploadMemo, label: str, env: Env) -> str:
     """This file's Kie URL, uploaded at most once per run (FR-200). `""` when the upload failed.
 
     Only successes are memoized: a file that failed once may be a transient upload error, and one
@@ -267,9 +331,9 @@ async def _upload(path: Path, memo: UploadMemo, entry: PlanEntry, env: Env) -> s
         memo[path] = url = await render.upload_file(path)
     except Exception as exc:  # noqa: BLE001 — a failed upload is one fewer reference, never a job
         env.log.warn("reference_upload_failed",
-                     f"{entry.asset_id}: {path.name} could not be uploaded ({exc}); the job "
+                     f"{label}: {path.name} could not be uploaded ({exc}); the job "
                      "proceeds with its remaining references (FR-200)",
-                     asset_id=entry.asset_id, reference=path.name)
+                     asset_id=label, reference=path.name)
         return ""
     return url
 
@@ -297,4 +361,4 @@ def _ceiling(env: Env) -> int:
 
 
 __all__ = ["BRIEF_ROLE", "Reference", "UploadMemo", "attach", "branding_block", "provenance",
-           "reset_uploads", "role_lines", "style_of", "wordmark"]
+           "reset_uploads", "role_lines", "style_of", "upload_local", "wordmark"]

@@ -497,6 +497,83 @@ def test_fr73_an_unknown_degradation_tag_from_an_older_meta_is_shown_not_hidden(
         "known tags in enum order, then the unknown one — nothing dropped"
 
 
+def test_fr321_the_page_header_names_a_deck_that_shipped_short(tmp_path: Path) -> None:
+    """FR-321: a partial deck is counted INSIDE `delivered` — it did ship — and then named.
+
+    This is the opening line of the page the operator reviews the run on, so "delivered 2 of 2"
+    over a deck missing a slide is the same silence the spend table's `7/8` removed. The
+    predicate is the pair `carousel.package()` writes, read the same way the money module reads
+    it, because two implementations of "is this deck short" are free to disagree.
+    """
+    deck(tmp_path, asset_id="0001_carousel_linkedin", slide_count=2, slides_ordered=3)
+    asset(tmp_path, meta(asset_id="0002_image_linkedin", creative_format="image",
+                         actual_cost_usd=0.04), media=("image.jpg",))
+
+    html_text = page(tmp_path)
+
+    assert "delivered 2 of 2 (1 partial)" in html_text
+
+
+def test_fr321_a_whole_deck_and_a_pre_requirement_meta_leave_the_header_unqualified(
+    tmp_path: Path,
+) -> None:
+    """The silence has to be the default, twice over.
+
+    A deck that delivered everything it ordered is not partial, and a `meta.yaml` written before
+    FR-321 existed carries no `slides_ordered` and therefore makes no claim either way — guessing
+    one from `missing_slide_numbers` here would be a second implementation of the predicate,
+    disagreeing with the spend table's on exactly the runs nobody re-checks.
+    """
+    deck(tmp_path, asset_id="0001_carousel_linkedin", slide_count=3, slides_ordered=3)
+    deck(tmp_path, asset_id="0002_carousel_linkedin", slide_count=2)  # no `slides_ordered` key
+
+    html_text = page(tmp_path)
+
+    assert "delivered 2 of 2 · " in html_text
+    assert "partial" not in html_text
+
+
+def test_fr318_the_brand_chip_appears_on_a_signed_creative_and_nowhere_else(
+    tmp_path: Path,
+) -> None:
+    """FR-318: `brand:` is a claim about the CREATIVE, so it may only appear where the wordmark did.
+
+    `meta.brand` records which brand's rotation and style pool this run drew on — it is written on
+    every creative, signed or not, and it stays in meta.yaml as provenance. The gallery is a review
+    surface, not provenance: waving "brand: hypelead" at an operator who just switched branding
+    off (now the default) says the batch is self-branded when nothing on it is. An unsigned card
+    therefore states only `unsigned`.
+    """
+    deck(tmp_path, asset_id="0001_carousel_linkedin", brand="hypelead", branded=False)
+
+    html_text = page(tmp_path)
+
+    chips = re.findall(r'<span class="badge">([^<]+)</span>', html_text)
+    assert "unsigned" in chips
+    assert "signed" not in chips
+    assert not any(chip.startswith("brand:") for chip in chips), \
+        "no brand name on a creative that carries no wordmark"
+    assert "brand: hypelead" not in html_text
+
+
+def test_fr318_a_signed_creative_still_names_the_brand_it_was_signed_with(
+    tmp_path: Path,
+) -> None:
+    """The complement: a creative that DID carry the wordmark names the brand beside `signed`.
+
+    Both chips, in that order, because "signed" alone leaves the operator of a two-brand config
+    with no way to tell which wordmark is on the picture in front of them.
+    """
+    deck(tmp_path, brand="hypelead", branded=True)
+
+    html_text = page(tmp_path)
+
+    chips = re.findall(r'<span class="badge">([^<]+)</span>', html_text)
+    assert "brand: hypelead" in chips and "signed" in chips
+    assert chips.index("brand: hypelead") + 1 == chips.index("signed")
+    assert "unsigned" not in chips
+
+
 def test_fr298_the_receipt_names_the_post_and_reads_the_slots_in_reading_order(
     tmp_path: Path,
 ) -> None:

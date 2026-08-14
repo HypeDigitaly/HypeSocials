@@ -56,6 +56,14 @@ _LANGUAGES = ("en", "cs")  # D6
 #: itself and still spends on its siblings (FR-51/69/137).
 PLATFORMS = ("linkedin", "instagram", "tiktok")
 _REEL_PLATFORMS = ("tiktok",)  # 30 §2: reel is allowlisted on TikTok only by default
+#: Each platform's own carousel HARD MAX — what the destination accepts, not what we prefer to
+#: ship (operator decision 2026-08-13). A bound deck is its source post's panel count clamped into
+#: `[MIN_DECK_SLIDES, this]`, so lowering one of these TRUNCATES real decks; it is not a target.
+#: Instagram's 10 is the platform's own published ceiling and must not be raised.
+_PLATFORM_SLIDE_MAX: dict[str, int] = {"linkedin": 20, "instagram": 10, "tiktok": 20}
+#: The max for a platform nobody has published a number for. Instagram's ceiling, because it is
+#: the tightest of the three and therefore the one that fits anywhere.
+_DEFAULT_SLIDE_MAX = 10
 #: `Config` fields that come from the filesystem, not from YAML — writing them in a file is as
 #: meaningless as any other unknown key.
 _META = frozenset({"name", "path", "description", "defaults_applied", "warnings"})
@@ -108,7 +116,12 @@ class RunConfig:
     languages: dict[str, str] = field(
         default_factory=lambda: {"linkedin": "en", "instagram": "en", "tiktok": "en"})
     notion_influence: Literal["off", "copy", "full"] = "off"
-    vision_check: bool = False
+    # `true` since 2026-08-13 (operator decision, was `false`): run 20260813_143420_oyo4 shipped
+    # with NO post-render verification at all, so nothing noticed the truncated decks or the lost
+    # slides until the audit. The check is the only thing between a paid render and the gallery
+    # that reads what actually came back; it is paid LLM spend, so it is estimated before the
+    # Confirm gate (`budget._entry_lines`) and never runs ahead of it.
+    vision_check: bool = True
     spend_cap_usd: float = 10.00
     # 30 since 2026-08-13 (D46/FR-307, was 7). The window is the no-repeat memory, and post-pivot
     # the fetch reaches back `sources.max_post_age_days` (30) — a 7-day memory over a 30-day fetch
@@ -131,9 +144,11 @@ class RunConfig:
     onimage_text_language: dict[str, str] = field(default_factory=dict)
     text_budgets: TextBudgets = field(default_factory=TextBudgets)
     # Soft ceiling, monotonic clock (FR-108/243). DEPENDS ON models.video_job_timeout_s: a reel
-    # reaches its own timeout only while this exceeds it plus the analyze/copy/image stages. 25
-    # stands because the default ships reels OFF; reel-capable configs use 45 and `_validate` warns.
-    run_deadline_min: int = 25
+    # reaches its own timeout only while this exceeds it plus the analyze/copy/image stages.
+    # Raised 25 → 45 in v2.1.3/D48: with image_job_timeout_s at 600 s and the FR-317 single
+    # resubmit, a 25-minute ceiling would truncate the very delivery guarantee the operator
+    # mandated — the deadline must outlive one worst-case wave plus its resubmit.
+    run_deadline_min: int = 45
 
 
 @dataclass(slots=True)
@@ -178,7 +193,12 @@ class PlatformConfig:
     """One `platforms.<name>` entry; `formats` is the allowlist FR-132 requires."""
 
     formats: list[str] = field(default_factory=lambda: ["image", "carousel"])
-    carousel_slides: int = 5  # FR-257: the ONE slide-count key — deck ceiling AND estimate basis
+    # FR-257 as amended 2026-08-13: the platform's HARD MAX, no longer the deck's target length.
+    # A bound deck renders its source post's own panel count clamped into `[2, this]` (§0.4′/
+    # FR-304); an unbound one uses `plan.DEFAULT_UNBOUND_DECK_SLIDES`, never this. The value is
+    # per-platform — `_default_platform` overrides it from `_PLATFORM_SLIDE_MAX`, and the generic
+    # `_DEFAULT_SLIDE_MAX` stands here for a platform that table has never heard of.
+    carousel_slides: int = _DEFAULT_SLIDE_MAX
     aspect_ratios: dict[str, str] = field(default_factory=dict)  # OVERRIDE only; defaults 10 FR-21
     conventions: dict[str, str] = field(default_factory=dict)  # length/tone/hashtag prompt hints
 
@@ -214,14 +234,18 @@ class ModelsConfig:
 
     analysis: str = "anthropic/claude-sonnet-5"
     copy: str = "openai/gpt-5.6-luna"
-    # FR-280 (amended v2.1.0): the TEXT-TO-IMAGE route is the default now (was
+    # FR-280 (amended v2.1.0, then v2.1.3/D48): the TEXT-TO-IMAGE route is the default now (was
     # `gpt-image-2-image-to-image`). D46 took the style registry's reference images out of every
     # render job, so the common job carries no reference at all and the reference-bearing sibling
     # is reserved for the jobs that genuinely have one — a brief image, a carousel anchor, a reel
-    # seed frame (20 §8c/FR-241). The profile dual-routes either way, so this only decides which
-    # route a REFERENCE-FREE job takes; pointing it at the i2i sibling is what made the first paid
-    # run clone its Inspiration files ~1:1.
+    # seed frame, a cropped logo patch (20 §8c/FR-241). This key overrides the REFERENCE-FREE
+    # route ONLY: until D48 it was the profile's single override and it silently collapsed both
+    # halves onto text-to-image, which accepted anchor-chained references and ignored them.
     image: str = "gpt-image-2-text-to-image"
+    # FR-241/FR-280 (v2.1.3, D48): the reference-BEARING route, its own key precisely so no single
+    # setting can collapse the split again. Empty falls back to the profile's declared
+    # image-to-image route, so a config that never mentions it still routes correctly.
+    image_edit: str = "gpt-image-2-image-to-image"
     video: str = "bytedance/seedance-2-5"
     image_profile: str = "gpt-image-2"  # FR-281 — changes only on a model FAMILY change
     video_profile: str = "seedance-2-5"
@@ -242,7 +266,12 @@ class ModelsConfig:
     max_tokens_floor: dict[str, int] = field(
         default_factory=lambda: {"analysis": 6000, "copy": 1000})
     price_per_unit: PriceTable = field(default_factory=PriceTable)
-    image_job_timeout_s: int = 180
+    # 600 (FR-259 as amended v2.1.3/D48, was 300, was 180): run 20260813_143420_oyo4 lost 11 of 30
+    # image jobs at the 180 s ceiling and 300 s did not clear the tail. A slide's wall clock
+    # includes time queued behind `max_inflight_render_jobs`, not just its own ~90 s render. A
+    # timed-out image job now earns exactly ONE automatic resubmit (FR-317) and a second timeout
+    # is final, so the ceiling covers queue + render and the resubmit covers the outlier.
+    image_job_timeout_s: int = 600
     # 1800 (operator decision 2026-08-10, was 600): W6's run 20260809_221816_0316 failed a Seedance
     # reel at the 600 s ceiling and wasted ~$4.78 — a timed-out job is paid and never resubmitted
     # (20 §8). Live renders measured 302 s and 378 s; 1800 s is headroom, not an expected wait.
@@ -386,8 +415,21 @@ class BrandingConfig:
     `competitors` is the filter's layer-1 blocklist and is deliberately deterministic and
     fail-closed: it applies even when the LLM screen degrades, because "the model was unavailable"
     must never be the reason a competitor's name ships in our pixels (FR-294).
+
+    `enabled` is FR-318's master switch and ships **false** (operator decision, 2026-08-13): while
+    it is off no creative is signed, no branding block reaches a render prompt, no `brand_context`
+    reaches the copy LLM, and a `brand_slot: true` style — a brand's own house card — leaves the
+    rotation pool. The point is a run whose outputs carry zero self-branding.
+
+    **The switch kills SELF-branding only, never safety.** `competitors` and every creator/
+    competitor strip built on it (FR-294/FR-312) stay fully active with `enabled: false` — those
+    exist to keep somebody ELSE's name out of our pixels, which is a rule about what we publish,
+    not about how we sign it. Nothing below this line reads `enabled`.
     """
 
+    #: FR-318 master switch. False (the shipped default) = no wordmark, no branding block, no
+    #: brand facts in the copy call, no brand-slot styles. Never gates `competitors`.
+    enabled: bool = False
     brand: Literal["hypedigitaly", "hypelead"] = "hypedigitaly"
     brand_ratio: float = 0.5  # 0..1 — fraction of creatives signed with the wordmark
     mode: Literal["background_tint", "overlay", "both"] = "overlay"
@@ -396,10 +438,31 @@ class BrandingConfig:
     profiles: dict[str, BrandProfile] = field(default_factory=_default_profiles)
 
 
-# `StylesConfig` (`styles.refs_per_job`) was removed with D46/F3: a meta-style ships no
-# reference images, so there is no window to size. The registry itself was never config
-# (`prompts/styles.yaml`, FR-290); a stale `styles:` block in an operator file now earns the
-# ordinary unknown-key warning and is ignored.
+@dataclass(slots=True)
+class StylesConfig:
+    """`styles:` — a SELECTOR over the meta-style registry, never the registry itself (FR-314).
+
+    The registry stays a prompt artifact (`prompts/styles.yaml`, FR-290): its content — render
+    prompts, palettes, layout zones — is authored there and nowhere else. What lives here is the
+    one thing an operator legitimately decides per RUN rather than per registry: which of the
+    authored looks this run may rotate over. "Curate the colour by curating the styles" (D47/D-G)
+    is the whole reason the key exists; editing a style to change a run would leave the next run
+    changed too.
+
+    `enabled` empty (the default, and the shipped state) means EVERY style is available, so the
+    absence of the key is exactly the pre-FR-314 behaviour rather than a run with no styles at all.
+    A named key that the registry does not define is a pre-flight refusal, not a silent skip
+    (`styles.validate`, FR-314/FR-295) — a typo'd selector that quietly thinned the rotation would
+    be indistinguishable from a deliberate one-style run.
+
+    The FR-314 amendment supersedes the D46/F3 tombstone that stood here (`styles.refs_per_job`,
+    removed when a meta-style stopped shipping reference images). The tombstone's real claim —
+    "the registry is never config" — still holds: this block names keys, it does not carry style
+    content, and nothing in it reaches a render prompt.
+    """
+
+    #: Style keys from `prompts/styles.yaml` this run may assign. Empty = all of them.
+    enabled: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -416,6 +479,7 @@ class Config:
     output: OutputConfig = field(default_factory=OutputConfig)
     niche: NicheConfig = field(default_factory=NicheConfig)
     branding: BrandingConfig = field(default_factory=BrandingConfig)  # FR-292
+    styles: StylesConfig = field(default_factory=StylesConfig)  # FR-314 selector, not the registry
     platforms: dict[str, PlatformConfig] = field(default_factory=dict)
     mcp_servers: McpConfig = field(default_factory=McpConfig)
     briefs_dir: str = "briefs"  # D26/D27; a niche config points this at its own folder
@@ -835,9 +899,17 @@ def _bounded(value: Any, key: str, ctx: _Ctx) -> Any:
 
 
 def _default_platform(name: str) -> PlatformConfig:
-    """30 §2: image + carousel everywhere, reel on TikTok only, 5 slides (FR-132/257)."""
+    """30 §2: image + carousel everywhere, reel on TikTok only, that platform's own slide max.
+
+    The slide number is per-platform for the same reason `formats` is: it is a fact about the
+    PLATFORM (what Instagram will accept), not a project preference. A config that omits the
+    `platforms:` block entirely — `configs/hypedigitaly.yaml` does — lands here for every value,
+    so a flat number here would silently reimpose the 5-slide truncation this key stopped meaning
+    on 2026-08-13.
+    """
     formats = ["image", "carousel", "reel"] if name in _REEL_PLATFORMS else ["image", "carousel"]
-    return PlatformConfig(formats=formats)
+    return PlatformConfig(
+        formats=formats, carousel_slides=_PLATFORM_SLIDE_MAX.get(name, _DEFAULT_SLIDE_MAX))
 
 
 def _build_platforms(raw: Any, active: Sequence[str], ctx: _Ctx) -> dict[str, PlatformConfig]:
@@ -859,6 +931,9 @@ def _build_platforms(raw: Any, active: Sequence[str], ctx: _Ctx) -> dict[str, Pl
         if entry.get("formats") is None:  # the allowlist default is per-platform, not shared
             ctx.defaults.append(f"platforms.{name}.formats")
             entry["formats"] = _default_platform(name).formats
+        if entry.get("carousel_slides") is None:  # likewise per-platform: it is a platform ceiling
+            ctx.defaults.append(f"platforms.{name}.carousel_slides")
+            entry["carousel_slides"] = _default_platform(name).carousel_slides
         built[name] = _build(PlatformConfig, entry, f"platforms.{name}.", ctx)
     return built
 
@@ -952,6 +1027,68 @@ def _validate(cfg: Config, ctx: _Ctx) -> None:
             "abandons the run before a slow reel can reach its own timeout, and that reel is "
             "paid for and never resubmitted; raise run_deadline_min above the job timeout plus "
             "the analyze/copy/image stages")
+    if throughput := carousel_throughput_warning(cfg):
+        ctx.warn(throughput)  # same grade as its reel neighbour above: advisory, never a refusal
+
+
+#: FR-317: an image job may run its timeout TWICE — once as itself, once as its single automatic
+#: resubmit. The wall-clock projection below multiplies by this rather than by a bare 2, so the
+#: day someone changes the resubmit budget there is one number to change here.
+_RESUBMIT_ATTEMPTS = 2
+
+
+def carousel_throughput_warning(cfg: Config) -> str | None:
+    """Advisory: can ONE max-length deck still finish inside the run deadline?
+
+    The sibling check above catches one slow reel outliving the deadline. This one catches the
+    same waste arriving as SLIDE VOLUME, which is what `carousel_slides` becoming a platform hard
+    max (2026-08-13) made possible: a deck that used to be a flat 5 slides can now be 20, and 20
+    image jobs squeezed through `max_inflight_render_jobs` at up to `image_job_timeout_s` apiece
+    is a very different wall clock. A deadline that fires mid-batch abandons renders that are
+    already submitted and therefore already PAID (20 §8, FR-108).
+
+    The projection is ONE deck at the tallest configured max, through the two-wave shape
+    generation actually renders in: the anchor alone (wave 1), then its remaining slides (wave 2),
+    each wave costing the full image timeout — DOUBLED since v2.1.3/D48, because a wave whose
+    slides time out is resubmitted once (FR-317) and the resubmitted attempt may run the timeout
+    again. The worst case a deadline has to survive is therefore two timeouts per wave, not one;
+    a healthy batch still lands in a fraction of it. Deliberately not the whole plan's job count —
+    `carousel: 6` x a 20-slide max at 8 lanes projects past ANY sane deadline, so a plan-wide
+    worst case would fire on every config ever loaded and teach the operator to skip the line.
+    Real Virlo decks are 5–8 panels; the tail beyond that is what this is watching for.
+
+    A nudge to re-check one pairing, not a scheduler model — which is why it warns rather than
+    fails, and stays silent unless the projection genuinely clears the deadline.
+    """
+    decks = cfg.run.formats.get("carousel", 0)
+    if decks <= 0:
+        return None
+    carousel_platforms = [name for name in cfg.run.platforms
+                          if "carousel" in cfg.platform(name).formats]
+    if not carousel_platforms:
+        return None
+    slide_max = max(cfg.platform(name).carousel_slides for name in carousel_platforms)
+    lanes = max(1, cfg.models.max_inflight_render_jobs)
+    # ceil: a part-full wave still costs a whole timeout. +1 for the anchor's own wave-1 render,
+    # which every later slide references and therefore cannot overlap with (FR-25).
+    waves = 1 + -(-max(0, slide_max - 1) // lanes)
+    # Trigger on the SINGLE-attempt worst case: a resubmit (FR-317) is the exception, not the
+    # plan, and a projection that assumes every job times out twice would fire on the shipped
+    # defaults at every load — teaching the operator to skip the line. The sentence still
+    # states the doubled figure so the true ceiling is on record.
+    projected_s = waves * cfg.models.image_job_timeout_s
+    if projected_s <= cfg.run.run_deadline_min * 60:
+        return None
+    doubled_s = projected_s * _RESUBMIT_ATTEMPTS
+    return (f"a full-length {slide_max}-slide deck is ~{waves} render waves at "
+            f"models.max_inflight_render_jobs {lanes}, and at models.image_job_timeout_s "
+            f"{cfg.models.image_job_timeout_s} s that is a worst case of "
+            f"~{projected_s // 60} min for ONE carousel (~{doubled_s // 60} min if every job "
+            f"also burns its FR-317 resubmit) — over run.run_deadline_min "
+            f"{cfg.run.run_deadline_min} min, with {decks} planned. Renders already submitted "
+            f"when the deadline fires are paid for and abandoned (20 §8); raise "
+            f"run_deadline_min, lower a platform's carousel_slides hard max, or shorten "
+            f"image_job_timeout_s")
 
 
 def windows_violation(cfg: Config) -> str | None:
@@ -1061,9 +1198,9 @@ def _clamp_token_limits(models: ModelsConfig, ctx: _Ctx) -> None:
 
 
 __all__ = [
-    "CONFIGS_DIR", "DEFAULT_CONFIG_NAME", "LOGS_DIR", "BrandConfig", "BrandProfile",
+    "CONFIGS_DIR", "DEFAULT_CONFIG_NAME", "LOGS_DIR", "BrandProfile",
     "BrandingConfig", "Config", "ConfigError", "ConfigSummary",
     "GalleryConfig", "McpConfig", "ModelsConfig", "NicheConfig", "OutputConfig", "PLATFORMS",
-    "PlatformConfig", "PriceTable", "RunConfig", "SourcesConfig", "TextBudgets",
+    "PlatformConfig", "PriceTable", "RunConfig", "SourcesConfig", "StylesConfig", "TextBudgets",
     "formats_sourcing_violation", "list_configs", "load_config", "windows_violation",
 ]

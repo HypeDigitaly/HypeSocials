@@ -79,8 +79,18 @@ sources:
   # `false` relies on Virlo's own panel_texts alone, which many fresh rows leave empty.
   vision_transcribe: true
 
-# The `styles:` section (`refs_per_job`) is gone (D46/F3): a meta-style is text-only DNA and
-# ships no reference images. The registry itself stays prompts/styles.yaml (FR-290), never config.
+# Style selection (v2.1.2/FR-314/D-E): which of the authored meta-styles this config's runs may
+# rotate over. A SELECTOR only - prompts/styles.yaml (FR-290) still owns every render prompt,
+# palette and layout zone, and nothing written here carries style content. UNSET on purpose, like
+# every other inherited key in this overrides-only file: an empty selection means all eight styles
+# the active brand can wear, which is the shipped behaviour. Uncomment to curate this niche's look
+# permanently, or pass `run.bat --styles key1,key2` for one run. A key the registry does not
+# define, or a selection that leaves a requested format with no affine style under the brand,
+# refuses at pre-flight: exit 2, $0 spent, and the message names what the registry really offers.
+# (The old `styles.refs_per_job` window is still gone - D46/F3, a text-only style ships no
+# reference images - and this key is not its return.)
+# styles:
+#   enabled: [editorial-voxel-carousel, letterpress-print-carousel, platform-showcase-card]
 
 # Brand identity for this config (FR-292/D43) - which brand the run signs with, how often, and in
 # what shape. Only the branded fraction below carries the wordmark. The wordmark itself is NOT

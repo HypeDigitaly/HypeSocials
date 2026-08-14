@@ -17,6 +17,12 @@ Invariants:
   `carousel.py` and `reel.py` price nothing and write no ledger line.
 - **Spend tallies on submission, failures included** — a reservation that reached the provider is
   reconciled, never released; only a submission that never happened is released (20 §8).
+- **One automatic resubmit per IMAGE job** (FR-317, v2.1.3/D48). A standalone image, a carousel
+  slide or a reel seed frame that ends in TIMEOUT or a non-moderation failure is submitted once
+  more, unchanged, as discretionary spend; a second failure is final. It is a NEW job with its own
+  taskId and its own ledger lines — nothing re-polls a task id, and nothing resubmits a Seedance
+  clip (FR-44). A timed-out attempt reconciles at a measured $0 (`_billed_usd`), so the pair costs
+  one render rather than two.
 - **A folder never holds media without meta** — `AssetFolder` writes `pending` meta at creation
   and rewrites it terminally, so every exit path (success, skip, interrupt, abandonment) leaves
   one whole state (NFR-21). A failed creative keeps its paid caption (FR-74).
@@ -89,6 +95,9 @@ from hypesocials.util import Deadline, fit
 # is safe and keeps the dispatch a plain name lookup (which is also what makes it fakeable).
 from hypesocials.generate.refs import Reference, attach, branding_block, role_lines, style_of
 from hypesocials.generate.refs import wordmark as wordmark_of
+# FR-98 (v2.1.4): what the provider actually returned, read off the delivered file's own header.
+# No decoder and no Pillow — four integers out of the first bytes of a PNG/JPEG/WebP.
+from hypesocials.generate.pixels import native_size
 from hypesocials.generate.carousel import render_carousel
 from hypesocials.generate.reel import render_reel
 
@@ -98,7 +107,9 @@ ROLE_IMAGE = "image_post.md"
 #: FR-108's "one short grace poll (~30 s)": at the deadline — or at the first Ctrl+C (FR-201) —
 #: outstanding jobs get exactly this long to land, because work seconds from completing is work
 #: already paid for. Whatever is still running afterwards is abandoned and left unclaimed at Kie,
-#: which is the accepted, stated cost. Never a resubmission, never a second window.
+#: which is the accepted, stated cost. Never a second window, and never a resubmission FROM HERE:
+#: the grace window is the run stopping, and FR-317's single image resubmit is refused once
+#: `env.halted` is true precisely so a halt cannot order new work (v2.1.3/D48).
 GRACE_S = 30.0
 #: How often `_drain` re-reads `env.halted` while creatives run; the deadline is a soft ceiling
 #: (FR-108), so half a second of slack costs nothing and a timer beats a busy loop.
@@ -353,8 +364,23 @@ async def _dispatch(entry: PlanEntry, env: Env, folder: AssetFolder,
     return record
 
 
+def _resubmittable(outcome: RenderOutcome | None) -> bool:
+    """FR-317 (v2.1.3, D48): does this IMAGE job's ending sanction exactly one more attempt?
+
+    A moderation refusal is excluded by name — FR-97 owns that failure, and re-asking the identical
+    question buys the identical no. A declined submission is excluded because nothing was ordered.
+    Everything else terminal (a timeout, a provider error, an empty or unreachable result) is the
+    same request that simply did not come back, so it is worth sending once more.
+
+    Video jobs never reach this predicate: `_submit_clip` is Seedance's only door and FR-44 keeps
+    "a timed-out video job is never resubmitted" exactly as it was.
+    """
+    return (outcome is not None and outcome.kind is not RenderOutcomeKind.SUCCESS
+            and outcome.fail_cause is not RenderFailCause.MODERATION)
+
+
 async def _image(entry: PlanEntry, env: Env, folder: AssetFolder, submit: Any) -> AssetRecord:
-    """One standalone image: assemble, submit, FR-97's retry, FR-27's check, package the bytes."""
+    """One standalone image: assemble, submit, FR-97's retry, FR-317's resubmit, FR-27's check."""
     attached = await attach(entry, env, folder)
     urls = [ref.url for ref in attached]
     prompt = _assemble(entry, env, attached)
@@ -377,7 +403,25 @@ async def _image(entry: PlanEntry, env: Env, folder: AssetFolder, submit: Any) -
                                  label=f"moderation retry · {entry.asset_id}")
             if retry is not None:
                 folder.mark(DegradationTag.REFS_DROPPED_MODERATION)
-                outcome = retry
+                outcome, urls = retry, []
+        # FR-317: a timeout or an ordinary provider failure is the same request that never came
+        # back, so it goes once more — as discretionary spend the cap may decline, after a fresh
+        # read of `env.halted` (the first attempt may have burned the whole 600 s timeout inside
+        # the window where Ctrl+C landed). Exactly one: whatever the second attempt says is final,
+        # and the timed-out first attempt already reconciled at $0 (`_billed_usd`).
+        if _resubmittable(outcome) and not env.halted and not env.credits_exhausted:
+            cause = outcome.fail_cause.value if outcome.fail_cause else outcome.kind.value
+            env.log.warn("image_job_resubmit",
+                         f"{entry.asset_id}: {cause} "
+                         f"({outcome.fail_message or 'no usable result'}) — resubmitting the SAME "
+                         "job once (FR-317, attempt 2 of 2); a second failure is final",
+                         asset_id=entry.asset_id, cause=cause, attempt=2,
+                         task_id=outcome.task_id, detail=outcome.fail_message)
+            again = await submit(entry, params, RenderRefs(image_urls=urls), job="image",
+                                 priority=RenderPriority.WAVE1, kind="discretionary",
+                                 label=f"resubmit · {entry.asset_id}")
+            if again is not None:
+                outcome = again
     except render.KieOutOfCredits as exc:
         env.credits_exhausted = True
         return _fail(entry, env, folder, f"{_CREDITS} ({exc})")
@@ -403,17 +447,27 @@ async def _image(entry: PlanEntry, env: Env, folder: AssetFolder, submit: Any) -
             env.disk_full = True
         return _fail(entry, env, folder, f"{exc.reason}: {exc}", cost=outcome.cost_usd,
                      outcome=outcome)
-    verdict, retry = await _vision(entry, env, folder, submit, attached, stored)
+    verdict, retry, delivered = await _vision(entry, env, folder, submit, attached, stored)
 
     entry.status = PlanEntryStatus.SUCCESS
     cost = outcome.cost_usd + (retry.cost_usd if retry is not None else 0.0)
     return folder.finish(
         actual_cost_usd=round(cost, 6),
-        model_ids=[env.config.models.image, env.config.models.image_profile],
+        # FR-270, honestly (v2.1.4): this creative's route was decided by whether it carried
+        # references (FR-241), so the id recorded is the one that was actually used — `image_edit`
+        # for a reference-bearing job, `image` for a reference-free one. Recording `models.image`
+        # for every image was a lie the moment the dual route went live: glz0's reference-bearing
+        # renders all claim a text-to-image id they never touched.
+        model_ids=[env.config.models.image_edit if attached else env.config.models.image,
+                   env.config.models.image_profile],
         kie_job_ids=[job.task_id for job in (outcome, retry) if job is not None and job.task_id],
         job_submission_timestamp=outcome.submitted_at,
         job_completion_timestamp=(retry.completed_at if retry else "") or outcome.completed_at,
-        native_size_rendered=entry.aspect_ratio,  # FR-98: shipped exactly as it came back
+        # FR-98: shipped exactly as it came back — and now RECORDED as it came back. `native_size`
+        # reads the delivered file's own header, so a 1536x1024 answer to a 1:1 request is stated
+        # rather than restated as "1:1" (audit R4), and warns once.
+        native_size_rendered=native_size(delivered, entry.aspect_ratio, log=env.log,
+                                         asset_id=entry.asset_id),
         vision_check_result=verdict,
         event_id=env.log.event("creative_delivered", f"{entry.asset_id} rendered",
                                asset_id=entry.asset_id, task_id=outcome.task_id,
@@ -424,30 +478,43 @@ async def _image(entry: PlanEntry, env: Env, folder: AssetFolder, submit: Any) -
 async def _vision(
     entry: PlanEntry, env: Env, folder: AssetFolder, submit: Any,
     attached: Sequence[Reference], stored: Path,
-) -> tuple[VisionCheckResult, RenderOutcome | None]:
+) -> tuple[VisionCheckResult, RenderOutcome | None, Path]:
     """FR-27/105 for a standalone image: one check, ONE re-render, one re-check, then it ships.
 
     The estimator prices exactly this pair per image (`budget.py`'s `checked_images` plus the
     `vision_retry_allowance`), so an image the operator was billed a check for gets one. The
     re-render is discretionary (FR-106c) — a declined or failed one is `retried_failed`, never
-    laundered into `passed`. Returns the verdict and the retry's outcome, for cost and job ids.
+    laundered into `passed`.
+
+    Returns the verdict, the retry's outcome (for cost and job ids) and the path of the file that
+    is actually SHIPPING — `stored`, or the re-render that replaced it. The third value exists
+    because meta records the delivered picture's real pixel size (FR-98/v2.1.4), and after a
+    successful retry the delivered picture is the second one.
     """
     if not env.config.run.vision_check or env.llm_call is None:
-        return VisionCheckResult.NOT_CHECKED, None
-    first = (await vision_check.check([stored], call=env.llm_call, engine=env.engine,
-                                      log=env.log)).verdict_for(1)
+        return VisionCheckResult.NOT_CHECKED, None, stored
+    copyset = env.copy.get(entry.asset_id) or CopySet(asset_id=entry.asset_id,
+                                                      language=entry.language)
+    # FR-105 v2.1.1: the check carries the image's LOCKED words — headline, subline and, on a
+    # branded entry, the wordmark that renders through the same TEXT block (B1). Without them the
+    # third question has no referent and a clean render of the wrong copy passes.
+    signature = wordmark_of(entry, env)
+    first = (await vision_check.check(
+        [stored], expected=[vision_check.expected_text(copyset, "image", wordmark=signature)],
+        call=env.llm_call, engine=env.engine, log=env.log)).verdict_for(1)
     if first is None or not first.flagged or env.halted:
-        return vision_check.verdict_result(first), None
+        return vision_check.verdict_result(first), None, stored
     env.log.warn("vision_check_flagged",
                  f"{entry.asset_id} flagged ({first.detail}); one re-render with shorter, larger "
-                 "text (FR-105)", asset_id=entry.asset_id)
-    plan = vision_check.retry_plan(
-        env.copy.get(entry.asset_id) or CopySet(asset_id=entry.asset_id, language=entry.language),
-        "image", env.config.run.text_budgets)
+                 "text (FR-105)", asset_id=entry.asset_id, text_broken=first.text_broken,
+                 fake_ui=first.fake_ui, text_mismatch=first.text_mismatch)
+    # D-F (v2.1.2): the verdict rides into the plan, so a render that invented words is told so and
+    # forbidden by name — the −40%/larger-type lever alone does nothing about invented copy.
+    plan = vision_check.retry_plan(copyset, "image", env.config.run.text_budgets, verdict=first)
     prompt = _assemble(entry, env, attached, copyset=plan.copy, budget_scale=plan.budget_scale,
                        extra=plan.instruction)
     if prompt is None:
-        return VisionCheckResult.RETRIED_FAILED, None
+        return VisionCheckResult.RETRIED_FAILED, None, stored
     try:
         retry = await submit(entry, RenderParams(prompt=prompt, aspect_ratio=entry.aspect_ratio),
                              RenderRefs(image_urls=[ref.url for ref in attached]), job="image",
@@ -455,22 +522,37 @@ async def _vision(
                              label=f"vision re-render · {entry.asset_id}")
     except render.KieOutOfCredits:
         env.credits_exhausted = True  # FR-167: the flagged image ships exactly as rendered
-        return VisionCheckResult.RETRIED_FAILED, None
+        return VisionCheckResult.RETRIED_FAILED, None, stored
     if retry is None or retry.kind is not RenderOutcomeKind.SUCCESS or not retry.result_urls:
         env.log.warn("vision_retry_unavailable",
                      f"{entry.asset_id}: the flagged image ships as rendered "
                      f"({'declined by the cap' if retry is None else 'the re-render failed'})",
                      asset_id=entry.asset_id)
-        return VisionCheckResult.RETRIED_FAILED, retry
+        return VisionCheckResult.RETRIED_FAILED, retry, stored
     try:  # the re-render REPLACES the delivered file, then earns its one second verdict
         replaced = await folder.store_render(retry.result_urls[0])
     except PackagingError as exc:
         if exc.reason == "disk_full":
             env.disk_full = True
-        return VisionCheckResult.RETRIED_FAILED, retry
-    after = (await vision_check.check([replaced], call=env.llm_call, engine=env.engine,
-                                      log=env.log)).verdict_for(1)
-    return vision_check.verdict_result(first, after, retried=True), retry
+        return VisionCheckResult.RETRIED_FAILED, retry, stored
+    # The re-check compares against what the RETRY was ordered to carry — a shortened headline and
+    # no subline — not against the original copy the first render was flagged on.
+    after = (await vision_check.check(
+        [replaced], expected=[vision_check.expected_text(plan.copy, "image", wordmark=signature)],
+        call=env.llm_call, engine=env.engine, log=env.log)).verdict_for(1)
+    # FR-321d: the SECOND verdict on the record. `retried_passed` is the one state that asserts a
+    # defect was fixed, and until this line the assertion rested on a verdict nothing logged.
+    env.log.event("vision_recheck",
+                  f"{entry.asset_id} re-checked after its one re-render: "
+                  + ("clean" if after is not None and not after.flagged else
+                     "still flagged" if after is not None else "no verdict returned"),
+                  asset_id=entry.asset_id, attempt=2, checked=after is not None,
+                  flagged=bool(after is not None and after.flagged),
+                  text_broken=bool(after is not None and after.text_broken),
+                  fake_ui=bool(after is not None and after.fake_ui),
+                  text_mismatch=bool(after is not None and after.text_mismatch),
+                  detail=(after.detail if after is not None else ""))
+    return vision_check.verdict_result(first, after, retried=True), retry, replaced
 
 
 # --------------------------------------------------------------------------- the money door
@@ -497,7 +579,8 @@ async def _submit(
     Also owns the profile (`clip` → `models.video_profile`, everything else →
     `models.image_profile`), the per-job projection (`budget.job_projection` — no caller prices
     anything), and exactly one FR-203 `terminal` ledger line per submission, including the
-    moderation-refused and content-audit-failed attempts a caller then retries.
+    moderation-refused and content-audit-failed attempts a caller then retries. What "its own
+    reported cost" means for a job that reported nothing is `_billed_usd`'s single decision.
 
     `render.KieOutOfCredits` is re-raised after the reservation is released — callers latch
     `env.credits_exhausted` and package what they hold (FR-167). A halt is belt and braces: every
@@ -536,7 +619,7 @@ async def _submit(
         return RenderOutcome(kind=RenderOutcomeKind.FAIL, fail_message=str(exc))
     finally:
         _CURRENT_ASSET.reset(token)
-    await env.budget.reconcile(held, outcome.cost_usd if outcome.cost_usd else None)
+    await env.budget.reconcile(held, _billed_usd(outcome))
     env.jobs_done += 1
     if outcome.kind is RenderOutcomeKind.SUCCESS and outcome.result_urls:
         env.jobs_ok += 1
@@ -546,6 +629,38 @@ async def _submit(
     if env.say is not None:  # FR-299: one event-driven terminal line per submission
         env.say(_job_line(entry, label, priority, outcome))
     return outcome
+
+
+def _billed_usd(outcome: RenderOutcome) -> float | None:
+    """What this submission is reconciled AT — a real figure, or `None` for FR-85's *estimated*.
+
+    `None` means "the provider reported no billing data": `budget.reconcile` then lets the
+    reservation's own estimate stand and flags the row `estimated_only` rather than inventing a
+    number. That is the honest answer for a job that finished and simply came back without a
+    `creditsConsumed` field — the work happened, only its price is unreported.
+
+    It is the WRONG answer for a job that TIMED OUT, and that is what this helper exists to
+    separate. `render/kie.py::_classify` builds a timeout outcome from an EMPTY record (no
+    terminal state was ever read), so its `cost_usd` is a structural 0.0 rather than a reported
+    one — and the falsy test this replaced (`outcome.cost_usd if outcome.cost_usd else None`)
+    could not tell those two zeros apart. It read the timeout as missing data and booked the FULL
+    per-job estimate as billed: run `20260813_143420_oyo4` reported $1.27 against $0.94 of real
+    Kie spend for exactly that reason, on rows the summary then labelled `estimated_only`.
+
+    A timed-out job delivered nothing and is reconciled at a measured 0.0. The residual risk is
+    stated rather than hidden: the job may still complete unclaimed at Kie and bill later (the
+    same aftermath FR-108's abandonment line names by taskId), in which case the run under-reports
+    by that job — a bounded, visible gap, where the old behaviour over-reported every timeout by
+    a whole render on every run.
+
+    Every other outcome keeps the pre-existing reading, FR-85 semantics untouched: a genuine 0.0
+    from a successful job is indistinguishable from an absent figure at this seam, so it stays
+    `estimated_only`.
+    """
+    if (outcome.kind is not RenderOutcomeKind.SUCCESS
+            and outcome.fail_cause is RenderFailCause.TIMEOUT):
+        return 0.0
+    return outcome.cost_usd if outcome.cost_usd else None
 
 
 def _job_line(entry: PlanEntry, label: str, priority: RenderPriority,
@@ -602,13 +717,17 @@ def _assemble(entry: PlanEntry, env: Env, attached: Sequence[Reference], *,
     # `{{content_sentence}}` slot beside `{{render_prompt}}` (F16), so no manual prepend.
     try:
         prompt = env.engine.render(role, context, profile=profile.name,
-                                   max_chars=profile.limits.max_prompt_chars)  # 50 §7
+                                   max_chars=profile.limits.max_prompt_chars,  # 50 §7
+                                   # FR-193: the vision retry repeats the preserve list and adds
+                                   # one line — through the engine, so it is INSIDE the length
+                                   # guarantee. Appended afterwards (as it was until v2.1.4) it
+                                   # pushed an at-the-limit prompt over the provider's hard wall
+                                   # with no guard event and bought a certain HTTP 500.
+                                   suffix=extra)
     except (UnresolvedPlaceholderError, MissingTemplateError, ValueError, LookupError) as exc:
         env.log.error("prompt_assembly_failed", f"{entry.asset_id}: {exc}",
                       asset_id=entry.asset_id, role=role)
         return None
-    if extra:  # FR-193: the vision retry repeats the preserve list and adds one line
-        prompt = f"{prompt}\n\n{extra}"
     env.log.event("render_prompt_assembled", f"{entry.asset_id} prompt ready", verbose_only=True,
                   asset_id=entry.asset_id, role=role, references=len(attached), prompt=prompt)
     return prompt

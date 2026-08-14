@@ -75,7 +75,7 @@ def test_fr50_a_valid_file_loads_and_absent_keys_take_their_documented_defaults(
     assert cfg.run.vision_check is True
     # untouched keys — the defaults 30 §2 documents
     assert cfg.run.trend_history_days == 30  # v2.1.0 (FR-307): was 7, now covers the fetch window
-    assert cfg.run.run_deadline_min == 25
+    assert cfg.run.run_deadline_min == 45  # v2.1.3 (D48): was 25; must fit 600 s jobs + FR-317 resubmit
     assert cfg.sources.active == ["virlo"]
     assert cfg.models.analysis == "anthropic/claude-sonnet-5"
     assert cfg.output.dir == "output/"
@@ -148,13 +148,22 @@ def test_fr292_a_partial_brand_profile_override_keeps_the_compiled_profile_aroun
 
 
 def test_fr132_platform_defaults_are_per_platform_not_shared(tmp_path: Path) -> None:
-    """30 §2: image + carousel everywhere, reel allowlisted on TikTok only, 5 slides."""
-    cfg = load(tmp_path, "run:\n  platforms: [linkedin, tiktok]\n")
+    """30 §2: image + carousel everywhere, reel allowlisted on TikTok only.
+
+    The slide max is per-platform too since 2026-08-13, and for the same reason the format
+    allowlist is: it states what the DESTINATION accepts (Instagram stops at 10, the others take
+    20), not a house preference. `configs/hypedigitaly.yaml` ships no `platforms:` block at all,
+    so a shared number here would silently truncate every deck on the operator's real config.
+    """
+    cfg = load(tmp_path, "run:\n  platforms: [linkedin, tiktok, instagram]\n")
 
     assert cfg.platform("linkedin").formats == ["image", "carousel"]
     assert cfg.platform("tiktok").formats == ["image", "carousel", "reel"]
-    assert cfg.platform("linkedin").carousel_slides == 5
+    assert cfg.platform("linkedin").carousel_slides == 20
+    assert cfg.platform("tiktok").carousel_slides == 20
+    assert cfg.platform("instagram").carousel_slides == 10  # the platform's own hard ceiling
     assert cfg.platform("mastodon").formats == ["image", "carousel"]  # unnamed platform defaults
+    assert cfg.platform("mastodon").carousel_slides == 10  # ... at the safe generic max
 
 
 def test_the_shipped_configs_all_load_without_an_error() -> None:
@@ -285,7 +294,7 @@ def test_fr51_an_unknown_key_warns_and_is_ignored_rather_than_refusing(tmp_path:
 
     assert any("run.vision_chek" in w for w in cfg.warnings)
     assert any("nonsense" in w for w in cfg.warnings)
-    assert cfg.run.vision_check is False  # the real key kept its default
+    assert cfg.run.vision_check is True  # the real key kept its default (True since 2026-08-13)
 
 
 def test_nfr111_a_token_cap_under_its_floor_is_clamped_up_with_a_warning(tmp_path: Path) -> None:
@@ -334,13 +343,18 @@ def test_a_run_deadline_under_the_video_job_timeout_warns_on_a_reel_capable_conf
     assert Config().models.video_job_timeout_s == 1800
 
     priced = "models:\n  price_per_unit:\n    reel_second: { '720p': 0.95 }\n"
-    warned = load(tmp_path, priced)  # deadline defaults to 25 min = 1500 s < 1800 s
+    # v2.1.3 (D48) raised the deadline default to 45 min (2700 s > 1800 s), so the tight
+    # pairing must now be written explicitly to reproduce the warned shape.
+    warned = load(tmp_path, "run:\n  run_deadline_min: 25\n" + priced)  # 1500 s < 1800 s
     assert any("run_deadline_min" in w and "video_job_timeout_s" in w for w in warned.warnings)
 
     quiet = load(tmp_path, "run:\n  run_deadline_min: 45\n" + priced)
     assert not any("run_deadline_min" in w for w in quiet.warnings)
-    # Reels unreachable (default.yaml's shape): the same 25/1800 pairing is silent.
-    assert not any("run_deadline_min" in w for w in load(tmp_path, "run: {}\n").warnings)
+    # Reels unreachable (default.yaml's shape): the VIDEO pairing stays silent. (A 25-min
+    # deadline under 600 s image jobs now earns the separate carousel-throughput advisory,
+    # which is that function's own concern — asserted in its own tests.)
+    assert not any("video_job_timeout_s" in w
+                   for w in load(tmp_path, "run:\n  run_deadline_min: 25\n").warnings)
 
 
 # ------------------------------------------------- D46: the fetch window and its two invariants
@@ -444,6 +458,59 @@ def test_d46_014e_image_and_reel_counts_are_refused_while_sourcing_is_slideshow_
     with_video = load(tmp_path, "run:\n  formats: { image: 2, carousel: 4, reel: 1 }\n"
                                 "sources:\n  include_videos: true\n")
     assert with_video.run.formats["image"] == 2 and with_video.sources.include_videos is True
+
+
+# ------------------------------------------------------- FR-314: the style selector (v2.1.2/D-E)
+
+
+def test_fr314_the_styles_selector_parses_and_an_absent_block_means_every_style(
+    tmp_path: Path,
+) -> None:
+    """`styles.enabled` is a list of registry KEYS, and its empty default means "all of them".
+
+    That default is the whole compatibility story of FR-314: every config written before the key
+    existed — and `configs/default.yaml`, which ships it empty — must keep rotating over the full
+    registry. So absence is recorded in `defaults_applied` like any other defaulted key, never
+    read as "this run selected nothing".
+    """
+    chosen = load(tmp_path, "styles:\n  enabled: [alpha, beta]\n")
+    assert chosen.styles.enabled == ["alpha", "beta"]  # order is the file's, and it is kept
+
+    absent = load(tmp_path, "run:\n  spend_cap_usd: 3.5\n")
+    assert absent.styles.enabled == []
+    assert "styles" in absent.defaults_applied  # the whole block fell back
+
+    explicit_empty = load(tmp_path, "styles:\n  enabled: []\n")
+    assert explicit_empty.styles.enabled == []
+    assert "styles.enabled" not in explicit_empty.defaults_applied  # the file did write it
+
+
+def test_fr314_a_selector_that_is_not_a_list_of_strings_is_one_refusal_line(
+    tmp_path: Path,
+) -> None:
+    """FR-51/69 posture, unchanged by the new key: name the key, the value and the shape wanted.
+
+    A bare scalar is the mistake worth catching — `enabled: brand-card` reads perfectly to a human
+    and would otherwise become the six-character-membership test `"b" in "brand-card"`, i.e. a
+    selection nobody wrote.
+    """
+    scalar = refusal(tmp_path, "styles:\n  enabled: brand-card\n")
+    assert "styles.enabled" in scalar and "a list" in scalar
+
+    numeric = refusal(tmp_path, "styles:\n  enabled: [alpha, 7]\n")
+    assert "styles.enabled[1]" in numeric and "text" in numeric
+
+
+def test_fr314_a_stale_refs_per_job_key_warns_and_the_run_still_loads(tmp_path: Path) -> None:
+    """The D46/F3 tombstone survives FR-314's revival of the `styles:` block: `refs_per_job` was a
+    reference-image window, a text-only style has none, and an operator file that still carries it
+    must load with the ordinary unknown-key WARNING rather than refuse. Reviving the section is not
+    reviving its dead key."""
+    cfg = load(tmp_path, "styles:\n  enabled: [alpha]\n  refs_per_job: 2\n")
+
+    assert cfg.styles.enabled == ["alpha"]
+    assert any("styles.refs_per_job" in warning for warning in cfg.warnings), cfg.warnings
+    assert not hasattr(cfg.styles, "refs_per_job")
 
 
 # --------------------------------------------------------------------------- the YAML 1.1 trap
@@ -651,6 +718,48 @@ def test_fr137_the_platforms_flag_refuses_the_same_typo_at_the_flag_boundary(
     config = Config()
     assert "run.platforms=tiktok,linkedin" in cli.apply_overrides(config, opts)
     assert config.run.platforms == ["tiktok", "linkedin"]
+
+
+def test_fr314_the_styles_flag_overrides_the_files_selection_and_says_so(tmp_path: Path) -> None:
+    """`--styles a,b` is the per-run twin of `styles.enabled` (FR-61: the file is never rewritten).
+
+    Three things are the contract. It REPLACES rather than merges — a flag that unioned with the
+    file could never narrow a niche config that had already narrowed. It records an override note,
+    because the run header prints that list and a rotation restricted to two of eight styles is
+    exactly the kind of change an operator must be able to see in `run.log` afterwards. And it is
+    trimmed/deduped like `--platforms`, so a typed space is not a style key nobody defined.
+
+    Deliberately NOT checked against the registry here: which keys exist depends on the
+    `prompts_dir` seam (FR-174) and therefore on a config that is not loaded at parse time.
+    `styles.validate` refuses an unknown key at pre-flight, exit 2, $0 — that is `test_styles.py`.
+    """
+    opts = cli.parse_args(["--styles", "beta, alpha,beta"])
+    assert opts.styles == ["beta", "alpha"]
+
+    cfg = load(tmp_path, "styles:\n  enabled: [gamma]\n")
+    applied = cli.apply_overrides(cfg, opts)
+
+    assert cfg.styles.enabled == ["beta", "alpha"], "replaced, never merged with the file's pick"
+    assert "styles.enabled=beta,alpha" in applied
+
+    # Without the flag the file's selection stands and nothing is claimed as an override.
+    untouched = load(tmp_path, "styles:\n  enabled: [gamma]\n")
+    assert cli.apply_overrides(untouched, cli.parse_args([])) == []
+    assert untouched.styles.enabled == ["gamma"]
+
+
+def test_fr314_an_empty_styles_flag_is_refused_rather_than_read_as_every_style(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`--styles ""` means the opposite of what it looks like: an empty selection is "all styles",
+    so accepting it would turn a deliberate narrowing into a silent widening. Refused at the flag
+    boundary with exit 2, like every other malformed flag value (FR-63/69)."""
+    with pytest.raises(SystemExit) as caught:
+        cli.parse_args(["--styles", " , ,"])
+
+    assert caught.value.code == 2
+    assert "--styles" in capsys.readouterr().err
+    assert cli.parse_args([]).styles is None  # not passed is not the same as an empty selection
 
 
 def _timed(call) -> float:

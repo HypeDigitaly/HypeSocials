@@ -565,12 +565,16 @@ async def test_a_bound_decks_slides_are_mapped_from_the_source_panels_position_f
     assert provenance.source_panel_count == 4
     assert provenance.panel_map == [
         {"slide": 1, "source_position": 1, "source_text": "Panel one line",
-         "ref_label": "P1.panel.1"},
+         "source_text_original": "Panel one line", "ref_label": "P1.panel.1", "drop_reason": "",
+         "creator_stripped": False},
         {"slide": 2, "source_position": 2, "source_text": "Panel two line",
-         "ref_label": "P1.panel.2"},
-        {"slide": 3, "source_position": 3, "source_text": "", "ref_label": ""},
+         "source_text_original": "Panel two line", "ref_label": "P1.panel.2", "drop_reason": "",
+         "creator_stripped": False},
+        {"slide": 3, "source_position": 3, "source_text": "", "source_text_original": "",
+         "ref_label": "", "drop_reason": "empty", "creator_stripped": False},
         {"slide": 4, "source_position": 4, "source_text": "Panel four line",
-         "ref_label": "P1.panel.4"},
+         "source_text_original": "Panel four line", "ref_label": "P1.panel.4", "drop_reason": "",
+         "creator_stripped": False},
     ], "one row per OUR slide, empty ones included — the row IS the alignment (FR-309)"
 
 
@@ -592,31 +596,127 @@ async def test_the_merged_vision_panels_are_what_a_mapped_deck_quotes() -> None:
     assert result.provenance["d1"].refs["slide_2"] == "P1.panel.2"
 
 
-async def test_an_over_budget_panel_degrades_its_slide_and_is_never_trimmed() -> None:
-    """FR-100's structural guarantee, applied to the mapped deck: "a string that does not fit was
-    never offered", so there is nothing left to trim by the time the bytes exist. The slide renders
-    without text, KEEPS ITS POSITION, and the loss is warned once for the whole creative rather
-    than once per slide — the operator's question is how much of this deck came through."""
+async def test_a_long_mapped_panel_ships_verbatim_whatever_the_slide_budget_says() -> None:
+    """FIX 2 (operator ruling 2026-08-13), and the regression that paid for it.
+
+    In run 20260813_143420_oyo4 the per-style slide budget (180–300 characters) gated the MAPPED
+    deck as well as the chosen text, and it blanked 21 of 41 panels — one of them for being a
+    single character over 300. A style ceiling is a design rule for text WE choose; a mapped panel
+    is text we MIRROR, and our slide *i* is a re-render of their slide *i* whatever its length. So
+    the budget is out of this path entirely: the panel ships whole, and the render template is told
+    to give it room rather than to fit it.
+    """
     log = Recorder()
-    long_panel = "A panel that runs on for well past forty characters and keeps going besides"
-    trend = make_trend(post(1, panels=("Short panel", long_panel, "Third panel"),
+    long_panel = "Panel one. " + "It keeps explaining the point at length. " * 11  # ~470 chars
+    assert 300 < len(long_panel) < copywrite.PANEL_SANITY_CHARS
+    trend = make_trend(post(1, panels=(long_panel, "Third-of-the-way panel"),
+                            caption="A caption long enough to be a caption at all."))
+    call = StubCall({"d1": selection(headline_ref="", caption_ref="P1.caption")})
+
+    result = await copywrite.write_copy([deck_entry(slides=2)], call=call, log=log, **context(
+        trends={"t1": trend}, styles={STYLE_KEY: deck_style()}))  # slide cap 300
+
+    copyset, provenance = result.copy["d1"], result.provenance["d1"]
+    assert copyset.slide_texts == [long_panel, "Third-of-the-way panel"], "verbatim, in full"
+    assert provenance.refs["slide_1"] == "P1.panel.1"
+    assert provenance.panel_map[0]["drop_reason"] == ""
+    assert provenance.panel_map[0]["source_text_original"] == long_panel
+    assert not result.trimmed and DegradationTag.TEXT_TRIMMED not in result.tags.get("d1", ())
+    assert not log.warnings, "nothing was lost, so nothing is warned about"
+
+
+async def test_a_panel_past_the_sanity_ceiling_keeps_position_and_cites_it() -> None:
+    """The one length rule left on a mapped panel, and it is a fence rather than a budget.
+
+    Past `PANEL_SANITY_CHARS` the string is a transcription accident — a whole caption scraped into
+    one panel, a vision pass that ran away — not a slide anybody read. It is still never trimmed
+    (FR-100: a trimmed quote is not a quote), the slide KEEPS ITS POSITION, and the warning cites
+    the characters measured against the ceiling that actually applied. The old line read
+    "(96 characters, ceiling 300)" on panels it had blanked for other reasons entirely.
+    """
+    log = Recorder()
+    runaway = "W" * 1600
+    trend = make_trend(post(1, panels=("Short panel", runaway, "Third panel"),
                             caption="A caption long enough to be a caption at all."))
     call = StubCall({"d1": selection(headline_ref="", caption_ref="P1.caption")})
 
     result = await copywrite.write_copy([deck_entry(slides=3)], call=call, log=log, **context(
-        trends={"t1": trend},
-        styles={STYLE_KEY: make_style(max_onimage_chars={"headline": 90, "slide": 40})}))
+        trends={"t1": trend}, styles={STYLE_KEY: deck_style()}))
 
     copyset = result.copy["d1"]
     assert copyset.slide_texts == ["Short panel", "", "Third panel"]
-    assert long_panel not in " ".join(copyset.slide_texts)
-    assert not any(long_panel.startswith(text) and text for text in copyset.slide_texts), \
+    assert not any(runaway.startswith(text) and text for text in copyset.slide_texts), \
         "no prefix of it shipped either — a trimmed quote is not a quote"
-    assert not result.trimmed and DegradationTag.TEXT_TRIMMED not in result.tags.get("d1", ())
     assert result.provenance["d1"].panel_map[1] == {
-        "slide": 2, "source_position": 2, "source_text": "", "ref_label": ""}
+        "slide": 2, "source_position": 2, "source_text": "", "source_text_original": runaway,
+        "ref_label": "", "drop_reason": "over_budget", "creator_stripped": False}
     assert len(log.warned("panel_over_budget")) == 1
-    assert "slide 2" in log.warned("panel_over_budget")[0]
+    warning = log.warned("panel_over_budget")[0]
+    assert "slide 2 (1600 characters, sanity ceiling 1500)" in warning
+
+
+async def test_a_panel_carrying_a_handle_or_a_url_says_so_and_keeps_the_original() -> None:
+    """FIX 5a: the handle/URL backstop gets its OWN warning, naming what it found.
+
+    The audited run rejected whole panels because the vision pass transcribed a creator's watermark
+    into the panel text — and then reported the loss as a budget overflow, which sent the operator
+    hunting for a character ceiling that had nothing to do with it. FR-306's `chrome_text` field
+    keeps that chrome out of `onimage_text` upstream; this check stays as the backstop, and now it
+    says what it is. The pre-gate string survives in `source_text_original`, so the provenance can
+    still show what the blank slide cost.
+    """
+    log = Recorder()
+    trend = make_trend(post(1, panels=("Follow @growthdaily for more", "A perfectly good panel",
+                                       "Read the rest at example.com"),
+                            caption="A caption long enough to be a caption at all."))
+    call = StubCall({"d1": selection(headline_ref="", caption_ref="P1.caption")})
+
+    result = await copywrite.write_copy([deck_entry(slides=3)], call=call, log=log, **context(
+        trends={"t1": trend}, styles={STYLE_KEY: deck_style()}))
+
+    rows = result.provenance["d1"].panel_map
+    assert result.copy["d1"].slide_texts == ["", "A perfectly good panel", ""]
+    assert [row["drop_reason"] for row in rows] == [
+        "contains_handle_or_url", "", "contains_handle_or_url"]
+    assert [row["source_position"] for row in rows] == [1, 2, 3], "position kept, nothing slides up"
+    assert rows[0]["source_text_original"] == "Follow @growthdaily for more"
+    assert rows[2]["source_text_original"] == "Read the rest at example.com"
+    assert rows[0]["source_text"] == "", "what SHIPPED is still honestly empty"
+    assert not log.warned("panel_over_budget"), "this is not a length failure and never was"
+    handles = log.warned("panel_handle_or_url")
+    assert len(handles) == 1
+    assert "slide 1 (carries an @handle)" in handles[0]
+    assert "slide 3 (carries a URL)" in handles[0]
+
+
+async def test_an_empty_panel_is_silent_unless_the_strip_is_what_emptied_it() -> None:
+    """The third verdict, `empty`, and the one case where it is worth a word.
+
+    A slot Virlo never filled, or a position past the source deck's end, is normal (§0.14a) and is
+    already visible in the panel map — warning about it is the noise that buried the real losses in
+    the audited run. A panel that HAD words and lost every one of them to the competitor strip is
+    a different fact, and the operator is told.
+    """
+    quiet, loud = Recorder(), Recorder()
+    trend = make_trend(post(1, panels=("Plain panel", ""),
+                            caption="A caption long enough to be a caption at all."))
+    stripped = make_trend(post(1, panels=("Plain panel", "Nitro"),
+                               caption="A caption long enough to be a caption at all."))
+    answer = {"d1": selection(headline_ref="", caption_ref="P1.caption")}
+
+    silent = await copywrite.write_copy([deck_entry(slides=3)], call=StubCall(answer), log=quiet,
+                                        **context(trends={"t1": trend},
+                                                  styles={STYLE_KEY: deck_style()}))
+    warned = await copywrite.write_copy([deck_entry(slides=2)], call=StubCall(answer), log=loud,
+                                        competitors=["Nitro"],
+                                        **context(trends={"t1": stripped},
+                                                  styles={STYLE_KEY: deck_style()}))
+
+    assert [row["drop_reason"] for row in silent.provenance["d1"].panel_map] == ["", "empty",
+                                                                                "empty"]
+    assert not quiet.warnings, "an empty source slot is not a loss to report"
+    assert [row["drop_reason"] for row in warned.provenance["d1"].panel_map] == ["", "empty"]
+    assert "slide 2" in loud.warned("panel_emptied_by_strip")[0]
 
 
 def test_a_panel_keeps_its_emoji_newlines_and_hashtags_for_the_slide_slot_alone() -> None:

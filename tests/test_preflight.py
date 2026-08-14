@@ -393,6 +393,43 @@ def test_fr295_the_registry_is_not_read_where_no_style_is_ever_assigned(
             if "styles.yaml" in line], "preview-analysis assigns styles and must still refuse"
 
 
+_TWO_STYLES = _ONE_IMAGE_STYLE + """
+  - key: only-deck
+    render_prompt: A letterpress card, one line of type, wide margins.
+    format_affinity: [carousel]
+"""
+
+
+def test_fr314_a_style_selection_is_graded_at_preflight_and_costs_nothing_to_get_wrong(
+    tmp_path: Path,
+) -> None:
+    """FR-314's selector rides the SAME door as FR-295's registry checks, which is what makes a
+    mistyped `--styles` cost $0 rather than a plan: `cli.apply_overrides` mutates the config before
+    `check` runs, so the flag's selection is what pre-flight grades, and both of its refusals —
+    an unknown key, and a selection that empties a requested format's pool — land as exit-2 errors
+    here alongside the brand's. A selector validated at config LOAD time would never see the flag.
+    """
+    config = _styled_config(tmp_path, registry=_TWO_STYLES)
+    config.run.formats = {"image": 0, "carousel": 2, "reel": 0}
+
+    assert _style_errors(check(config, action="run", entries=[_entry(0)])) == []
+
+    config.styles.enabled = ["only-image", "only-dekc"]  # one real key, one typo
+    verdict = check(config, action="run", entries=[_entry(0)])
+
+    assert verdict.ok is False and EXIT_PREFLIGHT == 2
+    unknown = [line for line in verdict.errors if "styles.enabled names" in line]
+    assert len(unknown) == 1, verdict.report
+    assert "only-dekc" in unknown[0]
+    assert "only-deck" in unknown[0], "the line names the keys the registry really defines"
+    # The typo also leaves the carousel rotation empty, and THAT line blames the selector.
+    carousel = [line for line in verdict.errors if "carousel" in line]
+    assert len(carousel) == 1 and "styles.enabled" in carousel[0], verdict.report
+
+    config.styles.enabled = ["only-image", "only-deck"]  # spelled right: silent again
+    assert _style_errors(check(config, action="run", entries=[_entry(0)])) == []
+
+
 def test_fr292_a_brand_selector_with_no_profile_refuses(tmp_path: Path) -> None:
     """FR-292: `brand` selects one of `profiles`. `config._validate` fails the LOAD on this, so the
     check here is the backstop for a `Config` built in code — without it the first symptom is a
@@ -409,9 +446,16 @@ def test_fr292_a_brand_selector_with_no_profile_refuses(tmp_path: Path) -> None:
 
 def test_fr292_branding_findings_that_only_warn(tmp_path: Path) -> None:
     """Two runtime facts the config loader cannot judge: a branded run with nothing to sign with,
-    and FR-292's web-only orange in a brand profile. Both are wrong, neither is unrunnable."""
+    and FR-292's web-only orange in a brand profile. Both are wrong, neither is unrunnable.
+
+    `enabled=True` is now explicit in the fixture, because FR-318 (v2.1.3/D48) made the master
+    switch default to FALSE and the empty-wordmark warning is skipped while it is off. The finding
+    is about creatives this run will actually sign, and with nothing being signed there is nothing
+    to warn about — so the coverage moves to a run that HAS the switch on.
+    """
     config = _styled_config(tmp_path)
     config.run.formats = {"image": 2, "carousel": 0, "reel": 0}
+    config.branding.enabled = True
     profile = config.branding.profiles[config.branding.brand]
     profile.wordmark = ""
     profile.colors["accent"] = "#F97316"
@@ -424,6 +468,36 @@ def test_fr292_branding_findings_that_only_warn(tmp_path: Path) -> None:
     assert len([line for line in verdict.warnings if "WEB-ONLY" in line]) == 1
 
 
+def test_fr318_an_unsigned_run_is_not_warned_about_the_wordmark_it_will_never_render(
+    tmp_path: Path,
+) -> None:
+    """The complement, on the SAME config: switch branding off and the empty-wordmark warning goes.
+
+    FR-318's switch removes work, it can never make a runnable config unrunnable — so no new
+    refusal appears — and warning about an unrendered wordmark anyway would train the operator to
+    scroll past the branding warnings that DO mean something the day they flip the switch back on.
+    The web-only orange is deliberately NOT part of that: it is a colour a human typed into a
+    brand profile and it is wrong in the file whatever this run signs.
+    """
+    config = _styled_config(tmp_path)
+    config.run.formats = {"image": 2, "carousel": 0, "reel": 0}
+    config.branding.enabled = True
+    profile = config.branding.profiles[config.branding.brand]
+    profile.wordmark = ""
+    config.branding.brand_ratio = 0.5
+
+    signed = check(config, action="run", entries=[_entry(0)])
+    config.branding.enabled = False
+    unsigned = check(config, action="run", entries=[_entry(0)])
+
+    assert len([line for line in signed.warnings if "wordmark is empty" in line]) == 1
+    assert [line for line in unsigned.warnings if "wordmark is empty" in line] == []
+    assert [line for line in unsigned.warnings if "branding" in line] == [], \
+        "no branding warning at all survives the switch being off"
+    assert unsigned.errors == signed.errors, \
+        "the switch removes work; it can never refuse a config that was runnable"
+
+
 def test_f22_the_diacritics_hint_follows_the_source_post_not_the_configured_language(
     tmp_path: Path,
 ) -> None:
@@ -432,6 +506,7 @@ def test_f22_the_diacritics_hint_follows_the_source_post_not_the_configured_lang
     and stays silent for an override-brief plan, whose language really is config's."""
     config = _styled_config(tmp_path)
     config.run.formats = {"image": 2, "carousel": 0, "reel": 0}
+    config.run.vision_check = False  # the hint family only exists when the check is off
     assert set(config.run.languages.values()) == {"en"} and not config.run.vision_check
 
     verbatim = check(config, action="run", entries=[_entry(0)])
@@ -449,6 +524,7 @@ def test_f22_a_czech_config_still_gets_the_certain_hint_rather_than_the_possible
     possibility. Printing both would say the same thing twice with two confidences."""
     config = _styled_config(tmp_path, languages={"linkedin": "cs"}, platforms=["linkedin"])
     config.run.formats = {"image": 2, "carousel": 0, "reel": 0}
+    config.run.vision_check = False  # the hint family only exists when the check is off
 
     hints = check(config, action="run", entries=[_entry(0)]).hints
 
@@ -473,6 +549,7 @@ def test_fr286_the_report_wraps_long_lines_instead_of_overflowing_the_console(
     """
     config = _styled_config(tmp_path)
     config.run.formats = {"image": 2, "carousel": 0, "reel": 0}
+    config.run.vision_check = False  # the wrap subject is the verbatim hint, which needs the check off
 
     report = check(config, action="run", entries=[_entry(0)]).report
     lines = report.splitlines()

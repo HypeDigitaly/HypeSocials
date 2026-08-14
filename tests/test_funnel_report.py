@@ -43,6 +43,7 @@ import dataclasses
 import inspect
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -375,6 +376,61 @@ def test_the_spend_table_no_longer_restates_the_funnel_chain() -> None:
     assert "virlo" not in table and "post(s)" not in table
     assert table.splitlines()[0] == "requested 6 creatives, delivered 5"
     assert "TOTAL  llm" in table and "within the $1.00 cap" in table
+
+
+def test_fr321_a_deck_that_shipped_short_prints_its_two_counts_in_the_ok_column() -> None:
+    """FR-321: the `ok` column gains a third value, and it is the one an operator needs to see.
+
+    This table is where the result is first scanned. `yes` on a deck missing a slide is a loss the
+    operator finds only by opening the folder, and `no` is a lie in the other direction — the deck
+    did ship, and the seven slides in it were paid for. `7/8` is the only honest cell, and it costs
+    the column no width.
+    """
+    summary = SpendSummary(
+        headline="requested 3 creatives, delivered 3 (1 partial)",
+        rows=(SpendRow("Li_car_ai-agents_01", "carousel", 0.24, 0.21, True,
+                       slides_delivered=7, slides_ordered=8),
+              SpendRow("Li_car_ai-agents_02", "carousel", 0.24, 0.24, True,
+                       slides_delivered=6, slides_ordered=6),
+              SpendRow("Li_img_ai-agents_03", "image", 0.04, 0.00, False)),
+        by_format={"carousel": 0.45, "image": 0.0}, llm_usd=0.11, render_usd=0.45,
+        total_usd=0.56, cap_usd=1.0, over_cap_usd=0.0, skipped_budget=0, skipped_other=0,
+        cap_status="within the $1.00 cap")
+
+    table = runner._spend_table(summary)
+
+    console_safe(table)
+    cells = [line.rsplit(" ", 1)[-1] for line in table.splitlines()[2:5]]
+    assert cells == ["7/8", "yes", "no"]
+    assert table.splitlines()[0].endswith("(1 partial)"), "the headline names it too"
+
+
+def _session(tmp: str = "output/20260813_2200_abcd") -> SimpleNamespace:
+    """The four fields `_final_line` reads off the run session — nothing else is touched."""
+    return SimpleNamespace(run_id="20260813_2200_abcd", run_dir=Path(tmp),
+                           clock=SimpleNamespace(elapsed_s=91.4), virlo_contacted=False)
+
+
+def test_fr321_the_closing_line_counts_partial_decks_apart_from_whole_ones() -> None:
+    """FR-232's one-line close, and the last place a truncated deck could still read as whole.
+
+    Folding partial decks into `generated` would make the closing line disagree with the spend
+    table printed directly above it — the table would say `7/8` and the summary would say
+    "generated 3", on the same run, three lines apart.
+    """
+    rows = (SpendRow("a", "carousel", 0.24, 0.21, True, slides_delivered=7, slides_ordered=8),
+            SpendRow("b", "carousel", 0.24, 0.24, True, slides_delivered=6, slides_ordered=6))
+    summary = SpendSummary(
+        headline="requested 2 creatives, delivered 2 (1 partial)", rows=rows,
+        by_format={"carousel": 0.45}, llm_usd=0.0, render_usd=0.45, total_usd=0.45, cap_usd=1.0,
+        over_cap_usd=0.0, skipped_budget=0, skipped_other=0, cap_status="within the $1.00 cap")
+
+    assert summary.partial == 1
+    line = runner._final_line(_session(), [], summary, 0)
+
+    console_safe(line)
+    assert "generated 2 · 1 partial" in line
+    assert "generated 2 ·  skipped" not in line, "the clause is silent when there are none"
 
 
 # --------------------------------------------------------------------------- the arithmetic

@@ -28,10 +28,17 @@
 #     anchor chaining slide 1 IS the deck's style). `cover_only` is a note to the author; such a
 #     style still takes whole decks, so it still needs a `carousel_slide` paragraph.
 #   - `exclusions` are SELF-CONTAINED forbid-rules, readable without any picture: platform chrome,
-#     watermarks, real company/product logos, real account names, faces, legible text outside the
-#     declared zones. They never restrict the TEXT block: a wordmark quoted in the TEXT block is
-#     always rendered, even when a similar word appears in the exclusions below (the render
-#     templates state this in one line of their own).
+#     watermarks, competitor/creator/platform marks, real account names, faces, legible text
+#     outside the declared zones. They never restrict the TEXT block: a wordmark quoted in the TEXT
+#     block is always rendered, even when a similar word appears in the exclusions below (the
+#     render templates state this in one line of their own).
+#   - An exclusion also never reaches a mark named on a render's TOOL MARKS line (D-A, v2.1.2).
+#     That line sanctions the real logos a mapped source panel actually showed — a tool's icon
+#     beside its list row — and they render as the REAL mark in their TRUE brand colours, exempt
+#     from this style's palette. So a logo exclusion here is scoped to what stays banned in every
+#     frame: competitor marks, creator marks, platform and channel marks, and every invented
+#     substitute for one. Write it that way; a blanket "no real logos" now contradicts the render
+#     template it is pasted into.
 #   - `max_onimage_chars` is this style's own ceiling per text kind. The EFFECTIVE limit is
 #     `min(config text_budgets, this cap)` — config ships headline 90, subline 160, slide 300,
 #     reel seed hook 60 (FR-259), so a cap lower than those is what actually binds, and the raised
@@ -83,7 +90,7 @@ styles:
     exclusions:
       - "platform UI of any kind: player chrome, progress bars, play buttons, pagination dots, search fields, tab bars, share and like icons"
       - "watermarks, app badges, usernames, @handles, profile pictures, follower, like, view or comment counters"
-      - "manufacturer logos and brand marks on visible hardware, appliances, packaging, clothing or stationery — every object in frame is unbranded"
+      - "competitor, creator and platform marks on visible hardware, appliances, packaging, clothing or stationery — every prop is unbranded unless the request's TOOL MARKS line sanctions the mark, and a sanctioned mark then renders as the real logo in its own brand colours"
       - "identifiable faces: a person in frame is turned away, silhouetted, or cropped at the edge"
       - "legible text anywhere outside the caption zone — signage, screen copy, book spines, printed matter and handwriting stay soft, out of focus or illegible"
       - "graphic furniture: stickers, badges, chips, sparkles, drawn arrows, frames, borders, gradient meshes, lens flares"
@@ -101,8 +108,8 @@ styles:
       graphics: an icon-and-label list column, a dark terminal-window card.
     subject_mode: scene_open
     layout_zones:
-      - {position: "top-left corner", content: "slide-position badge",
-         text_treatment: "outlined rounded-rectangle chip, small bold sans; carries the slide position and nothing else"}
+      - {position: "top-left corner", content: "slide-position badge", role: counter_slot,
+         text_treatment: "outlined rounded-rectangle chip, small bold sans; carries the counter string quoted in the TEXT block and nothing else"}
       - {position: "upper 40 percent, full width, kicker directly above the headline",
          content: headline,
          text_treatment: "tracked-out uppercase sans kicker over a Didone serif headline in two or three lines, near-black with one saturated teal phrase, thin teal double rule beneath"}
@@ -123,12 +130,12 @@ styles:
     image_treatment: "physically rendered voxel and glossy 3D props photographed as studio product shots — matte moulded surfaces, soft contact shadows, gentle specular highlights — floating on a flat cream field with no environment behind them; hand-drawn ink accents in the accent colour; no photography of real places, no gradient background"
     visual_pacing: "loud headline, quiet ground, one hero object; every slide repeats the same three-part rhythm of kicker, headline, object, so the deck reads as one magazine"
     per_format_guidance:
-      carousel_cover: "Cover: the full stacked headline with the teal payoff phrase at maximum scale, the largest hero object, badge reading position 1."
-      carousel_slide: "Body slide: drop the headline by roughly a third, keep the kicker and the teal rule, and give the freed middle band to the quoted line, the icon-and-label list, or the terminal card. Same cream ground, same rule weight, same corner chips as the cover."
+      carousel_cover: "Cover: the full stacked headline with the teal payoff phrase at maximum scale, the largest hero object, and the top-left chip only when a counter string is quoted in the TEXT block."
+      carousel_slide: "Body slide: drop the headline by roughly a third, keep the kicker and the teal rule, and give the freed middle band to the quoted line, the icon-and-label list, or the terminal card. Same cream ground, same rule weight, same corners as the cover — the top-left chip appears only where a counter string is quoted."
     exclusions:
       - "platform UI and overlays: pagination dots, search fields, play triangles, tab bars, share sheets, 'related content' banners"
       - "watermarks, app badges, usernames, @handles, follower, like or view counters"
-      - "real company, product or app logos — list rows, chips and icon nodes carry invented abstract glyphs only, and a made-up brand name in their place is equally forbidden"
+      - "competitor, creator and platform marks — list rows, chips and icon nodes carry invented abstract glyphs, and a made-up brand name in their place is equally forbidden; a mark the request's TOOL MARKS line sanctions is the exception and renders as the real logo in its true brand colours, at icon size beside its row"
       - "legible text inside a screenshot, terminal card, phone or device screen: interface copy is greeked into grey bars unless it is quoted in the TEXT block"
       - "lettered navigation cues — the top-right swipe mark is a drawn arrow glyph and carries no words"
       - "photographic environments, gradient meshes, lens flares, drop-shadowed glass panels: the ground is a flat cream field and stays flat"
@@ -146,8 +153,8 @@ styles:
       photographic. High text tolerance.
     subject_mode: scene_open
     layout_zones:
-      - {position: "top-left corner", content: "slide-position badge",
-         text_treatment: "outlined rounded-rectangle chip in the accent ink, small tracked caps; the slide position only"}
+      - {position: "top-left corner", content: "slide-position badge", role: counter_slot,
+         text_treatment: "outlined rounded-rectangle chip in the accent ink, small tracked caps; the counter string quoted in the TEXT block only"}
       - {position: "top two-thirds on the cover, upper-left third with a generous margin on a body slide",
          content: headline,
          text_treatment: "towering display type set tight, one ink for the setup lines and the second ink (or a reversed black bar) for the payoff phrase"}
@@ -167,12 +174,12 @@ styles:
     image_treatment: "flat printed inks on textured paper — visible tooth, grain, slight plate misregistration, ink density variation inside solids; a pixel-art mascot is the only illustration; screenshot insets are taped onto white cards and never bleed to the edge; no photograph, no gradient, no gloss, no drop shadow"
     visual_pacing: "one enormous typographic statement per slide, one supporting paragraph, one drawn mark — the paper is the ground and never a photograph"
     per_format_guidance:
-      carousel_cover: "Cover: aged cream paper with visible grain. The headline is towering condensed woodtype-style uppercase filling two thirds of the frame — black ink for the setup lines, vermilion for the payoff line, distressed ink texture inside every letterform. Hand-circled cue lower-right, outlined position chip top-left."
-      carousel_slide: "Body slide: saturated terracotta ground with film grain. The headline is lowercase ultra-heavy geometric sans in cream with one phrase reversed inside a solid black highlight bar; a longer quoted string sets beneath it in the lighter cream weight across the middle band. Insets ride on a taped white card. Position chip top-left in mono caps."
+      carousel_cover: "Cover: aged cream paper with visible grain. The headline is towering condensed woodtype-style uppercase filling two thirds of the frame — black ink for the setup lines, vermilion for the payoff line, distressed ink texture inside every letterform. Hand-circled cue lower-right; the outlined position chip appears top-left only when a counter string is quoted in the TEXT block."
+      carousel_slide: "Body slide: saturated terracotta ground with film grain. The headline is lowercase ultra-heavy geometric sans in cream with one phrase reversed inside a solid black highlight bar; a longer quoted string sets beneath it in the lighter cream weight across the middle band. Insets ride on a taped white card. The position chip sits top-left in mono caps only when a counter string is quoted in the TEXT block."
     exclusions:
       - "platform UI and overlays: pagination dots, search fields, play triangles, player chrome, 'related content' banners"
       - "watermarks, app badges, usernames, @handles, real account names or author credits printed as a rule or footer"
-      - "real company, product or app logos and any invented substitute for one; marks in this style are drawn shapes without letters"
+      - "competitor, creator and platform marks and any invented substitute for one; marks in this style are drawn shapes without letters, the exception being a mark the request's TOOL MARKS line sanctions, which is printed as the real logo in its true brand colours"
       - "legible text inside a taped screenshot card, a mock website or a device screen — that interface is invented and either wordless or greeked"
       - "lettered navigation cues: the swipe mark is a hand-drawn circled arrow and carries no words"
       - "photographic imagery, glossy surfaces, gradients, soft drop shadows, 3D renders — every mark on the page is printed ink"
@@ -210,18 +217,18 @@ styles:
       carousel_slide: "Body slide only, never a cover. Each slide is its own complete two-panel joke on the deck's shared paper ground, with the same frame weight, the same margins and the same caption treatment as its neighbours."
     exclusions:
       - "platform UI, watermarks, app badges, usernames, @handles, follower, like or view counters"
-      - "manufacturer and company logos on monitors, laptops, mugs, packaging or clothing inside either panel"
+      - "competitor, creator and platform marks on monitors, laptops, mugs, packaging or clothing inside either panel; only a mark the request's TOOL MARKS line sanctions is drawn for real, and then as the actual logo in its own brand colours"
       - "the likeness of any real, recognisable person — the characters are invented caricatures"
       - "readable text inside the artwork: sticky notes, papers, whiteboards, screens and signage stay illegible scrawl, because the only words in this frame are the two panel captions"
       - "a third panel, an inset, a speech balloon or a caption box inside the artwork — captions live in the paper margin and nowhere else"
 
   - key: anime-noir-statement
     render_prompt: >-
-      Cinematic anime key visual: a hooded figure seen from behind at a multi-monitor desk, face
-      never shown, dwarfed by a rain-streaked window onto a night-city bokeh skyline. Painterly
-      cel shading with heavy rim light from the screens, glowing abstract light ribbons on the
-      displays, one warm practical lamp against a cool blue-teal night palette; the bottom
-      quarter of the frame falls to near-black. Over that dark band sits a display serif
+      Cinematic anime key visual: a hooded figure seen from behind at a desk carrying at most two
+      monitors, face never shown, dwarfed by a rain-streaked window onto a night-city bokeh
+      skyline. Painterly cel shading with heavy rim light from the screens, glowing abstract light
+      ribbons, one warm practical lamp against a cool blue-teal night palette; the
+      bottom quarter of the frame falls to near-black. Over that dark band sits a display serif
       statement at poster scale, white with exactly one word in saturated teal, tight leading:
       two lines by default, up to four tighter lines at reduced scale when the quoted string is
       long. Below it a thin hairline rule closes the frame. Mood: nocturnal, obsessive, quietly
@@ -247,12 +254,12 @@ styles:
     per_format_guidance:
       carousel_role: cover_only
       carousel_cover: "Cover: the widest night view, the statement in the lower third at full poster scale, the hairline rule closing the frame."
-      carousel_slide: "Body slide: the same night, one step closer — a different angle on the same desk, window or skyline under the same rim light and the same palette. The dark lower band, the statement position and the type treatment are identical to the cover; only the picture behind them and the quoted words change. A long quoted panel sets in up to four tighter lines rather than spilling out of the band."
+      carousel_slide: "Body slide: the SAME night, the SAME room, the SAME desk and the SAME window onto the SAME skyline as the cover — one step closer at most. Never a new location, never a new camera position, never a second desk and never more than two monitors. The rim light, the palette, the dark lower band, the statement position and the type treatment are identical to the cover; only the quoted words and the small things on the desk change. THIS SCENE OUTRANKS THE SLIDE'S VISUAL BRIEF: where the brief describes another room, another angle, another background or another composition, it is describing the source deck and not this one — keep this desk under this window and place the brief's content elements into it. A long quoted panel sets in up to four tighter lines rather than spilling out of the band."
     exclusions:
       - "platform UI, player chrome, progress bars, watermarks, app badges, usernames, @handles, follower or view counters"
-      - "readable interface content on the monitors — the screens carry abstract light ribbons only: no windows, no code, no dashboards, no charts, no logos"
+      - "readable interface content on the monitors — the screens carry abstract light ribbons: no windows, no code, no dashboards, no charts, and no mark except one the request's TOOL MARKS line sanctions, which may glow as a single icon and nothing more"
       - "any recognisable face: the figure is seen from behind and stays anonymous"
-      - "company, product and app logos anywhere in the scene, including on the hardware, the hoodie and the city signage; distant signs stay illegible glow"
+      - "competitor, creator and platform marks anywhere in the scene, including on the hardware, the hoodie and the city signage; distant signs stay illegible glow, and a mark the request's TOOL MARKS line sanctions is the one logo drawn for real, in its true brand colours"
       - "legible text outside the statement band and the footer — no titles, no subtitles, no captions burned over the picture"
 
   - key: ugc-tabletop-statement
@@ -286,26 +293,27 @@ styles:
       carousel_slide: "Body slide only, never a cover. Each slide is a different corner of the same table under the same light: one prop moves, the statement block keeps its position, size and treatment, and a longer quoted string adds lines downward rather than shrinking the type."
     exclusions:
       - "platform UI, watermarks, app badges, usernames, @handles, follower, like or view counters"
-      - "manufacturer logos and brand marks on the laptop, the mug, the pen, the notebook or any other prop"
+      - "competitor, creator and platform marks on the laptop, the mug, the pen, the notebook or any other prop — props stay unbranded, the exception being a mark the request's TOOL MARKS line sanctions, which is drawn as the real logo in its own brand colours"
       - "readable handwriting or print on props — writing in the notebook and on any paper stays illegible scrawl"
       - "legible text anywhere outside the statement block, including screens, packaging and signage in the blurred background"
       - "graphic overlays: stickers, badges, chips, arrows, frames, emoji drawn as artwork, gradient scrims"
 
   - key: platform-showcase-card
     render_prompt: >-
-      Flat ecru canvas with generous whitespace and a strict vertical stack: a small tracked-out
-      uppercase kicker in teal; an oversized tight-tracking geometric sans headline in near-black
-      across two lines with one phrase switched to teal; then a large centred browser-window
-      mock-up — rounded corners, three traffic-light dots, pale chrome bar — holding an invented
-      interface rendered as a wireframe with greeked grey bars where copy would sit; then the
-      quoted explanatory text in a regular sans, two to four centred lines; then a
-      hairline-flanked signature slot at the foot. Soft card shadow only, no gradient on the
-      canvas, no photography, no 3D. Mood: announcement, product-launch clarity.
+      Flat ecru canvas with a strict vertical stack. At the top a small tracked-out teal kicker
+      slot, lettered only where the TEXT block quotes a kicker string and otherwise a short teal
+      rule; under it an oversized tight-tracking geometric sans headline in near-black across two
+      lines with one phrase in teal; then a large centred browser-window mock-up — rounded
+      corners, three traffic-light dots, pale chrome bar — holding an invented wireframe
+      interface with greeked grey bars where copy would sit; then the quoted text in a regular
+      sans, two to four centred lines. A hairline-flanked signature slot closes the foot when
+      declared by the layout zones. Soft card shadow only, no gradient, no photography,
+      no 3D. Mood: announcement, product-launch clarity.
     subject_mode: scene_open
     layout_zones:
-      - {position: "upper quarter, centred, kicker immediately above the headline",
+      - {position: "upper quarter, centred, kicker slot immediately above the headline",
          content: headline,
-         text_treatment: "tracked-out uppercase teal kicker over an oversized tight-tracking geometric sans headline in near-black, two lines, one phrase in teal"}
+         text_treatment: "an oversized tight-tracking geometric sans headline in near-black, two lines, one phrase in teal; above it the tracked-out uppercase teal kicker slot, which letters only where the TEXT block quotes a kicker string and otherwise carries a short teal rule"}
       - {position: "centre of the frame", content: "browser-window mock-up",
          text_treatment: "no lettering inside the window — greeked grey bars and blocks stand in for every string"}
       - {position: "directly beneath the browser card, centred", content: body,
@@ -321,16 +329,16 @@ styles:
     motion_profile: graphic
     palette: ["ecru canvas #F4EFE2", "near-black #16151A", "teal accent #0C8897", "card white #FFFFFF", "chrome grey #D6D2C8"]
     typography: "one tight-tracking geometric sans across the whole card (Poppins, Gilroy, or the same species): tracked-out uppercase for the kicker and the footer, oversized bold for the headline, regular for the caption; no serif, no script, no second family"
-    text_placement: "strict vertical stack — kicker, headline, browser card, the quoted caption in two to four centred lines, signature slot; everything centred on one axis, everything margined generously, nothing touching the canvas edge"
+    text_placement: "strict vertical stack — kicker slot, headline, browser card, the quoted caption in two to four centred lines, signature slot; the kicker and signature slots letter only where a string is quoted for them and otherwise hold a rule or clear space; everything centred on one axis, everything margined generously, nothing touching the canvas edge"
     image_treatment: "flat vector-clean canvas with exactly one soft card shadow; the only depth in the frame is the browser window floating over the ecru; wireframe interface inside it — grey bars, empty blocks, simple outlined shapes; no gradient, no photograph, no 3D render, no glass or glow effect"
     visual_pacing: "announcement rhythm — a whisper, a shout, a demonstration, a footnote — repeated identically on every slide of a deck"
     per_format_guidance:
-      carousel_cover: "Cover: the browser card at its largest, the headline at full scale, the signature slot closing the frame."
-      carousel_slide: "Body slide: keep the stack and shrink the browser card to make room for the quoted caption, which may run to four lines at reading size. The kicker keeps its size, colour and tracking on every slide; only the words below the card change."
+      carousel_cover: "Cover: the browser card at its largest, the headline at full scale, and the signature slot closing the frame when this deck is signed."
+      carousel_slide: "Body slide: keep the stack and shrink the browser card to make room for the quoted caption, which may run to four lines at reading size. The kicker slot keeps its size, colour and tracking on every slide, lettered only where a kicker string is quoted for it; only the words below the card change."
     exclusions:
       - "platform UI outside the mock-up itself: no player chrome, no pagination dots, no search overlay, no share sheet, no tab bar"
       - "watermarks, app badges, usernames, @handles, follower, like or view counters"
-      - "real company, product or app logos anywhere in the frame, including inside the browser mock-up and above the headline; an invented brand name in their place is equally forbidden"
+      - "competitor, creator and platform marks anywhere in the frame, including inside the browser mock-up and above the headline; an invented brand name in their place is equally forbidden, and only a mark the request's TOOL MARKS line sanctions is drawn for real — as the actual logo, in its true brand colours"
       - "legible text inside the browser window — every string in that interface is greeked into grey bars unless it is quoted in the TEXT block"
       - "photography, gradient backgrounds, glassmorphism, neon glow, 3D perspective on the card: the canvas is flat ecru and the card is flat white"
 
@@ -372,6 +380,6 @@ styles:
     exclusions:
       - "platform UI, watermarks, app badges, usernames, @handles, follower, like or view counters"
       - "third-party channel marks and their brand colours — LinkedIn, Messenger, Instagram, WhatsApp, X, email-client glyphs: icon nodes carry invented abstract symbols only"
-      - "any company, product or app logo other than a wordmark quoted in the TEXT block; the badge beside the lockup is a plain geometric mark and carries no letters"
+      - "competitor, creator and platform marks; the only logos in this frame are the wordmark quoted in the TEXT block and any mark the request's TOOL MARKS line sanctions, which renders as the real logo in its true brand colours; the badge beside the lockup stays a plain geometric mark and carries no letters"
       - "legible text inside a card's interface mock-up — those screens are wireframes of grey bars and blocks unless the string is quoted in the TEXT block"
       - "photography, 3D renders, stock illustration, serif type, handwriting, neon glow and drop-shadowed glass panels"

@@ -47,7 +47,7 @@ from hypesocials import cli, generate, previews, render, runner, topic_filter
 from hypesocials.config import Config
 from hypesocials.models import (AssetRecord, CopySet, PlanEntry, PlanEntryStatus, RenderFailCause,
                                 RenderOutcome, RenderOutcomeKind, RenderPriority, SourcePost,
-                                TrendItem)
+                                TrendItem, VisionCheckResult)
 from hypesocials.util import Deadline, Pulse, Stopwatch
 
 #: FR-286's ceiling, read off the runner so a widened console cannot silently pass this file.
@@ -829,7 +829,7 @@ def test_fr296_filter_prints_one_line_per_NON_keep_and_keeps_go_to_the_log(
     skips = [line for line in lines if line.strip().startswith("skip")]
     assert len(strips) == 1 and '"Cursor", "Lovable"' in strips[0]
     assert len(skips) == 1 and "PROMO: post sells n8n Cloud" in skips[0]
-    assert lines[0].startswith("[3/9] FILTER") and lines[0].endswith("...")
+    assert lines[0].startswith("[3/10] FILTER") and lines[0].endswith("...")  # CHECK joined the live stages (vision_check default on, v2.1.1)
     assert "4 topic(s) -> 2 keep, 1 strip, 1 skip" in lines[1]
     assert live.strip_brands == {topics[1].history_key: ("Cursor", "Lovable")}, \
         "M6: the LLM's strips ride to the copy AND render paths, keyed by trend_key"
@@ -1060,3 +1060,62 @@ def test_fr306_the_merged_panels_the_copy_stage_reads_come_from_this_stage_alone
 
     assert "session.slide_intel.items()" in write_source and "merged_panels=" in write_source
     assert "slide_intel=dict(session.slide_intel)" in create_source
+
+
+# ------------------------------------- FR-296: the CHECK rollup's categories must not overlap
+#
+# Run 20260814_010814_glz0 printed `6 checked -> 4 pass, 3 retried`, and 4 + 3 > 6. The cause was
+# `retried` counting BOTH retry outcomes while `passed` counted `retried_passed` as well, so a
+# creative that was flagged, re-rendered and came back clean was in two buckets at once. A rollup
+# whose numbers do not add up is a rollup the operator has to distrust in full.
+
+
+def _checked(**counts: int) -> generate.Report:
+    """A `Report` carrying `counts` creatives per `VisionCheckResult` value, ids in order."""
+    records: dict[str, AssetRecord] = {}
+    for value, many in counts.items():
+        for _ in range(many):
+            asset_id = f"{len(records) + 1:04d}_carousel_linkedin"
+            records[asset_id] = AssetRecord(
+                asset_id=asset_id, source="t1", source_name="AI tool stacks",
+                platform="linkedin", creative_format="carousel",
+                vision_check_result=VisionCheckResult(value))
+    return generate.Report(records=records)
+
+
+def test_fr296_the_check_rollups_categories_are_disjoint_and_add_up(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The glz0 shape, counted honestly: six checked, four of them passing, two still flagged.
+
+    `retried_passed` is a PASS — the defect was found and fixed, which is the whole point of
+    paying for a retry — so it is counted once, in the pass bucket, and how many passes needed a
+    re-render is stated as a parenthetical. `retried_failed` is what is left: flagged, re-rendered,
+    still wrong, shipped as rendered (FR-105).
+    """
+    live = session(stages=["RENDER", "CHECK", "DONE"])
+    report = _checked(passed=3, retried_passed=1, retried_failed=2, not_checked=1)
+
+    runner._check_rollup(live, report)
+
+    line = printed(capsys)[0]
+    console_safe(line)
+    assert "6 of 7 checked -> 4 pass (1 retried), 2 flagged" in line
+    numbers = [int(n) for n in re.findall(r"(\d+) (?:pass|flagged)", line)]
+    assert sum(numbers) == 6, "pass + flagged accounts for every CHECKED creative"
+
+
+def test_fr296_a_clean_run_states_no_retry_parenthetical_at_all(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The common case stays short: nothing was re-rendered, so nothing is said about retries.
+
+    `(0 retried)` on every clean run would be noise on the one line that is supposed to be
+    scannable — §1.10's rule that a surface states what happened, not what could have. The
+    denominator disappears too: with nothing unchecked, "6 of 6 checked" says it twice.
+    """
+    live = session(stages=["RENDER", "CHECK", "DONE"])
+
+    runner._check_rollup(live, _checked(passed=6))
+
+    assert "6 checked -> 6 pass, 0 flagged" in printed(capsys)[0]

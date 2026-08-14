@@ -69,7 +69,12 @@ def one(est: Estimate, code: str) -> budget.EstimateLine:
 
 
 def test_fr107_vision_check_calls(cfg: Config) -> None:
-    """"vision-check calls when `vision_check` is on"."""
+    """"vision-check calls when `vision_check` is on" — and none at all when it is off.
+
+    The off case is set EXPLICITLY since 2026-08-13: `vision_check` defaults to `True` now, so a
+    plan that never touches the key is the ON case, not the OFF one.
+    """
+    cfg.run.vision_check = False
     plan = [entry(0), entry(1)]
     assert lines(estimate(cfg, plan), "vision_check") == []
 
@@ -282,10 +287,10 @@ def test_fr107_carousel_slides_at_each_entrys_own_deck_length(cfg: Config) -> No
     """"carousel slides (deck length from Virlo `panel_count` at ASSIGN per FR-95, clamped to
     platform ceiling)" — FR-107 as amended v2.1.0.
 
-    Each deck is priced at ITS OWN length now, not at one flat ceiling for the whole plan: a
+    Each deck is priced at ITS OWN length now, not at one flat number for the whole plan: a
     three-panel source and a nine-panel source in the same run cost three and six renders under a
-    ceiling of six. The ceiling is still the bound (FR-257) and still the number an unbound plan —
-    the pre-Collect estimate, and every override brief — is quoted at.
+    hard max of six. The platform max is still the bound (FR-257) — it caps a deck and never sets
+    one; an entry with no `slide_count` at all falls back to it as a last resort.
     """
     cfg.platforms["linkedin"] = PlatformConfig(formats=["carousel"], carousel_slides=6)
     assert one(estimate(cfg, [entry(0, "carousel")]), "carousel_slides").quantity == 6
@@ -301,6 +306,27 @@ def test_fr107_carousel_slides_at_each_entrys_own_deck_length(cfg: Config) -> No
     short, long = lines(mixed, "carousel_slides")
     assert (short.quantity, long.quantity) == (3, 6)
     assert mixed.per_entry_usd[1] > mixed.per_entry_usd[0]
+
+
+def test_two_bound_decks_of_different_lengths_get_different_estimated_costs(cfg: Config) -> None:
+    """Regression for the audit of run 20260813_143420_oyo4: every carousel in that run carried
+    the SAME `estimated_cost_usd` (0.196541) because every deck was the same flat 5 slides.
+
+    With `carousel_slides` demoted to a platform hard max (2026-08-13), deck length comes from the
+    bound post's panels, so identical per-entry costs across a plan of differing decks is now a
+    symptom — the length never reached the estimator. This pins the number `estimate()` stamps
+    back onto the entries, not just the lines it returns, because `meta.yaml`, the console plan
+    table and the trim-to-cap arithmetic all read the entry field.
+    """
+    cfg.platforms["linkedin"] = PlatformConfig(formats=["carousel"], carousel_slides=20)
+    short, tall = bound(0, "post-a", slides=3), bound(1, "post-b", slides=12)
+
+    est = estimate(cfg, [short, tall])
+
+    assert [line.quantity for line in lines(est, "carousel_slides")] == [3, 12]
+    assert short.estimated_cost_usd > 0 and tall.estimated_cost_usd > short.estimated_cost_usd, \
+        "a deck four times as long cannot cost the same as its sibling"
+    assert est.per_entry_usd == {0: short.estimated_cost_usd, 1: tall.estimated_cost_usd}
 
 
 # ------------------------------------------------- FR-306 slide intelligence (D46 §0.11)
@@ -815,6 +841,83 @@ async def test_fr84_summary_tallies_billed_attempts_on_submission(cfg: Config) -
     assert summary.llm_usd == pytest.approx(0.002)
     assert summary.total_usd == pytest.approx(0.182)
     assert summary.banner == est.banner and "within the" in summary.cap_status
+
+
+async def test_fr321_a_deck_that_shipped_short_carries_both_counts_and_is_called_partial(
+    cfg: Config,
+) -> None:
+    """FR-321: `delivered` answers "did this creative ship at all", which a 7-of-8 deck answers
+    with `True` — `carousel.package()` marks it incomplete rather than failing it, and that is
+    correct. It is also how a truncated deck came to read as an unqualified success on the one
+    surface the operator scans first.
+
+    So the row carries the pair `carousel.package()` writes (`slide_count` / `slides_ordered`) and
+    derives `partial` from it, and the headline names the count. Deriving rather than storing is
+    what keeps the headline, the spend table and the closing line from disagreeing about one
+    number they all print.
+    """
+    plan = [entry(0, "carousel"), entry(1, "carousel"), entry(2, "image")]
+    for item in plan:
+        item.status = PlanEntryStatus.SUCCESS
+    cap = Budget(1.00)
+    for item in plan:
+        await cap.reconcile(await cap.commit(0.15, label="deck", asset_id=item.asset_id), 0.15)
+    records = {plan[0].asset_id: SimpleNamespace(slide_count=7, slides_ordered=8),
+               plan[1].asset_id: SimpleNamespace(slide_count=6, slides_ordered=6)}
+
+    summary = cap.summary(plan, records=records)
+
+    short, whole, image = summary.rows
+    assert (short.slides_delivered, short.slides_ordered) == (7, 8) and short.partial
+    assert (whole.slides_delivered, whole.slides_ordered) == (6, 6) and not whole.partial
+    assert (image.slides_delivered, image.slides_ordered) == (None, None), \
+        "no record, no claim — an image has no deck length to be short of"
+    assert not image.partial
+    assert summary.partial == 1
+    assert summary.headline == "requested 3 creatives, delivered 3 (1 partial)"
+
+
+async def test_fr321_a_deck_that_failed_outright_is_a_skip_and_never_a_partial(
+    cfg: Config,
+) -> None:
+    """`partial` requires `delivered`. A deck that shipped nothing is a SKIP with its own reason,
+    and counting it here as well would report one loss twice in two vocabularies — the closing
+    line would say "generated 0 · 1 partial", which is a sentence about nothing."""
+    plan = [entry(0, "carousel")]
+    plan[0].status = PlanEntryStatus.FAILED
+    cap = Budget(1.00)
+
+    summary = cap.summary(
+        plan, records={plan[0].asset_id: SimpleNamespace(slide_count=0, slides_ordered=8)})
+
+    assert summary.rows[0].delivered is False and summary.rows[0].partial is False
+    assert summary.partial == 0
+    assert summary.headline == "requested 1 creatives, delivered 0", "no partial clause at all"
+
+
+async def test_fr321_a_meta_written_before_the_requirement_existed_makes_no_claim(
+    cfg: Config,
+) -> None:
+    """A record with `slide_count` and no `slides_ordered` was packaged before FR-321.
+
+    Guessing the ordered count from the delivered one would report every old truncated deck as
+    complete — precisely the silence this requirement removes — so the pair is read as a pair, and
+    a half-present pair claims nothing. The mapping shape is covered too, because `meta.yaml` read
+    back off disk is a dict rather than a dataclass.
+    """
+    plan = [entry(0, "carousel"), entry(1, "carousel")]
+    for item in plan:
+        item.status = PlanEntryStatus.SUCCESS
+    cap = Budget(1.00)
+
+    summary = cap.summary(plan, records={
+        plan[0].asset_id: SimpleNamespace(slide_count=7),                 # pre-FR-321 dataclass
+        plan[1].asset_id: {"slide_count": 5, "slides_ordered": 8}})       # meta.yaml off disk
+
+    legacy, off_disk = summary.rows
+    assert (legacy.slides_delivered, legacy.slides_ordered) == (7, None) and not legacy.partial
+    assert (off_disk.slides_delivered, off_disk.slides_ordered) == (5, 8) and off_disk.partial
+    assert summary.partial == 1
 
 
 async def test_skipped_counts_separate_budget_trims_from_other_losses(cfg: Config) -> None:

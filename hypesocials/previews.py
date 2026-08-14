@@ -203,8 +203,10 @@ async def _deep_stages(session: runner._Session, trends: Sequence[TrendItem],
     by_key = {trend.history_key: trend for trend in kept}
 
     registry = _registry(session)
-    styles.assign_styles(live, registry, config.branding.brand)
-    styles.assign_branding(live, config.branding.brand_ratio)
+    styles.assign_styles(live, registry, config.branding.brand,
+                         enabled=config.styles.enabled,  # FR-314: preview the SELECTED rotation
+                         branding_enabled=config.branding.enabled)  # FR-318: and the SIGNED pool
+    styles.assign_branding(live, config.branding.brand_ratio, enabled=config.branding.enabled)
     _record_style_forecast(session, live, registry, dropped=len(assignment.dropped))
 
     if table := _topics_table(list(trends), verdicts,

@@ -57,6 +57,13 @@ PENDING_TREND_SLUG = "unassigned"
 #: two panels is the shortest thing that still reads as a deck, so a source post with fewer usable
 #: panel slots than this is not a carousel source at all, and a bound deck is never shorter.
 MIN_DECK_SLIDES = 2
+#: What a carousel with NO bound source post is worth in slides (`_emit`, §0.14d). Since
+#: 2026-08-13 `platforms.<name>.carousel_slides` is a platform HARD MAX (20/10/20), not a target,
+#: so quoting it as a provisional length would price a pre-Collect plan at four times the deck any
+#: run actually ships. This number is the honest stand-in until `assign()` replaces it with the
+#: bound post's own panel count, and it stays the final length for an override brief, which binds
+#: no post and therefore has no panels to be 1:1 with.
+DEFAULT_UNBOUND_DECK_SLIDES = 5
 #: The machine-readable cause a starved carousel carries (FR-307/§0.10). It is a SKIP, not a
 #: fallback: binding the entry to a post whose text already shipped is the repeat D46 forbids, and
 #: binding it to a video topic is the silent rank-fallback FR-90 forbids.
@@ -343,11 +350,13 @@ def _emit(entries: list[PlanEntry], config: Config, fmt: CreativeFormat, platfor
         creative_format=fmt, platform=platform, language=config.language_for(platform),
         aspect_ratio=_aspect_ratio(config, platform, fmt),
         atomic_group=f"c{next(creatives):02d}",
-        # The config ceiling stands in until `assign()` replaces it with the bound source post's
+        # A provisional length stands in until `assign()` replaces it with the bound source post's
         # own panel count (FR-304/§0.4′). It is the honest number until then — the pre-Collect
         # estimate (`runner._stamp_provisional`) is quoted before any post exists, and an override
-        # brief binds no post at all (§0.14d), so the ceiling stays its deck length for good.
-        slide_count=config.platform(platform).carousel_slides if fmt == "carousel" else None,
+        # brief binds no post at all (§0.14d), so it stays that entry's deck length for good. NOT
+        # the platform ceiling: that key is a hard MAX now, and quoting it here would balloon every
+        # pre-bind estimate to 20 slides a deck.
+        slide_count=DEFAULT_UNBOUND_DECK_SLIDES if fmt == "carousel" else None,
         brief_name=brief.name if brief else None,
         brief_influence=brief.influence if brief else None))
 
@@ -477,9 +486,11 @@ def assign(entries: Sequence[PlanEntry], selection: Selection, config: Config) -
     - `source_post_id` names the bound source post (carousels only, FR-304). It is what
       `copywrite` quotes panel by panel, what `sources.slide_intel` reads after the Confirm gate,
       and what the gallery joins its provenance card on;
-    - `slide_count` is the deck length, fixed HERE from that post's panel count clamped to
-      `platforms.<name>.carousel_slides` (§0.4′). Fixing it before the estimate is what keeps the
-      Confirm gate honest — vision intelligence runs later and may never change a deck's length;
+    - `slide_count` is the deck length, fixed HERE from that post's panel count clamped under the
+      `platforms.<name>.carousel_slides` HARD MAX (§0.4′) — the post's panels set the number, the
+      platform only caps it, so a bound deck is 1:1 with its source. Fixing it before the estimate
+      is what keeps the Confirm gate honest — vision intelligence runs later and may never change
+      a deck's length;
     - `trend_reuse_index` records this creative's 0-based position among the creatives sharing
       that topic. **Legacy-only after D46 (§0.10 + the W3/F3 excision):** the bound
       `source_post_id` above says WHICH post a creative quotes, exactly and per creative, and
@@ -662,14 +673,22 @@ def fresh_source_post(trend: TrendItem, config: Config,
 def deck_length(post: SourcePost, config: Config, platform: str) -> int:
     """§0.4′/FR-95/FR-257: the source's panel count clamped into `[2, carousel_slides]`.
 
+    **The source decides the length; `carousel_slides` is only a HARD MAX** (operator decision
+    2026-08-13). It is what the destination platform will accept — 20 on LinkedIn and TikTok, 10 on
+    Instagram — and nothing else in the engine treats it as a target any more, so a 7-panel post
+    ships a 7-slide deck and a 3-panel post ships 3. That is FR-304's 1:1 panel fidelity: run
+    20260813_143420_oyo4 cut every 5–8 panel source down to 5 because this key used to mean both
+    things at once.
+
     Free arithmetic over data Virlo already handed us, which is exactly why the deck length is
     fixed here and not after the vision pass: the Confirm gate prices the deck it will render
     (rule 7), and vision intelligence is additive content that may never change a length.
 
-    A source deck longer than the ceiling is TRUNCATED to its first N panels with the indices
+    A source deck longer than the max is TRUNCATED to its first N panels with the indices
     preserved — `generate/carousel.py` tags that cut `panels_truncated` by comparing this length
-    back against `source_panel_count()`. The ceiling itself is floored at `MIN_DECK_SLIDES` so a
-    misconfigured `carousel_slides: 1` cannot produce a one-slide "carousel".
+    back against `source_panel_count()`. With the maxes at 20/10/20 that cut is now the rare case
+    it should always have been. The max itself is floored at `MIN_DECK_SLIDES` so a misconfigured
+    `carousel_slides: 1` cannot produce a one-slide "carousel".
     """
     ceiling = max(int(config.platform(platform).carousel_slides or 0), MIN_DECK_SLIDES)
     return max(MIN_DECK_SLIDES, min(source_panel_count(post), ceiling))

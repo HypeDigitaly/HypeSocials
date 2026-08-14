@@ -78,7 +78,9 @@ answer with the text of a candidate instead of its label.
 The list is already filtered for you:
 
 - Every on-image candidate already fits this creative's character budget, and
-  carries no @handle and no URL.
+  carries no @handle and no social-platform link. A technical URL (a code
+  host, a docs site, a package registry) may appear in a candidate: it is
+  legitimate content, quoted byte-exact like every other character.
 - Panel text keeps its own voice. When a panel is offered for a deck's slide it
   may contain emoji, line breaks and `#` words, because that is exactly how it
   stood on the source slide. That is not a defect and never a reason to skip

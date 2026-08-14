@@ -367,6 +367,12 @@ def _check_styles(config: Config, action: str, errors: list[str], warnings: list
     choice are warnings. Post-D46 there is no reference-image finding at all — a meta-style is
     text-only DNA (FR-17/18), declares no pictures, and therefore has none that can be missing.
 
+    The `config` handed over is the one CLI overrides already mutated (`cli.apply_overrides` runs
+    before `check`), so `--styles` is graded here too: FR-314's unknown-key refusal and its
+    "selection emptied this format's pool" refusal both arrive through this same call, at exit 2
+    with $0 spent. That ordering is load-bearing — a selector checked at config LOAD time would
+    never see the flag.
+
     Skipped where no style is ever assigned: `--list-monitors` prints monitor ids (FR-251) and
     `--preview-sources` is the $0 blocklist preview (FR-139) — refusing either on a registry they
     do not read would break the very commands an operator uses to fix a config.
@@ -399,6 +405,9 @@ def _check_branding(config: Config, action: str, errors: list[str],
     Two findings are genuinely new here, because they are runtime facts the loader cannot judge:
     a branded run whose profile carries no `wordmark` (nothing to sign with), and FR-292's
     web-only orange — a warning, since it is a colour choice the operator typed, not a broken run.
+    The first of those is skipped outright while FR-318's `branding.enabled` is false; the
+    invariants above it are still asserted, because a profile that is wrong stays wrong and the
+    switch is one config edit away from making it billable.
     `--list-monitors` is exempt for FR-251's reason: it is the cure for a broken config and must
     never be refused by one.
     """
@@ -427,7 +436,12 @@ def _check_branding(config: Config, action: str, errors: list[str],
                 warnings.append(f"{where} is {item} — that orange is WEB-ONLY and belongs in no "
                                 "brand asset; renders carrying it will not match the brand kit "
                                 "(FR-292)")
-    if branding.brand_ratio > 0 and not profile.wordmark.strip():
+    # FR-318: with the master switch off the wordmark is never rendered and `brand_ratio` never
+    # evaluated, so an empty wordmark beside a non-zero ratio describes nothing this run will do.
+    # Warning about it anyway would train the operator to ignore the branding warnings that DO
+    # mean something the day they flip the switch back on. No new refusal is added here: the
+    # switch removes work, it can never make a config unrunnable that was runnable before.
+    if branding.enabled and branding.brand_ratio > 0 and not profile.wordmark.strip():
         warnings.append(f"branding.profiles.{branding.brand}.wordmark is empty but brand_ratio is "
                         f"{branding.brand_ratio} — those creatives would be 'branded' with nothing "
                         "to sign them; set the wordmark or set brand_ratio to 0 (FR-292)")

@@ -38,6 +38,9 @@ from hypesocials.models import (
     SourcePost,
     TrendItem,
 )
+#: The provider's measured ceiling, imported rather than retyped — the length tests below are
+#: about the number `render/profiles.py` actually ships (glz0: 20 000 accepted, 20 007 refused).
+from hypesocials.render.profiles import MAX_PROMPT_CHARS
 
 #: The six pre-pivot placeholder names the W3.5 excision removed from the vocabulary — asserted
 #: ABSENT so a legacy builder cannot quietly return.
@@ -52,9 +55,20 @@ class Recorder:
 
     def __init__(self) -> None:
         self.warnings: list[tuple[str, str]] = []
+        self.data: list[tuple[str, dict[str, object]]] = []
 
     def warn(self, event_type: str, message: str = "", **data: object) -> None:
         self.warnings.append((event_type, message))
+        self.data.append((event_type, dict(data)))
+
+    def warned(self, event_type: str) -> list[dict[str, object]]:
+        """Every structured payload logged under `event_type`, in order.
+
+        The message half of a warning is prose and moves; the FIELDS are the machine-readable
+        half a run's events.jsonl is read with, and `prompt_hard_trimmed` exists to be read that
+        way (which fields were trimmed, how much came off, what the final length was).
+        """
+        return [fields for event, fields in self.data if event == event_type]
 
 
 def make_style(**overrides: object) -> MetaStyle:
@@ -221,7 +235,8 @@ def test_the_allowlist_table_is_the_pinned_final_one() -> None:
     assert pe.allowlist("carousel_slide.md") == frozenset({
         "slide_index", "style_dna", "render_prompt", "onimage_text", "reference_roles",
         "exclusions", "text_budgets", "brief_directives", "niche_visual_world", "branding_block",
-        "visual_brief", "slide_panel_source"})  # D46: the two panel-mapping slots (FR-304/308)
+        "visual_brief", "slide_panel_source",  # D46: the panel-mapping slots (FR-304/308)
+        "tool_marks", "slide_counter"})  # v2.1.2: the sanctioned marks line and the badge string
     assert pe.allowlist("slide_intel_question.md") == frozenset()
     assert pe.allowlist("reel_seed_frame.md") == frozenset({
         "render_prompt", "layout_zones", "onimage_text", "reference_roles", "exclusions",
@@ -567,6 +582,96 @@ def test_m11_a_brand_slot_zone_is_emitted_only_when_the_creative_is_signed() -> 
     assert pe._NO_SIGNATURE_LINE not in pe.build_context(style=make_style())["layout_zones"]
 
 
+# ------------------------------------------------------ v2.1.2: the sanctioned marks and counter
+
+
+def test_dd_a_counter_slot_zone_is_emitted_only_when_the_deck_carries_a_counter() -> None:
+    """D-D's half of M11. A style whose layout declares a position badge describes a chip with a
+    number in it; an uncounted deck used to get that chip described and nothing to put inside it,
+    and the models filled it with an invented "01", a page number, or a count matching no deck.
+    The zone is now gated on the counter STRING exactly as the signature zone is gated on the
+    wordmark, and its absence is stated rather than left to be inferred from a shorter list."""
+    style = make_style(layout_zones=[
+        LayoutZone("upper third", "headline", "all caps"),
+        LayoutZone("top-left corner", "slide-position badge", "small chip", role="counter_slot")])
+
+    counted = pe.build_context(style=style, slide_counter="3/7")["layout_zones"]
+    uncounted = pe.build_context(style=style)["layout_zones"]
+
+    assert "2. top-left corner — slide-position badge — small chip" in counted
+    assert pe._NO_COUNTER_LINE not in counted
+    assert "top-left corner" not in uncounted, "the zone itself is dropped…"
+    assert uncounted.endswith(pe._NO_COUNTER_LINE)  # …and its absence is stated instead
+    assert uncounted.startswith("1. upper third")
+    # A style with no counter slot at all says nothing about counters either way.
+    assert pe._NO_COUNTER_LINE not in pe.build_context(style=make_style())["layout_zones"]
+
+
+def test_the_signature_gate_and_the_counter_gate_are_independent() -> None:
+    """Two optional zones, two separate values: a signed-but-uncounted deck must lose the badge and
+    keep the signature. The numbering runs over what is EMITTED, so neither gap is visible."""
+    style = make_style(layout_zones=[
+        LayoutZone("upper third", "headline", "all caps"),
+        LayoutZone("top-left corner", "slide-position badge", "small chip", role="counter_slot"),
+        LayoutZone("lower margin", "brand", "letter-spaced", role="brand_slot")])
+
+    both = pe.build_context(style=style, wordmark="HypeLead", slide_counter="3/7")["layout_zones"]
+    signed_only = pe.build_context(style=style, wordmark="HypeLead")["layout_zones"]
+    counted_only = pe.build_context(style=style, slide_counter="3/7")["layout_zones"]
+    neither = pe.build_context(style=style)["layout_zones"]
+
+    assert len(both.splitlines()) == 3
+    assert pe._NO_COUNTER_LINE not in both and pe._NO_SIGNATURE_LINE not in both
+    assert signed_only.splitlines() == ["1. upper third — headline — all caps",
+                                        "  2. lower margin — brand — letter-spaced",
+                                        "  " + pe._NO_COUNTER_LINE]
+    assert "slide-position badge" in counted_only and pe._NO_SIGNATURE_LINE in counted_only
+    assert neither.splitlines() == ["1. upper third — headline — all caps",
+                                    "  " + pe._NO_SIGNATURE_LINE,
+                                    "  " + pe._NO_COUNTER_LINE]
+
+
+def test_dd_the_counter_is_a_locked_text_entry_between_the_words_and_the_signature() -> None:
+    """The counter stopped being an INSTRUCTION and became a quoted string (D-D).
+
+    It used to be "show this slide's position exactly as the FORMAT line states", pointed at
+    `{{slide_index}}` — orientation metadata, not content — and the models duly invented badges
+    that matched no deck. It is now locked like every other string in the block, spelling aid
+    included, and `slide_index` alone never produces one."""
+    context = pe.build_context(creative_format="carousel", slide_index="3 of 7",
+                               slide_text="Panel words", slide_counter="3/7", wordmark="HypeLead")
+    block = context["onimage_text"]
+
+    assert 'counter (render verbatim): "3/7"' in block
+    assert "3-/-7" in block, "FR-186's spelling aid rides on the counter like every locked string"
+    assert block.index("panel_text") < block.index("counter") < block.index("wordmark")
+    # `slide_index` is metadata: on its own it puts no counter into the frame.
+    assert "counter" not in pe.build_context(
+        creative_format="carousel", slide_index="3 of 7", slide_text="Panel words")["onimage_text"]
+    # …and a counter alone is still a text block, exactly as a wordmark alone is.
+    assert 'counter (render verbatim): "3/7"' in pe.build_context(
+        creative_format="carousel", slide_counter="3/7")["onimage_text"]
+
+
+def test_da_the_sanctioned_marks_line_reaches_the_slide_and_still_takes_the_strip_pass() -> None:
+    """D-A's slot is the ONE value in the context that tells an image model to draw a real logo, so
+    it stays inside M6's blocklist pass: the competitor screen's verdict outranks whatever the
+    source panel happened to show."""
+    marks = pe.build_context(creative_format="carousel", tool_marks="Notion, Slack")["tool_marks"]
+    stripped = pe.build_context(creative_format="carousel", tool_marks="Notion, Acme",
+                                competitor_strings=("Acme",))["tool_marks"]
+
+    assert marks == "Notion, Slack"
+    assert "Acme" not in stripped and "Notion" in stripped
+    assert pe.build_context()["tool_marks"] == "", "empty is the norm — no real mark on this slide"
+    rendered = pe.PromptEngine().render(
+        "carousel_slide.md",
+        pe.build_context(style=make_style(), creative_format="carousel", slide_index="2 of 5",
+                         slide_text="Panel words", tool_marks="Notion, Slack"),
+        profile=RENDER_PROFILE)
+    assert "TOOL MARKS" in rendered and "Notion, Slack" in rendered
+
+
 def test_branding_block_splits_the_colour_guards_from_the_medium_guards() -> None:
     """M6's split. `never_always` are COLOUR guards and go into every branded prompt;
     `never_style` are MEDIUM guards ("no photography", "no serif") and go in only when the assigned
@@ -753,8 +858,52 @@ def test_slide_index_is_filled_as_n_of_m_and_text_is_spelled_out() -> None:
         creative_format="carousel", slide_index="3 of 6", slide_text="Rychlejší růst",
         style=make_style())
     assert context["slide_index"] == "3 of 6"
-    assert 'headline (render verbatim): "Rychlejší růst"' in context["onimage_text"]
+    assert 'panel_text (render verbatim): "Rychlejší růst"' in context["onimage_text"]
     assert "R-y-c-h-l-e-j-š-í r-ů-s-t" in context["onimage_text"]
+
+
+def test_a_mapped_slides_text_is_labelled_panel_text_not_headline() -> None:
+    """B6 (2026-08-13): a deck's slide text is a whole SOURCE PANEL, not a headline.
+
+    The label is the first thing the render model reads, and calling a 300-character mapped panel
+    a `headline` is what licensed it to be set as one — one band, shrunk to fit, reconciled against
+    a constraint block quoting a 90-character headline ceiling. `headline` survives for the cover
+    of a slide that mapped no panel, so a deck that quotes only a cover line still renders it.
+    """
+    mapped = pe.build_context(creative_format="carousel", slide_index="2 of 5",
+                              slide_text="Většina lidí to dělá obráceně",
+                              copy=CopySet("a1", "en", headline="Cover line"))
+    cover_only = pe.build_context(creative_format="carousel", slide_index="1 of 5", slide_text="",
+                                  copy=CopySet("a1", "en", headline="Cover line"))
+
+    assert 'panel_text (render verbatim): "Většina lidí to dělá obráceně"' in mapped["onimage_text"]
+    assert "headline" not in mapped["onimage_text"], "the cover line is not this slide's text"
+    assert "V-ě-t-š-i-n-a" in mapped["onimage_text"], "FR-186's spelling aid rides on both labels"
+    assert 'headline (render verbatim): "Cover line"' in cover_only["onimage_text"]
+    assert "panel_text" not in cover_only["onimage_text"]
+    # And the signature still travels with either label (B1/FR-292).
+    signed = pe.build_context(creative_format="carousel", slide_text="Panel words",
+                              wordmark="HypeLead")
+    assert 'panel_text (render verbatim): "Panel words"' in signed["onimage_text"]
+    assert 'wordmark (render verbatim): "HypeLead"' in signed["onimage_text"]
+
+
+def test_the_carousel_budget_line_prices_the_headline_and_frees_the_panel_text() -> None:
+    """FIX B6's other half: the constraint sentence must stop claiming a ceiling over panel text.
+
+    `copywrite._mapped_deck` locks a mapped panel and never trims it, so quoting a per-slide
+    character budget to the render model described a rule that no longer exists — and gave it a
+    number to shrink type towards. The headline budget stays, because a cover headline IS ours and
+    was selected against exactly that ceiling.
+    """
+    budgets = TextBudgets(image_headline=90, slide=300)
+    line = pe.build_context(style=make_style(max_onimage_chars={"headline": 90}),
+                            creative_format="carousel", text_budgets=budgets)["text_budgets"]
+
+    assert "the headline slot at most 90 characters" in line
+    assert "300" not in line, "no per-slide character ceiling is quoted at the render any more"
+    assert "panel_text string carries no character budget" in line
+    assert "never shorter" in line
 
 
 def test_fr144_override_visual_directives_replace_render_prompt_and_layout_zones() -> None:
@@ -778,23 +927,273 @@ def test_fr145_blend_states_the_style_wins_visuals_and_the_brief_wins_the_messag
 # ------------------------------------------------------------------ 50 §7 truncation order
 
 
-def test_truncation_cuts_style_dna_first_and_never_the_text_or_exclusions() -> None:
-    style = make_style(render_prompt="R " * 400, typography="T " * 400,
-                       text_placement="P " * 400)
-    copy = CopySet("a1", "en", headline="Sedm nástrojů, které používá každý",
-                   subline="a čtyři, které nepoužívá nikdo")
-    context = pe.build_context(style=style, copy=copy, creative_format="image",
-                               text_budgets=TextBudgets())
+#: Sentinels planted in the three CUTTABLE slots a live carousel slide carries, so a truncation
+#: assertion reads as "which block went" rather than as a length comparison. Each is a nonsense
+#: token that can only have arrived from the value it was planted in.
+_NICHE_WORLD, _BRAND_BLOCK, _BRIEF = "ZZNICHEWORLD", "ZZBRANDBLOCK", "ZZVISUALBRIEF"
+#: The two style-trio slots `carousel_slide.md` actually resolves: `render_prompt` directly, and
+#: `style_dna`, whose five rows are built out of the style's typography/placement/treatment fields.
+_RENDER_PROMPT, _STYLE_DNA = "ZZRENDERPROMPT", "ZZTYPOGRAPHY"
+#: The slide's locked words and one of the style's literal exclusions — neither is in
+#: `_TRUNCATION_ORDER` and neither ever has been.
+_SLIDE_TEXT = "Sedm nástrojů, které používá každý"
+
+
+def _long_slide_context(**overrides: object) -> dict[str, str]:
+    """One carousel-slide context whose every cuttable AND style slot is deliberately enormous.
+
+    Padding each value to hundreds of characters is what makes the shrink observable: `_shrink`
+    trims exactly the overflow at a word boundary, so a slot has to be long enough to survive a
+    small cut and short enough to be emptied by a large one.
+    """
+    style = make_style(render_prompt=f"{_RENDER_PROMPT} " * 60,
+                       typography=f"{_STYLE_DNA} " * 60,
+                       text_placement="ZZPLACEMENT " * 60)
+    context = pe.build_context(
+        style=style, copy=CopySet("a1", "en", slide_texts=[_SLIDE_TEXT]),
+        creative_format="carousel", text_budgets=TextBudgets(),
+        slide_index="2 of 4", slide_text=_SLIDE_TEXT, slide_panel_source="source panel 2",
+        niche_visual_world=f"{_NICHE_WORLD} " * 60,
+        branding_block=f"{_BRAND_BLOCK} " * 60,
+        visual_brief=f"{_BRIEF} " * 60,
+        tool_marks="Notion")
+    # FR-189: the deck's DNA is stamped over the built value by every caller of this role, so the
+    # test stamps it too — that is the string the trio-survival assertions are about.
+    context["style_dna"] = pe.style_dna(style)
+    context.update(overrides)  # type: ignore[arg-type]
+    return context
+
+
+def _core_chars(engine: pe.PromptEngine, context: dict[str, str]) -> int:
+    """The length of `_long_slide_context`'s slide with every CUTTABLE slot already empty.
+
+    That is the exact limit at which the cuttable pass is sufficient and the last resort must not
+    fire — the boundary between the two policies, derived rather than guessed, so the tests below
+    stay true when a template gains a sentence.
+    """
+    bare = dict(context) | {"niche_visual_world": "", "branding_block": "", "visual_brief": ""}
+    return len(engine.render("carousel_slide.md", bare, profile=RENDER_PROFILE))
+
+
+def test_the_style_trio_survives_every_cut_the_cuttable_pass_can_make() -> None:
+    """D48's rule, unchanged where it was right: NO cuttable pass may touch the style trio.
+
+    `style_dna`, `render_prompt` and `layout_zones` were once cut FIRST, written when style
+    REFERENCE IMAGES rode along to carry the look after the words were gone. D46 excised that
+    channel, so the textual DNA became the only carrier of the look and the trio left
+    `_TRUNCATION_ORDER` entirely. This pins that half: squeezed to the exact length its uncuttable
+    core occupies, the slide loses every cuttable block and keeps its look, its words and its
+    exclusions — with no last-resort trim and no warning, because none was needed.
+    """
+    recorder = Recorder()
+    engine = pe.PromptEngine(log=recorder)
+    context = _long_slide_context()
+    full = engine.render("carousel_slide.md", context, profile=RENDER_PROFILE)
+    core = _core_chars(engine, context)
+
+    cut = engine.render("carousel_slide.md", context, profile=RENDER_PROFILE, max_chars=core)
+
+    assert len(cut) < len(full) and len(cut) <= core
+    assert not any(token in cut for token in (_NICHE_WORLD, _BRAND_BLOCK, _BRIEF)), \
+        "standing context, the branding accents and the visual brief are all cuttable"
+    assert _RENDER_PROMPT in cut and _STYLE_DNA in cut, "the trio is not in the cuttable set"
+    assert _SLIDE_TEXT in cut, "the locked TEXT block is never touched"
+    assert "platform UI" in cut, "the style's literal exclusions are never touched"
+    assert not recorder.warnings, "the cuttable pass was enough; nothing to announce"
+
+
+def test_the_style_trio_is_tail_trimmed_as_a_last_resort_rather_than_shipping_over_the_limit(
+) -> None:
+    """v2.1.4 amends D48's endgame — the half the glz0 run proved wrong.
+
+    D48 said a prompt still over the bound after every cuttable field is gone SHIPS WHOLE, on the
+    reasoning that an oversized prompt is a bounded provider risk and a styleless deck is a paid
+    batch of wrong pictures. Run `20260814_010814_glz0` measured that risk: Kie refuses every
+    prompt past its hard limit with HTTP 500, deterministically, and FR-317 answers by resending
+    the identical bytes. Six slides were lost. So past the limit the trio is now tail-trimmed —
+    proportionally, from the END, never below 40% of what each field arrived with — and the
+    result is ALWAYS inside the limit.
+    """
+    recorder = Recorder()
+    engine = pe.PromptEngine(log=recorder)
+    context = _long_slide_context()
+    core = _core_chars(engine, context)
+    limit = core - 400  # the uncuttable core alone is now over: only the trio can give
+
+    cut = engine.render("carousel_slide.md", context, profile=RENDER_PROFILE, max_chars=limit)
+
+    assert len(cut) <= limit, "a prompt over the provider's limit is a guaranteed HTTP 500"
+    assert _SLIDE_TEXT in cut, "the locked TEXT block is still never cut"
+    assert "platform UI" in cut, "the exclusions are still never cut"
+    assert _RENDER_PROMPT in cut and _STYLE_DNA in cut, "trimmed, never emptied"
+    assert 60 * pe._TRIO_FLOOR <= cut.count(_RENDER_PROMPT) < 60, \
+        "the render prompt gave something and kept at least its 40%"
+    event, message = recorder.warnings[0]
+    assert event == "prompt_hard_trimmed" and len(recorder.warnings) == 1
+    assert "last resort" in message
+    fields = recorder.warned("prompt_hard_trimmed")[0]
+    assert fields["fields"] == ["render_prompt", "style_dna"], "both trio slots this role resolves"
+    assert fields["chars_cut"] == sum(fields["cuts"].values()) > 0
+    # PROPORTIONAL, and each inside its own 40% floor: the two fields differ in length, so a cut
+    # that ignored proportion would show up as one of them carrying the whole overflow.
+    for name, removed in fields["cuts"].items():
+        assert 0 < removed <= (1 - pe._TRIO_FLOOR) * len(context[name]) + 1, \
+            f"{name} was cut below its 40% floor"
+    assert fields["final_chars"] == len(cut) <= limit
+    assert fields["hard_truncated"] is False, "the floors made enough room without truncating"
+
+
+def test_a_prompt_the_trio_floors_cannot_save_is_hard_truncated_at_the_limit() -> None:
+    """The degenerate case, and the guarantee that has no exceptions.
+
+    A single 3 000-character verbatim panel under a 1 200-character limit cannot be made to fit by
+    any honest means: the TEXT block is uncuttable by contract and the trio's floors stop long
+    before the overflow is gone. Something still has to be submitted — and a prompt whose head
+    (format, TEXT block, style) survives is worth more than a certain 500. The hard truncation is
+    the last line of the guarantee and it is loud about itself.
+    """
+    recorder = Recorder()
+    engine = pe.PromptEngine(log=recorder)
+    context = _long_slide_context(slide_text="Nekonečný panel. " * 180)
+
+    cut = engine.render("carousel_slide.md", context, profile=RENDER_PROFILE, max_chars=1_200)
+
+    assert len(cut) == 1_200, "hard truncation lands exactly on the limit, never above it"
+    fields = recorder.warned("prompt_hard_trimmed")[0]
+    assert fields["hard_truncated"] is True and fields["final_chars"] == 1_200
+    assert "even the 40% floors could not make room" in recorder.warnings[0][1]
+
+
+def test_a_worst_case_slide_assembly_never_exceeds_the_provider_prompt_ceiling() -> None:
+    """The regression this whole fix exists for, asserted against the REAL ceiling.
+
+    glz0 submitted prompts of 20 007+ characters because the engine's bound was set AT the
+    provider's wall and an over-bound prompt shipped anyway. Here every input is at or past its
+    plausible worst — a 3 000-character panel, a 6 000-character style instruction, a maximal DNA,
+    a full visual brief, a retry suffix — and the assembly still comes back inside
+    `profiles.MAX_PROMPT_CHARS`, which is itself 200 characters under the measured 20 000.
+    """
+    engine = pe.PromptEngine(log=Recorder())
+    style = make_style(render_prompt="Rendered in a maximalist editorial manner. " * 140,
+                       typography="Extended grotesque with tight tracking. " * 60,
+                       text_placement="Anchored to a twelve-column grid. " * 60)
+    context = pe.build_context(
+        style=style, copy=CopySet("a1", "cs", slide_texts=["Dlouhý panel textu. " * 150]),
+        creative_format="carousel", text_budgets=TextBudgets(), slide_index="4 of 8",
+        slide_text="Dlouhý panel textu. " * 150, slide_panel_source="source panel 4",
+        niche_visual_world="Ambient art direction. " * 60,
+        branding_block="Accent colours and letterforms. " * 60,
+        visual_brief="Line chart with three rising series. " * 60,
+        reference_roles=[f"Image {n}: MARK PATCH, copy it exactly." for n in range(1, 17)],
+        tool_marks="Notion, Figma, Linear, Claude")
+    context["style_dna"] = pe.style_dna(style)
+
+    prompt = engine.render("carousel_slide.md", context, profile=RENDER_PROFILE,
+                           max_chars=MAX_PROMPT_CHARS,
+                           suffix="RETRY: set the same words larger and shorter." * 20)
+
+    assert len(prompt) <= MAX_PROMPT_CHARS
+    assert MAX_PROMPT_CHARS == 19_800, \
+        "the ceiling is 200 chars under Kie's measured hard limit of 20 000 (glz0)"
+
+
+def test_the_retry_suffix_is_counted_inside_the_limit_rather_than_appended_past_it() -> None:
+    """FR-193's instruction is part of the string the provider measures (v2.1.4).
+
+    Three glz0 retry prompts cleared every guard and still went out over the wall, because the
+    caller appended the retry instruction AFTER the engine had finished fitting the prompt. The
+    suffix now travels through `render()`: it is subtracted from the budget, it is never itself
+    cut, and it is still the last thing the model reads.
+    """
+    engine = pe.PromptEngine(log=Recorder())
+    context = _long_slide_context()
+    suffix = "RETRY: the previous render garbled the headline. Set it larger and shorter."
+
+    fitted = engine.render("carousel_slide.md", context, profile=RENDER_PROFILE,
+                           max_chars=_core_chars(engine, context), suffix=suffix)
+
+    assert len(fitted) <= _core_chars(engine, context)
+    assert fitted.endswith(f"\n\n{suffix}"), "the instruction is intact and last"
+
+
+#: Each cuttable slot in `_long_slide_context` is this many characters, so an overshoot can be
+#: chosen to land INSIDE a named block and the row below reads as arithmetic rather than as magic.
+_BLOCK_CHARS = 60 * len(f"{_NICHE_WORLD} ")
+
+
+@pytest.mark.parametrize(
+    ("overshoot", "gone", "shortened"),
+    [
+        # Under one block: the FIRST cuttable is trimmed at a word boundary, not emptied, and
+        # nothing below it is touched at all.
+        (_BLOCK_CHARS // 2, (), _NICHE_WORLD),
+        # Past the standing context: it is gone and the branding accents start giving (F18 — a
+        # creative that loses its accents still ships; one that loses its subject does not).
+        (_BLOCK_CHARS + 200, (_NICHE_WORLD,), _BRAND_BLOCK),
+        # Past the accents too, and FR-316's visual brief — the LAST cuttable — begins to shrink.
+        (2 * _BLOCK_CHARS + 200, (_NICHE_WORLD, _BRAND_BLOCK), _BRIEF),
+        # Past every cuttable there is nothing left below `visual_brief` to give: the style trio.
+        (10_000, (_NICHE_WORLD, _BRAND_BLOCK, _BRIEF), None),
+    ])
+def test_the_cuttable_fields_are_emptied_in_50_7s_declared_order(
+    overshoot: int, gone: tuple[str, ...], shortened: str | None,
+) -> None:
+    """50 §7 states an ORDER, and the order is the policy: standing operator context first
+    (`niche_visual_world`), the creative's accents next (`branding_block`, F18), and FR-316's
+    `visual_brief` last of all — guidance about what the slide SHOWS outranks ambient art
+    direction, and below it sits the uncuttable style trio.
+
+    Each row shrinks the prompt by a stated amount and names which sentinels must be GONE and
+    which one is merely SHORTER. The count comparison is what actually pins the order: a prompt
+    trimmed out of order is the same length as one trimmed in order, so a length assertion alone
+    would have nothing to say about the block that vanished off the slide.
+    """
     engine = pe.PromptEngine()
-    full = engine.render("image_post.md", context, profile=RENDER_PROFILE)
-    limit = len(full) - 600
+    context = _long_slide_context()
+    full = engine.render("carousel_slide.md", context, profile=RENDER_PROFILE)
 
-    cut = engine.render("image_post.md", context, profile=RENDER_PROFILE, max_chars=limit)
+    cut = engine.render("carousel_slide.md", context, profile=RENDER_PROFILE,
+                        max_chars=len(full) - overshoot)
 
-    assert len(cut) <= limit
-    assert "Sedm nástrojů, které používá každý" in cut  # the exact text block survives
-    assert "platform UI" in cut and "EMIR AI LAB" in cut  # exclusion clause survives
-    assert cut.count("R R R") < full.count("R R R")  # descriptive material took the cut
+    order = (_NICHE_WORLD, _BRAND_BLOCK, _BRIEF)
+    for token in order:
+        assert (token not in cut) is (token in gone), f"{token} took the cut out of order"
+    if shortened is not None:
+        assert 0 < cut.count(shortened) < full.count(shortened), "trimmed, not emptied"
+        for later in order[order.index(shortened) + 1:]:
+            assert cut.count(later) == full.count(later), f"{later} is cut AFTER {shortened}"
+    assert _RENDER_PROMPT in cut and _STYLE_DNA in cut and _SLIDE_TEXT in cut
+
+
+def test_layout_zones_survive_a_shrink_that_empties_every_cuttable_beside_them() -> None:
+    """The third member of the trio, asserted on the role that actually resolves it.
+
+    `carousel_slide.md` names `style_dna` and `render_prompt` but no `layout_zones`, so the zone
+    list needs `image_post.md` to be observable at all — and it is the block most obviously worth
+    protecting: a render told nothing about where its headline goes puts the words wherever it
+    likes, on a creative the operator bought for its layout.
+
+    The limit is the length of this prompt's own uncuttable core (v2.1.4), which is the honest
+    statement of the rule: everything the cuttable pass can reach goes, the zones stay. Past that
+    core the last-resort trim engages — that boundary is pinned by its own test above, and a limit
+    chosen below it here would have been asserting the OLD policy by accident.
+    """
+    style = make_style(render_prompt="ZZRP " * 60)
+    engine = pe.PromptEngine()
+    context = pe.build_context(
+        style=style, copy=CopySet("a1", "en", headline=_SLIDE_TEXT), creative_format="image",
+        text_budgets=TextBudgets(), niche_visual_world=f"{_NICHE_WORLD} " * 60,
+        branding_block=f"{_BRAND_BLOCK} " * 60, content_sentence="ZZCONTENT " * 60)
+    assert "upper third" in context["layout_zones"]
+    core = len(engine.render("image_post.md",
+                             dict(context) | {"niche_visual_world": "", "branding_block": "",
+                                              "content_sentence": ""}, profile=RENDER_PROFILE))
+
+    cut = engine.render("image_post.md", context, profile=RENDER_PROFILE, max_chars=core)
+
+    assert "upper third" in cut and "lower band" in cut, "the zones are not cuttable"
+    assert "ZZRP" in cut and _SLIDE_TEXT in cut and "platform UI" in cut
+    assert not any(token in cut for token in (_NICHE_WORLD, _BRAND_BLOCK, "ZZCONTENT"))
 
 
 def test_trim_words_never_cuts_mid_word() -> None:

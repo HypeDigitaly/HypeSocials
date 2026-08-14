@@ -8,7 +8,11 @@ Public API: `get(name)` · `RenderProfile` · `ReferenceLimits` · `UnknownProfi
 `PROFILE_NAMES`.
 Invariants:
 - One profile carries BOTH GPT Image 2 routes (FR-241) — reference-bearing to image-to-image with
-  `input_urls`, reference-free to text-to-image. No route name is spoken outside this file.
+  `input_urls`, reference-free to text-to-image. No route name is spoken outside this file, and
+  no single config key may collapse the two: each route has its own override (`models.image` for
+  the reference-free one, `models.image_edit` for the reference-bearing one, FR-241 as amended
+  v2.1.3/D48), because one key overriding both is the live defect that sent every anchor-chained
+  slide to text-to-image with its reference attached and ignored.
 - Every list is capped at the model's documented limit before it is sent: a rejected job is a
   paid round trip avoidable by counting.
 - Ratio/resolution pairs Kie refuses at *task creation* are clamped here, not discovered at
@@ -30,9 +34,11 @@ from hypesocials.models import RenderParams, RenderRefs
 GPT_IMAGE_2 = "gpt-image-2"
 SEEDANCE_2_5 = "seedance-2-5"
 
-# Kie route ids. These are the profile's DECLARATION of the family's routes (FR-272), and the
-# reference-bearing one is overridden by `models.image` / `models.video` from config (FR-270) —
-# the reference-free sibling has no config key of its own (30 §2 ships one image model key).
+# Kie route ids. These are the profile's DECLARATION of the family's routes (FR-272). Each route
+# has its OWN config override (FR-270/FR-280 as amended v2.1.3): `models.image` names the
+# reference-free route, `models.image_edit` the reference-bearing one, and `models.video` names
+# a single-route family's only route. Anything a config leaves empty falls back to the id declared
+# here, so a run with no overrides at all still routes both halves of FR-241 correctly.
 _GPT_IMAGE_2_REF_ROUTE = "gpt-image-2-image-to-image"
 _GPT_IMAGE_2_TEXT_ROUTE = "gpt-image-2-text-to-image"
 _SEEDANCE_ROUTE = "bytedance/seedance-2-5"
@@ -44,13 +50,28 @@ _ONE_K_ONLY_RATIOS = frozenset({"", "auto", "5:4", "4:5", "3:1", "1:3", "9:21"})
 #: config: above 2K the model is documented unstable, and 1:1 at 4K fails task creation outright.
 _IMAGE_RESOLUTION_CEILING = "2K"
 
-#: 50 §7 states the truncation ORDER but no number, and no provider documents a prompt-length
-#: limit. 16 000 characters is therefore this ENGINE's bound, not a provider fact. Raised from
-#: 10 000 at W3 (D46): a slide-2+ carousel prompt now legitimately assembles ~13k — a 300-char
-#: verbatim panel, its English visual brief and the anchor block are all payload, not runaway —
-#: and under the ceiling the truncator was cutting content the operator paid the analysis call
-#: to produce. Still bounded, so a genuinely runaway template cannot buy a rejected job.
-MAX_PROMPT_CHARS = 16_000
+#: 50 §7 states the truncation ORDER but no number. This one is no longer an engine preference:
+#: run `20260814_010814_glz0` MEASURED the provider's hard limit at exactly 20 000 characters —
+#: every createTask with a prompt of 20 000 characters or fewer was accepted, and every one at
+#: 20 007 or more came back HTTP 500 `"The text length cannot exceed the maximum limit"`. Six
+#: slides were lost and three quality re-renders blocked to establish that boundary, because the
+#: engine's bound was set AT the limit and a prompt still over it after truncation shipped whole
+#: into a deterministic 500 (and FR-317 then resubmitted the identical bytes for a second one).
+#:
+#: 19 800 leaves a 200-character margin under the measured wall. The margin is deliberate slack,
+#: not superstition: the caller's suffix (FR-193's retry instruction), a provider-side prompt
+#: preamble or one multi-byte counting difference all land inside it, and 200 characters of style
+#: prose is worth less than one slide that never submits.
+#:
+#: History: 10 000 at W3 (D46), 16 000 then 20 000 at v2.1.3/D48 — that last raise was made to
+#: hold a MEASURED 17 757-character body slide (anchor block, TOOL MARKS rules, mark-patch role
+#: lines and a 300-char verbatim panel, all of it payload) without cutting the style trio. That
+#: reasoning still stands and the trio is still not cuttable by the ordinary pass; what changed at
+#: v2.1.4 is the endgame, in `prompts_engine._shrink`: past this bound the trio is tail-trimmed as
+#: a LAST RESORT rather than the prompt shipping over the wall (FR-241's i2i route means the
+#: anchor reference carries the deck's look on body slides, so trimmed style prose is recoverable
+#: — a slide that never submits is not).
+MAX_PROMPT_CHARS = 19_800
 
 SEEDANCE_DURATION_RANGE = (4, 30)  # FR-164; the provider's `-1` auto value is never sent
 _SEEDANCE_DEFAULT_DURATION_S = 5
@@ -90,19 +111,43 @@ class RenderProfile:
     name: str
     kind: Literal["image", "video"]  # picks image_job_timeout_s vs video_job_timeout_s
     template_set: str  # `prompts/<set>/` (FR-181); 50-promptcraft owns the set's contents
-    model_id: str  # reference-bearing route, overridable from config (FR-270)
-    model_id_no_refs: str  # FR-241's second route; empty when the family has only one
+    model_id: str  # reference-bearing route (a single-route family's only route), config `image_edit`
+    model_id_no_refs: str  # FR-241's second route, config `image`; empty = the family has only one
     limits: ReferenceLimits
     builder: Callable[[RenderParams, RenderRefs, str, str], tuple[str, dict[str, Any]]]
 
-    def request(self, params: RenderParams, refs: RenderRefs, model_id: str = "") -> tuple[str, dict[str, Any]]:
+    @property
+    def dual_route(self) -> bool:
+        """True when this family splits reference-bearing and reference-free jobs (FR-241).
+
+        The one thing a caller may ask about routing without learning a route NAME: it decides
+        which config key overrides which half, and `render/__init__.py` needs the answer to pass
+        two configured ids instead of one.
+        """
+        return bool(self.model_id_no_refs)
+
+    def request(
+        self, params: RenderParams, refs: RenderRefs, model_id: str = "", model_id_edit: str = "",
+    ) -> tuple[str, dict[str, Any]]:
         """Returns `(provider model route, provider input object)` for exactly one job.
 
-        `model_id` is the configured route for this profile; empty falls back to the declared
-        default so a direct call still works. Reference lists are capped and out-of-range values
-        clamped in here, so the caller never has to know the family's ceilings.
+        `model_id` is the configured id for this family's DEFAULT route and `model_id_edit` the
+        configured id for its reference-bearing one (FR-241 as amended v2.1.3/D48 — `models.image`
+        and `models.image_edit`). Either may be empty and then the profile's own declaration
+        stands, so a direct call with no config at all still routes both halves correctly.
+
+        On a SINGLE-route family (Seedance) there is no split to preserve: whichever id the caller
+        configured names that family's one route, which is what keeps `models.video` working
+        through the same two-argument seam.
+
+        Reference lists are capped and out-of-range values clamped in here, so the caller never
+        has to know the family's ceilings.
         """
-        return self.builder(params, refs, model_id or self.model_id, self.model_id_no_refs)
+        if self.dual_route:
+            return self.builder(params, refs, model_id_edit or self.model_id,
+                                model_id or self.model_id_no_refs)
+        route = model_id or model_id_edit or self.model_id
+        return self.builder(params, refs, route, route)
 
 
 def _build_gpt_image_2(

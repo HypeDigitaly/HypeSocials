@@ -18,7 +18,8 @@ several sentences read the way they do:
   re-introduce a "follow the attached house style picture" sentence.
 - **Panel-mapped decks.** A carousel mirrors one source slideshow: our slide *i*
   renders that deck's panel *i* verbatim (FR-304), under a per-slide English
-  `visual_brief` describing what that source slide *showed* (FR-308).
+  `visual_brief` describing the FOREGROUND CONTENT that source slide *showed*
+  (FR-308/316) — never its background, its colours or its chrome.
 
 ## Layout (FR-181)
 
@@ -26,9 +27,9 @@ several sentences read the way they do:
 prompts/
   styles.yaml                    the meta-style registry — 8 styles, the VISUAL AUTHORITY
   copywriter_system.md           global — Luna copy-selection system prompt
-  vision_check_question.md       global — the two objective defect questions
+  vision_check_question.md       global — the three objective defect questions (garbled / fake UI / text mismatch vs locked referent)
   topic_filter_system.md         global — the batched competitor screen
-  slide_intel_question.md        global — per-slide transcription + visual brief (FR-306)
+  slide_intel_question.md        global — per-slide transcription + foreground visual brief + deck mark boxes (FR-306/315/316)
   gpt-image-2/
     image_post.md                one single post creative
     carousel_slide.md            one carousel slide (style-DNA scaffold + visual brief)
@@ -76,19 +77,21 @@ Two rules govern every row below, and the second is the one people forget:
 | `{{render_prompt}}` | the assigned meta-style's ≤120-word executable style instruction — for a carousel slide, with that style's `per_format_guidance.carousel_cover` (slide 1) or `carousel_slide` (slides 2–N) appended; under an `override` brief, that brief's **visual** directives instead (M14) | image_post, carousel_slide, reel_seed_frame |
 | `{{layout_zones}}` | the style's ordered frame regions — zone structure only, never literal wording. A zone tagged `role: brand_slot` is emitted **only** when the creative is branded; when it is not, the zone is dropped and one line says the lower margin is empty | image_post, reel_seed_frame |
 | `{{style_dna}}` | the five style-DNA fields (palette, typography, text placement, image treatment, visual pacing), byte-identical on every slide of one deck. Post-D46 this block plus `render_prompt` is the **sole** carrier of the look — there is no style picture to fall back on | carousel_slide |
-| `{{visual_brief}}` | that slide's English **content** directive from slide intelligence (FR-306/308): what the source slide showed — chart, checklist, icon grid, table, composition. Ranked below `style_dna` on every question of look; competitor marks in it are genericized; empty when intelligence degraded | carousel_slide **only** |
+| `{{visual_brief}}` | that slide's English **foreground-content** directive from slide intelligence (FR-306/308/316): the chart, table, code block, icon grid, list, diagram, arrows and quantities the source slide showed — **never** its background or scenery, never a colour, typeface or gradient, never platform chrome or pagination widgets, never a creator name. Ranked below `style_dna` on every question of look; competitor marks in it are genericized and the whole value takes the competitor strip; cuttable under truncation; empty when intelligence degraded | carousel_slide **only** |
 | `{{slide_panel_source}}` | FR-304's position line — `source panel 3 of 7` — so the model knows this slide mirrors one specific source slide. Empty for an unbound or override-brief deck | carousel_slide **only** |
 | `{{onimage_text}}` | the exact strings to render, resolved from the copy call's reference labels — plus, on a branded creative, the `wordmark (render verbatim): "…"` entry and its spelling aid. On a mapped deck this is the source panel's own text, emoji, line breaks and `#` tokens included (§0.14b) | all render templates |
 | `{{branding_block}}` | accent colours per `branding.mode`, font character, placement hint, background hint, and the profile's `never:` guards. **Never the wordmark** — that travels in the TEXT block. Empty when the creative is unbranded, and empty of extras when the assigned style is itself a brand style (`brand_slot: true`) | image_post, carousel_slide, reel_seed_frame |
 | `{{text_budgets}}` | the on-image character budget **in force for this call** — the tighter of the style's `max_onimage_chars` and config `text_budgets` | copywriter_system + the three gpt-image-2 render templates |
-| `{{reference_roles}}` | one line per **actually attached** reference: index · what it contributes · what it must not. Post-D46 there are exactly three provenances — a brief's product photo, the carousel anchor slide, a reel's seed frame — and most image jobs attach nothing at all | image_post, carousel_slide, reel_seed_frame |
+| `{{reference_roles}}` | one line per **actually attached** reference: index · what it contributes · what it must not. Post-D46 the provenances are a brief's product photo, the carousel anchor slide, a reel's seed frame and (v2.1.3, FR-315) a **mark patch** — a tool logo cropped from the source slide, the one attachment whose own lettering may be copied — and most image jobs attach nothing at all | image_post, carousel_slide, reel_seed_frame |
 | `{{exclusions}}` | the style's own forbid-list from `styles.yaml`: self-contained rules (platform chrome, watermarks, real logos, faces, legible text outside the declared zones), readable without any picture. Never a restriction on the TEXT block | image_post, carousel_slide, reel_seed_frame, reel_director |
 | `{{content_sentence}}` | deterministic subject sentence, no LLM call (FR-96): reference-free jobs and override briefs | image_post |
 | `{{through_line}}` | the copy call's one-line "what this clip is about" | reel_director |
 | `{{motion_beat}}` | the copy call's ONE named physical action, dropped into the reel's Stage 2 | reel_director |
 | `{{motion_profile}}` | the style's `photographic` \| `graphic` switch — selects the reel's LOOK/CAMERA paragraph | reel_director |
 | `{{brief_directives}}` | campaign brief's directives; empty when none | render templates, copywriter_system |
-| `{{slide_index}}` | this slide's position in the deck | carousel_slide |
+| `{{slide_index}}` | this slide's position in the deck — METADATA for orientation, never rendered as words (FR-313) | carousel_slide |
+| `{{tool_marks}}` | the sanctioned real-logo list for this slide (FR-310/315): third-party tool marks named by the slide's text or seen on the source slide, competitor/creator/platform marks already filtered out. Each is a **required** element and renders as the real mark in true brand colours, palette-exempt — pixel-faithfully when a cropped MARK PATCH rides in `reference_roles` — inside the TEXT block beside its panel title, in the same position on every slide of the deck; empty = no sanctioned marks | carousel_slide **only** |
+| `{{slide_counter}}` | the deck's source-mirrored counter string for this slide (FR-313), e.g. `03 / 08`; normally reaches the model as the locked `counter` TEXT entry + `counter_slot` zone rather than through this raw slot — allowlisted so an override template may name it; empty = unnumbered deck | carousel_slide **only** |
 | `{{seed_frame_ref}}` | one-line description of what the seed frame shows | reel_director |
 | `{{audio_cue}}` | the whole AUDIO body — either the bracketed cue set or the silent-clip line | reel_director |
 | `{{trend_texts}}` | the topic's hooks, panel texts, tactics and Virlo's own summary, fenced as data. The summary (`description`) is **context only** — FR-303 bans it from every output | copywriter_system |
@@ -113,7 +116,7 @@ actually enforces. A role's set is exact: not a minimum, not a suggestion.
 | `topic_filter_system.md` | `topic_items`, `competitor_list` |
 | `slide_intel_question.md` | *(none)* |
 | `image_post.md` | `render_prompt`, `layout_zones`, `onimage_text`, `reference_roles`, `exclusions`, `text_budgets`, `brief_directives`, `niche_visual_world`, `content_sentence`, `branding_block` |
-| `carousel_slide.md` | `slide_index`, `style_dna`, `render_prompt`, `onimage_text`, `reference_roles`, `exclusions`, `text_budgets`, `brief_directives`, `niche_visual_world`, `branding_block`, `visual_brief`, `slide_panel_source` |
+| `carousel_slide.md` | `slide_index`, `style_dna`, `render_prompt`, `onimage_text`, `reference_roles`, `exclusions`, `text_budgets`, `brief_directives`, `niche_visual_world`, `branding_block`, `visual_brief`, `slide_panel_source`, `tool_marks`, `slide_counter` |
 | `carousel_anchor_instruction.md` | *(none)* |
 | `reel_seed_frame.md` | `render_prompt`, `layout_zones`, `onimage_text`, `reference_roles`, `exclusions`, `text_budgets`, `brief_directives`, `niche_visual_world`, `branding_block` |
 | `reel_director.md` | `through_line`, `seed_frame_ref`, `onimage_text`, `audio_cue`, `exclusions`, `brief_directives`, `motion_beat`, `motion_profile` |
@@ -151,13 +154,17 @@ the one call whose entire job is to read them as data.
 **Truncation.** When an assembled prompt exceeds the model's length limit the
 engine trims placeholder *values* (never the template's own prose) in the fixed
 order of `_TRUNCATION_ORDER` in `prompts_engine.py`; everything absent from that
-tuple — on-image text, exclusions, budgets, reference roles, the visual brief —
-is untouchable. The order is: `style_dna`, `layout_zones`, `trend_texts`,
-`render_prompt`, `brand_context`, `platform_conventions`, `seed_frame_ref`,
-`niche_descriptor`, `niche_visual_world`, **`branding_block`**,
-`content_sentence`, `source_hooks`. So the descriptive style text yields first,
-standing art direction next, the brand's accent instructions after that — and
-the locked text block, including the wordmark entry that lives inside
+tuple — on-image text, exclusions, budgets, reference roles — is untouchable.
+The order is: `trend_texts`, `brand_context`, `platform_conventions`,
+`seed_frame_ref`, `niche_descriptor`, `niche_visual_world`, **`branding_block`**,
+`content_sentence`, `source_hooks`, **`visual_brief`**, `layout_zones`,
+`render_prompt`, `style_dna`. So the topic material yields first, standing art
+direction next, the brand's accent instructions after that, then the slide's
+content guidance — and the style trio survives longest, because post-D46 those
+words are the only carrier of the look. `{{visual_brief}}` joined the cuttable
+set at v2.1.3 (FR-316): it is guidance, not pixels, and a block that could never
+shrink is a block that can push a prompt over the limit with nothing to give.
+The locked text block, including the wordmark entry that lives inside
 `{{onimage_text}}`, is never touched at all.
 
 ## Editing rules
@@ -172,18 +179,39 @@ the locked text block, including the wordmark entry that lives inside
   repeat nothing" is why headlines come back readable.
 - **Do not tell a slide to clean up its quoted panel text.** A source panel
   legitimately carries emoji, line breaks and `#` tokens — that is the deck's
-  own voice, and our slide is their slide (§0.14b). `@handles` and URLs are the
-  only things excluded, and the copy stage has already removed them. A template
-  that says "no emoji" on the slide role silently empties half a deck.
+  own voice, and our slide is their slide (§0.14b). `@handles` and
+  **social-platform** URLs are the only things excluded, and the copy stage has
+  already removed them; a **technical** URL — a code host, a docs site, a
+  package registry, a repository or file path, a shell command — is ordinary
+  content and renders byte-exact (FR-319), so no render template may carry a
+  blanket "no URL" line. A template that says "no emoji" on the slide role
+  silently empties half a deck.
 - **Do not re-introduce style reference images.** No sentence in any template
   may assume an attached house-style picture ("follow the first reference
   listed as the style", "reproduce the reference's palette"). The style is
   written, in `styles.yaml`; the only attachments are a brief's product photo,
   the anchor slide and the seed frame, and each already carries its own role
   line.
-- **Keep the visual brief subordinate.** `{{visual_brief}}` says WHAT a slide
-  shows; `{{style_dna}}` says how everything looks. A template that lets the
-  brief name a colour, a typeface or a mood hands the deck two art directors.
+- **Keep the visual brief subordinate, and foreground-only.** `{{visual_brief}}`
+  says WHAT a slide shows; `{{style_dna}}` says how everything looks. A template
+  that lets the brief name a colour, a typeface or a mood hands the deck two art
+  directors. Under FR-316 the brief is authored as FOREGROUND CONTENT ONLY —
+  charts, tables, code blocks, icons, lists, diagrams, quantities — and never
+  describes a background, a room, a photograph, a colour, a gradient, platform
+  chrome or a creator name. Both halves of that contract are load-bearing: the
+  slide-intel question forbids writing those words, and the slide template tells
+  the model to read past any that survive ("the deck's palette and typography
+  ALWAYS win"). Do not delete either half; a live deck came back with a
+  "red-to-orange gradient heading" and an "outdoor pool area" because a brief
+  was obeyed as art direction.
+- **Do not loosen the tool-mark rules.** A mark on the `{{tool_marks}}` line is
+  a REQUIRED element (FR-315): it renders as the real logo in true brand
+  colours, pixel-faithfully when a MARK PATCH reference is attached, inside the
+  TEXT block beside its panel title, in the same spot on every slide of the
+  deck — never floating in the scene, never on an in-scene screen. The
+  "generic unlettered shape" instruction still governs every mark that is NOT
+  on that line. The anchor block locks the mark's position the same way it
+  locks the text block's.
 - **Do not delete the TEXT PRECEDENCE clause** from a render template, and
   never quote a reference's own wording anywhere else in one. GPT Image 2
   reads any quoted string as content to letter, wherever it sits — a live run
@@ -261,7 +289,7 @@ any labelled line above that is empty"* line.
 | Silent-clip line, when `reel_audio` is off or audio was dropped after a content-audit failure | `{{audio_cue}}` | `generate/reel.py` `SILENT_CLIP_CLAUSE` |
 | `@Image1` description — "the 9:16 still hook frame … hook text already burnt in" | `{{seed_frame_ref}}` | `generate/reel.py` `_SEED_REF_LINE` |
 | The two seed-frame-less variants: render the hook text in-model, or a clip with no lettering at all (`reel_overlay_text: in_model` / `none`) | `{{seed_frame_ref}}` | `generate/reel.py` `_IN_MODEL_REF_LINE`, `_CLEAN_CLIP_REF_LINE` |
-| Reference role lines — one per attached reference: **brief subject**, **carousel anchor**, **reel seed frame**. The style provenance was removed by D46 | `{{reference_roles}}` | `generate/refs.py`, `generate/carousel.py`, `generate/reel.py` |
+| Reference role lines — one per attached reference: **brief subject**, **carousel anchor**, **reel seed frame**, and (v2.1.3, FR-315) a **mark patch** — a sanctioned tool logo cropped from the source slide, the one reference whose own lettering is copied rather than greeked. The style provenance was removed by D46 | `{{reference_roles}}` | `generate/refs.py`, `generate/carousel.py`, `generate/reel.py` |
 | Vision-check retry instruction — "re-render of an image whose text came back broken … one text block only, maximum legible size" (FR-105's third lever) | appended to the assembled render prompt on a retry | `vision_check.py` `RETRY_INSTRUCTION` |
 | On-image text block — `headline (render verbatim): "…"` plus its `spelled out: H-e-a-d` line (FR-186 diacritics defence) | `{{onimage_text}}` | `prompts_engine.py` `_onimage_text` / `_spell` |
 | Wordmark entry — `wordmark (render verbatim): "HypeLead"` + spelling aid, emitted only when the creative is branded (FR-292 channel 1) | `{{onimage_text}}` | `prompts_engine.py` `_onimage_text` |

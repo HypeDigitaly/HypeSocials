@@ -39,8 +39,14 @@ Invariants enforced here, once, for every caller:
   warning naming the file and the reason; a new profile has none, so its set is validated at
   pre-flight, with required names derived from `RenderProfile.kind` — never a second registry.
 - **50 §7 truncation order.** Over a length limit the descriptive values are cut first, at a word
-  boundary, style-DNA leading; the exact text block, the exclusions and the budget line are never
-  cut. Truncation is a pure function of (value, limit), so a deck's slides stay identical.
+  boundary, standing context leading; the exact text block, the exclusions and the budget line are
+  never cut. Truncation is a pure function of (value, limit), so a deck's slides stay identical.
+- **A `max_chars` prompt NEVER comes back longer than `max_chars` (v2.1.4).** The limit is the
+  provider's, measured: Kie answers an over-length createTask with HTTP 500 and FR-317 answers
+  that by sending the same bytes again. So past the cuttable pass the style trio is tail-trimmed
+  (never below 40% each) and, in the degenerate case, the assembly is hard-truncated — loudly,
+  under `prompt_hard_trimmed`. The caller's FR-193 retry suffix goes through `render(suffix=...)`
+  and is counted, because appending it afterwards is how three glz0 prompts cleared the guard.
 
 Do not: add a fence, invent prompt text outside a template (FR-180), read config or env here,
 cache templates across runs (files are hot-loaded per run, FR-181), or import `render.kie` /
@@ -80,11 +86,21 @@ _FENCE_RUN = re.compile(r"<{3,}|>{3,}")
 _FORMAT_KEYS = ("image", "carousel", "reel")  # the only dict[str, str] field in the vocabulary
 
 #: 50 §7 — cut these, in this order, when a prompt exceeds a model's length limit. Everything
-#: absent from this tuple (on-image text, visual brief, exclusions, budgets, reference roles) is
-#: untouchable. RE-ORDERED at W3 (D46/F3): the original tuple cut `style_dna`/`layout_zones`
+#: absent from this tuple (on-image text, exclusions, budgets, reference roles, and since
+#: v2.1.3/D48 the STYLE TRIO) is untouchable.
+#: RE-ORDERED at W3 (D46/F3): the original tuple cut `style_dna`/`layout_zones`
 #: FIRST, written when style reference images rode along to carry the look if the words were cut
-#: away. Post-excision the textual DNA is the ONLY carrier of the look, so the style trio is now
-#: cut LAST — standing context goes first, the subject next, the style survives longest.
+#: away. Post-excision the textual DNA is the ONLY carrier of the look, so the style trio was
+#: moved LAST — standing context first, the subject next, the style surviving longest.
+#: REMOVED ENTIRELY at v2.1.3 (D48): `style_dna`, `render_prompt` and `layout_zones` are no longer
+#: cuttable at any position. "Last" still meant "emptied" on a long prompt, and a slide that
+#: reaches the model with its style trio blanked is a STYLELESS slide — the exact failure D46's
+#: excision made possible and the one this engine may never ship silently. A measured body slide
+#: assembles ~17.8k characters, so the bound moved instead and the trio came out of this tuple.
+#: AMENDED at v2.1.4 (post-glz0): the trio is still not cut HERE — no cuttable pass may touch it —
+#: but "ships whole, loudly" was the wrong endgame. See `_STYLE_TRIO` and `_shrink` below: past
+#: the provider's measured hard limit the trio is tail-trimmed as a last resort instead, because
+#: an over-limit prompt is not a bounded risk at all — it is a guaranteed HTTP 500.
 _TRUNCATION_ORDER: tuple[str, ...] = (
     "trend_texts",
     "brand_context", "platform_conventions", "seed_frame_ref",
@@ -96,8 +112,32 @@ _TRUNCATION_ORDER: tuple[str, ...] = (
     # ship, one that loses the subject it is about is not. The wordmark is safe either way, because
     # it lives in `{{onimage_text}}` and this tuple is the complete list of what may be cut.
     "niche_descriptor", "niche_visual_world", "branding_block", "content_sentence", "source_hooks",
-    "layout_zones", "render_prompt", "style_dna",
+    # FR-316 (v2.1.3, D48) — `visual_brief` joins the cuttable set, late. It is GUIDANCE, not
+    # pixels: a slide that loses part of its content directive still renders its locked TEXT block
+    # in the deck's own style, so the brief must be shrinkable rather than being the one block that
+    # can push a prompt over the limit with nothing to give. It is cut AFTER the standing context
+    # and the subject sentence, because what the slide SHOWS outranks the operator's ambient
+    # direction — and it is now the LAST cuttable field, because what remains below it (the style
+    # trio) is not cuttable at all.
+    "visual_brief",
 )
+
+#: The style trio, in the order the LAST-RESORT trim cuts it (v2.1.4). These three are the deck's
+#: whole visual DNA post-D46 and no CUTTABLE pass may touch them — they are deliberately absent
+#: from `_TRUNCATION_ORDER`. They are tail-trimmed only when the uncuttable core alone still
+#: exceeds the provider's hard limit, which is the one situation where protecting them costs the
+#: slide entirely. `render_prompt` leads because it is the most redundant of the three under
+#: FR-241 (the anchor reference already shows a body slide what the deck looks like); `style_dna`
+#: and `layout_zones` follow, and all three are cut PROPORTIONALLY so no single block is gutted.
+_STYLE_TRIO: tuple[str, ...] = ("render_prompt", "style_dna", "layout_zones")
+#: How much of a trio field the last-resort trim must leave standing. Below ~40% the block stops
+#: being a shortened instruction and starts being a fragment, and a fragment misleads a render
+#: model more than a missing block does.
+_TRIO_FLOOR = 0.40
+#: Trim/re-measure rounds. Each pass distributes the whole overflow across the fields' remaining
+#: room, so one pass normally lands it; the extra rounds absorb the word-boundary rounding, and
+#: the hard truncation below is the backstop if even the floors cannot make room.
+_TRIM_PASSES = 4
 
 #: FR-261 condition 3 — which placeholders each ROLE may resolve, per `prompts/README.md`'s
 #: mapping table (that table is the allowlist source). Out-of-role name -> unresolved -> FR-260.
@@ -132,7 +172,16 @@ _ALLOWLIST: dict[str, frozenset[str]] = {
         # D46 (FR-304/FR-308) — the two panel-mapping slots, allowlisted for slides ONLY: the
         # cover/image/reel roles have no source panel to mirror, so the names do not resolve
         # there and a template drift fails loudly instead of leaking a blank line.
-        "visual_brief", "slide_panel_source"}),
+        "visual_brief", "slide_panel_source",
+        # v2.1.2 (D-A/D-D), carousel slides ONLY, for the same reason: a mapped deck is the one
+        # place where a source panel's own tool logos and its position badge are part of the
+        # content being mirrored. `tool_marks` names the marks this slide may draw FOR REAL —
+        # everywhere else in the product a real mark is still a generic unlettered shape.
+        # `slide_counter` reaches the model through `{{onimage_text}}`'s locked `counter` entry
+        # and the `counter_slot` layout zone rather than through a slot of its own (D-D: the TEXT
+        # block is the only source of renderable words), and is allowlisted here so an override
+        # template MAY name it and so the context key stays inside the vocabulary (FR-261).
+        "tool_marks", "slide_counter"}),
     "carousel_anchor_instruction.md": frozenset(),
     # FR-306's slide-intelligence question is a GLOBAL template like the vision check: zero
     # placeholders — the images ARE the variable input, and the question must read identically
@@ -238,6 +287,7 @@ class PromptEngine:
         *,
         profile: str = "",
         max_chars: int | None = None,
+        suffix: str = "",
     ) -> str:
         """The finished prompt for `role`, or `UnresolvedPlaceholderError` (FR-260).
 
@@ -246,7 +296,15 @@ class PromptEngine:
             context: a `build_context()` result. Names outside this role's allowlist are treated
                 as unresolved, which is what keeps brand context out of render prompts (FR-109).
             profile: render-profile subfolder (`gpt-image-2`); empty for the three global roles.
-            max_chars: model prompt-length limit; over it, 50 §7's truncation order applies.
+            max_chars: model prompt-length limit; over it, 50 §7's truncation order applies and
+                `_shrink` guarantees the returned string never exceeds it (v2.1.4).
+            suffix: text appended after the filled template, separated by a blank line — FR-193's
+                vision-retry instruction, and nothing else. It is passed HERE rather than
+                concatenated by the caller because it is part of what the provider measures: the
+                glz0 run's three over-limit retry prompts were all built by appending this block
+                to an already-at-the-limit prompt, so no guard event fired and the resubmission
+                bought a second guaranteed HTTP 500. Counted against `max_chars` and never cut —
+                it is one short instruction and the reason the re-render exists.
 
         Raises:
             UnresolvedPlaceholderError: the template names something assembly cannot provide.
@@ -261,9 +319,10 @@ class PromptEngine:
                 f"(template {template.origin}) — this creative fails before submission (FR-260)")
         values = {name: _neutralize(str(context[name])) for name in names}
         text = _fill(template.text, values)
-        if max_chars is not None and len(text) > max_chars:
-            text = _fill(template.text, self._shrink(template, values, max_chars))
-        return text
+        tail = f"\n\n{suffix}" if suffix else ""
+        if max_chars is not None and len(text) + len(tail) > max_chars:
+            text = self._fit(template, values, max_chars - len(tail))
+        return text + tail
 
     def attribution(self) -> list[dict[str, str]]:
         """FR-184 — one row per template role actually used: name, origin and content hash."""
@@ -272,10 +331,62 @@ class PromptEngine:
 
     # ------------------------------------------------------------------ internals
 
+    def _fit(self, template: Template, values: dict[str, str], max_chars: int) -> str:
+        """The filled template, GUARANTEED at or under `max_chars` — three stages, in order.
+
+        1. **The cuttable pass** (`_shrink`, 50 §7): descriptive values only, standing context
+           first, style trio untouched. This is where a prompt normally lands.
+        2. **The last-resort trio trim** (`_trim_trio`, v2.1.4): only when the UNCUTTABLE core —
+           TEXT block, exclusions, reference roles, style trio — is over the limit by itself.
+        3. **A hard truncation** of the assembled string, for the degenerate case where even the
+           trio's 40% floors leave the core too long (a single enormous verbatim panel, say).
+
+        Why stage 3 exists at all: `20260814_010814_glz0` proved the limit is the PROVIDER's, not
+        this engine's taste. Kie's createTask answers every prompt over ~20 000 characters with
+        HTTP 500 `"The text length cannot exceed the maximum limit"`, deterministically, and
+        FR-317 then resubmits the identical bytes for a second 500. Six slides were lost that way.
+        A prompt that cannot be made to fit by any honest means is still worth submitting truncated
+        — the words at the head of these templates are the format, the TEXT block and the style;
+        what falls off the end is the tail of whichever block was already the longest.
+        """
+        out = self._shrink(template, values, max_chars)
+        text = _fill(template.text, out)
+        if len(text) <= max_chars:
+            return text
+        trimmed, cuts = self._trim_trio(template, out, max_chars)
+        text = _fill(template.text, trimmed)
+        truncated = len(text) > max_chars
+        final = text[:max_chars] if truncated else text
+        self._warn(
+            "prompt_hard_trimmed",
+            f"{template.role}: the uncuttable core alone exceeded {max_chars} characters, so the "
+            f"style trio was tail-trimmed as a last resort ("
+            + (", ".join(f"{name} -{cut}" for name, cut in sorted(cuts.items())) or "nothing left "
+               "to trim")
+            + f"); final length {len(final)}"
+            + (f", after a hard truncation of {len(text) - max_chars} more characters — even the "
+               "40% floors could not make room" if truncated else "")
+            + ". D48's 'the style trio is never cut' stands for the CUTTABLE pass; past the "
+              "provider's hard limit a trimmed look beats a slide that never submits (FR-241's "
+              "anchor reference carries the deck's look on body slides)",
+            role=template.role, limit=max_chars, fields=sorted(cuts),
+            cuts=dict(sorted(cuts.items())), chars_cut=sum(cuts.values()),
+            hard_truncated=truncated, final_chars=len(final))
+        return final
+
     def _shrink(
         self, template: Template, values: dict[str, str], max_chars: int
     ) -> dict[str, str]:
-        """50 §7: cut descriptive values at word boundaries, style-DNA first; protect the rest."""
+        """50 §7: cut descriptive values at word boundaries, standing context first; protect the rest.
+
+        `_TRUNCATION_ORDER` is the COMPLETE list of what THIS pass may shrink. Everything else —
+        the TEXT block, the exclusions, the budgets, the reference roles and (since v2.1.3/D48) the
+        style trio `style_dna` / `render_prompt` / `layout_zones` — is passed through whatever the
+        length, because a prompt that arrives without its look or without its locked words is not
+        a shorter version of the job the operator paid for, it is a different one.
+
+        Returns values that may still assemble OVER the limit; `_fit` owns what happens then.
+        """
         out = dict(values)
         for name in _TRUNCATION_ORDER:
             length = len(_fill(template.text, out))
@@ -285,12 +396,50 @@ class PromptEngine:
                 continue
             keep = max(0, len(out[name]) - (length - max_chars))
             out[name] = trim_words(out[name], keep)[0] if keep else ""
-        if len(_fill(template.text, out)) > max_chars:
-            self._warn("prompt_over_length",
-                       f"{template.role}: still over {max_chars} characters after truncating "
-                       "every descriptive field; the text block and exclusions are never cut",
-                       role=template.role, limit=max_chars)
         return out
+
+    def _trim_trio(
+        self, template: Template, values: dict[str, str], max_chars: int
+    ) -> tuple[dict[str, str], dict[str, int]]:
+        """Tail-trim the style trio proportionally down to `_TRIO_FLOOR`; returns (values, cuts).
+
+        Proportional to each field's REMAINING ROOM (its length above its own floor), so the
+        overflow is shared out by size instead of one block being gutted while another keeps every
+        word. Each field is cut from the END — the head of a style instruction carries the
+        grammar, the tail carries the elaboration — at a word boundary where one exists above the
+        floor, and never below 40% of the length it arrived with.
+
+        Amends D48's rule to: the trio is never cut by the cuttable pass, and tail-trimmed only
+        here, always logged. The change is safe in a way it was not before FR-241 went live: a body
+        slide now reaches the image-to-image route with the anchor attached, and the anchor IS the
+        deck's look, so shortened style prose degrades the wording of an instruction the picture is
+        already making. An unsubmitted slide degrades nothing — it is simply gone.
+
+        One knock-on, stated rather than hidden: FR-189/M9's byte-identical `{{style_dna}}` across
+        a deck holds only while no slide reaches this function, and a deck whose panels differ
+        wildly in length could have two slides trimmed differently. That is the right trade at
+        this point — the alternative for the slide that triggered it is not a matching prompt, it
+        is no prompt at all.
+        """
+        out = dict(values)
+        floors = {name: int(len(out[name]) * _TRIO_FLOOR)
+                  for name in _STYLE_TRIO if out.get(name)}
+        cuts: dict[str, int] = {}
+        for _ in range(_TRIM_PASSES):
+            over = len(_fill(template.text, out)) - max_chars
+            if over <= 0:
+                break
+            room = {name: len(out[name]) - floors[name]
+                    for name in floors if len(out[name]) > floors[name]}
+            total = sum(room.values())
+            if total <= 0:
+                break
+            for name, available in room.items():
+                share = min(available, -(-over * available // total))  # ceil, never past the floor
+                keep = len(out[name]) - share
+                out[name] = _tail_trim(out[name], keep, floors[name])
+                cuts[name] = len(values[name]) - len(out[name])
+        return out, {name: cut for name, cut in cuts.items() if cut > 0}
 
     def _fallback_warning(self, path: Path, reason: str) -> None:
         self._warn("template_fallback",
@@ -387,6 +536,8 @@ def build_context(
     reel_beats: str = "",
     visual_brief: str = "",
     slide_panel_source: str = "",
+    tool_marks: str = "",
+    slide_counter: str = "",
 ) -> dict[str, str]:
     """Build the ONE prompt context (FR-261). Every value is derived from typed domain objects.
 
@@ -435,6 +586,24 @@ def build_context(
             crafted topic name must not be able to address another topic's verdict (§1.5 B4).
         budget_scale: 1.0 normally; FR-105's vision-check retry passes `1 - retry_reduction_pct`.
         slide_text: this carousel slide's own line (FR-13's coherent sequence, one entry a slide).
+        tool_marks: D-A (v2.1.2) — the SANCTIONED marks line, carousel slides only. One engine-
+            free string built by the caller from what the source panel actually showed: every mark
+            named on it renders as the REAL logo, in its true brand colours, exempt from the
+            style's palette discipline. Empty is the norm and means "no real mark on this slide",
+            which is the pre-D-A behaviour: every company, product and app mark stays a generic
+            unlettered shape. It goes through `_strip_brands()` like every other source-derived
+            value, so a configured competitor cannot be sanctioned into a render prompt by
+            accident (M6) — the screen's verdict still wins over the panel's contents.
+        slide_counter: D-D (v2.1.2) — the deck's own position badge STRING ("3/7"), gated by the
+            caller SOLELY on the source deck actually being counted (`detect_counter`): the
+            counter is content (the source's own convention), so a style that declares no
+            `counter_slot` zone still renders it via the locked TEXT entry — zone-gating would
+            silently suppress the badge on such decks. Non-empty adds a locked
+            `counter (render verbatim)` entry to
+            `{{onimage_text}}` (spelling aid included) and emits the `counter_slot` layout zone;
+            empty drops that zone and states the absence instead (`_NO_COUNTER_LINE`), for exactly
+            the reason M11 gives for the signature zone. It is NEVER derived from `slide_index`,
+            which is orientation metadata the templates now forbid drawing.
         reel_beats: `beats_for(duration_s)`'s real-second shot schedule, passed by `generate.reel`
             because it owns the configured duration. F24a deliberately gives it no placeholder of
             its own (`prompts/README.md` §"computed per call"): it rides in front of the motion
@@ -456,7 +625,7 @@ def build_context(
     context = {
         # --- the assigned meta-style (FR-290: the look is assigned, never re-derived per topic) ---
         "render_prompt": strip(visual or (style.render_prompt if style else "")),
-        "layout_zones": "" if override else _style_zones(style, wordmark),
+        "layout_zones": "" if override else _style_zones(style, wordmark, slide_counter),
         "style_dna": style_dna(style),
         "exclusions": _join(style.exclusions if style else (), "; "),
         # Conductor decision (W2 wire-in): an override brief has no style, but the reel director's
@@ -465,7 +634,7 @@ def build_context(
         # graphic-panel physics assumed).
         "motion_profile": style.motion_profile if style else "photographic",
         # --- copy ---
-        "onimage_text": _onimage_text(copy, creative_format, slide_text, wordmark),
+        "onimage_text": _onimage_text(copy, creative_format, slide_text, wordmark, slide_counter),
         "through_line": strip((copy.through_line if copy else "") or content_sentence),
         "motion_beat": _motion_beat(copy, reel_beats),
         # --- topic material (the template owns the fences; FR-102) ---
@@ -503,8 +672,20 @@ def build_context(
         # empty: an image/reel/anchor context carries them harmlessly (the allowlist keeps them
         # out of those templates), and a deck without slide intelligence renders its "(ignore if
         # empty)" lines blank rather than failing the slide.
-        "visual_brief": visual_brief,
+        # FR-316 (v2.1.3, D48) — the brief takes the M6 strip pass on its way in, for the same
+        # reason `tool_marks` below does: it is third-party VISION output describing a competitor's
+        # slide, and a competitor name that survives in it is a brand name handed to an image model.
+        # The vision step strips at authoring time; this is the defence-in-depth pass that also
+        # covers a brief written by an older run and replayed from `meta.yaml`.
+        "visual_brief": strip(visual_brief),
         "slide_panel_source": slide_panel_source,
+        # v2.1.2 (D-A/D-D) — carousel slides only, both empty by default. `tool_marks` is the one
+        # value in the whole context that TELLS the model to draw a real logo, so it takes the M6
+        # strip pass on its way in; `slide_counter` carries no words of its own into the prompt
+        # (the `counter` TEXT entry and the `counter_slot` zone above are how it reaches the
+        # model), and is kept here so a niche override template may name the slot.
+        "tool_marks": strip(tool_marks),
+        "slide_counter": slide_counter,
     }
     if not set(context) <= PLACEHOLDERS:  # FR-261 condition 2 — a typo here is a build error
         raise ValueError(
@@ -631,6 +812,22 @@ def trim_words(text: str, limit: int) -> tuple[str, bool]:
     if not value[limit].isspace() and " " in head:
         head = head.rsplit(" ", 1)[0]
     return head.rstrip(" ,;:-–—"), True
+
+
+def _tail_trim(value: str, keep: int, floor: int) -> str:
+    """`value` cut from the END to about `keep` characters, never below `floor` (v2.1.4).
+
+    A word boundary is preferred — `trim_words`' rule, and the reason a trimmed style instruction
+    still reads as English — but not at any price: a tail with one very long word (a URL, a
+    hyphen-free compound) can push that boundary far below the floor, and the floor is the
+    promise. So the boundary cut is taken when it clears the floor and a plain slice at `keep` is
+    taken when it does not.
+    """
+    keep = max(floor, keep)
+    if keep >= len(value):
+        return value
+    word = trim_words(value, keep)[0]
+    return word if len(word) >= floor else value[:keep].rstrip()
 
 
 # --------------------------------------------------------------------------------------------
@@ -838,23 +1035,40 @@ def _content_sentence(trend: TrendItem | None, creative_format: str) -> str:
 #: vanished from the list still leaves the style's own composition expecting something there.
 _NO_SIGNATURE_LINE = "This frame carries no signature zone: the lower margin is empty."
 
+#: D-D (v2.1.2) — the counter's half of the same rule, and it fails the same way. A style whose
+#: layout declares a position badge describes a chip with a number in it; a deck rendering without
+#: a counter used to get that chip described and nothing to put inside it, and the models fill it
+#: with an invented "01", a "3/7" that matches no deck, or a page number. The counter is a STRING
+#: now (a locked `counter` entry in the TEXT block), so its absence is stated the same way M11
+#: states an unsigned frame's.
+_NO_COUNTER_LINE = ('This deck carries no slide counter: no position badge, no "N of M", '
+                    "no page number anywhere in the frame.")
 
-def _style_zones(style: MetaStyle | None, wordmark: str) -> str:
-    """The assigned style's ordered frame regions, with the signature zone gated on `wordmark`.
+
+def _style_zones(style: MetaStyle | None, wordmark: str, slide_counter: str = "") -> str:
+    """The assigned style's ordered frame regions, with the two OPTIONAL zones gated on their value.
 
     A zone tagged `role: brand_slot` is emitted ONLY when this creative is signed (W2 addendum
-    item 1: branded ⇔ a non-empty wordmark). When it is not, that zone is dropped and the M11 line
-    above is appended instead. Numbering runs over the EMITTED zones, so an unsigned creative gets
-    a clean 1..N list rather than a gap where the signature used to be.
+    item 1: branded ⇔ a non-empty wordmark), and a zone tagged `role: counter_slot` ONLY when this
+    deck carries a counter string (D-D). A gated-out zone is dropped and the matching absence line
+    is appended instead — a described-but-unfilled text zone is the single biggest hallucination
+    site the render models have, whether the missing string is a signature or a page number.
+    Numbering runs over the EMITTED zones, so a creative with neither gets a clean 1..N list rather
+    than two gaps.
     """
     if style is None:
         return ""
     signed = bool(wordmark.strip())
-    kept = [zone for zone in style.layout_zones if signed or zone.role != "brand_slot"]
+    counted = bool(slide_counter.strip())
+    gated = {"brand_slot": signed, "counter_slot": counted}
+    kept = [zone for zone in style.layout_zones if gated.get(zone.role, True)]
     lines = [f"{i}. {zone.position} — {zone.content} — {zone.text_treatment}".rstrip(" —")
              for i, zone in enumerate(kept, start=1)]
-    if not signed and len(kept) != len(style.layout_zones):
+    declared = {zone.role for zone in style.layout_zones}
+    if not signed and "brand_slot" in declared:
         lines.append(_NO_SIGNATURE_LINE)
+    if not counted and "counter_slot" in declared:
+        lines.append(_NO_COUNTER_LINE)
     return "\n  ".join(lines)
 
 
@@ -874,7 +1088,7 @@ def _motion_beat(copy: CopySet | None, reel_beats: str) -> str:
 
 
 def _onimage_text(copy: CopySet | None, creative_format: str, slide_text: str,
-                  wordmark: str = "") -> str:
+                  wordmark: str = "", slide_counter: str = "") -> str:
     """The locked text asset (FR-186): every string quoted, then echoed letter by letter.
 
     FR-292's channel 1 rides here (§1.4 B1). Every render template declares this block the ONLY
@@ -888,17 +1102,35 @@ def _onimage_text(copy: CopySet | None, creative_format: str, slide_text: str,
     this block is the order the model reads the frame's words in. A creative with no copy at all
     but a wordmark still gets a block — an unsigned frame and a wordless-but-signed frame are two
     different renders.
+
+    **A deck's slide text is labelled `panel_text`, not `headline` (B6 fix, 2026-08-13).** Under
+    FR-304 that string is a whole source PANEL mapped onto our slide — a complete thought written
+    to be read on its own slide, and frequently several lines of it. Calling it a headline was the
+    render model's licence to treat it as one: to shrink it, to set it as a single band, and to
+    reconcile it against a constraint block that quoted a 90-character headline ceiling. The label
+    is what the model reads first, so the label is where the fix belongs. `headline` survives for
+    the cover of a deck that mapped no panel onto this slide.
+
+    **The slide counter is a locked string too (D-D, 2026-08-13).** It used to be an instruction —
+    "show this slide's position exactly as the FORMAT line states" — pointed at `{{slide_index}}`,
+    which is orientation metadata rather than content, and the models duly invented badges, page
+    numbers and counts that matched no deck. A counted deck now quotes its badge here, between the
+    creative's own words and its signature, under the same verbatim contract as everything else in
+    this block; an uncounted deck quotes nothing and is told the frame carries no counter.
     """
     signature = wordmark.strip()
-    if copy is None and not slide_text and not signature:
+    counter = slide_counter.strip()
+    if copy is None and not slide_text and not signature and not counter:
         return ""
     headline = copy.headline if copy else ""
     if creative_format == "carousel":
-        blocks = [("headline", slide_text or headline)]
+        blocks = [("panel_text", slide_text)] if slide_text else [("headline", headline)]
     elif creative_format == "reel":
         blocks = [("hook", (copy.overlay_text if copy else "") or headline)]
     else:
         blocks = [("headline", headline), ("subline", copy.subline if copy else "")]
+    if counter:
+        blocks.append(("counter", counter))
     if signature:
         blocks.append(("wordmark", signature))
     lines = []
@@ -1017,13 +1249,18 @@ def _budget_line(budgets: TextBudgets, style: MetaStyle | None, creative_format:
         return (f"hook headline at most {limit(budgets.reel_seed_headline, 'overlay', 'headline')} "
                 "characters, spaces included")
     if creative_format == "carousel":
-        # v2.1.0: the deck's slide text has its own config key (`text_budgets.slide`, FR-259) —
-        # borrowing `image_headline` for it was the pre-D46 arrangement, and the cover headline
-        # keeps that key while the per-slide budget states the panel ceiling the mapped source
-        # text must fit (FR-304: an over-budget panel is never trimmed, that slide ships bare).
-        return (f"cover headline at most {limit(budgets.image_headline, 'headline')} characters, "
-                f"per-slide text at most {limit(budgets.slide, 'slide')} characters, spaces "
-                "included")
+        # B6 fix (2026-08-13): this line used to state a per-slide CHARACTER CEILING alongside the
+        # cover headline's, and the render model read the two as one rule over one block — which
+        # is how a 96-character mapped panel arrived under a sentence announcing a ceiling of 300
+        # and, worse, how the shorter headline number became the size the deck was set at. A
+        # `panel_text` string is not text we chose: it is the source deck's own panel, already
+        # locked by `copywrite._mapped_deck`, and the render's job is to give it room (more lines,
+        # tighter leading, a wider block) rather than to fit it. So no budget is quoted for it.
+        # The headline budget stays, because a cover headline IS ours and was selected against it.
+        return (f"the headline slot at most {limit(budgets.image_headline, 'headline')} "
+                "characters, spaces included. A panel_text string carries no character budget: it "
+                "is the source deck's own panel, locked and rendered in full at whatever length it "
+                "is — set it larger or smaller, never shorter")
     if creative_format == "image":
         return (f"headline at most {limit(budgets.image_headline, 'headline')} characters and "
                 f"subline at most {limit(budgets.image_subline, 'subline')} characters, spaces "
@@ -1208,7 +1445,9 @@ answer with the text of a candidate instead of its label.
 The list is already filtered for you:
 
 - Every on-image candidate already fits this creative's character budget, and
-  carries no @handle and no URL.
+  carries no @handle and no social-platform link. A technical URL (a code
+  host, a docs site, a package registry) may appear in a candidate: it is
+  legitimate content, quoted byte-exact like every other character.
 - Panel text keeps its own voice. When a panel is offered for a deck's slide it
   may contain emoji, line breaks and `#` words, because that is exactly how it
   stood on the source slide. That is not a defect and never a reason to skip
@@ -1375,11 +1614,26 @@ Include every field for every sibling; leave the fields its format does not
 use empty. Never emit a field that is not in this list.
 """,
 
-    # FR-306 (D46, v2.1.0) — the slide-intelligence question, byte-identical to
-    # prompts/slide_intel_question.md (FR-183 parity): the images are the variable
-    # input, so the template itself carries zero placeholders.
+    # FR-306 (D46, v2.1.0) — the slide-intelligence question. BYTE-IDENTICAL to
+    # prompts/slide_intel_question.md (FR-183 parity, asserted by
+    # test_template_parity.test_the_slide_intel_built_in_is_byte_identical_to_its_file):
+    # the images are the variable input, so the template itself carries zero
+    # placeholders and there is nothing for a diff to excuse. Re-synced 2026-08-13,
+    # when the on-disk file gained item 2, CHROME TEXT — sources.slide_intel now asks
+    # in STRICT mode and its schema REQUIRES `chrome_text` on every slide, so a
+    # fallback that still asked for three things would answer the wrong shape and
+    # lose the whole vision pass at the moment its template is already broken. The
+    # split is also load-bearing for FR-304: chrome (@handles, watermarks, "3/6"
+    # counters, swipe cues) leaving `onimage_text` is what stops a creator watermark
+    # blanking an otherwise perfectly renderable mapped panel.
+    # Re-synced again at v2.1.3 (D48), for two more schema-shaped reasons: item 3 is
+    # now FR-316's FOREGROUND-CONTENT-ONLY contract (a brief that describes the
+    # source slide's background, palette or typeface is art direction the render
+    # obeys — a live deck came back with a "red-to-orange gradient heading" over an
+    # "outdoor pool area"), and item 5 asks for FR-315's `mark_boxes`, which
+    # `sources.slide_intel._SLIDE` REQUIRES on every slide row in strict mode.
     "slide_intel_question.md": """Each attached image is one slide of a source slideshow, attached in slide
-order. Report exactly three things about every slide. Report nothing else.
+order. Report exactly five things about every slide. Report nothing else.
 
 1. ON-IMAGE TEXT — transcribe every word that appears ON the slide, exactly as
    it is written: same language, same spelling, same capitalisation, same
@@ -1387,50 +1641,176 @@ order. Report exactly three things about every slide. Report nothing else.
    line breaks the slide has, one per visible break. Keep the reading order:
    heading first, then body text, then labels, callouts, chart labels, button
    or badge text. Do not translate, correct, complete, shorten, summarise,
-   re-order or explain. A slide with no text on it at all is an empty string.
+   re-order or explain. This item is the slide's OWN CONTENT ONLY: leave out
+   every piece of creator chrome — @handles and account names, URLs and domains,
+   watermarks and signature lines, page or slide counters like "3/6" or "2 of
+   7", "swipe", "swipe up", "follow for more", "link in bio", and any platform
+   interface text (like, comment, share, share counts, sound titles, usernames
+   in the app frame). Those belong to item 2 and must not appear here. A slide
+   whose only text is chrome has an empty string here, and so does a slide with
+   no text on it at all.
 
-2. VISUAL BRIEF — one to three sentences, ALWAYS IN ENGLISH whatever language
-   the slide is in, describing what is on the slide well enough to draw it
-   again: the layout (where the blocks sit), and the graphics — photos,
-   charts (type, how many series, which direction), diagrams, tables, icons,
-   arrows, numbered lists, how many of each. Describe CONTENT, not art
-   direction: "line chart, three series, all rising left to right, legend
-   bottom right; short heading above it" is a brief. "Bold modern look", "make
-   it pop", "use a warm palette" are instructions, and instructions are not
-   what is being asked. Do not judge quality, do not suggest improvements, do
-   not guess at anything the slide does not show.
+2. CHROME TEXT — the words you just left out of item 1, transcribed with the
+   same verbatim care: same language, same spelling, same capitalisation, same
+   punctuation, line breaks kept. Every @handle, account name, URL, domain,
+   watermark or signature line, page or slide counter, swipe or follow call to
+   action, and every piece of platform interface text on the slide, in the
+   order it appears. Do not clean it up, do not expand it, do not describe it.
+   A slide with no chrome on it gets an empty string.
 
-3. BRAND MARKS — list every logo, wordmark, watermark, app badge, platform
+3. VISUAL BRIEF — one to three sentences, ALWAYS IN ENGLISH whatever language
+   the slide is in, naming this slide's FOREGROUND CONTENT and nothing else.
+   Foreground content is the stuff the slide puts in front of you: charts (type,
+   how many series, which direction), tables, code or terminal blocks, icons,
+   lists, diagrams, arrows, quantities, and the objects sitting on top of the
+   slide — how many of each, and where they sit relative to one another.
+   Describe CONTENT, not art direction: "line chart, three series, all rising
+   left to right, legend bottom right; short heading above it" is a brief.
+
+   NEVER describe, not in one word and not in twenty:
+   - the BACKGROUND — the scenery, room, location, landscape, backdrop, set or
+     photograph the content sits on. "Outdoor pool area with a log cabin
+     behind it", "office desk by a window", "sunset over mountains" are
+     backgrounds, and a background is never content here;
+   - ANY colour, gradient, typeface, font weight, texture, lighting, finish or
+     mood. "Red-to-orange gradient heading", "bold modern look", "make it pop",
+     "warm palette", "clean sans-serif" are art direction, and art direction is
+     never what is being asked;
+   - platform chrome and interface furniture — pagination dots, page arrows,
+     swipe cues, progress bars, watermarks, slide counters, like or view
+     counters (item 2 already has those words);
+   - creator or account names.
+   A slide whose only content is a background photograph gets a MINIMAL brief
+   that names the foreground elements sitting on that photograph and nothing
+   about the photograph itself — or the exact phrase "no distinct foreground
+   content" when there are no foreground elements at all. Do not judge quality,
+   do not suggest improvements, do not guess at anything the slide does not
+   show.
+
+4. BRAND MARKS — list every logo, wordmark, watermark, app badge, platform
    chrome or visible @handle on the slide, named as what it is: "TikTok
    watermark", "Nike swoosh, top left", "@creator handle over the footer".
    Name what you can see; never describe how to reproduce it. A slide with
    none of these gets an empty list.
 
+5. MARK BOXES — for every visible third-party tool, app or product logo ON THIS
+   SLIDE (the marks from item 4 that belong to a real tool or company — never
+   platform chrome, never a watermark, never the creator's own signature), give
+   its name, this slide's number, and where the mark sits. The position is a
+   bounding box in FRACTIONS of the image, never pixels: [x, y, w, h], each
+   number between 0 and 1, measured from the TOP-LEFT corner — x and w along the
+   width, y and h down the height (so [0.12, 0.04, 0.09, 0.06] is a small mark
+   near the top-left corner). Draw the box TIGHT around the mark itself: the
+   logo only, with no surrounding label, card, button or padding. The box is the
+   logo and never the panel — a rectangle covering most of the slide, a whole
+   screenshot or the background is a misdetection and is thrown away. A slide
+   with no third-party tool logo on it gets an empty list, and no more than
+   twenty-four marks are wanted across the whole deck — give the most prominent
+   ones.
+
 Answer for every attached slide, one entry each, in the order the slides were
-attached, numbered from 1. Return valid JSON and nothing else:
+attached, numbered from 1. Return valid JSON and nothing else (the four numbers
+below are only an example of the shape a box takes):
 
 {
   "slides": [
     {
       "slide": 1,
-      "onimage_text": "<every word on this slide, verbatim, source language, line breaks kept, or empty>",
-      "visual_brief": "<English description of this slide's layout and graphics>",
-      "brand_marks": ["<a logo, wordmark or watermark you can see>"]
+      "onimage_text": "<this slide's own words, verbatim, source language, line breaks kept, no handles or URLs or counters or swipe cues, or empty>",
+      "chrome_text": "<the handles, URLs, watermarks, counters and swipe or follow cues on this slide, verbatim, or empty>",
+      "visual_brief": "<English description of this slide's foreground content only — no background, no colours, no typefaces, no chrome>",
+      "brand_marks": ["<a logo, wordmark or watermark you can see>"],
+      "mark_boxes": [
+        {
+          "name": "<the tool, app or company this mark belongs to>",
+          "slide": 1,
+          "box": [0.12, 0.04, 0.09, 0.06]
+        }
+      ]
     }
   ]
 }
 """,
-    "vision_check_question.md": """Inspect each attached image and answer exactly two objective
-questions about it. Answer nothing else.
-1. TEXT BROKEN — is any rendered text garbled, misspelled, cut off at an edge, overlapping,
-   duplicated, unreadable at small size, or missing/flattened diacritics?
-2. FAKE PLATFORM UI — does the image contain social-media chrome, watermarks, app logos,
-   usernames or @handles, profile pictures, follower/like/view/comment counters, play buttons or
-   progress bars?
-Judge nothing else — not aesthetics, composition, brand fit or truthfulness. An image with no
-text at all is not broken text: answer false.
-Return valid JSON and nothing else, one entry per attached image, in the order attached, each
-with `image` (1-based), `text_broken`, `fake_ui` and a short `detail` phrase.""",
+    # BYTE-IDENTICAL to `prompts/vision_check_question.md`, and pinned as such by
+    # `tests/test_template_parity.py` (the same guarantee `slide_intel_question.md` carries, and
+    # for the same reason): this role names ZERO placeholders, so the placeholder-set parity check
+    # passes vacuously for it and the two copies drifted for three waves without a test noticing.
+    # `vision_check._SCHEMA` is STRICT and now REQUIRES `text_mismatch` on every verdict, so a
+    # fallback that asks the old two questions loses the whole check on the one day its file is
+    # already broken — the exact moment nobody is reading the prompt. Re-synced at v2.1.3 (D48):
+    # `text_broken` now covers ILLEGIBLE lettering (dark type on a dark ground reads as a clean
+    # render to a question that only asks about garbling), and a mark listed in the SANCTIONED
+    # MARKS block that is ABSENT from the image is a `text_mismatch` — FR-315 makes a sanctioned
+    # mark a required element, and a defect nobody asks about is a defect nobody retries.
+    # Re-synced again at v2.1.4: glz0 deck 06 slide 1 shipped GHOSTED, double-exposed typography
+    # certified `clean`, because a second overstruck copy of the words leaves a readable copy too
+    # and the question never named that shape. It names it now, explicitly, including the clause
+    # that a readable copy alongside the ghost does not excuse it.
+    "vision_check_question.md": """Inspect each attached image and answer exactly three objective questions about
+it. Answer nothing else.
+
+1. TEXT BROKEN — is any text rendered on the image garbled, misspelled,
+   cut off at an edge, overlapping itself, duplicated, unreadable at small
+   size, or missing/flattened accent marks (diacritics)? ILLEGIBLE text counts
+   as broken even when every letterform is technically well made: lettering
+   that disappears into what is behind it (dark type on a dark ground, pale
+   type on a pale one, type lost inside a photograph or a busy texture) and
+   lettering you cannot read at a glance are both broken text. GHOSTED,
+   DOUBLE-EXPOSED or OVERSTRUCK lettering is broken text too: letterforms drawn
+   twice at an offset, a faint or shadowed second copy of the same words behind
+   or beside the first, doubled or double-outlined strokes, smeared or
+   motion-blurred type, and words printed over other words all count — answer
+   true for them even when a readable copy of the words also appears on the
+   image. Judge legibility by whether the words can be READ cleanly, never by
+   whether they look good.
+
+2. FAKE PLATFORM UI — does the image contain social-media interface chrome,
+   watermarks, usernames or @handles, profile pictures, follower or like or
+   view or comment counters, play buttons, progress bars, or an invented app
+   interface dressed up as a real one? A product, tool or company logo is NOT
+   fake UI when that tool is named in the EXPECTED TEXT listed for the image,
+   or when the request lists it as a sanctioned mark: a sanctioned logo beside
+   a list row, on a card, in an icon grid or as an app icon is intended
+   content, so answer false for it. Answer true only for the interface chrome
+   above.
+
+3. TEXT MISMATCH — do the words rendered on the image differ from the EXPECTED
+   TEXT listed for that image in the user message? The expected text is the
+   exact wording this image was ordered to carry. Answer true when the image
+   shows different words, a paraphrase, a translation, invented extra words,
+   or when part of the expected wording is missing. Answer false when every
+   expected string appears on the image, same words in the same order —
+   differences of capitalisation, line breaks, letter spacing, hyphenation
+   and quotation marks are NOT a mismatch, and neither is text set across
+   several lines or several blocks. The lettering inside a sanctioned tool
+   mark — the logo's own wordmark, drawn as part of the mark — is not extra
+   words and never a mismatch. A mark listed in the SANCTIONED MARKS block for
+   an image is a REQUIRED element of it: when a listed mark is nowhere on the
+   image, answer true and name that missing mark in the detail, spelled as the
+   block spells it. An image whose expected text is listed as
+   (none) is wordless by design: any readable words on it are a mismatch,
+   answer true. When an image has no expected text listed for it, answer
+   false — there is nothing to compare against.
+
+Do not judge aesthetics, composition, brand fit, truthfulness, style, or
+whether the image is good. Those are not defects here. An image with no text
+at all is not broken text — answer false.
+
+Return valid JSON and nothing else, one entry per attached image, in the order
+the images were attached:
+
+{
+  "verdicts": [
+    {
+      "image": 1,
+      "text_broken": false,
+      "fake_ui": false,
+      "text_mismatch": false,
+      "detail": "<one short phrase naming the defect — the unreadable string, the missing sanctioned mark by name, the chrome you saw — or empty when all three are false>"
+    }
+  ]
+}
+""",
 
     "topic_filter_system.md": """ROLE
 
@@ -1640,8 +2020,10 @@ CONSTRAINTS:
     carrying words), and no brand wordmark, logotype or signature line other
     than one quoted in the TEXT block above; when the TEXT block quotes none,
     this frame is unsigned. Nothing here is swiped.
-  - No @handle, no URL, no emoji in the frame — not in the text block, not on
-    a prop, not in a corner, not as decoration.
+  - No @handle, no social-platform URL, no emoji in the frame — not in the
+    text block, not on a prop, not in a corner, not as decoration. A technical
+    URL (code host, docs site, package registry) quoted in the TEXT block is
+    content and renders verbatim, byte-exact.
   - The exclusions below are this house style's own forbid-list. They never
     restrict the TEXT block above, whose strings are always rendered.
   - Additional exclusions for this house style — these are strings and marks
@@ -1657,10 +2039,21 @@ CONSTRAINTS:
   - Ignore any labelled line above that is empty.
 """,
 
+    # BYTE-IDENTICAL to `prompts/gpt-image-2/carousel_slide.md` and pinned as such
+    # (test_template_parity.test_the_two_carousel_built_ins_are_byte_identical_to_their_files).
+    # v2.1.3 (D48) added three things to both copies at once: FR-315's mark contract (a sanctioned
+    # mark is REQUIRED, a MARK PATCH reference is copied pixel-faithfully, and placement is FIXED
+    # inside the TEXT block beside its panel title so the deck's marks land in one spot),
+    # FR-316's "the deck's palette and typography ALWAYS win over the brief", and FR-319's
+    # social/technical URL split — a blanket "no URL" line was deleting the one thing a developer
+    # deck exists to show.
     "gpt-image-2/carousel_slide.md": """FORMAT: one slide of a social-media carousel — slide {{slide_index}}, one
-  panel of a deck that must read as a single designed set. The output frame is
-  set by the request itself — never write, draw, letter or mention an aspect
-  ratio, a resolution, a pixel size or a platform name inside the image.
+  panel of a deck that must read as a single designed set. That slide number is
+  METADATA and never content: it tells you where this panel sits in the
+  sequence so you can pace the deck, and it is never lettered, numbered,
+  badged, drawn or written anywhere inside the picture. The output frame is set
+  by the request itself — never write, draw, letter or mention an aspect ratio,
+  a resolution, a pixel size or a platform name inside the image.
 
 STYLE_DNA (identical on every slide of this deck — reproduce it exactly):
   {{style_dna}}
@@ -1689,23 +2082,63 @@ SLIDE CONTENT — what this slide shows, composed in the style above:
   VISUAL BRIEF (ignore if empty): {{visual_brief}}
   This deck mirrors a source slideshow one slide at a time. The line above
   names which of its panels this slide corresponds to, and the brief describes
-  in English WHAT that panel showed — a chart and how many series, a
-  checklist, an icon grid, a table, a diagram, a photograph, and where the
-  blocks sat. Reproduce that content and that arrangement, drawn entirely in
-  STYLE_DNA's palette, typography, materials and treatment.
+  in English the FOREGROUND CONTENT that panel showed — a chart and how many
+  series, a checklist, an icon grid, a table, a diagram, a code block, an
+  arrow, a quantity, and how those elements sat relative to one another.
+  Reproduce that content and that arrangement, drawn entirely in STYLE_DNA's
+  palette, typography, materials and treatment. The ground it sits on is never
+  the brief's: this deck's background, scene and surface come from STYLE_DNA
+  and, on a body slide, from the anchor.
   The brief is a CONTENT directive, never a style instruction: where it names
   a colour, a typeface, a texture or a mood, ignore that word and use the
   deck's own; where it names an object, a quantity, a direction or a position,
-  follow it exactly. A company, product or app mark it names is drawn as a
-  GENERIC unlettered shape of its kind — never the real mark, never its name,
-  never an invented substitute — and platform chrome, watermarks, usernames
-  and counters it describes are dropped outright.
+  follow it exactly. THIS DECK'S PALETTE AND TYPOGRAPHY ALWAYS WIN: no colour,
+  gradient, typeface, weight, texture, finish or lighting can enter this frame
+  through the brief, and any such word that survived into it is noise — read
+  past it and use STYLE_DNA's own. The source deck's furniture is dropped the
+  same way: pagination dots, page arrows, swipe widgets, progress bars and
+  slide counters a brief describes are never drawn here. A competitor's, a
+  creator's or a platform's mark it names is drawn as a GENERIC unlettered
+  shape of its kind — never the real mark, never its name, never an invented
+  substitute — and platform chrome, watermarks, usernames and engagement
+  counters it describes are dropped outright.
+
+  TOOL MARKS (sanctioned real logos — ignore if empty):
+  {{tool_marks}}
+  Every mark named on that line is a real, existing logo this slide is
+  SANCTIONED to draw, and a REQUIRED element of it: without it the slide is
+  wrong. Draw it as the actual mark, in its own true brand colours, with its own
+  letterforms: it is the single element exempt from STYLE_DNA's palette and ink
+  discipline, and it is never greeked, never abstracted into a generic glyph,
+  never recoloured into the deck's palette.
+  A reference introduced as a MARK PATCH is that logo's own pixels, cropped from
+  the source slide: copy it pixel-faithfully — same shapes, same proportions,
+  same true brand colours, same glyph — with no redesign, no re-lettering and no
+  invented substitute. Where the patch and your memory of the mark disagree, the
+  patch wins.
+  PLACEMENT IS FIXED: the mark renders INSIDE the TEXT block, immediately beside
+  the panel title it belongs to, at icon size, never larger than the words next
+  to it, and in the SAME spot on every slide of this deck. It never floats in
+  the scene and never rides on an in-scene screen, device, sign or package.
+  The lettering built into such a logo is part of the mark, not typeset copy:
+  reproduce the mark, never re-set its name in the deck's typeface, and never
+  add its name beside it as a separate label.
+  A competitor's, a creator's or a platform's mark that is NOT named on that
+  line is not sanctioned and stays a generic unlettered shape. This line never
+  sanctions platform or social chrome, watermarks, usernames, @handles, profile
+  pictures or engagement counters: those are banned in every frame, whatever it
+  names.
 
   BRIEF OVERLAY: {{brief_directives}}
 
 TEXT (locked asset — this slide's exact content):
   {{onimage_text}}
 
+  A line labelled panel_text is the source deck's own panel, mapped onto this
+  slide whole. It is finished content, not a headline to be sized down: it may
+  run to one word or to several sentences, and it renders in full either way.
+  A line labelled headline is this deck's own cover line, and one labelled
+  wordmark is its signature. All of them are locked.
   Every quoted string comes from the source deck's own panel and renders
   exactly as written: same characters, accents, capitalisation, punctuation,
   emoji, hashtag symbols, numbers and line breaks. Set it in the deck's
@@ -1715,64 +2148,85 @@ TEXT (locked asset — this slide's exact content):
   copy, no label, no caption, no signature.
   A letter-by-letter echo ("V-ě-t-š-i-n-a") is a spelling aid for you alone;
   never draw the hyphenated form onto the image.
-  If STYLE_DNA's layout includes a slide-position badge, it shows this slide's
-  position exactly as the FORMAT line states, in that badge style, and carries
-  no other characters.
+  A line labelled counter is this deck's own position badge: render that string
+  exactly as quoted, once, in the small chip or badge treatment STYLE_DNA
+  describes, and nowhere else in the frame.
+  When no counter line is quoted above, this deck carries no slide counter: no
+  position badge, no "N of M", no page number anywhere in the frame.
   Fit a long string by giving it room — more lines, tighter leading, a wider
   block, the plate or card STYLE_DNA describes. A quoted string is never
   shortened, re-worded, hyphenated, ellipsed or set below legible size.
 
   TEXT PRECEDENCE — this block is the ONLY source of renderable words on this
-  slide (the position badge excepted). Any string named anywhere else in this
-  instruction — in STYLE_DNA, in SLIDE CONTENT, in the visual brief, in
-  REFERENCES, in the exclusions — is a DESCRIPTION, never content to render. A
-  zone STYLE_DNA describes with words in it (a kicker, a label, a chip, a
-  wordmark, a swipe sticker) supplies its position, size, typeface, weight,
-  colour and alignment only; its words come from the block above, or that zone
-  carries none. A chart, table or interface drawn for the brief carries no
-  labels of its own: greek them into bars, blocks and unlettered shapes.
+  slide. Any string named anywhere else in this instruction — in STYLE_DNA, in
+  SLIDE CONTENT, in the visual brief, in REFERENCES, in the exclusions — is a
+  DESCRIPTION, never content to render. A zone STYLE_DNA describes with words
+  in it (a kicker, a label, a chip, a wordmark, a swipe sticker) supplies its
+  position, size, typeface, weight, colour and alignment only; its words come
+  from the block above, or that zone carries none. A chart, table or interface
+  drawn for the brief carries no labels of its own: greek them into bars,
+  blocks and unlettered shapes. The single thing in this frame that may carry
+  letters without being quoted above is a sanctioned TOOL MARK, because a logo
+  is a picture of a mark and not a line of copy.
 
 REFERENCES:
   {{reference_roles}}
 
   Often there is no attachment at all, and that is normal: the look lives in
   STYLE_DNA, in words. When one is attached its role line says what it gives —
-  slide 1 of this deck as the PRIMARY template, or a brief's product photo as
-  the identity of the object it shows. None of them ever gives a legible
-  string, a logo, a watermark, platform chrome, a username, a counter, or the
-  identity of a person in it. Where two disagree, the PRIMARY one wins.
+  slide 1 of this deck as the PRIMARY template, a brief's product photo as the
+  identity of the object it shows, or a MARK PATCH as the exact pixels of a
+  sanctioned tool logo. None of them ever gives a legible string, a watermark,
+  platform chrome, a username, a counter, or the identity of a person in it —
+  the lettering inside a mark patch excepted, because that lettering is part of
+  the logo and not a line of copy. Where two disagree, the PRIMARY one wins.
 
 CONSTRAINTS:
   - Match STYLE_DNA exactly. A slide that drifts in palette, type or grid has
     failed even if it looks good alone — and so has a slide that looks right
     but shows something other than the SLIDE CONTENT above.
-  - Never reproduce platform UI, watermarks, app logos, usernames, handles,
-    follower or like or view counters, progress bars or play buttons, whether
-    copied from an attachment or invented to look native.
-  - Never reproduce a real company, product or app logo or wordmark: draw an
-    unlettered generic shape of that kind instead. A made-up brand name in its
-    place is equally forbidden.
-  - Every legible character in this frame comes from the TEXT block. Charts,
-    cards, interfaces and icon grids are labelled with greeked bars and
-    unlettered shapes, never with words. A text zone with no string quoted
-    above renders empty or as a non-text graphic element (a rule, a bar, a
-    shape, negative space), never with invented words.
+  - Never reproduce platform or social UI, watermarks, usernames, handles,
+    profile pictures, follower or like or view counters, progress bars or play
+    buttons, whether copied from an attachment or invented to look native. A
+    mark named on the TOOL MARKS line is not platform UI and this rule does not
+    reach it.
+  - Never reproduce a competitor's, a creator's or a platform's logo or
+    wordmark: draw an unlettered generic shape of that kind instead, and a
+    made-up brand name in its place is equally forbidden. A mark named on the
+    TOOL MARKS line is the one exception — it renders as the real logo, in its
+    true brand colours, in the fixed position that block sets.
+  - Every legible character in this frame comes from the TEXT block, the
+    lettering inside a sanctioned TOOL MARK excepted. Charts, cards, interfaces
+    and icon grids are labelled with greeked bars and unlettered shapes, never
+    with words. A text zone with no string quoted above renders empty or as a
+    non-text graphic element (a rule, a bar, a shape, negative space), never
+    with invented words.
   - A swipe prompt ("SWIPE LEFT", "READ MORE", "TAP", a worded arrow) appears
     only if it is quoted in the TEXT block. No brand wordmark, logotype or
     signature line other than one quoted there; when none is quoted, this slide
     is unsigned. A deck is signed on slide 1 alone, however clearly slide 1
     shows a signature.
   - The exclusions below are this house style's own forbid-list. They never
-    restrict the TEXT block above, whose strings are always rendered.
+    restrict the TEXT block above, whose strings are always rendered, and they
+    never reach a mark named on the TOOL MARKS line.
   - Additional exclusions for this house style — strings and marks forbidden in
     the frame, never strings to render: {{exclusions}}
-  - No @handle and no URL anywhere in the frame.
+  - No @handle and no social-platform URL anywhere in the frame — instagram,
+    tiktok, x, facebook, youtube, a linktr.ee or any other link-in-bio address,
+    copied or invented. A TECHNICAL URL is NOT covered by this rule: a code
+    host, a docs site, a package registry, a repository or file path, a shell
+    command quoted in the TEXT block above is ordinary TEXT content and renders
+    verbatim, byte-exact, like every other quoted string.
   - All rendered text sits inside the central 80% of the frame, clear of every
     edge.
   - Compose natively for the frame this request sets: re-flow the layout to
     fill it. Never letterbox, stretch, bar-pad or crop a borrowed composition.
-  - The text above is already within the budget in force for this render:
-    {{text_budgets}}. Render it large enough to stay legible at thumbnail size.
+  - Budgets in force for this render: {{text_budgets}}. A panel_text string is
+    already final and has no character budget to be judged against — set it at
+    the largest size that holds it whole and legible at thumbnail scale, and
+    give a long one more lines, tighter leading, a wider block or the plate
+    STYLE_DNA describes. Never shorten, ellipse, summarise or drop part of it
+    to reach a size.
   - One text block, one focal element. No duplicate subject, no duplicate
     headline, no mirrored copy of the text elsewhere in the frame.
   - Ignore any labelled line above that is empty.
@@ -1782,15 +2236,36 @@ CONSTRAINTS:
   Image 1 is the finished slide 1 of THIS deck: STYLE_DNA already rendered, and
   the only picture of this deck's look that exists.
 
-  Reproduce from it exactly: the layout template, the grid and column
-  structure, the margins and padding, the background and its treatment, the
-  colour palette, the type family, weights, case and relative sizes, the text
-  zones and their positions, the badge style and position, and every
-  decorative motif (rules, bars, borders, corner marks).
+  Reproduce from it exactly: the SCENE ITSELF — the same room, set, surface or
+  environment, the same camera position, height and angle, the same background
+  and its treatment — together with the layout template, the grid and column
+  structure, the margins and padding, the colour palette, the type family,
+  weights, case and relative sizes, the text zones and their positions (this
+  slide's text block sits exactly where Image 1's text block sits), the tool-mark
+  position (this slide's sanctioned mark sits exactly where Image 1's mark sits),
+  the badge style and position, and every decorative motif (rules, bars, borders,
+  corner marks).
 
   Change only two things: the text, which comes from this slide's own locked
   TEXT block, and the content this slide shows, which comes from its own SLIDE
   CONTENT section and visual brief. Everything else is Image 1, unchanged.
+
+  THE SCENE IS IMAGE 1'S. This slide's SLIDE CONTENT section and its visual
+  brief supply the CONTENT ELEMENTS only — the chart, the list rows, the cards,
+  the icons, the object on the surface — placed INTO Image 1's scene, in Image
+  1's light, at Image 1's camera. They never replace that scene: a brief that
+  describes a different room, a different angle, a different background or a
+  different composition is describing the SOURCE deck's slide, not this one.
+  Where the brief and Image 1 disagree about scenery, camera, background or
+  composition, Image 1 wins; where they disagree about which content elements
+  this slide shows, the brief wins.
+
+  THE MARK POSITION IS IMAGE 1'S. A sanctioned tool mark is part of that locked
+  template too: wherever Image 1 seats its mark inside the text block, at that
+  offset from the panel title and at that icon size, this slide's mark sits in
+  exactly that spot — never elsewhere in the scene. Only WHICH mark is drawn
+  comes from this slide's own TOOL MARKS line, and a slide that sanctions none
+  leaves the spot as plain margin rather than copying Image 1's mark into it.
 
   Image 1 must NOT contribute: its headline or any of its words, its focal
   subject, the chart, list, grid or artwork that filled its content area, or
@@ -1813,7 +2288,9 @@ CONSTRAINTS:
   signature down the deck is a failed render exactly like copying its headline.
 
   Where Image 1 and any other attachment disagree, Image 1 wins. Where Image 1
-  and STYLE_DNA disagree, Image 1 wins — it is STYLE_DNA already rendered.
+  and this slide's own visual brief disagree on scene, camera, background or
+  composition, Image 1 wins. Where Image 1 and STYLE_DNA disagree, Image 1
+  wins — it is STYLE_DNA already rendered.
 """,
 
     "gpt-image-2/reel_seed_frame.md": """FORMAT: the opening still frame of a short vertical video — a tall upright

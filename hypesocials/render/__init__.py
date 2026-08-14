@@ -24,9 +24,11 @@ Invariants:
   — the rule that stops `max_inflight_render_jobs` carousels deadlocking (models.RenderPriority).
 - WAVE2 waiters are served before ANY queued WAVE1 waiter, FIFO within a tier, no preemption.
 - An unknown profile raises at lookup, before any spend (FR-272).
-- Money moves at most once per `run()`: nothing here resubmits, not on timeout, not on a failed
-  poll, not on a lost response (20 §8). FR-97's and FR-105's single retries are the CALLER's, as
-  a second `run()` call it decides to make.
+- Money moves at most once per `run()`: this seam never resubmits and never re-polls a task id,
+  not on timeout, not on a failed poll, not on a lost response (20 §8). Every retry in the engine
+  is the CALLER's, as a second `run()` call it decides to make: FR-97's moderation retry, FR-105's
+  vision re-render, and — since v2.1.3/D48 — FR-317's single automatic resubmit of a timed-out or
+  non-moderation-failed IMAGE job. A video job is still never resubmitted, by anyone (FR-44).
 Do not: import `render.kie`/`render.profiles` from outside this package; branch on a Kie state or
 route name; hold a permit across a chained-artifact await; log an API key.
 """
@@ -70,10 +72,20 @@ class RenderSettings:
     api_key_env: str = "KIE_API_KEY"  # the NAME of the variable; the value never lands in config
     max_inflight_render_jobs: int = 8
     poll_interval_s: float = 3.0
-    image_job_timeout_s: float = 180.0
+    #: Queue + render, not render alone (config.py). 600 s since v2.1.3/D48: an image job that
+    #: times out now costs a resubmit rather than a slide (FR-317), and a second timeout is final.
+    image_job_timeout_s: float = 600.0
     video_job_timeout_s: float = 300.0
     http_max_attempts: int = 3
-    model_ids: dict[str, str] = field(default_factory=dict)  # profile name -> configured route
+    #: profile name -> the configured id for that family's DEFAULT route (`models.image` for
+    #: gpt-image-2's reference-FREE half, `models.video` for Seedance's only route).
+    model_ids: dict[str, str] = field(default_factory=dict)
+    #: profile name -> the configured id for that family's REFERENCE-BEARING route
+    #: (`models.image_edit`). Separate mapping because one key naming both halves is FR-241's
+    #: live defect (D48): the `models.image` override collapsed anchor-chained slides onto
+    #: text-to-image, which accepted the reference and ignored it. Empty leaves the profile's own
+    #: declared image-to-image route in force, which is the correct route either way.
+    edit_model_ids: dict[str, str] = field(default_factory=dict)
     upload_path: str = "hypesocials"
     credit_usd: float = 0.005  # Kie's published 1 USD = 200 credits (RESULTS.md §B)
     on_intent: IntentHook | None = None
@@ -226,7 +238,13 @@ async def run(
     """
     settings, client, gate = _require()
     render_profile = _profiles.get(profile)
-    model_id, body = render_profile.request(params, refs, settings.model_ids.get(profile, ""))
+    # Both configured ids travel, and the PROFILE decides which one this job's route takes
+    # (FR-241/D48): `model_ids` names the default (reference-free) route, `edit_model_ids` the
+    # reference-bearing one. Passing a single id here is what collapsed both halves of a
+    # dual-route family onto text-to-image on every anchor-chained slide of run
+    # 20260813_222101_g1xt — the seam still speaks no route name, it just stopped speaking half.
+    model_id, body = render_profile.request(
+        params, refs, settings.model_ids.get(profile, ""), settings.edit_model_ids.get(profile, ""))
     timeout_s = (
         settings.video_job_timeout_s if render_profile.kind == "video" else settings.image_job_timeout_s
     )

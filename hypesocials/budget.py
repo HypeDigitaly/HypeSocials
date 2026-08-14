@@ -30,11 +30,11 @@ from __future__ import annotations
 
 import asyncio
 import math
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
 from enum import Enum
-from typing import Literal
+from typing import Any, Literal
 
 from hypesocials.config import Config
 from hypesocials.models import PlanEntry, PlanEntryStatus
@@ -54,7 +54,10 @@ _COPY_TOKENS_PER_SIBLING = 120  # FR-99's per-sibling brief inside the grouped c
 _FILTER_PROMPT_TOKENS = 400
 _FILTER_TOKENS_PER_TOPIC = 120
 _FILTER_VERDICT_TOKENS = 60
-_VISION_CHECK_PROMPT_TOKENS = 250  # vision_check_question.md — one narrow question (FR-27)
+#: vision_check_question.md grew a third question and the carrier now quotes each asset's locked
+#: text as the mismatch referent (v2.1.1 FR-27/FR-105) — a full deck can ride ~2 KB of expected
+#: text, so the old 250 under-counted the estimate the Confirm gate shows.
+_VISION_CHECK_PROMPT_TOKENS = 900
 _VISION_CHECK_COMPLETION_TOKENS = 200  # per-slide verdicts, not prose (FR-105)
 _VISION_CHECK_MIN_PX = 1536  # FR-105: check inputs are NEVER downscaled below this
 #: FR-306's slide-intelligence pass (D46 §0.11), role `analysis`: `slide_intel_question.md` plus
@@ -273,8 +276,9 @@ def estimate(config: Config, entries: Sequence[PlanEntry]) -> Estimate:
     native render resolution; a reasoning allowance on every Luna call plus FR-99's split
     per-creative calls; the FR-127 + FR-41 retry allowance on every LLM call; per-platform
     resolution; **carousel slides at each entry's own ASSIGN-fixed deck length** (§0.4′: the bound
-    post's `panel_count`, clamped to the platform ceiling — the ceiling alone is what an unbound
-    plan is priced at); reels at `reel_second` x the configured duration, at the configured
+    post's `panel_count`, clamped under the platform HARD MAX — an entry with no post bound yet is
+    priced at `plan.DEFAULT_UNBOUND_DECK_SLIDES`, see `_deck_slides`); reels at `reel_second` x
+    the configured duration, at the configured
     resolution and with **no** motion-reference seconds (withdrawn, v2.0.0/D41).
 
     Args:
@@ -314,10 +318,16 @@ def _deck_slides(config: Config, entry: PlanEntry) -> int:
 
     `entry.slide_count` is the number `plan.assign()` fixed from the bound source post's own panel
     count, so every deck is priced at the length it will actually render rather than at one flat
-    ceiling for the whole plan. The platform ceiling is still applied on top: a source may reduce a
-    deck below it and may never raise it above (FR-257), and a plan priced BEFORE assignment (the
-    pre-Collect estimate, and every override brief, §0.14d) carries the ceiling as its length —
-    which is the honest number while no post is bound.
+    number for the whole plan. **Decks now differ in price, and that is correct** — a constant
+    per-carousel `estimated_cost_usd` across a plan means the source panel counts never reached
+    here.
+
+    `platforms.<name>.carousel_slides` is applied on top as the platform HARD MAX (2026-08-13; it
+    is no longer a 5-slide target): a source may make a deck shorter and may never make it longer
+    than the destination accepts (FR-257). An entry with no bound post carries
+    `plan.DEFAULT_UNBOUND_DECK_SLIDES` — the pre-Collect estimate and every override brief
+    (§0.14d) — so the `or ceiling` fallback below is a last-resort floor for a slide_count that
+    never got stamped at all, not the normal pre-bind path.
     """
     ceiling = config.platform(entry.platform).carousel_slides
     return max(1, min(int(entry.slide_count or ceiling), ceiling))
@@ -486,12 +496,18 @@ def _slide_intel_lines(config: Config, planned: Sequence[PlanEntry],
     (`slide_intel.enrich` deduplicates), so pricing them twice would over-quote the commonest run
     shape rather than the rare one.
 
-    **Before assignment binds anything the line is still quoted, worst-case-honest** (the v1.6.5
-    estimator-fidelity convention, and the reason `runner._stamp_provisional` exists): the gate
-    currently runs ahead of Collect, so a non-override carousel is priced as its OWN source post at
-    the platform ceiling — the most `plan.assign()` can produce. Binding can only make it cheaper
-    (siblings collapse onto one post, and a deck shorter than the ceiling carries fewer images),
-    and understating is the one unacceptable estimator error (D11).
+    **Before assignment binds anything the line is still quoted** (the v1.6.5 estimator-fidelity
+    convention, and the reason `runner._stamp_provisional` exists): the gate currently runs ahead
+    of Collect, so a non-override carousel is priced as its OWN source post at
+    `plan.DEFAULT_UNBOUND_DECK_SLIDES` slides. The POST count stays worst-case — siblings can only
+    collapse onto one post, never fan out — but since 2026-08-13 the per-post SLIDE count no longer
+    is: `carousel_slides` became a platform hard max (20/10/20) rather than a 5-slide target, so a
+    source with more panels than the provisional length makes this line dearer at bind time than at
+    the gate. That is a deliberate trade (a worst-case pre-bind quote would price every deck at 20
+    slides and swallow the spend cap on decks nobody will render); understating is still the one
+    unacceptable estimator error (D11), so the honest reading is that this line is PROVISIONAL
+    until ASSIGN. `runner` re-prices the whole plan on the bound topics right after `_select`
+    (runner.py:400) and restates it, which is where the real number lands.
 
     Basis, per §0.11: the deck length (`_deck_slides` — the bound post's `panel_count` once ASSIGN
     has run), one image block per slide at the provider's token ceiling, plus the question and one
@@ -707,7 +723,14 @@ class Reservation:
 
 @dataclass(slots=True)
 class SpendRow:
-    """FR-84: one creative's row — estimated vs billed-attempts vs delivered."""
+    """FR-84: one creative's row — estimated vs billed-attempts vs delivered.
+
+    FR-321 adds the DELIVERY COMPLETENESS of a deck beside the boolean. `delivered` answers "did
+    this creative ship at all", which a carousel missing one slide answers with `True` — the deck
+    did ship, `carousel.package()` marks it `incomplete` rather than failing it. That is correct
+    and it is also how a 7-of-8 deck came to read as an unqualified success on the one surface the
+    operator scans first. The two counts below carry the rest of the answer.
+    """
 
     asset_id: str
     creative_format: str
@@ -715,6 +738,42 @@ class SpendRow:
     billed_usd: float
     delivered: bool
     estimated_only: bool = False  # FR-85
+    #: FR-321 — slides actually delivered / slides ordered at ASSIGN, from this creative's
+    #: `meta.yaml` (`slide_count` / `slides_ordered`). BOTH `None` for images, reels and any
+    #: carousel whose record the caller did not pass: `None` means "no claim was made", which is
+    #: why the renderer falls back to the bare `yes` rather than printing `0/0`.
+    slides_delivered: int | None = None
+    slides_ordered: int | None = None
+
+    @property
+    def partial(self) -> bool:
+        """FR-321: did this creative ship with fewer slides than it was ordered to have?
+
+        Requires `delivered`: a deck that failed outright is not "partial", it is a skip with its
+        own reason, and counting it here would double-report one loss in two vocabularies.
+        """
+        return bool(self.delivered and self.slides_ordered
+                    and (self.slides_delivered or 0) < self.slides_ordered)
+
+
+def _deck_counts(record: Any) -> tuple[int | None, int | None]:
+    """FR-321: `(slides delivered, slides ordered)` off one asset record, or `(None, None)`.
+
+    Reads `slide_count` and `slides_ordered` — the pair `carousel.package()` writes — and refuses
+    to guess either from the other: a record with only `slide_count` is a deck packaged before
+    FR-321 existed, and treating its delivered count as its ordered count would report a truncated
+    deck as complete, which is precisely the silence this requirement removes. A record that is a
+    plain mapping (meta.yaml read back off disk) works through the same `getattr`-then-`get` pair.
+    """
+    if record is None:
+        return None, None
+    if isinstance(record, Mapping):
+        delivered, ordered = record.get("slide_count"), record.get("slides_ordered")
+    else:
+        delivered = getattr(record, "slide_count", None)
+        ordered = getattr(record, "slides_ordered", None)
+    return (None if delivered is None else int(delivered),
+            None if ordered is None else int(ordered))
 
 
 @dataclass(slots=True)
@@ -733,6 +792,15 @@ class SpendSummary:
     skipped_other: int
     banner: str = ""
     cap_status: str = ""
+
+    @property
+    def partial(self) -> int:
+        """FR-321: how many delivered creatives shipped short of the deck they were ordered to be.
+
+        Derived rather than stored, so the headline, the spend table and the closing line can never
+        disagree about a number they all print.
+        """
+        return sum(1 for row in self.rows if row.partial)
 
 
 class Budget:
@@ -841,12 +909,23 @@ class Budget:
         self._ledger.append(reservation)
         return reservation
 
-    def summary(self, entries: Sequence[PlanEntry],
-                plan_estimate: Estimate | None = None) -> SpendSummary:
+    def summary(self, entries: Sequence[PlanEntry], plan_estimate: Estimate | None = None, *,
+                records: Mapping[str, Any] | None = None) -> SpendSummary:
         """FR-84/FR-85's spend-summary data: one row per creative plus the closing lines.
 
         Billed figures are tallied ON SUBMISSION — every reservation that reached the provider
         counts, failures included — so a row can show billed spend with `delivered` False.
+
+        Args:
+            entries: the plan, in plan order — one row each, whatever their outcome.
+            plan_estimate: the Confirm-gate estimate, for its governance banner (FR-107/FR-282).
+            records: FR-321's optional `asset_id -> AssetRecord` view (`generate.Report.records`),
+                read for `slide_count` / `slides_ordered` only. Optional because the money module
+                must keep working for callers that have no packaging result yet — the abort path
+                summarises an empty plan long before any record exists — and because delivery
+                completeness is a PACKAGING fact this module reports rather than owns. Absent, the
+                rows simply make no completeness claim. Duck-typed (`getattr`) so a dict-shaped
+                meta read back off disk works as well as the dataclass.
         """
         billed: dict[str, float] = {}
         estimated_only: set[str] = set()
@@ -859,7 +938,8 @@ class Budget:
         rows = tuple(
             SpendRow(entry.asset_id, entry.creative_format, entry.estimated_cost_usd,
                      round(billed.get(entry.asset_id, 0.0), 6),
-                     entry.status is PlanEntryStatus.SUCCESS, entry.asset_id in estimated_only)
+                     entry.status is PlanEntryStatus.SUCCESS, entry.asset_id in estimated_only,
+                     *_deck_counts((records or {}).get(entry.asset_id)))
             for entry in entries)
         by_format: dict[str, float] = {}
         for row in rows:
@@ -869,9 +949,14 @@ class Budget:
         render = round(sum(r.counted_usd for r in self._ledger
                            if r.category is SpendCategory.RENDER), 6)
         over = max(0, self._billed + self._reserved - self._cap) / _MICRO
+        partial = sum(1 for row in rows if row.partial)
         return SpendSummary(
             headline=f"requested {len(rows)} creatives, "
-                     f"delivered {sum(1 for row in rows if row.delivered)}",
+                     f"delivered {sum(1 for row in rows if row.delivered)}"
+                     # FR-321: partial decks are named in the headline or they are named nowhere
+                     # the operator reads before scrolling. Silent when there are none, so the
+                     # ordinary line stays the ordinary line.
+                     + (f" ({partial} partial)" if partial else ""),
             rows=rows, by_format=by_format, llm_usd=llm, render_usd=render,
             total_usd=round(llm + render, 6), cap_usd=self.cap_usd, over_cap_usd=over,
             skipped_budget=sum(1 for e in entries if e.status is PlanEntryStatus.SKIPPED_BUDGET),

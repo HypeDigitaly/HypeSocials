@@ -28,7 +28,12 @@ run:
                                    # (override briefs, post-less topics), which are the only copy
                                    # the model still writes.
   notion_influence: off            # off | copy | full (needs NOTION_TOKEN + pages shared once)
-  vision_check: false              # cs platforms get a startup hint to turn this on
+  vision_check: true               # ON since 2026-08-13 (was false): post-render verification of
+                                   # what Kie actually returned. Run 20260813_143420_oyo4 ran with
+                                   # no verification at all, so truncated decks and lost slides
+                                   # reached the gallery unremarked. Paid LLM spend - it is priced
+                                   # before the Confirm gate. `false` turns it off and buys back
+                                   # that cost; cs platforms then get a startup hint to re-enable.
   spend_cap_usd: 10.00             # pre-flight control; --yes trims to fit, interactive refuses
   trend_history_days: 30           # post-ID no-repeat window in days (v2.1.0/FR-307, was 7). It
                                    # must be >= sources.max_post_age_days below, or a post drops
@@ -64,11 +69,14 @@ run:
     slide: 300                     # NEW: per-slide deck text on panel-mapped carousels (FR-304)
     reel_seed_headline: 60         # was 32
     retry_reduction_pct: 40        # cut budgets by this % on a vision-check retry
-  run_deadline_min: 25             # soft elapsed ceiling, monotonic clock (FR-108). DEPENDS ON
-                                   # models.video_job_timeout_s below: this file ships reels OFF,
-                                   # so 25 stands; turn reels on and it must exceed that timeout
-                                   # (30 min) plus the filter/copy/image stages, or the deadline
-                                   # abandons the run before a slow reel can ever finish.
+  run_deadline_min: 45             # soft elapsed ceiling, monotonic clock (FR-108). Raised
+                                   # 25 -> 45 in v2.1.3/D48: image_job_timeout_s is 600 s and
+                                   # FR-317 grants each image job one resubmit - a 25-min
+                                   # ceiling would truncate the delivery guarantee it exists to
+                                   # protect. DEPENDS ON models.video_job_timeout_s below: turn
+                                   # reels on and it must exceed that timeout plus the
+                                   # filter/copy/image stages, or the deadline abandons the run
+                                   # before a slow reel can ever finish.
 
 sources:
   active: [virlo]                  # google_trends, hacker_news: named in the picker, not built yet
@@ -105,9 +113,24 @@ sources:
                                    # `false` relies on Virlo's own panel_texts alone - cheaper, and
                                    # blind wherever that field is empty (many fresh rows are).
 
-# The `styles:` section (`refs_per_job`) is gone (D46/F3): a meta-style is text-only DNA and
-# ships no reference images, so there is no per-job window to size. The registry itself stays a
-# prompt artifact: prompts/styles.yaml (FR-290), never config.
+# Which of the authored meta-styles this run may rotate over (v2.1.2/FR-314/D-E). A SELECTOR only:
+# the registry itself stays a prompt artifact - prompts/styles.yaml (FR-290) owns every render
+# prompt, palette and layout zone, and nothing here carries style content. Naming a key the
+# registry does not define is a pre-flight refusal (exit 2, $0), and so is a selection that leaves
+# a requested format with no affine style under the active brand - both name what the registry
+# really offers. The old `styles.refs_per_job` window died with D46/F3 (a text-only style ships no
+# reference images) and is not coming back; this key replaces nothing it did.
+styles:
+  enabled: []                      # FR-314 selector: style keys from prompts/styles.yaml to use
+                                   # this run; EMPTY = all of them, which is the pre-FR-314
+                                   # behaviour and the shipped state. Per-run override:
+                                   # `run.bat --styles key1,key2`. Use it to curate the look of one
+                                   # batch (D-G: colour is curated by choosing styles, never by
+                                   # editing a style, which would change every later run too).
+                                   # Filtering order: branding.brand first (brand_affinity, B3),
+                                   # then this list, then FR-291's format-affine scan - so a
+                                   # selection of three rotates in the order those three appear in
+                                   # the registry file.
 
 # Brand identity for branded creatives (FR-292/D43), replacing the retired `niche.brand` keys.
 # TWO CHANNELS, deliberately: the WORDMARK is quoted into the render prompt's TEXT block (never
@@ -116,6 +139,17 @@ sources:
 # replaces one. Notion brand facts are a FUTURE override of these keys, not a dependency: these
 # values are the MVP source of truth.
 branding:
+  enabled: false                   # FR-318 MASTER SWITCH (operator decision, 2026-08-13). While
+                                   # this is false NOTHING self-brands: no creative is signed
+                                   # (brand_ratio is inert), no branding block reaches a render
+                                   # prompt, the copy LLM gets no brand facts, and a
+                                   # `brand_slot: true` house-card style leaves the rotation.
+                                   # Flip to `true` to re-enable the wordmark and the branded
+                                   # rotation - every key below then applies as written.
+                                   # SAFETY IS NOT GATED: `competitors` below, and every
+                                   # creator/competitor strip built on it (FR-294/FR-312), stay
+                                   # fully active either way. This switch decides how WE sign a
+                                   # creative, never whose name is allowed into our pixels.
   brand: hypedigitaly              # SELECTOR, never a mix: hypedigitaly (parent/corporate) or
                                    # hypelead (product). It also filters the style rotation - a
                                    # style whose `brand_affinity` names the other brand is not
@@ -183,22 +217,36 @@ branding:
 
 platforms:
   # `formats` is each platform's allowlist (FR-132): a requested format outside it is dropped from
-  # the plan with a logged reason, never an error. `carousel_slides` is the ONE slide-count key in
-  # the PRD - both the deck ceiling and the estimate basis (FR-257). Aspect-ratio defaults are
-  # owned by prds/10-pipeline.md FR-21; `aspect_ratios` here is an OVERRIDE map only.
+  # the plan with a logged reason, never an error.
+  #
+  # `carousel_slides` is the platform's HARD MAX, not a target (operator decision 2026-08-13, was
+  # a flat 5 everywhere). A BOUND deck's length is the source post's own panel count clamped into
+  # [2, this max] - so a 7-panel source ships 7 slides and a 3-panel source ships 3, which is the
+  # 1:1 panel fidelity FR-304 asks for. Run 20260813_143420_oyo4 truncated every 5-8 panel deck to
+  # 5 because this key was ALSO the target; it is only a ceiling now. Set it to what the platform
+  # itself accepts, and nothing lower unless you want decks cut. Decks with no bound post (override
+  # briefs, the pre-Collect estimate) do NOT use this number - they stay at plan.py's
+  # DEFAULT_UNBOUND_DECK_SLIDES so the pre-bind estimate cannot balloon to the ceiling.
+  #
+  # PAIR WITH models.image_job_timeout_s and run.run_deadline_min: a taller max means more image
+  # jobs per deck queued behind `max_inflight_render_jobs`, and the engine warns at load when the
+  # worst-case full plan cannot plausibly finish inside the deadline.
+  #
+  # Aspect-ratio defaults are owned by prds/10-pipeline.md FR-21; `aspect_ratios` here is an
+  # OVERRIDE map only.
   linkedin:
     formats: [image, carousel]
-    carousel_slides: 5
+    carousel_slides: 20            # LinkedIn document/carousel posts accept well past this
     aspect_ratios: {}              # e.g. { image: "1:1" } to deviate from the FR-21 default
     conventions: {}                # caption length / tone / hashtag hints - prompt guidance only
   instagram:
     formats: [image, carousel]
-    carousel_slides: 5             # keep within Instagram's own 2-10 (FR-257)
+    carousel_slides: 10            # Instagram's own hard ceiling is 10 (FR-257) - do not raise
     aspect_ratios: {}
     conventions: {}
   tiktok:
     formats: [image, carousel, reel]   # reels default to TikTok only
-    carousel_slides: 5
+    carousel_slides: 20            # TikTok photo posts accept up to 35; 20 is the sane working max
     aspect_ratios: {}
     conventions: {}
 
@@ -208,15 +256,24 @@ models:
                                             #   with the pivot; the visual authority is now the
                                             #   local meta-style registry, FR-290.)
   copy: openai/gpt-5.6-luna                 # OpenRouter chat id - captions/hooks/on-image text
-  image: gpt-image-2-text-to-image          # Kie route, TEXT-TO-IMAGE (v2.1.0/FR-280; was
-                                            #   gpt-image-2-image-to-image). D46 took the style
-                                            #   registry's reference images out of every render job,
-                                            #   so the ordinary job carries no reference at all; the
-                                            #   profile still routes the jobs that DO have one - a
-                                            #   brief image, a carousel anchor, a reel seed frame -
-                                            #   to the gpt-image-2-image-to-image sibling
-                                            #   (20 §8c/FR-241). Pointing this at i2i is what made
-                                            #   the first paid run clone its inputs ~1:1.
+  # TWO image routes, TWO keys (FR-241/FR-280 as amended v2.1.3, D48). Each key overrides exactly
+  # one half of the gpt-image-2 family and neither can reach the other:
+  #   image      -> the route a job with NO references takes (text-to-image)
+  #   image_edit -> the route a job WITH references takes  (image-to-image): a brief photo, the
+  #                 carousel anchor slide 2-N chain to, a reel seed frame, a cropped logo patch
+  # D48 fixed a live collapse here: `image` used to be the profile's only override, so setting it
+  # to text-to-image (correct for the common no-reference job, v2.1.0) also dragged every
+  # reference-BEARING job onto text-to-image, which accepts `input_urls` and ignores them. Run
+  # 20260813_222101_g1xt logged "accepted gpt-image-2-text-to-image ... with 1 reference(s)" on
+  # every anchored slide, and that is much of the anchor drift the operator reviewed.
+  # Leaving either key empty falls back to the profile's own declared route, so both halves stay
+  # correct even in a config that never mentions them.
+  image: gpt-image-2-text-to-image          # Kie route, TEXT-TO-IMAGE - reference-free jobs only
+  image_edit: gpt-image-2-image-to-image    # Kie route, IMAGE-TO-IMAGE - every reference-bearing
+                                            #   job (brief photo, anchor chain, seed frame, logo
+                                            #   patch). Pointing `image` here is what made the
+                                            #   first paid run clone its inputs ~1:1; that is a
+                                            #   reason to keep the keys apart, not to merge them.
   video: bytedance/seedance-2-5             # Kie route; needs price_per_unit.reel_second to plan
   # Profiles change ONLY on a model FAMILY change (e.g. Seedance -> Kling). A same-family swap is
   # just the id line above. An unknown profile is a pre-flight refusal, exit code 2 (FR-281).
@@ -277,15 +334,26 @@ models:
       # ---------------------------------------------------------------------------------------
       480p: null
       720p: null
-  image_job_timeout_s: 180         # measured image render: ~90 s, comfortable
+  image_job_timeout_s: 600         # 600 since v2.1.3/D48 (was 300, was 180). Measured image
+                                   # renders run ~90 s, but run 20260813_143420_oyo4 lost 11 of 30
+                                   # image jobs at the 180 s ceiling under a full-deck carousel
+                                   # batch and 300 s did not clear the tail: Kie queues behind
+                                   # `max_inflight_render_jobs`, so a slide's wall clock includes
+                                   # queue time, not just its own render. A timed-out image job is
+                                   # PAID, and since D48 it earns exactly ONE automatic resubmit
+                                   # (FR-317) - a second timeout is final and the slide is lost.
+                                   # Worst case per render wave is therefore two timeouts, which
+                                   # the pre-flight throughput warning now projects against
+                                   # run_deadline_min. Video jobs are never resubmitted (FR-44).
   video_job_timeout_s: 1800        # 30 min (operator decision 2026-08-10, was 600). At the W6
                                    # acceptance run a Seedance reel hit the 600 s ceiling and was
                                    # declared failed, wasting ~$4.78: a timed-out job is paid and
                                    # never resubmitted (20 §8), so a tight ceiling buys nothing.
                                    # Live renders measured 302 s and 378 s (spikes/RESULTS.md §C);
                                    # 1800 s is headroom for a slow one, not an expected wait.
-                                   # PAIR WITH run_deadline_min above - 25 min < 30 min means the
-                                   # deadline fires first (the engine warns when reels are on).
+                                   # PAIR WITH run_deadline_min above - at 45 min the deadline
+                                   # still outlives this 30-min ceiling only barely once the
+                                   # earlier stages are counted (the engine warns when reels on).
   poll_interval_s: 3               # gap between Kie recordInfo polls
   http_max_attempts: 3             # EVERY bounded-retry path: OpenRouter, Kie, Virlo, Postiz
   max_inflight_llm_calls: 8        # keep at or under your provider account's concurrency limit

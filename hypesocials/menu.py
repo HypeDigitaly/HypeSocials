@@ -282,13 +282,20 @@ def _say_confirm_ahead(io: Console, config: Config, steps: Sequence[str]) -> Non
     inputs, and brand/ratio/mode are run-wide config facts, not per-run choices. Named future
     option if that ever changes: make it an editable `brand=hypelead ratio=0.50` line parsed by
     `_parse_pairs`, exactly like the counts step — one prompt, not three.
+
+    FR-318 replaces that line outright when `branding.enabled` is false, rather than appending
+    "(off)" to it. This is the last screen before money moves, and a line reading
+    `brand hypelead · ratio 0.50` on a run that will sign nothing is a false statement about the
+    creatives the operator is about to buy. The key name is printed because it is the cure.
     """
     minutes = "5-8 minutes" if config.run.formats.get("reel", 0) else "about 3 minutes"
     branding = config.branding
+    brand_line = (f"brand {branding.brand} · ratio {branding.brand_ratio:.2f} · {branding.mode}"
+                  " · config, not asked" if branding.enabled else
+                  "branding: off (branding.enabled: false) · no wordmark on any creative")
     _step(io, steps, "confirm", f"A run of this shape takes {minutes}, and everything",
           "it makes lands under " + _fit(config.output.dir.rstrip("/\\"), 40) + "/<run id>/",
-          _fit(f"brand {branding.brand} · ratio {branding.brand_ratio:.2f} · {branding.mode}"
-               " · config, not asked", _FACTS_WIDTH))
+          _fit(brand_line, _FACTS_WIDTH))
 
 
 def _pick_config(io: Console, opts: cli.Options, steps: Sequence[str],
@@ -353,9 +360,11 @@ def _rows(index: int, summary: ConfigSummary, *, recommended: bool = False) -> t
         en · 0 mon · 4/2/0 · hypedigitaly · NO STYLES · NOT RUNNABLE
         en · 1 mon · 4/2/0 · WILL NOT LOAD
 
-    The style count is the count usable under THIS config's brand, and it is replaced outright by
-    `NO STYLES` when the registry will not serve this run — a broken registry has no number worth
-    printing, and swapping the fact rather than appending a badge keeps both blockers on one line.
+    The style count is the count usable under THIS config's brand, its `styles.enabled` selection
+    (FR-314) and its `branding.enabled` switch (FR-318 — an unsigned run cannot wear a brand's own
+    house card), and it is replaced outright by `NO STYLES` when the registry will not serve
+    this run — a broken registry has no number worth printing, and swapping the fact rather than
+    appending a badge keeps both blockers on one line.
 
     `summary.label` is the file's own one-liner and already fits; a derived niche join is three
     sentences and gets cut. Every variable-length string is LAST on its line, so a wide glyph can
@@ -398,8 +407,10 @@ class _Readiness:
     """
 
     brand: str = ""
-    usable_styles: int = 0  # styles assignable under `brand` (FR-291's brand filter)
+    usable_styles: int = 0  # assignable under `brand`, `styles.enabled` AND `branding.enabled`
+    #   (FR-291/FR-314/FR-318 — the last drops the `brand_slot` house cards when nothing is signed)
     styles_blocked: bool = True  # FR-295: registry missing/broken, or a requested format has none
+    #   left after the brand filter and the FR-314 selection — `styles.validate` grades all three
     reels_priced: bool = False
     loadable: bool = False
 
@@ -438,8 +449,14 @@ def _readiness(summary: ConfigSummary) -> _Readiness:
         registry = styles.load_registry([config.prompts_dir, PROMPTS_DIR])
     except styles.StyleRegistryError:
         return ready  # missing or unparseable: FR-295 exit 2, shown here as NO STYLES
-    ready.usable_styles = sum(1 for style in registry.styles
-                              if styles.brand_ok(style, ready.brand))
+    # FR-314/FR-318: the count the picker prints is the pool the run would actually rotate over —
+    # brand filter, the config's own `styles.enabled` selection, and the branding master switch
+    # (which removes the `brand_slot` house cards). A row saying "8 styles" for a config that
+    # selected two, or that will not sign anything, is the picker predicting a run that cannot
+    # happen.
+    ready.usable_styles = len(styles.usable_styles(
+        registry, ready.brand, config.styles.enabled,
+        branding_enabled=config.branding.enabled))
     ready.styles_blocked = bool(styles.validate(registry, config)[0])
     return ready
 

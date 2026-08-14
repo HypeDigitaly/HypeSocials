@@ -98,9 +98,15 @@ class Log:
         return [event_type for event_type, _, _ in self.warnings]
 
 
-def _answer(slot: int, text: str = "", brief: str = "a brief", marks: tuple[str, ...] = ()) -> dict:
-    """One row of the wire shape the module parses (`_SCHEMA`'s `slides` items)."""
-    return {"slide": slot, "onimage_text": text, "visual_brief": brief,
+def _answer(slot: int, text: str = "", brief: str = "a brief", marks: tuple[str, ...] = (),
+            chrome: str = "") -> dict:
+    """One row of the wire shape the module parses (`_SCHEMA`'s `slides` items).
+
+    `chrome_text` is a first-class field of that shape, not an extra: the creator's @handles, URLs,
+    watermarks and page counters are transcribed AWAY from the slide's words, so they can never
+    reach the panel text that §0.12 safety would then reject wholesale.
+    """
+    return {"slide": slot, "onimage_text": text, "chrome_text": chrome, "visual_brief": brief,
             "brand_marks": list(marks)}
 
 
@@ -192,7 +198,7 @@ async def test_each_slide_downloads_once_one_call_reads_them_all_and_source_yaml
                                 "status": slide_intel.STATUS_OK, "reason": ""}
     assert stored["slides"][0] == {
         "position": 1, "virlo_text": "Panel one", "vision_text": "Panel one as seen",
-        "visual_brief": "hero image, heading centred", "brand_marks": [],
+        "chrome_text": "", "visual_brief": "hero image, heading centred", "brand_marks": [],
         "vision_transcribed": False, "image_file": "slide_01.jpg"}
     # the transcription keeps the line break it was given — verbatim means the shape too
     assert stored["slides"][1]["vision_text"] == "Druhý panel\nna dvou řádcích"
@@ -237,6 +243,97 @@ async def test_a_virlo_panel_is_never_overwritten_by_the_transcription(
     assert report.slides[1].text == "Slide two words"
     assert report.degradations == [slide_intel.TEXT_SOURCE_VISION]  # slot 2 only
     assert _read_yaml(tmp_path)["slides"][0]["vision_transcribed"] is False
+
+
+# --------------------------------------------------------------------------- creator chrome
+
+
+async def test_creator_chrome_lands_in_its_own_field_and_never_in_the_slides_words(
+    tmp_path: Path, downloads: list[str]
+) -> None:
+    """The bug this field exists for: a footer watermark used to blank the entire panel.
+
+    Every slide of the deck that motivated this ended "@theromanknox | skool.com/knox | 3/6 |
+    swipe". Transcribed into `onimage_text`, each panel then carried a handle and a URL, §0.12
+    safety rejected all of them, and a real carousel shipped 100% wordless. Split at the source,
+    the words stand on their own and the chrome is still recorded — provenance keeps it, pixels
+    never see it.
+    """
+    post = _post(panels=("", "", ""))
+    chrome = "@theromanknox | skool.com/knox | 3/6 | swipe"
+    vision = Vision(_answer(1, "Stop guessing", "hero heading", chrome=chrome),
+                    _answer(2, "Ship it weekly", "two-column list", chrome="@theromanknox 2/6"),
+                    _answer(3, "", "closing card, logo only", chrome="follow for more"))
+    log = Log()
+
+    report = (await slide_intel.enrich([post], run_dir=tmp_path, call=vision, engine=_engine(),
+                                       cfg=Config(), log=log))["p1"]
+
+    assert report.panel_texts == ["Stop guessing", "Ship it weekly", ""]
+    assert [slide.chrome_text for slide in report.slides] == [
+        chrome, "@theromanknox 2/6", "follow for more"]
+    # the words the deck will quote carry no handle, no domain, no counter, no swipe cue
+    for panel in report.panel_texts:
+        assert "@" not in panel and "skool.com" not in panel and "swipe" not in panel
+    assert report.usable_panels == 2  # the chrome-only slide is blank, not "full of text"
+
+    stored = _read_yaml(tmp_path)
+    assert [slide["chrome_text"] for slide in stored["slides"]] == [
+        chrome, "@theromanknox 2/6", "follow for more"]
+    assert stored["slides"][0]["vision_text"] == "Stop guessing"
+    assert stored["slides"][2]["vision_text"] == ""
+
+
+async def test_a_row_without_chrome_text_still_applies(
+    tmp_path: Path, downloads: list[str]
+) -> None:
+    """Fail-open on the field (§0.14c): a row that names no chrome is a slide with no chrome.
+
+    An older model, a cached answer or a row that simply omitted the key must never cost the slide
+    its transcription, its brief or its marks.
+    """
+    post = _post(slides=2, panels=("", ""))
+    legacy = {"slide": 1, "onimage_text": "Words survive", "visual_brief": "a brief",
+              "brand_marks": ["TikTok watermark"]}
+    vision = Vision(legacy, _answer(2, "Second", "second brief", chrome="@handle"))
+    log = Log()
+
+    report = (await slide_intel.enrich([post], run_dir=tmp_path, call=vision, engine=_engine(),
+                                       cfg=Config(), log=log))["p1"]
+
+    assert report.status == slide_intel.STATUS_OK
+    assert report.slides[0].chrome_text == ""
+    assert report.slides[0].text == "Words survive"
+    assert report.slides[0].visual_brief == "a brief"
+    assert report.slides[0].brand_marks == ["TikTok watermark"]
+    assert report.slides[1].chrome_text == "@handle"
+    assert not log.warnings, f"a missing optional field is not a degrade: {log.keys()}"
+    assert _read_yaml(tmp_path)["slides"][0]["chrome_text"] == ""
+
+
+async def test_chrome_never_enters_the_virlo_over_vision_merge(
+    tmp_path: Path, downloads: list[str]
+) -> None:
+    """The merge rule is untouched by the split: `text` is still `virlo_text or vision_text`.
+
+    Chrome sits beside both and joins neither — a Virlo panel still wins outright, an empty panel
+    is still filled by the transcription alone, and a slot whose only reading was chrome is still
+    a blank slot with `text_source == none`.
+    """
+    post = _post(panels=("Původní panel", "", ""))
+    vision = Vision(_answer(1, "re-read of slide one", chrome="@creator"),
+                    _answer(2, "transcribed words", chrome="linkinbio.com"),
+                    _answer(3, "", chrome="4/6 swipe"))
+
+    report = (await slide_intel.enrich([post], run_dir=tmp_path, call=vision, engine=_engine(),
+                                       cfg=Config(), log=Log()))["p1"]
+
+    assert report.panel_texts == ["Původní panel", "transcribed words", ""]
+    assert [slide.text_source for slide in report.slides] == [
+        slide_intel.TEXT_SOURCE_VIRLO, slide_intel.TEXT_SOURCE_VISION,
+        slide_intel.TEXT_SOURCE_NONE]
+    assert report.slides[0].chrome_text == "@creator"  # recorded even where Virlo's panel wins
+    assert report.degradations == [slide_intel.TEXT_SOURCE_VISION]
 
 
 # --------------------------------------------------------------------------- fail-open matrix
@@ -406,6 +503,14 @@ def test_the_question_template_is_a_real_file_that_renders_with_no_placeholders(
     assert "verbatim" in text.lower()
     assert "english" in text.lower()  # the visual brief's language rule (§0.11)
     assert '"slides"' in text and '"onimage_text"' in text and '"brand_marks"' in text
+    # the chrome split is instruction, not post-processing: if the question stops asking for it,
+    # handles and counters come back inside the words and §0.12 blanks the panels again
+    assert '"chrome_text"' in text
+    lowered = text.lower()
+    assert all(cue in lowered for cue in ("@handle", "url", "counter", "swipe"))
+    assert set(slide_intel._SLIDE["required"]) == {
+        "slide", "onimage_text", "chrome_text", "visual_brief", "brand_marks",
+        "mark_boxes"}
 
 
 def test_a_source_controlled_post_id_cannot_escape_the_run_folder() -> None:
@@ -419,3 +524,328 @@ def test_a_source_controlled_post_id_cannot_escape_the_run_folder() -> None:
     assert len(long_id) <= 64 and not long_id.endswith(".")  # Windows eats a trailing dot
     assert packager.source_slide_name(7, "https://cdn.test/a/b.png?sig=1") == "slide_07.png"
     assert packager.source_slide_name(1, "https://cdn.test/a/b") == "slide_01.jpg"
+
+
+# ---------------------------------------------------- D-D: the source deck's counting convention
+
+
+@pytest.mark.parametrize(
+    ("chrome", "panels", "count", "expected"),
+    [
+        # The padded convention, kept: `01 / 06` re-bases as `03 / 08`, spacing and zeros intact.
+        ((["@knox | skool.com/knox | 01 / 06 | swipe"], ["@knox | 02 / 06"], ["@knox | 03 / 06"]),
+         ("a", "b", "c"), 6, "03 / 08"),
+        # The bare convention: no padding, no spaces around the slash.
+        ((["3/6"], ["4/6"], []), ("a", "b", "c"), 6, "3/8"),
+        # A worded separator is a convention too, and the spacing around it is part of it.
+        (([], ["2 of 7"], []), ("a", "b", "c"), 7, "3 of 8"),
+        # The prefix style: typeset into the panel's own words, and it names no total.
+        (([], [], []), ("// 01 THE HOOK", "// 02 THE TURN", "// 03 THE CLOSE"), 3, "// 03"),
+        # Rejected: `24/7` is a claim about opening hours. Its denominator is not the deck, and its
+        # numerator is not the slide — and 24 > 7 makes it not a counter at all.
+        ((["open 24/7"], ["support 24/7"], []), ("a", "b", "c"), 3, None),
+        # Rejected: a date is a RUN of numbers, and one pair pulled out of it is not a counter.
+        ((["posted 12/08/2026"], ["12/08/2026"], []), ("a", "b"), 2, None),
+        # Rejected: nothing counted anywhere. The absence is the common case, and the safe one.
+        ((["@knox | skool.com/knox"], ["swipe →"], []), ("a", "b", "c"), 3, None),
+        # Rejected: ONE positional-looking token, on one slide. `1/2 cup` in a recipe deck is not
+        # a page number, and a single hit is exactly what the two-slide rule exists to refuse.
+        ((["1/2 cup of oats"], [], []), ("a", "b", "c"), 4, None),
+    ])
+def test_detect_counter_accepts_a_real_convention_and_refuses_a_lookalike(
+    chrome: tuple[list[str], ...], panels: tuple[str, ...], count: int, expected: str | None,
+) -> None:
+    """D-D: a badge is re-based onto OUR deck in the SOURCE's hand, or there is no badge.
+
+    The accept rules are deliberately narrow — a denominator that equals the deck's own length, or
+    the same badge stating its own position on two slides — because the two failure modes are not
+    symmetric. A missed counter renders a deck without a page badge and says so in the prompt; a
+    false one prints "24/7" on every slide of a creative the operator paid for.
+    """
+    spec = slide_intel.detect_counter(chrome, panels, count)
+
+    if expected is None:
+        assert spec is None
+        return
+    assert spec is not None
+    assert spec.format(3, 8) == expected
+
+
+def test_a_counter_is_re_based_onto_our_deck_never_copied_from_theirs() -> None:
+    """§0.4′ truncates a nine-panel source onto a five-slide deck — the badge must follow.
+
+    Copying the source's own numbers would print "3/9" on slide 3 of 5 and tell the reader four
+    slides are missing.
+    """
+    spec = slide_intel.detect_counter([["01 / 09"], ["02 / 09"]], ("a", "b"), 9)
+
+    assert spec is not None
+    assert [spec.format(n, 5) for n in (1, 5)] == ["01 / 05", "05 / 05"]
+    assert spec.format(0, 5) == "" and spec.format(1, 0) == "", "a nonsense request has no badge"
+
+
+def test_the_counter_spec_is_frozen_so_one_deck_counts_in_one_hand() -> None:
+    """It is detected once per deck and read on every slide; a mutable one is a deck that drifts."""
+    spec = slide_intel.CounterSpec(pad=2, separator=" / ", total_pad=2)
+
+    with pytest.raises(Exception):
+        spec.pad = 3  # type: ignore[misc]
+    assert spec == slide_intel.CounterSpec(pad=2, separator=" / ", total_pad=2)
+
+
+# ------------------------------------------- FR-313 amended (v2.1.3/D48): the OFFSET accept rules
+#
+# Rules 1 and 2 above answer "the denominator IS the deck" and "two slides state their own
+# position". Both miss the shape a real deck actually has: an unnumbered cover. Run
+# `20260813_161444_r9pz` shipped a badge-less deck because its seven panels carried `1/ 6` … `6/ 6`
+# on positions 2–7 — every number one lower than its slide, and a denominator one lower than the
+# deck. Rule 3 accepts that when the offset is CONSTANT and the denominator equals
+# `panel_count − offset`; rule 4 accepts a constant offset alone, and only when nothing in the
+# deck contradicts it. Both still lose the tie to `None`.
+
+
+@pytest.mark.parametrize(
+    ("chrome", "count", "expected"),
+    [
+        # (a) The live-corpus shape, exactly: seven panels, one unnumbered cover, `1/ 6` … `6/ 6`
+        # on positions 2–7. Offset 1 everywhere, denominator 6 == 7 − 1. The separator is `"/ "`
+        # — the space after the slash is part of the source's hand and is carried, not normalised.
+        (([], ["1/ 6"], ["2/ 6"], ["3/ 6"], ["4/ 6"], ["5/ 6"], ["6/ 6"]), 7, "3/ 8"),
+        # (b) TWO unnumbered covers (a title card and a hook card, the common eight-panel build):
+        # offset 2 everywhere, denominator 6 == 8 − 2.
+        (([], [], ["1/6"], ["2/6"], ["3/6"], ["4/6"], ["5/6"], ["6/6"]), 8, "3/8"),
+        # (c) Rule 4, uncorroborated: the badges agree on an offset of 1 but their denominator (9)
+        # cannot be checked against this deck (Virlo returned five panels of a nine-panel post).
+        # Weaker evidence, so it is the LAST rule — and it is still evidence.
+        (([], ["1/9"], ["2/9"]), 5, "3/8"),
+        # (d) Contradicting offsets kill it: `1/6` on panel 2 (offset 1) and `3/6` on panel 3
+        # (offset 0). At least one of those is not counting this deck, so neither is believed.
+        (([], ["1/6"], ["3/6"]), 7, None),
+        # (e) A lone candidate is never an offset. One badge is a coincidence — a statistic, a
+        # recipe fraction — and the two-slide floor is what refuses it under every rule.
+        (([], ["1/6"], []), 7, None),
+    ])
+def test_detect_counter_reads_a_deck_whose_badges_start_after_its_cover(
+    chrome: tuple[list[str], ...], count: int, expected: str | None,
+) -> None:
+    """FR-313 amended: an unnumbered cover shifts every badge by a constant, and that is still a
+    counted deck.
+
+    The asymmetry from the v2.1.2 rules is unchanged and is why these two rules could be added at
+    all: a missed counter renders a deck with no badge and says so in the prompt, while a false one
+    prints a wrong page number on every slide of a creative the operator paid for. So the offset
+    has to be the SAME on every candidate — one disagreement anywhere in the deck refuses the badge
+    rather than being outvoted.
+    """
+    spec = slide_intel.detect_counter(chrome, ("panel",) * count, count)
+
+    if expected is None:
+        assert spec is None
+        return
+    assert spec is not None
+    assert spec.format(3, 8) == expected
+
+
+def test_the_offset_rules_never_resurrect_a_lookalike_the_earlier_rules_refused() -> None:
+    """The D48 rules widened the accept set, so the v2.1.2 rejections are re-asserted THROUGH them.
+
+    `24/7` twice is a constant offset of 1 by arithmetic (`open 24/7` on panels 2 and 3), and rule
+    4 would take it if the sanity fence did not refuse both tokens first: 24 > 7 is not a counter,
+    and a date is a run of digits rather than a pair. These are the strings that would print
+    "24/7" on every slide, so they are pinned here as well as above.
+    """
+    assert slide_intel.detect_counter(([], ["open 24/7"], ["support 24/7"]), ("a",) * 3, 3) is None
+    assert slide_intel.detect_counter(
+        ([], ["posted 12/08/2026"], ["12/08/2026"]), ("a",) * 3, 3) is None
+    assert slide_intel.detect_counter(([], ["1/2 cup of oats"], []), ("a",) * 3, 3) is None
+
+
+# ------------------------------------ FR-306 amendment (v2.1.3/D48): mark boxes, sanitised hard
+#
+# `mark_boxes` is the rectangle FR-315 crops a logo patch out of, so it is source-controlled
+# geometry on its way to Pillow and to a Kie upload. Everything below is a REJECTION, applied per
+# entry and silently (§0.14c): a box this parser cannot trust costs its mark a pixel reference and
+# nothing else — the mark still renders from its name and its written description.
+
+
+def _row(slot: int, *boxes: dict[str, Any]) -> dict[str, Any]:
+    """One answer row carrying `mark_boxes`, on top of the ordinary slide fields."""
+    return _answer(slot) | {"mark_boxes": list(boxes)}
+
+
+def _box(name: str = "Notion", slide: int = 1, box: Any = (0.1, 0.2, 0.2, 0.1)) -> dict[str, Any]:
+    return {"name": name, "slide": slide, "box": list(box) if isinstance(box, tuple) else box}
+
+
+@pytest.mark.parametrize(
+    ("box", "why"),
+    [
+        ((0.1, 0.2, 0.2), "three numbers is not a rectangle"),
+        ((0.1, 0.2, 0.2, 0.1, 0.5), "five numbers is not a rectangle either"),
+        (("a", "b", "c", "d"), "non-numeric coordinates"),
+        ((0.1, 0.2, 0.0, 0.1), "a zero-width box crops nothing"),
+        ((0.1, 0.2, 0.2, 0.0), "a zero-height box crops nothing"),
+        ((0.0, 0.0, 0.95, 0.5), "wider than 90% of the slide is the panel, not a logo"),
+        ((0.0, 0.0, 0.5, 0.95), "taller than 90% of the slide is the panel, not a logo"),
+        ("0.1,0.2,0.2,0.1", "a string is not a coordinate array"),
+        (None, "an absent box"),
+    ])
+async def test_a_mark_box_that_is_not_a_small_rectangle_is_dropped_and_never_raises(
+    tmp_path: Path, downloads: list[str], box: Any, why: str,
+) -> None:
+    """FR-306 amendment: the span ceiling is the carve-out's upstream guard, and arity is Pillow's.
+
+    A "logo" spanning more than `_MARK_BOX_MAX_SPAN` of the slide is the model boxing the whole
+    panel — cropping it would upload the source slide itself, which is exactly what FR-244's narrow
+    carve-out does NOT sanction (D46 keeps `source/` analysis-and-display-only). Everything else
+    here is a rectangle Pillow could not crop from, and a bad rectangle reaching Pillow is a
+    traceback on a paid run.
+
+    Every rejection is local and silent: the deck still reads, the slide still keeps its words, and
+    the answer parses as a slide with no boxes rather than as a failed analysis.
+    """
+    post = _post(slides=2, panels=("Panel one", "Panel two"))
+    vision = Vision(_row(1, _box(box=box)), _answer(2))
+    log = Log()
+
+    report = (await slide_intel.enrich([post], run_dir=tmp_path, call=vision, engine=_engine(),
+                                       cfg=Config(), log=log))["p1"]
+
+    assert report.mark_boxes == [], why
+    assert report.status == slide_intel.STATUS_OK, "a bad box is not a failed read (§0.14c)"
+    assert report.panel_texts == ["Panel one", "Panel two"], "the deck's words are untouched"
+    assert _read_yaml(tmp_path)["mark_boxes"] == []
+
+
+async def test_a_mark_box_reaching_past_the_slide_edge_is_clamped_rather_than_dropped(
+    tmp_path: Path, downloads: list[str]
+) -> None:
+    """Clamped on RANGE, rejected on SHAPE — the two halves of `_box` and the reason for the split.
+
+    A model that says `1.02` means the slide's edge, and a crop that stops at the edge is the right
+    crop; dropping it would cost a real mark its pixels over a rounding error. The width/height
+    ceiling still applies AFTER the clamp, so a box clamped into a full-slide rectangle is refused
+    by the span rule rather than sneaking through as "clamped, therefore fine".
+    """
+    post = _post(slides=2, panels=("Panel one", "Panel two"))
+    vision = Vision(_row(1, _box("Notion", 1, (-0.2, 1.4, 0.3, 0.25)),
+                            _box("Figma", 2, (0.5, 0.5, 1.6, 0.2))),
+                    _answer(2))
+
+    report = (await slide_intel.enrich([post], run_dir=tmp_path, call=vision, engine=_engine(),
+                                       cfg=Config(), log=Log()))["p1"]
+
+    assert [mark.name for mark in report.mark_boxes] == ["Notion"], \
+        "the second box clamps to a full-slide width and the span rule then refuses it"
+    assert report.mark_boxes[0].box == (0.0, 1.0, 0.3, 0.25), "x and y clamp into [0, 1]"
+
+
+@pytest.mark.parametrize(("slide", "kept"), [(0, True), (1, True), (2, True), (3, False),
+                                             (-1, False), (99, False)])
+async def test_a_mark_box_naming_a_slide_outside_the_deck_is_dropped_or_falls_back_to_its_row(
+    tmp_path: Path, downloads: list[str], slide: int, kept: bool,
+) -> None:
+    """The box names its own slide, so a mislabelled one is caught by the RANGE test rather than
+    trusted because of where it arrived.
+
+    Two behaviours are pinned together because they are one line of the implementation. A FALSY
+    `slide` (0, or absent) falls back to the answer row's own position — an entry that names no
+    slide arrived on a slide, and that is the slide it belongs to. Any other out-of-deck value,
+    negative ones included, named nothing and is dropped: FR-315 would otherwise crop it from a
+    file that is not there, or from the wrong panel.
+    """
+    post = _post(slides=2, panels=("Panel one", "Panel two"))
+    vision = Vision(_row(1, _box("Notion", slide)), _answer(2))
+
+    report = (await slide_intel.enrich([post], run_dir=tmp_path, call=vision, engine=_engine(),
+                                       cfg=Config(), log=Log()))["p1"]
+
+    assert [mark.name for mark in report.mark_boxes] == (["Notion"] if kept else [])
+    if kept:
+        assert 1 <= report.mark_boxes[0].slide <= 2
+
+
+async def test_the_deck_keeps_at_most_twenty_four_mark_boxes_however_many_the_model_returned(
+    tmp_path: Path, downloads: list[str]
+) -> None:
+    """The cap is per DECK, not per slide (FR-306 amendment): each box becomes a cropped patch and
+    a Kie upload downstream (FR-315), so it is a cost fence like every other number in that block.
+
+    RAISED from 10 to 24 after the glz0 audit (v2.1.4). Ten was set on the belief that ten marks
+    is already more than a real deck carries; the run then produced a tool round-up whose panels
+    carried 21 distinct product logos, and eleven of them shipped with no patch — rendering from
+    their names alone, which is precisely the invented-logo failure FR-315 exists to end. A tool
+    round-up is a format this product renders, so the cap has to hold one.
+    """
+    post = _post(slides=2, panels=("Panel one", "Panel two"))
+    vision = Vision(_row(1, *(_box(f"Mark {n}", 1) for n in range(16))),
+                    _row(2, *(_box(f"Mark {n}", 2) for n in range(16, 32))))
+
+    report = (await slide_intel.enrich([post], run_dir=tmp_path, call=vision, engine=_engine(),
+                                       cfg=Config(), log=Log()))["p1"]
+
+    assert len(report.mark_boxes) == slide_intel._MAX_MARK_BOXES == 24
+    assert [mark.name for mark in report.mark_boxes[:16]] == [f"Mark {n}" for n in range(16)], \
+        "the cap takes the tail, in detection order — it never reshuffles"
+    assert [mark.name for mark in report.boxes_on(2)] == [f"Mark {n}" for n in range(16, 24)]
+    assert len(_read_yaml(tmp_path)["mark_boxes"]) == 24
+
+
+async def test_a_deck_of_twenty_one_real_marks_keeps_every_one_of_them(
+    tmp_path: Path, downloads: list[str]
+) -> None:
+    """The glz0 shape itself, pinned: 21 distinct marks across a deck now all survive the cap.
+
+    Deck 01 of run `20260814_010814_glz0` was exactly this — a round-up naming 21 tools, capped to
+    10, eleven marks left to the render model's imagination. Written as its own test beside the
+    boundary test above because the boundary is arithmetic and this is the case that was lost.
+    """
+    post = _post(slides=2, panels=("Panel one", "Panel two"))
+    vision = Vision(_row(1, *(_box(f"Tool {n}", 1) for n in range(11))),
+                    _row(2, *(_box(f"Tool {n}", 2) for n in range(11, 21))))
+
+    report = (await slide_intel.enrich([post], run_dir=tmp_path, call=vision, engine=_engine(),
+                                       cfg=Config(), log=Log()))["p1"]
+
+    assert len(report.mark_boxes) == 21, "no real mark loses its pixels to the fence any more"
+
+
+async def test_a_payload_with_no_mark_boxes_key_parses_as_a_deck_with_no_boxes(
+    tmp_path: Path, downloads: list[str]
+) -> None:
+    """Strict mode makes `mark_boxes` REQUIRED of the model and OPTIONAL of the parser (§0.14c).
+
+    An older cached answer, a truncated row, or a model that simply omitted the key is a slide with
+    no boxes — never a failed read and never a warning, because a deck with no third-party mark on
+    it is the ordinary case and the marks are an upgrade to it.
+    """
+    post = _post(slides=2, panels=("Panel one", "Panel two"))
+    vision = Vision(_answer(1, "Words"), _answer(2, "More words"))
+    log = Log()
+
+    report = (await slide_intel.enrich([post], run_dir=tmp_path, call=vision, engine=_engine(),
+                                       cfg=Config(), log=log))["p1"]
+
+    assert report.mark_boxes == [] and report.boxes_on(1) == []
+    assert report.status == slide_intel.STATUS_OK
+    assert not log.warnings, f"an absent optional key is not a degrade: {log.keys()}"
+    assert _read_yaml(tmp_path)["mark_boxes"] == []
+
+
+async def test_the_mark_boxes_recorded_in_source_yaml_are_the_ones_the_crop_step_will_read(
+    tmp_path: Path, downloads: list[str]
+) -> None:
+    """FR-71 provenance for the pixels: `source.yaml` records WHERE each cropped patch came from,
+    so a patch that rendered wrong can be traced back to its rectangle without re-running (and
+    re-paying for) the vision pass. The stored row must therefore be the sanitised box, not the
+    model's raw answer."""
+    post = _post(slides=2, panels=("Panel one", "Panel two"))
+    vision = Vision(_row(1, _box("  Notion   logo  ", 1, (0.05, 0.05, 0.18, 0.09))), _answer(2))
+
+    report = (await slide_intel.enrich([post], run_dir=tmp_path, call=vision, engine=_engine(),
+                                       cfg=Config(), log=Log()))["p1"]
+
+    assert report.mark_boxes == [slide_intel.MarkBox(
+        name="Notion logo", slide=1, box=(0.05, 0.05, 0.18, 0.09))], "whitespace collapsed"
+    assert _read_yaml(tmp_path)["mark_boxes"] == [
+        {"name": "Notion logo", "slide": 1, "box": [0.05, 0.05, 0.18, 0.09]}]

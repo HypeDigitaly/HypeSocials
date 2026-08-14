@@ -38,6 +38,8 @@ from __future__ import annotations
 import dataclasses
 from typing import Any
 
+import pytest
+
 from hypesocials import copywrite
 from hypesocials.config import TextBudgets
 from hypesocials.models import (
@@ -130,9 +132,9 @@ def refs(**overrides: Any) -> dict[str, Any]:
 
 def post(number: int, *, views: int = 1_000, caption: str = "", hooks: tuple[str, ...] = (),
          overlays: tuple[str, ...] = (), panels: tuple[str, ...] = (),
-         description: str = "") -> SourcePost:
+         description: str = "", author: str = "") -> SourcePost:
     return SourcePost(post_id=f"p{number}", url=f"https://virlo.test/p/{number}",
-                      author=f"@creator{number}", views=views,
+                      author=author or f"@creator{number}", views=views,
                       caption=caption or f"Caption of post {number}, as its author wrote it.",
                       hooks=list(hooks), text_overlays=list(overlays), panel_texts=list(panels),
                       description=description)
@@ -579,11 +581,14 @@ async def test_a_topic_with_no_quotable_caption_falls_back_to_our_own_words_and_
 
 
 def _offer(plan_entry: PlanEntry, source: TrendItem, meta: MetaStyle | None = None,
-           competitors: tuple[str, ...] = ()) -> copywrite._Offer:
+           competitors: tuple[str, ...] = (),
+           chrome_lines: dict[str, list[str]] | None = None,
+           log: Any = None) -> copywrite._Offer:
     run = copywrite._Run(call=None, engine=PromptEngine(), budgets=TextBudgets(),  # type: ignore[arg-type]
                          styles={STYLE_KEY: meta or style()}, conventions={},
                          onimage_languages={}, niche_descriptor="", brand_context="",
-                         competitors=competitors, strip_brands={}, log=None)
+                         competitors=competitors, strip_brands={},
+                         chrome_lines=chrome_lines or {}, log=log)
     return copywrite._offer_for(plan_entry, copywrite._Group(trend=source, campaign_brief=None,
                                                              entries=[plan_entry]), run)
 
@@ -750,6 +755,405 @@ def test_a_captions_trailing_hashtags_are_never_offered_inside_the_frame() -> No
     assert offer.captions[0].hashtags == ("#ai", "#saas")
 
 
+# ----------------------------------------- §1.5 layer 3: the SOURCE CREATOR's own name (FR-312)
+#
+# The regression that bought this section: run 20260813_161444_r9pz shipped eight rendered slides
+# whose first line was "EMIR AI LAB" — the display form of the source creator's handle,
+# `emirailab`, which their deck carried as a brand header on every panel. The verbatim contract
+# worked exactly as designed and put another account's name on our creative. Layers 1 and 2 could
+# not see it (it is not a competitor and no filter proposed it), the @handle/URL backstop could
+# not see it (it is neither) and no budget could see it (it is eleven characters).
+#
+# Layer 3 is unguarded and fail-closed like layer 1, and its unit is the LINE rather than the word:
+# a line whose collapsed form EQUALS an identifier is dropped whole, and everything else on the
+# panel ships byte for byte. Two things are pinned below and neither is an accident — a legitimate
+# short line that collapses onto the handle is dropped too (`test_..._fail_closed_...`), and a line
+# that merely CONTAINS an identifier is never touched.
+
+#: The audited creator, in the two forms the run carried: the handle Virlo returned as `author`,
+#: and the display form their own slides were headed with.
+CREATOR_HANDLE = "@emirailab"
+CREATOR_HEADER = "EMIR AI LAB"
+
+
+def creator_deck(*panels: str, author: str = CREATOR_HANDLE, caption: str = "") -> TrendItem:
+    """One bound slideshow post by `author`, its panels exactly as given."""
+    return topic(post(1, author=author, panels=panels,
+                      caption=caption or "A caption long enough to be a caption at all."))
+
+
+def deck(asset_id: str = "d1", slides: int = 2) -> PlanEntry:
+    return entry(asset_id, 0, creative_format="carousel", slide_count=slides, source_post_id="p1")
+
+
+async def write_deck(source: TrendItem, *, slides: int = 2, log: Any = None,
+                     **overrides: Any) -> copywrite.CopyResult:
+    call = ScriptedCall({"d1": [refs(caption_ref="P1.caption")]})
+    return await write([deck(slides=slides)], call, trends={"t1": source}, log=log,
+                       styles={STYLE_KEY: style(max_onimage_chars={"headline": 90, "subline": 60,
+                                                                   "slide": 300})},
+                       **overrides)
+
+
+def test_the_collapse_is_what_makes_a_handle_and_a_brand_header_one_string() -> None:
+    """The whole matcher in four lines. Case, spaces, punctuation and glyphs go; letters and
+    digits stay, including accented ones — a Czech line must collapse to its own letters rather
+    than to a mangled ASCII skeleton that could collide with an unrelated identifier."""
+    assert copywrite._collapse(CREATOR_HEADER) == "emirailab" == copywrite._collapse("@emirailab")
+    assert copywrite._collapse("Emir | AI Lab ") == "emirailab"
+    assert copywrite._collapse("SWIPE ❮❮") == "swipe" == copywrite._collapse("SWIPE <<")
+    assert copywrite._collapse("Rychlejší růst") == "rychlejšírůst", "no accent is folded away"
+
+
+def test_layer_3_drops_a_line_that_IS_the_identifier_and_never_one_that_merely_contains_it(
+) -> None:
+    """Equality, not substring — the single decision that keeps this safe to run unguarded over
+    every candidate on every post. A substring rule would shred "The AI lab nobody talks about"
+    the moment a creator called themselves `ailab`, and the verbatim contract with it."""
+    identifiers = {"emirailab": "author"}
+
+    assert copywrite._strip_creator_lines(CREATOR_HEADER, identifiers) == ("", True)
+    assert copywrite._strip_creator_lines(f"{CREATOR_HEADER}\nReal words", identifiers) == (
+        "Real words", True)
+    assert copywrite._strip_creator_lines("Why EMIR AI LAB does this", identifiers) == (
+        "Why EMIR AI LAB does this", False), "a line that CONTAINS the name is not this rule's"
+    assert copywrite._strip_creator_lines("Real words", identifiers) == ("Real words", False)
+    assert copywrite._strip_creator_lines("Real words", {}) == ("Real words", False)
+
+
+async def test_the_creators_brand_header_is_dropped_and_the_rest_ships_byte_for_byte() -> None:
+    """(a) The audited failure, and the fix in one assertion: the header line goes, everything
+    below it is the source's own bytes. Dropping — not substituting — is the operator's ruling:
+    there is no replacement string that would be honest, and a blank where their brand was is what
+    a re-render of somebody else's slide should look like."""
+    log = Recorder()
+    source = creator_deck(f"{CREATOR_HEADER}\nThe 5 tools that replaced my team",
+                          f"{CREATOR_HEADER}\nNumber 3 costs nothing at all")
+
+    result = await write_deck(source, log=log)
+
+    assert result.copy["d1"].slide_texts == ["The 5 tools that replaced my team",
+                                             "Number 3 costs nothing at all"]
+    assert CREATOR_HEADER not in shipped_strings(result.copy["d1"])
+    assert all(text in source.posts[0].panel_texts[index]
+               for index, text in enumerate(result.copy["d1"].slide_texts)), \
+        "what survives is a byte-substring of the panel it came from — nothing was rewritten"
+    warnings = log.warned("panel_creator_line_stripped")
+    assert len(warnings) == 1, "one event per creative, however many lines it names"
+    assert "'EMIR AI LAB' == the author identifier 'emirailab'" in warnings[0]
+
+
+async def test_a_panel_that_names_nobody_is_returned_untouched() -> None:
+    """(c) The control, and the one that matters most: layer 3 is a scalpel, and the overwhelming
+    majority of panels must come out of it as the same object they went in as. If this test ever
+    fails, the verbatim contract has been broken for every deck we render."""
+    log = Recorder()
+    source = creator_deck("The 5 tools that replaced my team",
+                          "Number 3 costs nothing at all")
+
+    result = await write_deck(source, log=log)
+
+    assert result.copy["d1"].slide_texts == list(source.posts[0].panel_texts)
+    assert [row["source_text_original"] for row in result.provenance["d1"].panel_map] == \
+        list(source.posts[0].panel_texts)
+    assert not any(row["creator_stripped"] for row in result.provenance["d1"].panel_map)
+    assert not log.warned("panel_creator_line_stripped"), "nothing was taken, nothing is warned"
+
+
+async def test_a_short_legitimate_line_that_collapses_onto_the_handle_is_dropped_too() -> None:
+    """(b) FAIL-CLOSED, pinned deliberately. "AI LAB" is a perfectly good slide line, and against
+    the handle `ailab` it collapses to the same nine characters and goes. That is the trade the
+    operator chose (D-C): between one lost slide line and one creative signed with somebody else's
+    brand, the line loses. Anyone tempted to "fix" this by adding a guard is looking at the exact
+    behaviour the run 20260813_161444_r9pz audit asked for — change the PRD first (FR-312)."""
+    log = Recorder()
+    source = creator_deck("AI LAB\nWhat we build here", "A second panel with real words",
+                          author="ailab")
+
+    result = await write_deck(source, log=log)
+
+    assert result.copy["d1"].slide_texts == ["What we build here",
+                                             "A second panel with real words"]
+    assert "'AI LAB' == the author identifier 'ailab'" in \
+        log.warned("panel_creator_line_stripped")[0]
+
+
+async def test_a_two_character_identifier_never_strips_anything() -> None:
+    """(h) The floor. Two characters is an initialism, a page counter or a particle, and an
+    identifier that short would blank panels for a living — so it is discarded before it can
+    match, and the line it would have taken ships whole."""
+    log = Recorder()
+    source = creator_deck("AB\nThe real words of the panel", "A second panel with real words",
+                          author="ab")
+
+    result = await write_deck(source, log=log)
+
+    assert copywrite._CREATOR_MIN_CHARS == 3
+    assert copywrite._creator_identifiers(source.posts[0]) == {}, "nothing qualified"
+    assert result.copy["d1"].slide_texts == ["AB\nThe real words of the panel",
+                                             "A second panel with real words"]
+    assert not log.warnings
+
+
+async def test_a_panel_line_that_echoes_the_decks_chrome_is_dropped_as_well() -> None:
+    """(d) The second identifier channel. FR-306 transcribes watermarks, counters and swipe cues
+    into `chrome_text`, apart from the slide's words — but Virlo's own `panel_texts` carry the same
+    cue on `virlo_text`, so "SWIPE ❮❮" reaches the deck through the front door. It is the creator's
+    furniture, it tells our reader to swipe on a deck whose slides do not swipe that way, and the
+    collapse makes their glyphs and ours the same cue."""
+    log = Recorder()
+    source = creator_deck("SWIPE <<\nHere is the real content of slide one",
+                          "A second panel with real words")
+
+    result = await write_deck(source, log=log, chrome_lines={"p1": ["SWIPE ❮❮", "1/8"]})
+
+    assert result.copy["d1"].slide_texts == ["Here is the real content of slide one",
+                                             "A second panel with real words"]
+    warning = log.warned("panel_creator_line_stripped")[0]
+    assert "'SWIPE <<' == the chrome identifier 'swipe'" in warning
+    assert copywrite._creator_identifiers(source.posts[0], ["1/8", ""]) == {
+        "emirailab": "author"}, \
+        "a page counter collapses to two characters and an empty chrome field to none — neither " \
+        "becomes an identifier, and only the author's own handle is left"
+
+
+async def test_a_panel_that_was_ONLY_the_creators_name_renders_wordless_in_its_own_position(
+) -> None:
+    """(e) The empty case, joined to FR-304's alignment rule. A panel whose every line was the
+    creator's goes to "", the slide renders without text and it KEEPS ITS ROW — the row is the
+    alignment, and closing the gap would tell the gallery our slide 2 renders their slide 3."""
+    source = creator_deck(CREATOR_HEADER, "The second panel, with real words",
+                          "A third panel, also real")
+
+    result = await write_deck(source, slides=3)
+
+    assert result.copy["d1"].slide_texts == ["", "The second panel, with real words",
+                                             "A third panel, also real"]
+    rows = result.provenance["d1"].panel_map
+    assert [row["source_position"] for row in rows] == [1, 2, 3], "nothing slid up"
+    assert rows[0]["drop_reason"] == "empty", "the strip emptied it; the verdict is honest"
+    assert rows[0]["source_text"] == "" and rows[0]["source_text_original"] == CREATOR_HEADER
+    assert "slide_1" not in result.provenance["d1"].refs
+
+
+async def test_the_panel_map_row_says_creator_stripped_and_keeps_the_pre_strip_panel() -> None:
+    """(f) The receipt. `source_text` is what SHIPPED, `source_text_original` is the panel as it
+    reached layer 3, and `creator_stripped` is the flag that explains the difference — the one row
+    fact that can be true on a slide which rendered perfectly well. Without the pair, an operator
+    reading meta.yaml could not tell a panel we edited from a panel the source wrote that way."""
+    original = f"{CREATOR_HEADER}\nThe 5 tools that replaced my team"
+    source = creator_deck(original, "A second panel with real words")
+
+    rows = (await write_deck(source)).provenance["d1"].panel_map
+
+    assert rows[0]["source_text"] == "The 5 tools that replaced my team"
+    assert rows[0]["source_text_original"] == original, "pre-strip, so the loss is visible"
+    assert rows[0]["creator_stripped"] is True
+    assert rows[0]["drop_reason"] == "", "the slide shipped — this is not a drop"
+    assert rows[1] == {"slide": 2, "source_position": 2,
+                       "source_text": "A second panel with real words",
+                       "source_text_original": "A second panel with real words",
+                       "ref_label": "P1.panel.2", "drop_reason": "", "creator_stripped": False}
+
+
+async def test_the_caption_loses_the_creators_name_at_word_boundaries() -> None:
+    """(g) The caption is prose, so the whole-line rule barely touches it — "Follow EMIR AI LAB for
+    more AI tool picks" is one line and most of it is legitimate. Its half of layer 3 is the
+    word-boundary mechanic layers 1 and 2 already own, over the AUTHOR terms alone: the handle, and
+    the DISPLAY form found on the deck (the handle by itself would never match three spaced words).
+
+    A chrome cue is deliberately NOT a caption term: "swipe" is an ordinary word in a sentence, and
+    a caption is not pixels.
+    """
+    source = creator_deck(f"{CREATOR_HEADER}\nThe 5 tools that replaced my team",
+                          "Swipe through the whole list to see them",
+                          caption="Follow EMIR AI LAB for more AI tool picks")
+
+    result = await write_deck(source, chrome_lines={"p1": ["SWIPE ❮❮"]})
+
+    copyset = result.copy["d1"]
+    assert copyset.caption == "Follow for more AI tool picks"
+    assert CREATOR_HEADER not in shipped_strings(copyset)
+    assert "emirailab" not in shipped_strings(copyset).casefold()
+    assert copyset.slide_texts[1] == "Swipe through the whole list to see them", \
+        "a chrome cue is not a caption term and not a substring rule — the sentence survives"
+
+
+# ------------------------------ FR-319: the social / technical split on the verbatim path (D48)
+#
+# Before v2.1.3 both gates asked "is there a URL here" and blanked the panel if there was. On a
+# developer-tooling deck that is most of the deck: `github.com/user/repo` IS the slide's content,
+# and a shell line quoting `pypi.org` is the point of the panel. The question changed to "does this
+# text point at somebody's IDENTITY or funnel", and the answer is fail-closed twice over — an
+# allowlisted technical host renders byte-verbatim, every other host drops, and a line carrying
+# BOTH a handle and a technical URL is social and drops (the PRD's own tie-break).
+
+
+@pytest.mark.parametrize(
+    ("text", "social"),
+    [
+        # Technical CONTENT — rendered as the source wrote it. Matched by registrable SUFFIX, so
+        # a `gist.` sub-domain resolves through its parent, and by first LABEL, so every vendor's
+        # `docs.`/`api.`/`developer.` reference site is covered without enumerating vendors.
+        ("Clone it from github.com/acme/toolkit", False),
+        ("The whole thing is in gist.github.com/acme/1234", False),
+        ("Straight out of docs.python.org/3/library/asyncio.html", False),
+        ("POST to api.stripe.com/v1/charges", False),
+        ("It has been on pypi.org since March", False),
+        ("Plain words, no link, no handle — the case that is nearly every string", False),
+        # Social marks — dropped, the slide keeps its POSITION and ships wordless (FR-304).
+        ("Ask @creator about it", True),
+        ("Follow instagram.com/creator", True),
+        ("Everything is in skool.com/creator", True),
+        ("All my links at linktr.ee/creator", True),
+        ("Come argue with me at discord.gg/abcd", True),
+        ("Full breakdown: youtu.be/dQw4w9WgXcQ", True),
+        # An unknown marketing domain is social by construction: the allowlist is an ALLOWLIST,
+        # and it is easier to add `crates.io` the day a Rust deck needs it than to explain a
+        # creative that shipped a stranger's funnel because a domain looked harmless.
+        ("Read more at example.com", True),
+        # The tie-break, stated in the PRD and pinned here: a handle is tested first and no
+        # technical host in the same line redeems it.
+        ("Clone github.com/acme/toolkit and ping @creator", True),
+    ])
+def test_fr319_a_handle_or_an_unplaceable_host_is_social_and_a_technical_url_is_content(
+    text: str, social: bool,
+) -> None:
+    """The ONE gate both callers ask (`_fitting_slots` for offers, the panel map for mapped decks).
+
+    The asymmetry of the two errors is what sets the default. Dropping a technical URL costs a
+    developer deck its actual content — 21 of 41 panels in run `20260813_143420_oyo4` went wordless
+    for exactly this reason — while keeping an unplaceable one ships somebody else's funnel inside
+    a frame the operator paid for. So content wins on the hosts we can place, and everything else
+    still drops.
+    """
+    assert copywrite._social_mark(text) is social
+
+
+async def test_fr319_a_panel_that_is_a_technical_url_renders_verbatim_in_its_own_slot(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    """End to end on the path that spends money: the panel keeps its text, its row and its label.
+
+    `drop_reason` is the receipt — an empty one is the claim "nothing was taken from this slide",
+    and it is what distinguishes a panel we rendered as written from one we blanked. The social
+    sibling beside it must still drop, or the split is not a split.
+    """
+    source = creator_deck("Clone it from github.com/acme/toolkit",
+                          "All my links at linktr.ee/creator",
+                          author="@someoneelse")
+
+    result = await write_deck(source)
+
+    copyset = result.copy["d1"]
+    assert copyset.slide_texts == ["Clone it from github.com/acme/toolkit", ""]
+    rows = result.provenance["d1"].panel_map
+    assert rows[0]["drop_reason"] == "", "a technical URL is content, not a drop"
+    assert rows[0]["source_text"] == "Clone it from github.com/acme/toolkit"
+    assert [row["source_position"] for row in rows] == [1, 2], "the social panel kept its row"
+    assert rows[1]["source_text"] == "" and rows[1]["drop_reason"]
+
+
+# ------------------------------- FR-312 layer 3b: the fuzzy CAPTION strip (v2.1.3, captions only)
+#
+# Layer 3a removes the author's name at WORD BOUNDARIES, which needs the caption to spell the
+# handle the way the handle is spelled. Run 20260813 shipped a caption saying "ScaleWithOma" over
+# an author whose handle is `@scalewithomaa` — one dropped character, invisible to a whole-term
+# regex. Similarity can see it (0.96), and a caption is the one place in this codebase where a
+# near miss may be removed, because nothing in a caption becomes pixels.
+
+#: The audited pair: the handle Virlo returned, and the near-miss the caption was written with.
+FUZZY_HANDLE = "@scalewithomaa"
+FUZZY_NEAR_MISS = "ScaleWithOma"
+
+
+async def test_fr312_a_caption_naming_a_near_miss_of_the_handle_loses_it_and_says_the_ratio() -> None:
+    """The audited defect, and the receipt that makes the judgement auditable.
+
+    A fuzzy strip is the one removal in this codebase of a string that is not byte-equal to
+    anything we were given, so it is warned INDIVIDUALLY with the token, the identifier it matched
+    and the measured similarity: "ScaleWithOma ≈ scalewithomaa at 0.96" is a finding the operator
+    can check, "the caption was cleaned" is not.
+    """
+    log = Recorder()
+    source = creator_deck("A first panel with real words", "A second panel with real words",
+                          author=FUZZY_HANDLE,
+                          caption=f"Built by {FUZZY_NEAR_MISS} for the community")
+
+    result = await write_deck(source, log=log)
+
+    assert result.copy["d1"].caption == "Built by for the community"
+    warnings = log.warned("caption_creator_fuzzy_stripped")
+    assert len(warnings) == 1, "one line per removed token, not one per caption"
+    assert f"{FUZZY_NEAR_MISS!r} was removed" in warnings[0]
+    assert "0.96 similarity" in warnings[0] and "0.85 threshold" in warnings[0]
+    data = next(fields for name, _, fields in log.warnings
+                if name == "caption_creator_fuzzy_stripped")
+    assert data["token"] == FUZZY_NEAR_MISS, "the token AS WRITTEN, so the operator can find it"
+    assert data["identifier"] == FUZZY_HANDLE.lstrip("@"), "the author term it was judged against"
+    assert data["ratio"] == pytest.approx(0.96, abs=0.01)
+
+
+@pytest.mark.parametrize("word", ["community", "scale", "with", "confidence", "companies"])
+async def test_fr312_an_ordinary_word_that_shares_letters_with_the_handle_survives(
+    word: str,
+) -> None:
+    """The 0.85 threshold, from the other side. "community" scores 0.27 against `scalewithomaa`
+    and "scale" scores 0.56 — the caption's own vocabulary, and a strip that ate any of it would
+    be rewriting the source's prose rather than removing its signature.
+
+    Pinned word by word because a threshold lowered "just a little" to catch one more spelling is
+    exactly how a similarity score starts editing captions.
+    """
+    log = Recorder()
+    caption = f"A caption about {word} that runs long enough to be a real caption"
+    source = creator_deck("A first panel with real words", "A second panel with real words",
+                          author=FUZZY_HANDLE, caption=caption)
+
+    result = await write_deck(source, log=log)
+
+    assert result.copy["d1"].caption == caption, "byte-identical — nothing was judged"
+    assert not log.warned("caption_creator_fuzzy_stripped")
+
+
+async def test_fr312_a_caption_that_names_nobody_comes_back_byte_identical() -> None:
+    """The control, and the one that matters most: the overwhelming majority of captions must come
+    out of layer 3b as the same string they went in as. If this ever fails, every caption the tool
+    ships has been quietly rewritten."""
+    caption = "Seven tools, four workflows, and the one nobody sets up correctly"
+    source = creator_deck("A first panel with real words", "A second panel with real words",
+                          author=FUZZY_HANDLE, caption=caption)
+
+    result = await write_deck(source)
+
+    assert result.copy["d1"].caption == caption
+
+
+async def test_fr312_a_panel_is_never_fuzzied_however_close_it_reads_to_the_author() -> None:
+    """The asymmetry between captions and panels IS the design (PRD FR-312, v2.1.3).
+
+    A panel becomes PIXELS, so it is held to full-line collapse-EQUALITY and nothing looser: put a
+    similarity score in charge of slide text and it eventually eats a word the creator meant, on a
+    creative nobody re-reads before it ships. `ScaleWithOma` collapses to `scalewithoma`, which is
+    not `scalewithomaa`, so the panel stands — while the identical string in the caption beside it
+    goes. Both halves are asserted in one run, because the point is that they DIFFER.
+    """
+    log = Recorder()
+    source = creator_deck(FUZZY_NEAR_MISS, f"{FUZZY_NEAR_MISS}\nThe five tools I actually use",
+                          author=FUZZY_HANDLE,
+                          caption=f"More from {FUZZY_NEAR_MISS} every single week, no exceptions")
+
+    result = await write_deck(source, log=log)
+
+    assert result.copy["d1"].slide_texts == [
+        FUZZY_NEAR_MISS, f"{FUZZY_NEAR_MISS}\nThe five tools I actually use"], \
+        "a near miss is not the identifier; the panel keeps its own bytes"
+    assert not log.warned("panel_creator_line_stripped")
+    assert result.copy["d1"].caption == "More from every single week, no exceptions", \
+        "the caption half of the same layer still fires on the same string"
+    assert len(log.warned("caption_creator_fuzzy_stripped")) == 1
+
+
 # ------------------------------------------- the barrier at the level that actually spends money
 #
 # Everything above asserts on a `CopySet`. That is the object, not the risk. The risk is the
@@ -878,3 +1282,137 @@ async def test_the_strip_reaches_the_channels_the_copy_object_never_touches() ->
     for slot in ("trend_texts", "content_sentence", "render_prompt", "through_line",
                  "brief_directives"):
         assert BRAND.casefold() not in filtered[slot].casefold(), slot
+
+
+# --------------------------------- FR-312 layer 3c: the CAPTION CTA strip (v2.1.4, captions only)
+#
+# Layers 1–3b remove NAMES: competitors, the creator's handle, near misses of it. Run
+# 20260814_010814_glz0 shipped the thing none of them look for — the creator's FUNNEL, quoted
+# verbatim under our brand:
+#
+#   "Swipe all 7 slides."                              (our deck had five)
+#   "Grab the free step-by-step guide via the link in my bio."   (their bio)
+#   'Comment "SCALE" and I'll send you the link'                 (their DMs)
+#
+# Each is an instruction our audience cannot follow. The unit removed is the SENTENCE, for the same
+# reason `_scrub_creator` drops a whole sentence: "Grab the free guide via the link in my bio" with
+# only the four cue words removed still promises a guide nobody can reach.
+
+
+@pytest.mark.parametrize(
+    ("cue", "pattern"),
+    [
+        ("Swipe all 7 slides.", "swipe_cue"),
+        ("Swipe up for the full breakdown.", "swipe_cue"),
+        ("Grab the free step-by-step guide via the link in my bio.", "link_in_bio"),
+        ("Everything is linked in bio.", "link_in_bio"),
+        ('Comment "SCALE" and I will send you the link.', "comment_keyword"),
+        # the 59el miss: the same mechanic with the quotes left off (deck 02's caption shipped it)
+        ("Comment CLAUDE and I will send free guide to install them.", "comment_keyword_bare"),
+        ("DM me the word AUDIT for the template.", "dm_me"),
+        ("Tap the link to get the whole stack.", "tap_the_link"),
+    ])
+async def test_fr312_a_creators_call_to_action_is_dropped_from_the_caption_sentence_and_all(
+    cue: str, pattern: str,
+) -> None:
+    """One row per pattern, each written the way glz0 (or its near neighbour) actually wrote it.
+
+    The surviving sentence is asserted byte for byte beside the removal, because the promise of a
+    sentence-level strip is that it takes ONE sentence: a caption reduced to its first clause is a
+    different failure from a caption carrying somebody else's funnel, not a milder one.
+    """
+    log = Recorder()
+    caption = f"Seven tools that replaced my whole stack. {cue}"
+    source = creator_deck("A first panel with real words", "A second panel with real words",
+                          caption=caption)
+
+    result = await write_deck(source, log=log)
+
+    assert result.copy["d1"].caption == "Seven tools that replaced my whole stack."
+    warnings = log.warned("caption_cta_stripped")
+    assert len(warnings) == 1, "one line per removed sentence"
+    assert cue.rstrip() in warnings[0] and pattern in warnings[0], \
+        "the warning quotes the sentence and names the pattern that caught it"
+
+
+async def test_fr312_a_cue_on_its_own_line_is_a_sentence_too() -> None:
+    """Captions are written in lines as often as in sentences, and the commonest shape of all is a
+    bare cue on the last line with no terminator: `…\\nLink in bio 👇`.
+
+    Splitting on line breaks as well as on `.!?` is what makes that shape reachable; without it the
+    whole caption would be one sentence and the strip would either take everything or nothing.
+    """
+    log = Recorder()
+    source = creator_deck("A first panel with real words", "A second panel with real words",
+                          caption="Seven tools that replaced my whole stack\nLink in bio")
+
+    result = await write_deck(source, log=log)
+
+    assert result.copy["d1"].caption == "Seven tools that replaced my whole stack"
+    assert len(log.warned("caption_cta_stripped")) == 1
+
+
+@pytest.mark.parametrize(
+    "caption",
+    [
+        "Follow for more AI tool picks.",
+        "The comment section on the original post was full of good ideas.",
+        "I swipe left on tools that need a demo call.",
+        "We linked our findings in the docs, with the raw numbers beside them.",
+        "Tap targets under 44px are the reason this dashboard fails on mobile.",
+        "Recruiters read your LinkedIn bio before they read anything else.",
+        "Seven tools, four workflows, and the one nobody sets up correctly.",
+    ])
+async def test_fr312_ordinary_prose_that_merely_sounds_like_a_cue_survives_intact(
+    caption: str,
+) -> None:
+    """The other half, and the one that decides whether this strip is safe to run unguarded.
+
+    Every row here contains a word one of the five patterns is built around — "comment", "swipe",
+    "link", "tap", "follow" — used as ordinary English. A caption is prose the operator paid a
+    model to choose, so a pattern that eats any of these is worse than the defect it fixes: the
+    funnel sentence is visible in a review, a silently shortened caption is not.
+    """
+    log = Recorder()
+    source = creator_deck("A first panel with real words", "A second panel with real words",
+                          caption=caption)
+
+    result = await write_deck(source, log=log)
+
+    assert result.copy["d1"].caption == caption, "byte-identical: nothing matched, nothing moved"
+    assert not log.warned("caption_cta_stripped")
+
+
+async def test_fr312_a_caption_with_nothing_to_strip_is_never_even_reflowed() -> None:
+    """The control for the reflow: whitespace is only ever collapsed on a caption that WAS edited.
+
+    Removing a sentence out of the middle leaves double spaces behind, so the survivors are
+    rejoined — but a caption nobody touched must come back with its own line breaks and spacing
+    intact, or every caption this tool ships has been quietly rewritten.
+    """
+    caption = "Two lines,\nand the second one matters.   Spaced oddly on purpose."
+    source = creator_deck("A first panel with real words", "A second panel with real words",
+                          caption=caption)
+
+    result = await write_deck(source)
+
+    assert result.copy["d1"].caption == caption
+
+
+async def test_fr312_the_cta_strip_never_reaches_a_panel_a_hook_or_an_overlay() -> None:
+    """Caption-scoped by contract, and this is the assertion that holds it there.
+
+    A panel becomes PIXELS: our slide *i* is a re-rendering of their slide *i* (FR-304), and
+    editing one on a judgement about MEANING is how a verbatim deck stops being verbatim. A source
+    slide that really did say "Swipe up" renders saying "Swipe up" — the fix for that is the
+    chrome split (§0.11), not a caption rule reaching into the frame.
+    """
+    log = Recorder()
+    source = creator_deck("Swipe all 7 slides", "Comment \"SCALE\" for the link",
+                          caption="A caption long enough to be a caption at all.")
+
+    result = await write_deck(source, log=log)
+
+    assert result.copy["d1"].slide_texts == ["Swipe all 7 slides",
+                                             "Comment \"SCALE\" for the link"]
+    assert not log.warned("caption_cta_stripped")

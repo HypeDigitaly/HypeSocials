@@ -10,15 +10,19 @@ Invariants:
   branches on which: Seedance never left `waiting` across a 379 s render (RESULTS.md §C).
 - A failed *poll* is never a failed *job* (20 §8): one try per tick, retried with backoff,
   bounded only by the job timeout. `http_max_attempts` governs `createTask` and uploads.
-- A timed-out job is a failed job, NEVER resubmitted — it was billed and its `taskId` goes to the
-  caller for the ledger (FR-203).
+- A timed-out job is a failed job HERE: this client never re-polls and never resubmits a task id,
+  and it was billed, so its `taskId` goes to the caller for the ledger (FR-203). What the caller
+  may do with that verdict changed at v2.1.3/D48 — an IMAGE job earns exactly one automatic
+  resubmit as a NEW job (FR-317, owned by `generate/`), a video job earns none (FR-44). Neither
+  is visible from in here: a resubmit arrives as a second `render()` call with its own task id.
 - `state: success` is not success: `resultJson.resultUrls` must exist AND be downloadable, else
   FAIL with `empty_result_urls` / `result_url_unreachable` (FR-242).
 - Elapsed time is monotonic via `util.Stopwatch` (FR-243); a sleeping host cannot fake a stuck job.
 - The API key reaches one place, the `Authorization` header of the API host — never a log, an
   error message, or a third-party CDN (D30/NFR-112).
-Do not: set `callBackUrl` (no public endpoint on a workstation, 20 §8); resubmit anything; retry
-a 402; leak a provider string except through `RenderOutcome.fail_message`.
+Do not: set `callBackUrl` (no public endpoint on a workstation, 20 §8); resubmit anything or open
+a second poll window on a task id (FR-317's single image resubmit is the caller's, as a new job);
+retry a 402; leak a provider string except through `RenderOutcome.fail_message`.
 """
 
 from __future__ import annotations
@@ -229,7 +233,7 @@ class KieClient:
             kind=RenderOutcomeKind.FAIL, task_id=task_id, request_token=token,
             cost_usd=self._cost_usd(record),
         )
-        if not record:  # timed out: failed for the plan, never resubmitted (20 §8)
+        if not record:  # timed out: terminal here, never re-polled (20 §8; a resubmit is a NEW job)
             outcome.kind = RenderOutcomeKind.STUCK
             outcome.fail_cause = RenderFailCause.TIMEOUT
             outcome.fail_message = f"no terminal state within {timeout_s:.0f}s"

@@ -1,5 +1,7 @@
 # 40 — Outputs & Logging
 
+**Amendment: v2.1.3 (2026-08-13, D48)** — Loud partial-delivery reporting: slides_ordered field, spend-table per-carousel marking, gallery partial count, vision-recheck logging. Social/technical URL split refinement in panel_map schema.
+
 ## TL;DR — Plain English
 
 Each run creates a timestamped folder on disk (`output/YYYYMMDD_HHMMSS_random/`) containing the finished images, carousel slides, videos, captions, and an offline HTML gallery. A single `gallery.html` file shows all creatives side by side with the style assigned to each, the brand applied, and the exact source post (with author, view count, post ID), platform badges, costs—reviewable in ~30 seconds. The folder also includes `run.log` (human-readable step-by-step narrative with stage headers and data tables) and `events.jsonl` (machine-parseable structured data for dashboards). A global `logs/trend_history.json` remembers which topics and posts were used recently to avoid repetition. Failed creatives still appear in the folder with a `SKIP_REASON.txt` file explaining why. Everything is self-contained: no external CDN, works offline, and ready to publish or archive.
@@ -20,9 +22,9 @@ Each run creates a timestamped folder on disk (`output/YYYYMMDD_HHMMSS_random/`)
 
 **FR-72 — Publishable asset enumeration (amended v2.1.0):** Each successful asset folder contains: the final image file (JPG/PNG, zero-padded if carousel: `slide_01.jpg`, `slide_02.jpg`, etc.), a video file for reels (MP4) **plus, when the seed-frame path ran, the paid seed-frame image as `seed_frame.jpg`** (cover/thumbnail only), a `caption.txt` file holding the caption and hashtags (plain text, ready to paste into a social platform), and a `meta.yaml` file with structured metadata. **Canonical publishable set:** `slide_NN.*`, `image.*`, `reel.*`, and `seed_frame.*` (cover-only). **Never published:** the `source/` and `refs/` subfolders (FR-213 in 60-publishing) and any intermediate analysis artifacts. Only the enumerated asset files move to 60-publishing pipelines.
 
-**FR-73** *(amended v2.0.0, v2.1.0)*: The `meta.yaml` file is the canonical schema for all asset metadata. It records (grouped logically):
+**FR-73** *(amended v2.0.0, v2.1.0, v2.1.2)*: The `meta.yaml` file is the canonical schema for all asset metadata. It records (grouped logically):
 
-**Identity & sourcing (v2.1.0 amendments: added source_panel_count, panel_map, source_post, ref_source):**
+**Identity & sourcing (v2.1.0 amendments: added source_panel_count, panel_map, source_post, ref_source; v2.1.2 amendments: panel_map rows gain creator_stripped):**
 - source (topic key / "brief/<name>")
 - source_name (human-readable topic or brief name)
 - platform, creative_format
@@ -33,7 +35,7 @@ Each run creates a timestamped folder on disk (`output/YYYYMMDD_HHMMSS_random/`)
 - copy_source_post_id (which SourcePost was quoted, e.g., "abc123def")
 - copy_source_refs (v2.0.0: `{headline: "P1.hook.2", caption: "P1.caption"}` — which exact strings were quoted, for gallery provenance)
 - source_panel_count (integer: the slideshow's original panel count, 0 for non-carousel or override-brief)
-- panel_map (array [optional]: per carousel slide, `{slide, source_position, source_text, ref_label, visual_brief, source_image}` (relative path); empty for override-brief carousels)
+- panel_map (array [optional]: per carousel slide, `{slide, source_position, source_text_original, source_text, drop_reason, creator_stripped, ref_label, visual_brief, source_image}` (relative path); empty for override-brief carousels. `source_text_original` is the pre-gate source text; `drop_reason` is one of: empty / contains_handle_or_url / over_budget / creator_stripped (v2.1.2; **v2.1.3 refinement per FR-319: `contains_handle_or_url` fires only for social marks; technical-URL panels are no longer dropped**); `creator_stripped` is boolean, true when the source panel line matched creator identity/chrome per FR-312 and was removed; `source_text` is the final rendered text (or "" if dropped))
 - source_post (nested object [optional, null for override-brief]: when bound post id is resolvable, `{post_id, url, author, views, published_at, caption}` — the original slide deck's provenance; when post id is bound but unresolvable from the roster, the object is `{post_id}` alone with other keys absent, marking the post as "unknown")
 - ref_source (string: `"brief"` when the creative's reference images came from a brief's own supplied files, empty string `""` for all other cases — style references no longer attach post-D46)
 - asset_id (full folder name including ordinal)
@@ -67,7 +69,8 @@ Each run creates a timestamped folder on disk (`output/YYYYMMDD_HHMMSS_random/`)
 
 *Carousel:*
 - slide_count (actual slides delivered)
-- missing_slide_numbers (array of 1-indexed slide ordinals that failed; the `incomplete` tag in `degradations` marks the condition)
+- slides_ordered (integer: total slides ordered at ASSIGN, per FR-95 deck-length rule; **new v2.1.3, FR-321**)
+- missing_slide_numbers (array of 1-indexed slide ordinals that failed; the `incomplete` tag in `degradations` marks the condition. **Enumeration expanded v2.1.0:** all missing slides listed, not capped at 3)
 
 *Reels:*
 - reel_audio (true | false)
@@ -165,9 +168,23 @@ Each run creates a timestamped folder on disk (`output/YYYYMMDD_HHMMSS_random/`)
 
 ## 7. Spend Summary & Budget Tally (FR-84, FR-85)
 
-**FR-84 (simplified v1.6.1):** At the end of every run, the summary opens with one headline line — **"requested N creatives, delivered M"** — so a scheduled run that was trimmed, shrunk by trend supply, or dropped reels is legible at a glance without decoding the exit code. Below it, **one** spend table is printed to the console and written to run.log: one row per creative with **estimated** vs. **billed-attempts** (tallied on submission, failures included) vs. **delivered**, a subtotal row per format, and a grand-total row splitting LLM vs. render spend (reasoning tokens included). Closing lines state: budget cap status, counts skipped by budget/deadline with reason summary, and any "governance partial — N lines unpriced" banner. The former separate per-category, per-platform and per-format tables are deleted — events.jsonl carries everything a future dashboard would need.
+**FR-84 (simplified v1.6.1, amended v2.1.0):** At the end of every run, the summary opens with one headline line — **"requested N creatives, delivered M"** — so a scheduled run that was trimmed, shrunk by trend supply, or dropped reels is legible at a glance without decoding the exit code. Below it, **one** spend table is printed to the console and written to run.log: one row per creative with **estimated** vs. **actual** (tallied on submission, failures included) vs. **delivered**, a subtotal row per format, and a grand-total row splitting LLM vs. render spend (reasoning tokens included). Actual spend reconciles to Kie-reported cost; timed-out jobs reconcile at the provider-reported amount (0.0 when none reported). Closing lines state: budget cap status, counts skipped by budget/deadline with reason summary, and any "governance partial — N lines unpriced" banner. The former separate per-category, per-platform and per-format tables are deleted — events.jsonl carries everything a future dashboard would need.
 
 **FR-85:** Unknown costs (where provider did not return billing data) are marked **"estimated"** (no "pending reconciliation" language).
+
+---
+
+## 7a. Partial-Delivery Reporting (FR-321)
+
+**FR-321 — Loud partial-delivery reporting and retry verdict provenance (new, v2.1.3).** Incomplete carousels are made audible in four places:
+
+1. **meta.yaml dual recording:** Every carousel carries both `slide_count` (actual slides delivered) and `slides_ordered` (the deck length at ASSIGN per FR-95) in the metadata, making partial delivery machine-readable: "7 of 8 slides" is the report.
+
+2. **Spend table per-carousel delivery marking:** When slides are missing, the spend table per-carousel row displays either `7/8` or a `partial` badge instead of a bare `yes`. A deck missing any slides **must never read as an unqualified success** — the spend table is where the operator first scans the result.
+
+3. **Gallery header partial-deck count:** The gallery's opening summary counts delivered items including partial carousels distinctly (e.g., "delivered 4 images, 1 complete carousel, 1 partial carousel").
+
+4. **Vision-check retry verdict logging:** After a vision-check re-render (FR-105, §8), the vision checker runs again on the retried slide and the result is logged as a `vision_recheck` event to `events.jsonl`, so the metadata field `vision_check_result` carries one of `[passed | retried_passed | retried_failed | not_checked]` — four distinct states where "retried" is verifiable from events rather than asserted.
 
 ---
 
