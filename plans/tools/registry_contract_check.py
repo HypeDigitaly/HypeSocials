@@ -11,7 +11,7 @@ import sys
 
 import yaml
 
-ROOT = pathlib.Path(r"C:\Users\Pavli\Desktop\HypeDigitaly\GIT\HypeSocials")
+ROOT = pathlib.Path(__file__).resolve().parents[2]  # plans/tools/ -> repo root
 PATH = pathlib.Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "prompts" / "styles.yaml"
 
 HEX = re.compile(r"#([0-9A-Fa-f]{6})\b")

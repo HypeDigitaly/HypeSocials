@@ -16,7 +16,7 @@ import logging
 import pathlib
 import sys
 
-ROOT = pathlib.Path(r"C:\Users\Pavli\Desktop\HypeDigitaly\GIT\HypeSocials")
+ROOT = pathlib.Path(__file__).resolve().parents[2]  # plans/tools/ -> repo root
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 logging.disable(logging.CRITICAL)  # silence the prompt_hard_trimmed warnings
