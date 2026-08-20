@@ -109,12 +109,21 @@ run:
                                    # CAROUSELS ONLY - images, reels, override briefs and decks
                                    # with no source post behind them never read this key.
                                    # `verbatim` is the ENGINE default and the stricter
-                                   # contract; the three shipped brand configs pin `compress`,
-                                   # because their minimal-density styles declare 160-300
-                                   # character slide budgets and a real source panel runs
+                                   # contract, and since D58 (2026-08-20) it is also what all
+                                   # three shipped brand configs use - the D54 pin of
+                                   # `compress` is WITHDRAWN. That pin existed because the
+                                   # four-key minimal-density pool of the day declared 160-300
+                                   # character slide budgets while a real source panel ran
                                    # several times that (measured: 1,018-1,048 chars on a
-                                   # 180-char budget).
-                                   # Per-run override: `run.bat --copy-mode compress`.
+                                   # 180-char budget). D56's archetypes give such a panel a
+                                   # better LAYOUT but not a bigger BUDGET - they share the
+                                   # registry's 300-char ceiling with 9 of 19 styles, and
+                                   # FR-304a forbids a budget from dropping mapped text, so
+                                   # verbatim run 20260820_145809_4a0q shipped 500-1,180 char
+                                   # panels onto 300-char frames (8 of 9 decks over budget).
+                                   # D58 is an operator PREFERENCE with that cost accepted.
+                                   # Compress is unchanged and fully supported - pin it here
+                                   # or use the per-run override: `run.bat --copy-mode compress`.
   reel_overlay_text: seed_frame    # seed_frame | in_model | none
   reel_audio: true                 # Seedance generate_audio; false ships a silent clip
   reel_duration_s: 5               # 4-30 (Seedance verified range); out-of-range is CLAMPED at pre-flight

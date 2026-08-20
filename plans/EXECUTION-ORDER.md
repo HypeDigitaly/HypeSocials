@@ -432,6 +432,65 @@ plans/xmasterplan-style-intelligence.md (SESSION I).
 
 ---
 
+# SESSIONS J–N — Render quality, design system, and language (v2.5.0 → v2.7.0, D59–D63) · ⏳ NOT STARTED
+
+> Plan: **plans/xmasterplan-render-quality-and-language.md** (v3, verified 2026-08-20). Read its §0–§5 before
+> any session; §5 is the corrected file:line table, §7 the per-session briefs, §11 the paste-ready prompts.
+> Five sessions in strict order J → K → L → M → N. Each ends green + committed + `plans/SESSION-<X>-CLOSEOUT.md`.
+> Paid spend: ONE 3-carousel checkpoint after L (~$4–5), ONE 9-carousel run after N (`--budget 15`).
+
+| Session | Waves | Owns | Spend |
+|---|---|---|---|
+| J | 0J, 1, 2, 8 | `{{counter_rule}}` slot (FR-338/339), empty-zone rule (FR-340), phantom 4:5 band, icon-ledger rows, FR-313 counter metadata | $0 |
+| K | 0K, 4, 5 | palette re-work + one-accent rule + hex validator (FR-347/349), type rule (FR-348), house spine (FR-350), 2K (FR-342) | $0 |
+| L | 0L, 3 | seven carousel-derived styles (FR-341, 19→26, enabled 12→17), icon-ledger narrowing, concentration line (FR-355) | $0.30 preview + checkpoint |
+| M | 0M, 6, 7 | best-of-3 cover + `cover_pick.py` (FR-351/352), `carousel_copy_mode: auto` (FR-353/354) | $0 |
+| N | 0N, 9 | translate to config language (FR-343–346), final paid run, docs pass | $0.30 preview + final run |
+
+Paste blocks (one per fresh session):
+
+```
+SESSION J
+/xecutor Read plans/SESSION-I-CLOSEOUT.md, then plans/xmasterplan-render-quality-and-language.md
+in full (§0–§5 first, then §7 "SESSION J"). Step 0: verify git status is clean and branch from main.
+Execute Session J = Waves 0J, 1, 2, 8 exactly as written, using the corrected file:line table in §5.
+Suite green after every wave; $0 barriers only. Finish with plans/SESSION-J-CLOSEOUT.md and a commit.
+```
+```
+SESSION K
+/xecutor Read plans/SESSION-J-CLOSEOUT.md, then plans/xmasterplan-render-quality-and-language.md
+(§0–§5, §3, then §7 "SESSION K"). Execute Session K = Waves 0K, 4, 5 (palette re-work, one-accent rule,
+hex-based validator, type rule, house spine, 2K). Bring all 19 styles into compliance in warning mode
+before switching the errors on. Suite green; $0 barriers. Close with SESSION-K-CLOSEOUT.md + commit.
+```
+```
+SESSION L
+/xecutor Read plans/SESSION-K-CLOSEOUT.md, then plans/xmasterplan-render-quality-and-language.md
+(§3 style specs, §5, §7 "SESSION L"). Author the seven new styles one at a time (validate + prompt-fit
+after each), narrow icon-ledger, add the FR-355 concentration line, enabled 12->17. Barriers:
+--preview-sources ($0), --preview-analysis (~$0.30), then the 3-carousel paid checkpoint
+(--budget 5) in the background; run the §9 drift script on it and record the numbers.
+Close with SESSION-L-CLOSEOUT.md + commit.
+```
+```
+SESSION M
+/xecutor Read plans/SESSION-L-CLOSEOUT.md, then plans/xmasterplan-render-quality-and-language.md
+(§5, §7 "SESSION M"). Execute Waves 0M, 6, 7: cover best-of-3 (new hypesocials/cover_pick.py on the
+style_match.py shape, fail-open) and carousel_copy_mode auto with a pure _rows_over_budget(). Budget lines
+first, then code. Suite green; --preview-analysis shows the new estimate. Close with
+SESSION-M-CLOSEOUT.md + commit.
+```
+```
+SESSION N
+/xecutor Read plans/SESSION-M-CLOSEOUT.md, then plans/xmasterplan-render-quality-and-language.md
+(§5, §7 "SESSION N", §9). Ship 9a alone first (suite green), then 9b–9i. Translate runs BEFORE the auto
+budget test. Then --preview-sources, --preview-analysis, and the final 9-carousel run (--budget 15) in the
+background; accept against §9; run the drift script. Docs pass (NAVIGATION.md, prompts/README.md,
+CLAUDE.md, EXECUTION-ORDER.md), SESSION-N-CLOSEOUT.md, commit, PR body.
+```
+
+---
+
 ## Standing rules for every session
 
 Restate these verbatim in every subagent prompt — they have been load-bearing on this project:

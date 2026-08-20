@@ -50,19 +50,32 @@ run:
   # topic-driven creatives, point sources.virlo_monitor_ids at a monitor that collects Czech posts
   # (the old "CZ coverage probe" was the only one, and it is frozen - see the note there).
   languages: { linkedin: cs, instagram: cs, tiktok: cs }
-  # D54 (operator decision 2026-08-20): the decks this config ships COMPRESS their source panels
-  # instead of quoting them whole. The ENGINE default is `verbatim` and stays that way (see
-  # prds/30-configuration-and-run.md, run keys) - this is an opt-in, pinned here because the styles
-  # below are minimal-density: they declare 160-300 character slide budgets, while the measured
+  # D54 (2026-08-20) had the decks this config ships COMPRESS their source panels instead of
+  # quoting them whole; D58 (operator decision, the SAME day) WITHDREW that pin and this config is
+  # back on `verbatim`, which is also the engine default (prds/30-configuration-and-run.md, run
+  # keys) - the shipped selection and the engine default now agree.
+  # Why compress was pinned, and why it no longer needs to be: the styles.enabled pool of that day
+  # was four minimal-density keys declaring 160-300 character slide budgets, while the measured
   # panels of run 20260820_001158_2ard ran 1,018-1,048 characters onto `anime-noir-statement`'s
-  # 180 (5.8x over). Quoting those whole is what put walls of text on frames built for one bold
-  # statement. `compress` sends the SAME admitted panels back to the copy model to come out inside
-  # min(run.text_budgets.slide, the assigned style's own max_onimage_chars.slide), humanised, still
-  # in the source post's own language - the 1:1 panel-to-slide mapping, the deck length and the
-  # three drop reasons of FR-304 are untouched, and a failed compress call falls back to today's
-  # verbatim mapped deck tagged `copy_degraded`. Carousels only. `--copy-mode verbatim` reverts it
-  # for one run when a deck should quote and nothing else.
-  carousel_copy_mode: compress
+  # 180 (5.8x over) - quoting those whole is what put walls of text on frames built for one bold
+  # statement. D56's archetypes plus FR-334 matched assignment (styles.assignment below) route a
+  # dense panel to a LAYOUT built for lists and rows instead of a one-statement frame, which is a
+  # real improvement - but MEASURED on the first verbatim run (20260820_145809_4a0q) it is not a
+  # BUDGET one, and an earlier draft of this comment wrongly said it was. icon-ledger-carousel,
+  # circuit-atlas-dark, terminal-mockup-deck and build-log-mono all declare the SAME 300-char slide
+  # budget as the other dense styles (300 is simply the registry ceiling, shared by 9 of 19
+  # entries), and FR-304a forbids a style budget from dropping mapped text - so that run shipped
+  # 500-1,180 character panels onto 300-char frames, 8 of its 9 decks over budget. It delivered 6
+  # of 9. The 3 blocks were content-fidelity defects (invented_text, counter_value, identity_leak)
+  # and the SMALLEST-text deck (26 chars max) blocked too, so density is NOT the proven cause of
+  # those losses - but it is not solved either, and the gauntlet's garbled/composition/missing_text
+  # findings are the signature of an overfull frame. This key is therefore an operator PREFERENCE
+  # for the source's own words, with that cost accepted and visible - not a claim that the cost
+  # went away. Flip back with `--copy-mode compress` (or pin it here) if the decks read too dense.
+  # NOTHING about compress is removed - FR-331/332/333, prompts/copy_compress_system.md and menu
+  # step 3 all stand. `--copy-mode compress` turns it on for one run when a deck should be
+  # shortened and nothing else.
+  carousel_copy_mode: verbatim
   # 45 min (operator decision 2026-08-10, default is 25). This is a REEL-CAPABLE config, so the
   # deadline MUST exceed models.video_job_timeout_s (1800 s = 30 min) plus the topic-filter, copy
   # and image stages that run ahead of it - otherwise the run is abandoned before a slow reel can

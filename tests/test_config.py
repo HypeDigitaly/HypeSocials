@@ -988,14 +988,36 @@ def test_fr333_the_copy_mode_flag_refuses_a_typo_at_the_flag_boundary(
     assert "--copy-mode" in capsys.readouterr().err
 
 
-def test_fr333_the_three_shipped_brand_configs_pin_compress_and_default_yaml_does_not() -> None:
-    """D54's shipped posture, read off the files that actually ship.
+def test_fr333_every_shipped_config_is_verbatim_since_d58_withdrew_the_compress_pin() -> None:
+    """D58's shipped posture, read off the files that actually ship.
 
-    The three brand configs are the operator's own runs and they opt IN; `default.yaml` is the
-    template a new config is copied from and stays on the engine-wide default, because a template
-    that silently compressed would make the opt-in invisible to whoever copies it next.
+    D54 had the three brand configs opt IN to compress. D58 (operator decision, 2026-08-20)
+    withdrew that pin: the shipped selection and the engine default now agree, on the reasoning
+    that D56's text-dense archetypes plus FR-334 matched assignment put a 1,000-character source
+    panel on a frame built to hold it, so it no longer has to be compressed to fit one.
+
+    This pins the shipped VALUES only. The companion assertion below is the one that matters more:
+    D58 withdrew a pin, it did not remove a feature, so compress must still be selectable.
     """
-    for name in ("hypedigitaly", "hypedigitaly-cs", "hypedigitaly-fresh"):
+    for name in ("hypedigitaly", "hypedigitaly-cs", "hypedigitaly-fresh", "default"):
         cfg = load_config(name, configs_dir=CONFIGS_DIR)
-        assert cfg.run.carousel_copy_mode == "compress", f"{name} should pin D54's compress mode"
-    assert load_config("default", configs_dir=CONFIGS_DIR).run.carousel_copy_mode == "verbatim"
+        assert cfg.run.carousel_copy_mode == "verbatim", f"{name} should ship D58's verbatim mode"
+
+
+def test_fr333_d58_withdrew_a_pin_not_the_feature_compress_is_still_reachable(
+    tmp_path: Path,
+) -> None:
+    """The half of D58 that a value assertion cannot state: compress still works.
+
+    A withdrawn default that quietly became an unreachable code path would be a far worse
+    regression than the pin ever was, and it would not show up in the test above.
+    """
+    shipped = load_config("hypedigitaly", configs_dir=CONFIGS_DIR)
+    applied = cli.apply_overrides(shipped, cli.parse_args(["--copy-mode", "compress"]))
+
+    assert shipped.run.carousel_copy_mode == "compress", "--copy-mode still turns compress on"
+    assert "run.carousel_copy_mode=compress" in applied
+
+    # And a config may still pin it directly — D58 changed three files, not the key's vocabulary.
+    assert load(tmp_path, "run:\n  carousel_copy_mode: compress\n").run.carousel_copy_mode == (
+        "compress")
