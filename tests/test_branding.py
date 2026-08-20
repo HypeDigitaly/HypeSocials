@@ -612,7 +612,7 @@ def test_m12_the_carousel_signs_slide_one_and_never_a_slide_that_follows_it(
     refill the zone."""
     deck = _deck(tmp_path, branded=True)
 
-    prompts = {number: deck._prompt(number, anchor=number > 1, refs=[], plan=None)
+    prompts = {number: deck._prompt(number, anchor=number > 1, refs=[])
                for number in (1, 2, 3)}
 
     assert all(prompt is not None for prompt in prompts.values()), "FR-260: nothing failed to fill"
@@ -634,7 +634,7 @@ def test_m12_holds_on_an_independent_deck_where_every_slide_needs_the_colour_blo
     still slide 1's alone, whatever shape the deck took to get there."""
     deck = _deck(tmp_path, branded=True, anchored=False)
 
-    prompts = {number: deck._prompt(number, anchor=False, refs=[], plan=None)
+    prompts = {number: deck._prompt(number, anchor=False, refs=[])
                for number in (1, 2, 3)}
 
     assert all("#0FCFC4" in prompt for prompt in prompts.values()), "no anchor to inherit from"
@@ -647,7 +647,7 @@ def test_an_unsigned_deck_reaches_the_model_with_neither_channel(tmp_path: Path)
     deck = _deck(tmp_path, branded=False)
 
     for number, text in zip((1, 2, 3), ("Wired backwards", "Two", "Three")):
-        prompt = deck._prompt(number, anchor=number > 1, refs=[], plan=None)
+        prompt = deck._prompt(number, anchor=number > 1, refs=[])
         assert prompt is not None and text in prompt, "the slide assembled, brand or no brand"
         assert "HypeLead" not in prompt and "#0FCFC4" not in prompt
 
@@ -675,7 +675,7 @@ def test_fr318_the_competitor_strip_reaches_the_render_prompt_in_both_switch_sta
         name="Zzqcorp tool stacks", why_it_works="Zzqcorp keeps raising its prices",
         hook_texts=["Zzqcorp raised prices again"])}
 
-    prompt = deck._prompt(1, anchor=False, refs=[], plan=None)
+    prompt = deck._prompt(1, anchor=False, refs=[])
 
     assert prompt is not None and "Wired backwards" in prompt, "the slide really assembled"
     assert "Zzqcorp" not in prompt, "layer 1 is unguarded and untouched by FR-318"

@@ -34,6 +34,7 @@ from hypesocials import copywrite
 from hypesocials.config import TextBudgets
 from hypesocials.models import (
     Brief,
+    CopyCompressed,
     CopySelection,
     CopySet,
     DegradationTag,
@@ -90,6 +91,22 @@ def free_text(**overrides: Any) -> dict[str, Any]:
         "hook_line": "Most people wire this backwards", "headline": "Wired backwards",
         "subline": "and it costs them", "slide_texts": [], "narrative_arc": "",
         "overlay_text": "", "through_line": "", "motion_beat": ""}
+    payload.update(overrides)
+    return payload
+
+
+def compressed(**overrides: Any) -> dict[str, Any]:
+    """One `CopyCompressed` answer — the D54 contract's shape (FR-331/FR-332).
+
+    Text out, not labels: the compress call is handed the bound post's own admitted panels and
+    asked for each of them back shorter. `slide_texts` is POSITION-INDEXED — element *k* is the
+    compression of SOURCE PANEL *k+1* — and a blank element means "that source panel had nothing
+    to compress", which is why the engine reads it by index and never as a queue.
+    """
+    payload: dict[str, Any] = {
+        "headline": "Wired backwards", "caption": "The tools, in the order that matters.",
+        "hashtags": ["#ai", "#tools"], "slide_texts": [], "through_line": "what one prompt buys",
+        "narrative_arc": ""}
     payload.update(overrides)
     return payload
 
@@ -317,8 +334,11 @@ async def test_a_creative_whose_bound_post_is_burnt_ships_our_words_and_costs_no
     copyset = result.copy["a1"]
     assert call.calls == [], "nothing was asked, so nothing was spent"
     assert copyset.headline == "" and copyset.slide_texts == []
-    assert copyset.caption == "AI tool stacks — AI automation for Czech SMBs"
+    # v2.2.0 (FR-99/FR-307 caption forms): the topic name ALONE. A refused post may not be quoted
+    # even for a caption, and the operator's niche descriptor is not caption copy at all.
+    assert copyset.caption == "AI tool stacks"
     assert "First hook" not in copyset.caption
+    assert "AI automation for Czech SMBs" not in copyset.caption
     # FR-73's amended vocabulary, and deliberately the SAME word `plan.assign` uses when it skips
     # a creative group for the same condition: the operator reads one spelling whichever gate
     # caught the exhausted supply.
@@ -362,8 +382,9 @@ async def test_a_missing_bound_post_never_borrows_the_famine_word_from_the_burnt
     assert call.calls == [], "a refused post is settled before anything is asked"
     assert result.tags["a1"] == (DegradationTag.NO_ONIMAGE_TEXT,)
     assert DegradationTag.NO_FRESH_POST_AVAILABLE not in result.tags["a1"]
-    assert result.copy["a1"].caption == "AI tool stacks — AI automation for Czech SMBs"
+    assert result.copy["a1"].caption == "AI tool stacks", "the topic name alone (v2.2.0)"
     assert "First hook" not in result.copy["a1"].caption, "P1 is not a consolation prize"
+    assert "AI automation for Czech SMBs" not in result.copy["a1"].caption, "nor is our config"
     assert log.warned("copy_bound_post_missing") and log.warned("copy_post_refused")
 
 
@@ -563,18 +584,29 @@ async def test_a_bound_decks_slides_are_mapped_from_the_source_panels_position_f
     assert provenance.refs["slide_4"] == "P1.panel.4", "slide 4 quotes panel 4, not panel 3"
     assert "slide_3" not in provenance.refs, "an empty panel quotes nothing and claims nothing"
     assert provenance.source_panel_count == 4
+    # Eight keys per row since Session 5.5 (F2): `chrome_counter_stripped` joins the other two
+    # per-row facts that are not drop reasons — this deck carried no page counter, so it is False
+    # on every row, exactly like `creator_stripped` above it. NINE since v2.3.0 (D54): every row of
+    # BOTH walks carries `compressed`, and the verbatim walk writes False on every one of them by
+    # construction. The key is asserted here rather than filtered out because "one row schema
+    # always" is the contract `generate._panel_map` and the FR-309 gallery read (FR-73 as amended):
+    # a reader that had to ask whether the key exists would be reading two schemas.
     assert provenance.panel_map == [
         {"slide": 1, "source_position": 1, "source_text": "Panel one line",
          "source_text_original": "Panel one line", "ref_label": "P1.panel.1", "drop_reason": "",
-         "creator_stripped": False},
+         "creator_stripped": False, "chrome_counter_stripped": False,
+         "truncation_suspect": False, "compressed": False},
         {"slide": 2, "source_position": 2, "source_text": "Panel two line",
          "source_text_original": "Panel two line", "ref_label": "P1.panel.2", "drop_reason": "",
-         "creator_stripped": False},
+         "creator_stripped": False, "chrome_counter_stripped": False,
+         "truncation_suspect": False, "compressed": False},
         {"slide": 3, "source_position": 3, "source_text": "", "source_text_original": "",
-         "ref_label": "", "drop_reason": "empty", "creator_stripped": False},
+         "ref_label": "", "drop_reason": "empty", "creator_stripped": False,
+         "chrome_counter_stripped": False, "truncation_suspect": False, "compressed": False},
         {"slide": 4, "source_position": 4, "source_text": "Panel four line",
          "source_text_original": "Panel four line", "ref_label": "P1.panel.4", "drop_reason": "",
-         "creator_stripped": False},
+         "creator_stripped": False, "chrome_counter_stripped": False,
+         "truncation_suspect": False, "compressed": False},
     ], "one row per OUR slide, empty ones included — the row IS the alignment (FR-309)"
 
 
@@ -647,9 +679,18 @@ async def test_a_panel_past_the_sanity_ceiling_keeps_position_and_cites_it() -> 
     assert copyset.slide_texts == ["Short panel", "", "Third panel"]
     assert not any(runaway.startswith(text) and text for text in copyset.slide_texts), \
         "no prefix of it shipped either — a trimmed quote is not a quote"
-    assert result.provenance["d1"].panel_map[1] == {
+    row = result.provenance["d1"].panel_map[1]
+    # FR-304c (v2.2.0): a runaway panel is a truncation SUSPECT as well as over the ceiling — the
+    # flag is contract data for the post-render critic and never a second drop reason, so the row
+    # is asserted around it rather than on it.
+    assert {key: value for key, value in row.items() if key != "truncation_suspect"} == {
         "slide": 2, "source_position": 2, "source_text": "", "source_text_original": runaway,
-        "ref_label": "", "drop_reason": "over_budget", "creator_stripped": False}
+        "ref_label": "", "drop_reason": "over_budget", "creator_stripped": False,
+        # F2 (Session 5.5): the eighth key. A runaway transcription is not a page counter, so the
+        # chrome strip was silent here and the row says so.
+        "chrome_counter_stripped": False,
+        # D54 (v2.3.0): the ninth. This run is verbatim mode, so nothing on any row compressed.
+        "compressed": False}
     assert len(log.warned("panel_over_budget")) == 1
     warning = log.warned("panel_over_budget")[0]
     assert "slide 2 (1600 characters, sanity ceiling 1500)" in warning
@@ -1066,3 +1107,519 @@ async def test_the_free_text_answer_still_fills_the_legacy_copyset_fields() -> N
     assert copyset.hashtags == ["#ai", "#tools"]
     assert result.provenance["a1"].post_id == "" and result.provenance["a1"].refs == {}
     assert isinstance(copyset, CopySet)
+
+
+# ------------------------------------------------ D54/FR-331: the compress contract, end to end
+#
+# The third call shape beside selection (labels in, bytes resolved here) and free text (an
+# override brief's own prose). Compress is the one where a model writes strings that become
+# pixels on a creative bound to somebody ELSE's post, so what these tests pin is not "did it
+# compress" — it is every gate the engine re-applies on the way out, and the alignment contract
+# that keeps our slide *i* over their slide *i* while it does.
+#
+# `carousel_copy_mode="compress"` is an OPERATOR TOGGLE. Nothing below measures a panel and turns
+# it on, because nothing in the engine may: a run is in compress mode or it is not, and the second
+# condition (`_panel_mapped`) is structural. That is why every test here passes the mode
+# explicitly, and why the verbatim guard near the bottom of this section exists at all.
+
+
+def compress_deck(*panels: str, caption: str = "A caption long enough to be a caption at all.",
+                  key: str = "t1") -> TrendItem:
+    """A topic whose top post is a slideshow with `panels` — the compress path's only input."""
+    return make_trend(post(1, panels=panels, caption=caption), key=key)
+
+
+async def compress(entries: Any, call: StubCall, *, log: Any = None, **over: Any) -> Any:
+    """`write_copy` in compress mode — the one line every test in this section shares."""
+    return await copywrite.write_copy(entries if isinstance(entries, list) else [entries],
+                                      call=call, log=log, carousel_copy_mode="compress", **over)
+
+
+async def test_the_compress_call_uses_its_own_template_and_its_own_schema() -> None:
+    """The contract is chosen by the SCHEMA and the TEMPLATE together, not by prose.
+
+    A compress creative must not be sent `copywriter_system.md` (a reference-SELECTION mandate end
+    to end — "there is no slot in your answer where invented lettering can go") nor
+    `_selection_schema`, whose answer fields are all `*_ref`. Either would make the answer we then
+    resolve a shape the model was told not to produce. So: `copy_compressed` on the wire, the
+    compress role statement in the system prompt, and the source panels themselves in
+    `{{compress_panels}}` instead of a numbered table of labels to choose from.
+    """
+    trend = compress_deck("Panel one, at the length a real slideshow page carries.",
+                          "Panel two, likewise.")
+    call = StubCall({"d1": compressed(slide_texts=["Panel one, short", "Panel two, short"])})
+
+    await compress(deck_entry(slides=2), call,
+                   **context(trends={"t1": trend}, styles={STYLE_KEY: deck_style()}))
+
+    assert call.schemas[0]["name"] == "copy_compressed", "never `copy_selection` on this path"
+    prompt = call.prompts[0]
+    assert "You compress words a deck already has." in prompt
+    assert "Panel one, at the length a real slideshow page carries." in prompt, \
+        "the panels themselves are the payload — a label table would be the other contract"
+    assert "there is no slot in your answer where invented lettering can go" not in prompt
+
+
+def test_the_compress_schema_is_generated_from_copycompressed_with_asset_id_on_the_envelope() -> None:
+    """The same construction as `_selection_schema` (contracts item 10), so a field added to
+    `CopyCompressed` reaches the wire without anybody editing a hand-listed schema — and
+    `asset_id` still belongs to the envelope rather than to the answer."""
+    schema = copywrite._compress_schema()
+    creative = schema["schema"]["properties"]["creatives"]["items"]
+    generated = json_schema_for(CopyCompressed, exclude={"asset_id"})["properties"]
+
+    assert schema["name"] == "copy_compressed"
+    assert set(creative["properties"]) == {"asset_id", *generated}
+    assert list(creative["properties"])[0] == "asset_id"
+    assert creative["required"] == list(creative["properties"])  # strict mode (RESULTS.md §E)
+    assert creative["additionalProperties"] is False
+    assert {"headline", "caption", "hashtags", "slide_texts", "through_line",
+            "narrative_arc"} == set(generated)
+    assert "motion_beat" not in generated, "compress is carousels only; a reel has no panels"
+    assert "slide_refs" not in generated, "a compressed slide quotes no label (FR-302 amended)"
+
+
+async def test_a_mixed_group_splits_into_one_call_per_MODE_not_one_call_per_creative() -> None:
+    """The D54 split, and the reason it is per MODE: one grouped call cannot carry two mandates.
+
+    `copywriter_system.md` tells the model it may not invent lettering; asking half a group to
+    compress would make that instruction false for the other half. So a group holding a
+    panel-mapped carousel and an image takes exactly two calls — one per contract — and each one
+    lists only its own creatives. It is still ONE call on the shipped configs, which are
+    all-carousel; a genuinely mixed group is the one shape that pays for two.
+    """
+    trend = make_trend(post(1, panels=("Panel one line", "Panel two line"),
+                            caption="A caption long enough to be a caption at all."),
+                       post(2, hooks=("An image hook",),
+                            caption="A second caption, plainly written."))
+    entries = [deck_entry("d1", slides=2), entry("i1", 1, source_post_id="p2")]
+    call = StubCall({"d1": compressed(slide_texts=["Panel one", "Panel two"]),
+                     "i1": selection(headline_ref="P2.hook.1", caption_ref="P2.caption")})
+
+    result = await compress(entries, call,
+                            **context(trends={"t1": trend}, styles={STYLE_KEY: deck_style()}))
+
+    assert sorted(call.calls) == [["d1"], ["i1"]], "one call per contract, neither mixed"
+    assert sorted(schema["name"] for schema in call.schemas) == ["copy_compressed",
+                                                                "copy_selection"]
+    assert result.copy["d1"].slide_texts == ["Panel one", "Panel two"]
+    assert result.copy["i1"].headline == "An image hook", "the image still SELECTS, verbatim"
+    assert result.provenance["d1"].copy_mode == "compress"
+    assert result.provenance["i1"].copy_mode == "verbatim", "the mode is per CREATIVE, not per run"
+
+
+async def test_a_model_list_shorter_than_the_deck_pads_and_a_longer_one_is_truncated() -> None:
+    """1:1 alignment is the ENGINE's, never the model's. The deck's length was fixed at ASSIGN and
+    priced at the Confirm gate (§0.4'), so a short answer leaves the tail wordless rather than
+    shrinking the deck, and a long one cannot buy a slide nobody paid for."""
+    log = Recorder()
+    trend = compress_deck("Panel one", "Panel two", "Panel three")
+    short = StubCall({"d1": compressed(slide_texts=["Only one"])})
+    long_answer = StubCall({"d1": compressed(slide_texts=["A", "B", "C", "D", "E"])})
+
+    padded = await compress(deck_entry(slides=3), short,
+                            **context(trends={"t1": trend}, styles={STYLE_KEY: deck_style()}))
+    cut = await compress(deck_entry(slides=3), long_answer, log=log,
+                         **context(trends={"t1": trend}, styles={STYLE_KEY: deck_style()}))
+
+    assert padded.copy["d1"].slide_texts == ["Only one", "", ""]
+    assert [row["slide"] for row in padded.provenance["d1"].panel_map] == [1, 2, 3], \
+        "a short answer never shortens the deck — the rows are the alignment"
+    assert cut.copy["d1"].slide_texts == ["A", "B", "C"]
+    assert len(cut.provenance["d1"].panel_map) == 3
+    assert "returned 5 slide texts for a 3-slide deck" in log.warned("compress_list_truncated")[0]
+
+
+async def test_a_source_empty_position_stays_empty_even_when_the_model_answered_for_it() -> None:
+    """Compression fills no vacuums (FR-331).
+
+    An empty source panel means the source slide had no words. A slide of ours carrying words
+    theirs never had is the `invented_text` defect the post-render gate blocks whole decks for —
+    and it is the defect compress mode was adopted to REDUCE, so producing it here would be the
+    mode arguing with its own reason to exist. The line is discarded, the row keeps its `empty`
+    drop reason and its position, and the operator is told exactly what was thrown away.
+    """
+    log = Recorder()
+    trend = compress_deck("Panel one", "", "Panel three")
+    call = StubCall({"d1": compressed(
+        slide_texts=["First, shortened", "A slide the source never had", "Third, shortened"])})
+
+    result = await compress(deck_entry(slides=3), call, log=log,
+                            **context(trends={"t1": trend}, styles={STYLE_KEY: deck_style()}))
+
+    rows = result.provenance["d1"].panel_map
+    assert result.copy["d1"].slide_texts == ["First, shortened", "", "Third, shortened"]
+    assert rows[1]["drop_reason"] == "empty" and rows[1]["source_text"] == ""
+    assert [row["source_position"] for row in rows] == [1, 2, 3], "position kept, nothing slides up"
+    invented = log.warned("compress_invented_text")
+    assert len(invented) == 1 and "slide 2" in invented[0]
+    assert "A slide the source never had" in invented[0], "the operator sees what was discarded"
+
+
+async def test_the_drop_taxonomy_is_the_verbatim_one_judged_on_the_SOURCE_panel() -> None:
+    """FR-304a as amended: the same three drop reasons, in the same order, on the same string.
+
+    `_panel_verdict` runs on the SOURCE panel before the model's line is looked at, exactly as it
+    does in verbatim mode — which is why compression cannot rescue a dropped panel and is not
+    meant to. `PANEL_SANITY_CHARS` in particular stays an INPUT guard: a 1,600-character panel is
+    a transcription accident, and a confident compression of an accident is worse than a wordless
+    slide.
+    """
+    log = Recorder()
+    runaway = "W" * 1600
+    trend = compress_deck("", "Follow @growthdaily for more", runaway, "A perfectly good panel")
+    call = StubCall({"d1": compressed(
+        slide_texts=["one", "two", "three", "A shorter, perfectly good panel"])})
+
+    result = await compress(deck_entry(slides=4), call, log=log,
+                            **context(trends={"t1": trend}, styles={STYLE_KEY: deck_style()}))
+
+    rows = result.provenance["d1"].panel_map
+    assert [row["drop_reason"] for row in rows] == [
+        "empty", "contains_handle_or_url", "over_budget", ""]
+    assert result.copy["d1"].slide_texts == ["", "", "", "A shorter, perfectly good panel"]
+    assert rows[2]["source_text_original"] == runaway, "the pre-gate panel survives in the row"
+    assert "sanity ceiling 1500" in log.warned("panel_over_budget")[0]
+    assert "slide 2 (carries an @handle)" in log.warned("panel_handle_or_url")[0]
+    assert "never compressed" in log.warned("panel_over_budget")[0], \
+        "the warning must say the panel was not compressed either, or it reads as a length rule"
+
+
+async def test_a_compressed_line_carrying_a_handle_or_a_url_is_BLANKED_and_warned() -> None:
+    """FR-319 re-applied on the way OUT, because a compressed line is the model's own bytes.
+
+    The line is removed WHOLE rather than edited: a compressed sentence with its @handle cut out
+    is a sentence nobody wrote and nobody proof-read. The source panel here is clean, so this can
+    only be the model copying a mark it read elsewhere on the page — which is exactly why the gate
+    runs on both sides.
+    """
+    log = Recorder()
+    trend = compress_deck("A clean panel about the workflow", "Another clean panel")
+    call = StubCall({"d1": compressed(
+        slide_texts=["The workflow, via @growthdaily", "Another clean line"])})
+
+    result = await compress(deck_entry(slides=2), call, log=log,
+                            **context(trends={"t1": trend}, styles={STYLE_KEY: deck_style()}))
+
+    rows = result.provenance["d1"].panel_map
+    assert result.copy["d1"].slide_texts == ["", "Another clean line"]
+    assert rows[0]["drop_reason"] == "", "the SOURCE panel was fine — this is not a source drop"
+    assert rows[0]["source_text"] == ""
+    assert rows[0]["source_text_original"] == "A clean panel about the workflow"
+    scrub = log.warned("compress_scrub")
+    assert len(scrub) == 1 and "slide 1 (carries an @handle)" in scrub[0]
+    assert "BLANKED" in scrub[0]
+
+
+async def test_a_competitor_name_in_a_compressed_line_is_stripped_fail_closed() -> None:
+    """§1.5 layer 1 runs on what came BACK, unguarded, and before anything else.
+
+    The model may write a name the panels never contained — it can read one in the fenced trend
+    texts — so the blocklist is applied to the compressed line, not only to the panel it was
+    compressing. It runs FIRST of the three backstops because a name removed from a string changes
+    its length, and trimming before stripping would measure a budget against bytes we do not ship.
+    """
+    log = Recorder()
+    trend = compress_deck("A panel about scheduling posts", "A second panel")
+    call = StubCall({"d1": compressed(slide_texts=["Nitro schedules the posts", "Second line"])})
+
+    result = await compress(deck_entry(slides=2), call, log=log, competitors=["Nitro"],
+                            **context(trends={"t1": trend}, styles={STYLE_KEY: deck_style()}))
+
+    assert "Nitro" not in result.copy["d1"].slide_texts[0]
+    assert DegradationTag.COMPETITOR_STRIPPED in result.tags["d1"]
+    assert "the strip runs on both sides" in log.warned("competitor_stripped")[0]
+    assert DegradationTag.COPY_NOT_VERBATIM not in result.tags["d1"], \
+        "a compressed deck claims no byte identity, so the substring audit has nothing to report"
+
+
+async def test_the_backstop_trim_cuts_at_a_word_boundary_and_tags_text_trimmed() -> None:
+    """The trim is a BACKSTOP, not the mechanism: the prompt states the ceiling and the model is
+    asked to meet it. A line that still overshoots is cut at the last word boundary — never
+    mid-word — and earns FR-101's tag, so the operator knows the model was late rather than the
+    rule."""
+    log = Recorder()
+    over = "A compressed line that still runs well past the ceiling it was given"
+    trend = compress_deck("A source panel with plenty of words in it to shorten.")
+    call = StubCall({"d1": compressed(slide_texts=[over])})
+
+    result = await compress(deck_entry(slides=1), call, log=log, **context(
+        trends={"t1": trend},
+        styles={STYLE_KEY: make_style(max_onimage_chars={"headline": 90, "slide": 30})}))
+
+    shipped = result.copy["d1"].slide_texts[0]
+    assert len(shipped) <= 30 and over.startswith(shipped)
+    assert shipped.split()[-1] in over.split(), "cut at a word boundary, never mid-word"
+    assert DegradationTag.TEXT_TRIMMED in result.tags["d1"] and result.trimmed == frozenset({"d1"})
+    assert "against a 30-character budget" in log.warned("text_trimmed")[0]
+    assert result.provenance["d1"].panel_map[0]["source_text"] == shipped, \
+        "the row records what SHIPPED, so it moves with the trim"
+
+
+async def test_the_compressed_decks_panel_map_rows_are_the_receipt_the_gallery_reads() -> None:
+    """FR-73/FR-304(d)/FR-309, as one row-by-row assertion.
+
+    Four claims and each is load-bearing: `compressed: True` tells the auditor not to expect byte
+    identity, `source_text` is what SHIPS (the same string the render prompt locked and the
+    gauntlet will demand), `source_text_original` is the model's own starting point (the length
+    FR-309's card labels "compressed from N chars" off), and `ref_label` is EMPTY because a
+    compressed slide quotes no label — FR-302 as amended.
+    """
+    trend = compress_deck("Panel one, written out at the length a real page carries.",
+                          "", "Panel three, likewise long enough to be worth compressing.")
+    call = StubCall({"d1": compressed(slide_texts=["One, short", "ignored", "Three, short"])})
+
+    result = await compress(deck_entry(slides=3), call,
+                            **context(trends={"t1": trend}, styles={STYLE_KEY: deck_style()}))
+
+    copyset, provenance = result.copy["d1"], result.provenance["d1"]
+    rows = provenance.panel_map
+    assert all(row["compressed"] is True for row in rows), "every row of the walk, drops included"
+    assert [row["source_text"] for row in rows] == copyset.slide_texts, \
+        "ONE walk: `slide_texts[i]` and `panel_map[i].source_text` are the same string by " \
+        "construction — the invariant `gauntlet._expected_blocks` rests on"
+    assert rows[0]["source_text_original"] == \
+        "Panel one, written out at the length a real page carries."
+    assert len(rows[0]["source_text"]) < len(rows[0]["source_text_original"])
+    assert all(row["ref_label"] == "" for row in rows), "FR-302: no labels on this path"
+    assert provenance.refs == {} and provenance.post_id == "p1"
+    assert provenance.source_panel_count == 3
+
+
+async def test_a_failed_compress_call_ships_the_verbatim_mapped_deck_and_says_copy_degraded() -> None:
+    """The fallback is today's FR-304 mapped deck, and it costs nothing extra.
+
+    Long slides are the outcome the operator opted OUT of, not a loss of the deck — so a compress
+    call that dies falls straight onto the deterministic verbatim mapping, tagged `copy_degraded`,
+    with no second call. And the receipt tells the truth about what actually shipped: `copy_mode`
+    is `verbatim` on the creative even though the RUN asked for compress, because a per-asset
+    receipt reading "compressed" over verbatim panels would hide the degradation.
+    """
+    log = Recorder()
+    trend = compress_deck("Panel one line", "Panel two line")
+    call = StubCall({"d1": compressed(slide_texts=["never seen"])}, fail_when=lambda ids: True)
+
+    result = await compress(deck_entry(slides=2), call, log=log,
+                            **context(trends={"t1": trend}, styles={STYLE_KEY: deck_style()}))
+
+    assert result.copy["d1"].slide_texts == ["Panel one line", "Panel two line"], "verbatim"
+    assert DegradationTag.COPY_DEGRADED in result.tags["d1"]
+    assert result.provenance["d1"].copy_mode == "verbatim"
+    assert all(row["compressed"] is False for row in result.provenance["d1"].panel_map)
+    assert result.provenance["d1"].refs["slide_1"] == "P1.panel.1", "the labels are back"
+    assert log.warned("copy_degraded")
+
+
+async def test_a_creative_a_grouped_compress_call_missed_is_re_asked_to_COMPRESS() -> None:
+    """FR-99's per-creative split, re-dispatched through each creative's OWN contract.
+
+    Re-asking a compress creative through `_call_copy` would answer with refs into a candidate
+    table whose panels this deck's slides are already assigned from — and the deck would ship
+    verbatim under a `copy_mode: compress` receipt, which is a receipt that lies.
+    """
+    trend = compress_deck("Panel one line", "Panel two line")
+    call = StubCall({"d1": compressed(slide_texts=["One, short", "Two, short"]),
+                     "d2": compressed(slide_texts=["One, short", "Two, short"])},
+                    fail_when=lambda ids: len(ids) > 1)
+    entries = [deck_entry("d1", slides=2), deck_entry("d2", slides=2)]
+
+    result = await compress(entries, call,
+                            **context(trends={"t1": trend}, styles={STYLE_KEY: deck_style()}))
+
+    assert call.calls[0] == ["d1", "d2"] and sorted(call.calls[1:]) == [["d1"], ["d2"]]
+    assert all(schema["name"] == "copy_compressed" for schema in call.schemas), \
+        "every re-ask took the compress schema — never the selection one"
+    assert result.copy["d1"].slide_texts == ["One, short", "Two, short"]
+    assert result.provenance["d2"].copy_mode == "compress"
+
+
+async def test_compress_mode_leaves_every_creative_that_is_not_a_bound_deck_alone() -> None:
+    """`_compress_wanted` is `mode is compress AND _panel_mapped`, and the second half is
+    structural: an image, an override brief and an UNBOUND carousel have no panel mapping of their
+    own, so a compress-mode run touches none of them — and issues no compress call at all when the
+    partition comes out empty."""
+    trend = make_trend(post(1, hooks=("An image hook",), panels=("Panel one",),
+                            caption="A caption long enough to be a caption at all."))
+    entries = [entry("i1", 0, source_post_id="p1"),
+               entry("c1", 1, creative_format="carousel", aspect_ratio="1:1", slide_count=1),
+               entry("b1", 2, trend_key=None, brief_name="b", brief_influence="override")]
+    call = StubCall({"i1": selection(headline_ref="P1.hook.1", caption_ref="P1.caption"),
+                     "c1": selection(headline_ref="", caption_ref="P1.caption",
+                                     slide_refs=["P1.panel.1"]),
+                     "b1": free_text()})
+
+    result = await compress(entries, call,
+                            **context(trends={"t1": trend}, styles={STYLE_KEY: deck_style()}))
+
+    assert "copy_compressed" not in [schema["name"] for schema in call.schemas], \
+        "an empty compress partition issues no compress call at all"
+    assert all(prov.copy_mode == "verbatim" for prov in result.provenance.values())
+    assert result.copy["c1"].slide_texts == ["Panel one"], "the unbound selection path, untouched"
+
+
+async def test_verbatim_mode_never_issues_a_compress_call_on_a_bound_deck() -> None:
+    """The byte-identical regression guard, stated as the one thing that must not happen.
+
+    Verbatim is the engine-wide default and D50 still governs it — reflow, never shorten. The
+    FR-304 section above already pins what a verbatim mapped deck produces; what it cannot pin is
+    that D54 stayed behind its toggle, because it never passes a mode at all. So: the same deck,
+    the default mode, and no compress anything on the wire, in the prompt or in the receipts.
+    """
+    trend = compress_deck("Panel one, written out at the length a real page carries.",
+                          "Panel two, likewise.")
+    call = StubCall({"d1": selection(headline_ref="", caption_ref="P1.caption")})
+
+    result = await copywrite.write_copy(  # no `carousel_copy_mode` — the default IS the point
+        [deck_entry(slides=2)], call=call,
+        **context(trends={"t1": trend}, styles={STYLE_KEY: deck_style()}))
+
+    assert [schema["name"] for schema in call.schemas] == ["copy_selection"]
+    assert "You compress words a deck already has." not in call.prompts[0]
+    assert "compress post P1's panels" not in call.prompts[0]
+    assert result.copy["d1"].slide_texts == [
+        "Panel one, written out at the length a real page carries.", "Panel two, likewise."], \
+        "D50 in force: the panel ships whole, at whatever length it is"
+    assert result.provenance["d1"].copy_mode == "verbatim"
+    assert result.provenance["d1"].refs["slide_1"] == "P1.panel.1"
+    assert all(row["compressed"] is False for row in result.provenance["d1"].panel_map)
+
+
+def test_positional_keeps_blanks_because_the_index_is_the_contract() -> None:
+    """The silent-remap trap, closed at the primitive.
+
+    `_strings` — which every other consumer in the module wants — DROPS blank items, so a model
+    answering `["", "second"]` would have "second" land on slide 1 and its own slide 2 render
+    wordless. That is a deck reading as the source's with two slides swapped, which is precisely
+    the defect FR-304's index alignment exists to make impossible. `_positional` is the reading
+    that keeps the blank, and this is the assertion that keeps the two functions apart.
+    """
+    assert copywrite._positional(["", "second"]) == ["", "second"]
+    assert copywrite._strings(["", "second"]) == ["second"], "the OTHER reading, and why it hurts"
+    assert copywrite._positional(["a", None, "c"]) == ["a", "", "c"], "None is a blank, not a gap"
+    assert copywrite._positional("one line") == ["one line"]
+    assert copywrite._positional(None) == [] and copywrite._positional(7) == []
+
+
+async def test_a_model_blank_at_position_one_leaves_slide_one_wordless_not_slide_two() -> None:
+    """The same trap at the level that ships bytes: a blank first answer must not pull slide 2's
+    line forward. Both source panels have words, so nothing here is a source drop — the only thing
+    under test is which slide the model's one sentence lands on."""
+    log = Recorder()
+    trend = compress_deck("Panel one has words of its own.", "Panel two also has words.")
+    call = StubCall({"d1": compressed(slide_texts=["", "second"])})
+
+    result = await compress(deck_entry(slides=2), call, log=log,
+                            **context(trends={"t1": trend}, styles={STYLE_KEY: deck_style()}))
+
+    assert result.copy["d1"].slide_texts == ["", "second"], "never ['second', '']"
+    rows = result.provenance["d1"].panel_map
+    assert rows[0]["source_text"] == "" and rows[0]["drop_reason"] == "", \
+        "the source panel was admitted; it is the ANSWER that was empty"
+    assert rows[1]["source_text"] == "second"
+    assert "slide 1" in log.warned("compress_no_text")[0], \
+        "an admitted panel back with nothing is worth a word — the source slide HAS text"
+
+
+async def test_a_compressed_deck_that_came_back_empty_ships_caption_only_and_says_why() -> None:
+    """The `no_onimage_text` degrade on the compress path names the re-run that would fix it: the
+    panels themselves are intact, so a verbatim re-run renders them in full."""
+    log = Recorder()
+    trend = compress_deck("Panel one has words.", "Panel two has words.")
+    call = StubCall({"d1": compressed(headline="", slide_texts=["", ""])})
+
+    result = await compress(deck_entry(slides=2), call, log=log,
+                            **context(trends={"t1": trend}, styles={STYLE_KEY: deck_style()}))
+
+    assert result.copy["d1"].slide_texts == ["", ""]
+    assert DegradationTag.NO_ONIMAGE_TEXT in result.tags["d1"]
+    assert "a re-run in verbatim mode would render them in full" in log.warned("no_onimage_text")[0]
+
+
+async def test_the_compressed_caption_is_refused_whole_when_it_carries_a_social_mark() -> None:
+    """A caption is the one string this engine publishes as prose, and an @handle or a
+    link-in-bio URL in it points our audience at an account that is not ours. It is refused
+    OUTRIGHT rather than edited, and the creative captions itself from its own post's best
+    remaining line under a neutral attribution — the same form `_resolve` falls back to."""
+    log = Recorder()
+    trend = compress_deck("Panel one has words.", "Panel two has words.")
+    call = StubCall({"d1": compressed(caption="Great stuff - follow @growthdaily for more",
+                                      hashtags=["#ai"], slide_texts=["One", "Two"])})
+
+    result = await compress(deck_entry(slides=2), call, log=log,
+                            **context(trends={"t1": trend}, styles={STYLE_KEY: deck_style()}))
+
+    caption = result.copy["d1"].caption
+    assert "@growthdaily" not in caption and caption.strip()
+    assert result.copy["d1"].hashtags == [], "a refused caption takes its tags with it"
+    assert "carries an @handle" in log.warned("compress_caption_rejected")[0]
+
+
+async def test_a_blocklisted_hashtag_from_the_compress_call_is_dropped_whole() -> None:
+    """A hashtag is ONE token and cannot be part-stripped, so a blocklisted or identity-bearing
+    tag is removed entire (§1.5, FR-319) — and `_verify`'s blocklist half re-checks what ships."""
+    log = Recorder()
+    trend = compress_deck("A panel about scheduling posts.")
+    call = StubCall({"d1": compressed(hashtags=["#ai", "#nitro", "#tools"],
+                                      slide_texts=["A shorter panel"])})
+
+    result = await compress(deck_entry(slides=1), call, log=log, competitors=["Nitro"],
+                            **context(trends={"t1": trend}, styles={STYLE_KEY: deck_style()}))
+
+    assert result.copy["d1"].hashtags == ["#ai", "#tools"]
+    assert "'#nitro'" in log.warned("competitor_stripped")[0]
+
+
+async def test_the_compress_sibling_line_names_the_post_the_budget_and_the_mirror_rule() -> None:
+    """`_sibling_list(compress=True)` — one line per creative, stating the language rule in force.
+
+    Three facts, each answering a question the model would otherwise guess at: WHICH section of
+    `{{compress_panels}}` is this creative's, WHAT number it is being cut to, and WHOSE language
+    the answer is in. The engine detects no languages (§1.7.5) and must not start now, so the rule
+    names the panels rather than a language — checkable by the model against text it can see.
+    """
+    trend = compress_deck("Panel one has words.", "Panel two has words.")
+    call = StubCall({"d1": compressed(slide_texts=["One", "Two"])})
+
+    await compress(deck_entry(slides=2), call,
+                   **context(trends={"t1": trend}, styles={STYLE_KEY: deck_style()}))
+
+    line = next(l for l in call.prompts[0].splitlines() if l.startswith("- d1"))
+    assert "compress post P1's panels to 300 characters per slide" in line
+    assert "language: the panels' own, mirrored exactly, never translated" in line
+    assert "quote post P1" not in line, "the verbatim clause is REPLACED, not appended"
+    assert "as-selected" not in line
+
+
+async def test_the_compress_block_lists_only_admitted_panels_numbered_by_source_position() -> None:
+    """The block is the compress contract's whole input, and an UNLISTED number is the instruction
+    that the slide ships wordless. Numbering by SOURCE POSITION rather than re-numbering 1..N is
+    what keeps the answer alignable: the model returns one entry per slide of the deck, `""` for
+    the positions it was not given, and `slide_texts[i - 1]` is read by index."""
+    trend = compress_deck("Panel one has words.", "", "Panel three has words.")
+    call = StubCall({"d1": compressed(slide_texts=["One", "", "Three"])})
+
+    await compress(deck_entry(slides=3), call,
+                   **context(trends={"t1": trend}, styles={STYLE_KEY: deck_style()}))
+
+    block = call.prompts[0]
+    assert "1. (at most 300 characters) Panel one has words." in block
+    assert "3. (at most 300 characters) Panel three has words." in block
+    assert "\n2. (at most" not in block, "an empty panel is UNLISTED — that is the instruction"
+    assert "caption source: A caption long enough to be a caption at all." in block
+    assert "mirror it exactly and never translate" in block
+
+
+async def test_a_panel_is_shown_to_the_compress_call_IN_FULL_never_display_truncated() -> None:
+    """The verbatim candidate table may truncate for display, because the engine ships the ORIGINAL
+    bytes of whatever label the model names. Here the shown text IS the material being compressed,
+    so a truncated panel would be compressed into a lie."""
+    long_panel = "Panel one. " + "It keeps explaining the point at length. " * 11  # ~470 chars
+    assert len(long_panel) > copywrite._DISPLAY_CHARS
+    trend = compress_deck(long_panel)
+    call = StubCall({"d1": compressed(slide_texts=["A short compression of it"])})
+
+    await compress(deck_entry(slides=1), call,
+                   **context(trends={"t1": trend}, styles={STYLE_KEY: deck_style()}))
+
+    assert long_panel in call.prompts[0]
+    assert "…[truncated for display]" not in call.prompts[0]

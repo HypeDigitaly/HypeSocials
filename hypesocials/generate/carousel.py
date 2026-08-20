@@ -3,7 +3,7 @@
 Module contract
 ---------------
 Purpose: turn ONE approved carousel plan entry into a folder of slide files and one terminal
-`meta.yaml`. Owns the FR-95 anchor chain, the FR-105 ordering around it, the per-slide FR-97
+`meta.yaml`. Owns the FR-95 anchor chain, the gauntlet ordering around it, the per-slide FR-97
 moderation fallback and the honest partial-deck packaging — nothing else. Money, the profile
 lookup and the FR-203 ledger lines belong to the `submit` callable the caller passes in: this
 module never prices a job, never touches `env.budget` and never calls `render.run`.
@@ -17,32 +17,60 @@ Invariants:
   Copy no longer decides the length, and a panel that carried no words renders WITHOUT on-image
   text: the pre-D46 fallback repeated the headline into every unwritten slot, which turned a
   source deck's empty panel into a second printing of slide 1's line.
-- **The anchor is checked BEFORE slides 2–N are submitted** (FR-105/95). Slide 1 is a chained
-  artifact — every other slide copies it — so a garbled headline found afterwards is found N
-  renders too late. Its single re-render is discretionary (FR-106c); a declined or failed retry
-  ships the flagged anchor and records `retried_failed`. The deck anchors to the FINAL slide 1.
+- **The anchor is judged BEFORE slides 2–N are submitted, and gets ONE round to fix itself**
+  (FR-95/FR-324, D49). Slide 1 is a chained artifact — every other slide copies it — so a garbled
+  headline found afterwards is found N renders too late. The pre-gate is one `gauntlet.run_single`
+  call with the `brief` + `craft` critics only (spec §1: there is no separate anchor entry point,
+  and `system` has no cross-frame consistency to judge on a deck of one) and FR-324's ceiling of
+  "one extra round of re-renders, on the deck budget" — judge, fix once, judge again. Its re-render
+  is discretionary (FR-106c); a declined or failed one ships the flagged anchor, and the deck
+  anchors to the FINAL slide 1. The pre-gate never blocks: the whole deck faces the full panel
+  afterwards, and blocking a deck on a two-critic reading of its cover would refuse decks the fix
+  loop can fix.
 - **`{{style_dna}}` is built ONCE per deck and is byte-identical in every slide's context**
   (FR-189/M9) — a deck reads as one deck through templating, never through a consistency check
   (FR-20 explicitly has none). Cover-vs-body divergence lives in the assigned style's
   `per_format_guidance` instead: slide 1 renders under its `carousel_cover` prose and slides 2–N
   under `carousel_slide`, appended to `{{render_prompt}}` — the one block a deck is ALLOWED to
   vary, because the anchor is a cover and the rest are pages.
-- **The anchor-failure fallback is PRE-COMMITTED work** (FR-95/FR-106b, plan §2 T4.3): all N
-  slides re-render independently and none may be declined by the cap. Cap bookkeeping must never
-  be the thing that splits a deck.
-- **A partial deck ships** (FR-20, 10 §10): delivered slides stay, `missing_slide_numbers` names
-  the rest 1-indexed, the asset is tagged `incomplete`. Zero slides delivered is a failed
+- **A dead anchor buys ONE more anchor before the deck is unchained** (FR-95, v2.2.0). An
+  unchained deck is the defect the anchor exists to prevent, and one extra cover render against a
+  deck of five to nine is the cheapest repair there is; the Confirm gate prices it (the anchor
+  contingency is two units, FR-107). Only if the replacement also dies do all N slides render
+  independently. Both the replacement and the fallback burst are PRE-COMMITTED work
+  (FR-95/FR-106b): cap bookkeeping must never be the thing that splits a deck.
+- **A partial deck ships when the RUN stopped; it does not when the RENDER failed** (FR-20/10 §10,
+  as amended by D51). Delivered slides stay, `missing_slide_numbers` names the rest 1-indexed and
+  the asset is tagged `incomplete` — for losses to a halt, the deadline, a runway refusal,
+  exhausted credits or a full disk. But a slide permanently lost to a render DEFECT (terminal
+  after FR-317, and after FR-95's replacement for the anchor) makes the deck unsalvageable: our
+  slide *i* is their panel *i* (FR-304), so nothing further is ordered for it, it is tagged
+  `deck_viability_loss` and it is not published. Jobs already submitted are NEVER cancelled — they
+  are billed, they land, and they are recorded (FR-29/FR-203). Zero slides delivered is a failed
   creative that KEEPS its paid caption (FR-74).
+- **Nothing is ordered the clock cannot pay for** (D51). The runway gate lives in the injected
+  `submit`, so this module sees a refusal rather than a failure: it is unbilled, it carries no
+  taskId, it never joins `self.outcomes` and it never burns FR-317's one-shot.
 - **Nothing raises.** `render.KieOutOfCredits` latches `env.credits_exhausted` and the deck is
   packaged as it stands (FR-167); `env.halted` is re-read before EVERY submission, so Ctrl+C and
   the deadline stop ordering mid-deck rather than mid-run (FR-201/108).
 
-- **One re-render and one re-check per flagged slide, then it ships** (FR-105/NFR-4). A delivered
-  re-render IS re-checked — the estimator prices the vision-retry allowance as render plus
-  re-check, and `retried_passed` is only honest when a real second verdict says so. Re-checks are
-  batched into one call for every slide re-rendered in the same pass. A re-render that never
-  happens loses NOTHING: the slide it was improving is already on disk, so its failure is logged
-  as `vision_retry_unavailable` and never joins the deck's missing-slide ledger.
+- **The deck faces the GAUNTLET, and the gauntlet owns the loop** (D49, FR-322–330, v2.2.0). Three
+  fresh-context critics judge the frames that came back against contract data, failing frames
+  re-render with a CANNED fix suffix, and the whole thing repeats up to `rounds_max` times. This
+  module supplies exactly two things: the contract (`generate/contracts.py`) and the `RerenderFn`
+  closure. That closure is the MONEY SEAM and it owns every dollar decision in the loop — the
+  discretionary reserve against the run cap, the per-deck `gauntlet.deck_budget_usd`, D51's runway
+  check, and FR-317 exclusivity (a gauntlet re-render is a FRESH submission with its own ledger
+  rows; it is never itself resubmitted and never gets a second poll window). `gauntlet.py` prices
+  nothing and never sees `env.budget`.
+- **A gauntlet re-render that never happens loses NOTHING.** The slide it was improving is already
+  on disk and already shipping, so a decline, a halt or a failure is logged and never joins the
+  deck's missing-slide ledger (`_note(lost=False)`) — `missing_slide_numbers` means "not delivered".
+- **A BLOCKED deck keeps every paid artifact and is not published** (FR-325/FR-74). A standing
+  leakage defect blocks whatever `fail_action` says; a contract defect blocks under `block`; a
+  craft-only failure SHIPS with a `GAUNTLET_CRAFT` tag. `packager.block()` is the writer, the run
+  exits 1, and the deck's source post is NOT burnt in the history window.
 - **The deck counts itself the way its SOURCE did, or not at all** (D-D, v2.1.2). The counting
   convention is detected ONCE per deck from the source's chrome (padding, separator, `// ` prefix)
   and re-based onto OUR length, so a five-slide deck cut from a nine-panel source reads "3/5" and
@@ -67,30 +95,31 @@ Invariants:
   missing ledger. Its one-shot ledger is SEPARATE from the vision retry's (NFR-4) — a slide may
   legitimately use both — and the timed-out attempt reconciles at $0, so the resubmit costs one
   render, not two.
-- **Every checked slide travels with the words it was ordered to carry** (FR-105, v2.1.1), and on
-  a panel-mapped deck the retry may not touch them (FR-304 carve-out): the check's third question
-  is "do the rendered words match the source panel?", and the answer to it is the reason
-  `vision_check` is on by default — the 2026-08-13 audit shipped a slide of invented copy that
-  both older questions passed.
+- **Every judged slide travels with the words it was ordered to carry** (FR-322, v2.2.0), and the
+  fix loop may never touch them (FR-304 carve-out): the `brief` critic's question is "are the
+  quoted strings there, in full, in their own language, and is anything else readable?", and the
+  fix suffix is REMOVAL-side and LAYOUT-side only. The 2026-08-13 audit shipped a slide of invented
+  copy that read clean and legible, which is the whole reason the gate looks at the contract rather
+  than at the picture alone.
 
 Do not: call `render.run`, reserve or reconcile money, compute a price, write a ledger line, name
-a Kie field, check anything twice beyond that single re-check, or import `hypesocials.generate`
-at runtime — that package imports this module.
+a Kie field, put a critic's own words in a render prompt, or import `hypesocials.generate` at
+runtime — that package imports this module.
 """
 
 from __future__ import annotations
 
 import asyncio
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
-from hypesocials import render, vision_check
+from hypesocials import gauntlet, render
 from hypesocials.models import (
     AssetRecord, CopySet, DegradationTag, MetaStyle, PlanEntry, PlanEntryStatus, RenderFailCause,
     RenderOutcome, RenderOutcomeKind, RenderParams, RenderPriority, RenderRefs, SourcePost,
-    VisionCheckResult,
 )
 from hypesocials.outputs import AssetFolder, PackagingError
 # `plan.py` owns the source-deck arithmetic (it is the stage that fixed this deck's length), so the
@@ -107,9 +136,17 @@ from hypesocials.sources.slide_intel import CounterSpec, detect_counter
 # post's own `source/<post_id>/marks/` folder, which is the one path `refs.upload_local` will
 # upload out of the source store (FR-244's amended carve-out).
 from hypesocials.sources.logo_crops import crop_marks
+# FR-315's two normalizers, shared (v2.2.0). They were private here until `logo_crops` and
+# `slide_intel` needed the same two spellings of a mark; `logo_crops.py:112` collapsing the RAW
+# name while this module collapsed the PEELED one is how deck 06 lost a patch it had already paid
+# to upload. One definition, in the domain the strings come from.
+from hypesocials.sources.mark_names import collapse, mark_name
 from hypesocials.generate.refs import (
     Reference, attach, branding_block, role_lines, style_of, upload_local, wordmark,
 )
+# D49: "what was this frame ORDERED to be" — built once for the deck, the standalone image and the
+# reel seed frame alike, so three call sites cannot disagree about one style's own contract.
+from hypesocials.generate import contracts
 # FR-98 (v2.1.4): the delivered slide's real pixel size, read from its own header bytes. A sibling
 # module rather than `hypesocials.generate`, which imports THIS one (see the "do not" list above).
 from hypesocials.generate.pixels import native_size
@@ -134,37 +171,58 @@ GUIDANCE_SLIDE = "carousel_slide"
 #: (FR-190) — never rendered as-is in a live deck, but never a blank line either.
 _ANCHOR_ROLE = ("the finished slide 1 of this deck: reproduce its template, palette, typography "
                 "and margins exactly")
+#: FR-323/FR-18 (v2.2.0): the role line of a re-render's nearest delivered neighbour. It says what
+#: the picture is FOR and, at least as importantly, what it is not for — a body page carries body
+#: copy, and a re-render told only "match this" is being invited to copy the words too.
+_NEIGHBOUR_ROLE = (
+    "the finished slide {number} of this same deck — the page nearest this one that is already "
+    "rendered. Match its template, palette, typography, margins, spacing and graphic language "
+    "exactly, so this slide sits inside the deck rather than beside it. Take NOTHING else from it: "
+    "not its words, not its subject, not its imagery. The text for THIS slide is the one given "
+    "below and no other.")
 
 ReserveKind = Literal["projected", "precommitted", "discretionary"]  # FR-106 a/b/c
 
+#: F1-C: the blank line `PromptEngine.render(suffix=...)` puts between a filled template and its
+#: suffix (`tail = f"\n\n{suffix}"`). Two characters, counted here because `_prompt_cap` hands the
+#: suffix's room back and `gauntlet.fix_reserve` holds the same two aside — the reservation and the
+#: refund have to describe the same string or the body budget moves between passes after all.
+_SUFFIX_SEPARATOR = 2
+
 _CREDITS = "kie_credits_exhausted — top up your Kie.ai credits (FR-167)"
-#: Worst first: one `retried_failed` slide makes the whole deck `retried_failed` (FR-27 honesty).
-_SEVERITY = (VisionCheckResult.RETRIED_FAILED, VisionCheckResult.RETRIED_PASSED,
-             VisionCheckResult.PASSED)
 _FALLBACK_SLIDES = 5
+#: FR-325 tier 3: a deck whose ONLY standing failures are craft opinions ships, tagged. Resolved off
+#: `DegradationTag` when that enum carries the member and spelled literally until then — exactly
+#: like `PANELS_TRUNCATED` below: `AssetFolder.mark` stores whatever it is given and `DegradationTag`
+#: is a `str` enum, so the bytes in `meta.yaml` are identical either way.
+GAUNTLET_CRAFT = getattr(DegradationTag, "GAUNTLET_CRAFT", "gauntlet_craft")
+#: The gate degraded because a critic could not be parsed and was dropped for the whole deck
+#: (spec §2). The deck SHIPS — a broken checker never blocks delivery (D3) — and says so.
+GAUNTLET_DEGRADED = getattr(DegradationTag, "GAUNTLET_DEGRADED", "gauntlet_degraded")
 #: FR-73's `panels_truncated` (§0.4′): the source deck was longer than the platform ceiling, so it
 #: ships as its first N panels with the indices preserved. Resolved off `DegradationTag` when that
 #: enum carries the member and spelled literally until then — `models.py` belongs to another task
 #: this wave, `AssetFolder.mark` stores whatever it is given, and `DegradationTag` is a `str` enum,
 #: so the bytes in `meta.yaml` are identical either way.
 PANELS_TRUNCATED = getattr(DegradationTag, "PANELS_TRUNCATED", "panels_truncated")
+#: D51's `deck_viability_loss` (v2.2.0): ONE slide was permanently lost to a render defect, so the
+#: deck was stopped rather than finished — the badge that separates "we stopped buying" from
+#: `incomplete`, which means "this partial deck ships". Resolved off `DegradationTag` when that
+#: enum carries the member and spelled literally until then, exactly like `PANELS_TRUNCATED` above:
+#: `models.py` belongs to another task this wave, `AssetFolder.skip` stores whatever it is given,
+#: and `DegradationTag` is a `str` enum, so the bytes in `meta.yaml` are identical either way.
+DECK_VIABILITY_LOSS = getattr(DegradationTag, "DECK_VIABILITY_LOSS", "deck_viability_loss")
 
 #: D-A: how many of a panel's named marks are even considered, and how many may be sanctioned onto
 #: one slide. A panel showing nine real logos is an icon grid, and telling the render model to draw
 #: nine real marks faithfully is how it draws nine invented ones.
+#: D51's per-slide line for work the viability gate refused to order. One sentence, no cause: the
+#: cause belongs to the slide that actually died and is logged once, on the deck.
+_UNSALVAGEABLE = ("not ordered — a slide of this deck was permanently lost to a render defect, so "
+                  "the deck can never be whole and nothing further was bought for it (D51)")
+
 _MAX_MARKS_READ = 10
 _MAX_MARKS = 4
-#: The descriptors the vision pass appends when it names what it saw ("Notion logo icon"). They
-#: describe the ENTRY, not the brand, and a render model given them draws the word.
-_MARK_DESCRIPTORS = ("logo", "logos", "icon", "icons", "wordmark", "mark", "marks", "badge",
-                     "glyph", "symbol", "app", "lockup",
-                     # shape words a vision pass uses for a glyph it recognizes ("Claude
-                     # asterisk icon", 59el deck 06) — descriptors of the mark, never the brand
-                     "asterisk", "sunburst", "emblem")
-#: The characters a vision pass uses to staple two descriptors onto one word ("logo/wordmark",
-#: "logo+wordmark", "logo & wordmark"). Split as separators AND kept, so `_mark_name` can peel the
-#: pieces and then rebuild whatever survived exactly as it was written.
-_JOINER = re.compile(r"([/+&])")
 #: What is never sanctioned, however the panel showed it: the creator's signature and the
 #: platform's own furniture. Every render template bans platform UI outright, so a "TikTok
 #: watermark" on this line would put two instructions in the same prompt at war.
@@ -195,56 +253,10 @@ _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
 _MIN_AUTHOR_IDENT = 4
 
 
-def _mark_name(raw: str) -> str:
-    """`"Notion logo icon"` -> `"Notion"` — the brand, without the words that described the entry.
-
-    Trailing descriptors are peeled one at a time, so "app icon" and "logo mark" both reduce; a
-    string that is ONLY descriptors ("logo") reduces to nothing and is therefore never sanctioned,
-    which is the right answer for a mark whose brand the vision pass could not name.
-
-    JOINED descriptors peel too (v2.1.4). A vision pass writes "Claude logo/wordmark" as readily
-    as "Claude logo", and to a peeler that splits on whitespace `logo/wordmark` is one unknown
-    word: the peel stopped dead, the name stayed `"Claude logo/wordmark"`, and `_patch_refs`' join
-    onto the patch table (keyed `claude`) missed. In the glz0 run that cost deck 06 the Claude
-    patch it had already cropped and uploaded — `mark_patches_attached patched: []` — and the
-    cover recoloured the Claude mark into the style's teal, which is the exact defect FR-315 was
-    built to end. So `/`, `+` and `&` are treated as word breaks WHILE peeling.
-
-    They are not, however, rewritten. Each word is exploded on its joiners, the descriptor tail is
-    peeled off the pieces, and whatever survives is rebuilt with its ORIGINAL joiner — so
-    "AT&T logo" reduces to "AT&T" and never to "AT T". A brand whose name contains an ampersand
-    is a brand, not a list.
-    """
-    # A trailing comma-clause is a LOCATION, not a name: the vision pass writes "Claude
-    # logo/wordmark, top left" and "Claude asterisk icon, inside Decision Brief banner". The
-    # 59el run proved the peeler cannot exhaust free-form location prose ("top", "left",
-    # "banner"…), so everything after the first comma is cut before peeling begins — a brand
-    # name containing a comma is not a thing the registry or the vision pass produces.
-    raw = str(raw or "").split(",", 1)[0]
-    pieces: list[tuple[str, str]] = []  # (joiner that PRECEDES this piece, piece)
-    for index, word in enumerate(raw.replace("(", " ").replace(")", " ").split()):
-        parts = _JOINER.split(word)  # ['logo', '/', 'wordmark'] — separators kept
-        pieces.append((" " if index else "", parts[0]))
-        pieces.extend(zip(parts[1::2], parts[2::2]))
-    while pieces and (not (tail := pieces[-1][1].strip(".,:;'\""))
-                      or tail.casefold() in _MARK_DESCRIPTORS):
-        pieces.pop()  # an empty piece is a dangling joiner ("Claude logo / wordmark"), not a name
-    return "".join(joiner + piece for joiner, piece in pieces).strip(" -–—,:;\"'/+&")
-
-
 def _is_chrome(raw: str) -> bool:
     """True for a mark that is the creator's or the platform's furniture, not a product logo."""
     folded = str(raw or "").casefold()
     return "@" in folded or any(word in folded for word in _CHROME_WORDS)
-
-
-def _collapse(text: str) -> str:
-    """`"@The Roman Knox"` -> `"theromanknox"` — one identity, however it was typed.
-
-    A creator's mark is transcribed as an @handle on one slide and as a spaced account name on the
-    next, so the author test has to compare the two with the punctuation and spacing gone.
-    """
-    return "".join(char for char in str(text or "").casefold() if char.isalnum())
 
 
 class Submit(Protocol):
@@ -285,9 +297,6 @@ class _Deck:
     folder: AssetFolder
     submit: Submit
     texts: list[str] = field(default_factory=list)  # one line per slide, deck order (FR-13)
-    #: Slide -> the text actually ORDERED for it, when a retry changed it (FR-105). Only a
-    #: free-composed line can differ from `texts`; a mapped panel is byte-identical by contract.
-    ordered: dict[int, str] = field(default_factory=dict)
     dna: str = ""  # FR-189 — built once, reused byte for byte
     style: MetaStyle | None = None  # the assigned house style; None under an override brief (M14)
     branding: str = ""  # FR-292's colour/letterform block, or "" when this deck is unsigned
@@ -303,15 +312,57 @@ class _Deck:
     anchor_url: str = ""
     outcomes: list[RenderOutcome] = field(default_factory=list)  # EVERY submission, failures too
     paths: dict[int, Path] = field(default_factory=dict)
+    #: FR-95/FR-323 (v2.2.0): slide -> the Kie URL of its delivered render, kept for as long as the
+    #: deck is being built. A re-render references the anchor AND its nearest delivered neighbour,
+    #: and a neighbour is only referenceable while its provider URL is still held — discarding
+    #: every non-anchor URL (as this module did until now) meant a re-rendered slide 5 could only
+    #: look at the cover, and drifted from the four pages it sits between.
+    urls: dict[int, str] = field(default_factory=dict)
     delivered: set[int] = field(default_factory=set)
-    retried: set[int] = field(default_factory=set)  # one vision retry per slide (NFR-4)
+    #: D49: slides the gauntlet's fix loop re-rendered at least once. Bookkeeping only — the round
+    #: ceiling is the gauntlet's, so nothing here gates anything; it is what makes `retried_passed`
+    #: an honest claim in `vision_check_result` (a deck that passed WITHOUT a re-render passed
+    #: outright) and what the meta's rounds rows are cross-read against.
+    rerendered: set[int] = field(default_factory=set)
     #: FR-317's SEPARATE one-shot ledger: slides whose job has already been resubmitted once. Kept
-    #: apart from `retried` on purpose — that set is the vision retry's, and a slide is entitled to
-    #: one of each (a job that timed out, was resubmitted, landed, and was then flagged).
+    #: apart from the gauntlet's re-renders on purpose — a gauntlet re-render is a FRESH submission
+    #: with its own ledger rows and is never itself resubmitted (spec §7), while a slide whose job
+    #: timed out is entitled to exactly one identical retry whatever the gate later says about it.
     resubmitted: set[int] = field(default_factory=set)
-    checks: list[VisionCheckResult] = field(default_factory=list)
+    #: D49: this deck's whole gauntlet — the verdict, the rounds, the money. `None` while the gate
+    #: has not run (disabled, no metered call, nothing delivered, an unsalvageable deck).
+    report: gauntlet.GauntletReport | None = None
+    #: What the fix loop has BILLED on THIS deck, in dollars, measured against
+    #: `run.gauntlet.deck_budget_usd` inside the `RerenderFn` closure. The run cap is the budget's
+    #: own business (`_submit` reserves against it); this is the per-deck ceiling on top.
+    gauntlet_spend: float = 0.0
+    #: F4: dollars this deck has CLAIMED for fix re-renders that are still in flight. The gauntlet
+    #: re-renders every failing frame of a round CONCURRENTLY (`gauntlet._rerender_all` gathers
+    #: them), so a cap read against `gauntlet_spend` alone is read by all of them before any of
+    #: them has accrued: the 2026-08-14 run shipped eleven $0.03 re-renders against a $0.30 cap
+    #: because eight of the eleven checks each saw $0.00. Held from before the submit until after
+    #: the provider's own figure lands, exactly as `Budget.reserve`/`reconcile` hold the run cap.
+    gauntlet_reserved: float = 0.0
+    #: The lock the two above are read and written under — one per deck, because a deck's cap is a
+    #: deck's own business and two carousels never share one. It exists for the ORDER of the
+    #: read-modify-write, not for threads: this loop is a single event loop, and the race is the
+    #: `await` between "does it fit" and "it is now claimed".
+    gauntlet_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    #: F1-C: this run's fix-suffix reservation (`gauntlet.fix_reserve`), memoised on first use.
+    #: `-1` means "not measured yet"; the sheet is read once per deck rather than once per slide.
+    fix_reserve_chars: int = -1
     reasons: list[str] = field(default_factory=list)
     abandoned: bool = False
+    #: D51's viability verdict: the reason ONE slide was permanently lost to a render defect, or
+    #: `""` while the deck is still salvageable. Set once, never cleared except by FR-95's single
+    #: re-anchor (a first anchor failure is not final until its replacement has also died), and
+    #: read before every further submission for this deck.
+    doomed: str = ""
+    #: D51's other half: a submission the RUNWAY refused. Kept apart from `doomed` because it is
+    #: not a defect — nothing was ordered, nothing was billed, and the deck ships what it has
+    #: (10 §10's partial-deck row). It only suppresses FR-95's re-anchor, which would ask the same
+    #: expired clock the same question.
+    starved: bool = False
     #: FR-241/FR-270 (v2.1.4): which gpt-image-2 routes this deck's submissions actually took —
     #: `edit_route` for anything that carried references (the anchor, a brief photo, a mark patch),
     #: `text_route` for anything that carried none. Recorded rather than inferred, because the
@@ -347,28 +398,77 @@ class _Deck:
     # ------------------------------------------------------------------------------- ordering
 
     async def build(self) -> None:
-        """Anchor, check, deck — or the independent-slide fallback when the anchor never lands."""
+        """Anchor, re-anchor, deck — or the unchained fallback when neither anchor lands."""
         self._mark_truncation()
         self.attached = await attach(self.entry, self.env, self.folder)
         await self._crop_patches()  # FR-315: once per deck, before the first slide is priced
         self.anchored = bool(self.env.config.run.carousel_anchor)
         if self.anchored:
+            losses = len(self.reasons)
             await self._slide(1, anchor=False, kind="projected", priority=RenderPriority.WAVE1)
+            if not self.anchor_url:
+                await self._reanchor(losses)
             if self.anchor_url:
-                await self._check([1], RenderPriority.WAVE1)  # FR-105: BEFORE slides 2–N exist
-                await self._burst(range(2, len(self.texts) + 1))
-                await self._check(sorted(self.delivered), RenderPriority.WAVE2)
+                await self._anchor_gate()  # D49: BEFORE slides 2–N exist to copy it
+                if not self._blocked:  # a leaking cover buys no body pages (FR-325)
+                    await self._burst(range(2, len(self.texts) + 1))
+                    await self._gauntlet()
                 return
             self.anchored = False
+            # The unchained burst renders slide 1 AGAIN, from scratch, alongside every other slide
+            # — so the cover is not lost yet and the deck is not unsalvageable yet. D51's gate asks
+            # "has this slide run out of paths"; FR-95 says the anchor has one more. Both the doom
+            # and the anchor phase's loss lines are therefore cleared: what the burst does or does
+            # not deliver is recorded by the burst.
+            self.doomed = ""
+            del self.reasons[losses:]
             self.env.log.warn(
-                "carousel_anchor_fallback",
-                f"{self.entry.asset_id}: slide 1 never landed; the deck falls back to independent "
-                "generation of all slides from the style references (FR-95)",
+                "carousel_anchor_fallback_unchained",
+                f"{self.entry.asset_id}: slide 1 never landed and neither did its one replacement; "
+                "the deck falls back to UNCHAINED generation — every slide rendered independently "
+                "from the style DNA and its own text, with no anchor to copy (FR-95)",
                 asset_id=self.entry.asset_id, slides=len(self.texts))
         # The FR-95 fallback and the `carousel_anchor: false` A/B control are the same shape, and
         # both are PRE-COMMITTED wave-2 work — never discretionary (FR-106b, plan §2 T4.3).
         await self._burst(range(1, len(self.texts) + 1))
-        await self._check(sorted(self.delivered), RenderPriority.WAVE2)
+        await self._gauntlet()
+
+    async def _reanchor(self, losses: int) -> None:
+        """FR-95 (v2.2.0): ONE replacement anchor before the deck gives up on being chained.
+
+        The old shape was all-or-nothing in the wrong direction: a single failed cover — a timeout,
+        a provider hiccup, one moderation refusal — condemned every remaining slide to independent,
+        reference-free generation, and an unchained deck is the defect the anchor exists to prevent
+        (the 08-14 audit's decks 3 and 9 are both this). One more cover render is the cheapest
+        possible repair: it costs ONE image against a deck of five to nine, and when it lands the
+        deck is chained exactly as designed. The Confirm gate already prices it — `budget.py`'s
+        anchor contingency is two units for precisely this shape (FR-107).
+
+        Pre-committed spend (FR-106b), like every other FR-95 fallback: the cap may not decline the
+        one render that decides whether the operator gets a deck or nine strangers.
+
+        Refused in three states, each because the answer is already known: a halted run and an
+        exhausted credit balance stop ordering outright (FR-201/108/167), and a RUNWAY-refused
+        first attempt (D51) would ask the same expired clock the same question. A first attempt
+        lost to a real render defect is NOT one of them — that is the case this exists for — so
+        `doomed` is cleared for the retry: slide 1 is not permanently lost until its one
+        replacement has died too.
+        """
+        env = self.env
+        if env.halted or env.credits_exhausted or self.starved:
+            return
+        cause = self.doomed or "the first attempt never delivered"
+        self.doomed = ""  # not final until the replacement dies (see the docstring)
+        env.log.warn(
+            "carousel_anchor_retry",
+            f"{self.entry.asset_id}: the anchor never landed ({cause}); one replacement anchor is "
+            "ordered before the deck is unchained (FR-95, attempt 2 of 2)",
+            asset_id=self.entry.asset_id, slide=1)
+        await self._slide(1, anchor=False, kind="precommitted", priority=RenderPriority.WAVE1)
+        if self.anchor_url:
+            # The first attempt's failure is evidence, not a loss: `self.reasons` is the ledger of
+            # slides that are MISSING, and slide 1 is on disk. Both attempts stay in the log.
+            del self.reasons[losses:]
 
     def _mark_truncation(self) -> None:
         """FR-304/FR-257: say so when the source deck was longer than this platform's ceiling.
@@ -404,6 +504,14 @@ class _Deck:
         mark then renders from its name plus the template's written description, which is the
         documented fallback — a missing patch may never cost a slide, and it never blocks one.
 
+        NOTHING UNSANCTIONED IS CUT (v2.2.0). The allowlist handed to `crop_marks` is the union of
+        every slide's own D-A sanction list, collapsed — so a competitor's logo, the creator's own
+        mark, platform chrome and any mark boxed only on a SOURCE PANEL BEYOND OUR DECK's length
+        are never cropped, never written to disk and never uploaded. The sanction gate used to sit
+        at attachment only (`_patch_refs`), which meant a nine-panel source with a competitor logo
+        on panel 8 uploaded that logo to Kie for a five-slide deck that could never legitimately
+        show it: an upload the D48 carve-out does not cover. The gate now sits at the knife.
+
         The crop is SYNCHRONOUS (file read + decode + PNG write) and runs on a worker thread: it is
         real work, and the event loop here is also carrying every other creative in the run.
         """
@@ -411,10 +519,12 @@ class _Deck:
         boxes = list(getattr(intel, "mark_boxes", ()) or ()) if intel is not None else []
         folder = str(getattr(intel, "folder", "") or "")
         run_dir = getattr(self.env, "run_dir", "")
-        if not boxes or not folder or not run_dir:
+        allow = self._allowed_marks()
+        if not boxes or not folder or not run_dir or not allow:
             return
         try:
-            cropped = await asyncio.to_thread(crop_marks, Path(run_dir) / folder, boxes)
+            cropped = await asyncio.to_thread(crop_marks, Path(run_dir) / folder, boxes,
+                                              allow=allow)
         except Exception as exc:  # noqa: BLE001 — pixels are an upgrade; the deck ships without
             self.env.log.warn(
                 "logo_patch_unavailable",
@@ -426,7 +536,7 @@ class _Deck:
             url = await upload_local(path, self.env,
                                      label=f"{self.entry.asset_id} mark patch {name}")
             if url:
-                self.patches[_collapse(_mark_name(name))] = url
+                self.patches[collapse(mark_name(name))] = url
         self.env.log.event(
             "mark_patches_ready",
             f"{self.entry.asset_id}: {len(self.patches)} of {len(cropped)} cropped mark patch(es) "
@@ -434,34 +544,95 @@ class _Deck:
             boxes=len(boxes), cropped=len(cropped), uploaded=len(self.patches),
             marks=sorted(cropped))
 
+    def _allowed_marks(self) -> frozenset[str]:
+        """FR-315's crop allowlist: every mark THIS deck may legitimately draw, collapsed.
+
+        The union of `_sanctioned_marks(n)` over the slides we actually render — 1..len(texts), not
+        the source's panel count — spelled the way the patch table is keyed (`collapse(mark_name)`),
+        which is the same spelling `_patch_refs` joins on. One vocabulary end to end: a name that
+        cannot pass the sanction gate cannot reach the knife, and a name that passed it here will
+        match its patch at attachment.
+        """
+        return frozenset(collapse(mark_name(name))
+                         for number in range(1, len(self.texts) + 1)
+                         for name in self._sanctioned_marks(number))
+
     async def _burst(self, numbers: range) -> None:
-        """Every remaining slide at once — inside a wave nothing waits for a sibling (FR-25)."""
+        """Every remaining slide at once — inside a wave nothing waits for a sibling (FR-25).
+
+        Unless the deck is already unsalvageable (D51). One slide permanently lost to a render
+        defect means this deck can never be the deck that was approved: a carousel is read as a
+        sequence, our slide *i* IS source panel *i* (FR-304), and a hole in the middle is not a
+        shorter deck but a broken one. Everything still unordered is therefore skipped BEFORE the
+        money door rather than rendered into a deck that will not ship — the whole point of the
+        gate is that the remaining N−1 renders are never bought.
+
+        What is NOT done here, ever: cancelling. Jobs already submitted are already billed
+        (FR-29/FR-203), so they run to their own terminal line and are recorded like any other.
+        """
+        if self.doomed:
+            self._short_circuit(numbers)
+            return
         await asyncio.gather(*(
             self._slide(number, anchor=self.anchored, kind="precommitted",
                         priority=RenderPriority.WAVE2) for number in numbers))
 
+    def _short_circuit(self, numbers: range) -> None:
+        """D51: name every slide this deck will not order, in ONE line plus one reason each."""
+        skipped = [number for number in numbers if number not in self.delivered]
+        if not skipped:
+            return
+        # Straight into the loss ledger rather than through `_note`: these are not N independent
+        # setbacks, they are one decision with N consequences, and N warn lines would bury the
+        # single line that explains them.
+        # The per-slide line names the DECISION, not the sibling's failure: repeating the doom
+        # cause N times would put slide 3's provider error in slide 6's explanation, and the deck's
+        # own line below carries the cause once, in full.
+        self.reasons.extend(f"slide {number}: {_UNSALVAGEABLE}" for number in skipped)
+        self.env.log.warn(
+            "deck_viability_short_circuit",
+            f"{self.entry.asset_id}: {self.doomed}; a slide permanently lost to a render defect "
+            f"cannot be re-ordered, so slides {skipped} are not submitted at all and the deck is "
+            "kept off the run's published work (D51). Jobs already in flight are never cancelled — "
+            "they are billed and are recorded as they land (FR-29/FR-203)",
+            asset_id=self.entry.asset_id, cause=self.doomed, not_ordered=skipped,
+            delivered=sorted(self.delivered))
+
     async def _slide(
         self, number: int, *, anchor: bool, kind: ReserveKind, priority: RenderPriority,
-        plan: vision_check.RetryPlan | None = None,
+        fix: str = "",
     ) -> bool:
-        """Render one slide and put its bytes on disk. True when that slide was delivered."""
+        """Render one slide and put its bytes on disk. True when that slide was delivered.
+
+        `fix` is the gauntlet's CANNED remedy suffix (FR-323) when this is a fix-loop re-render, and
+        `""` on a first pass. It changes the request and never the words: the TEXT block is
+        byte-identical on both, because the strings are LOCKED CONTRACT STRINGS — a verbatim quote
+        of the source panel, or its D54-compressed text — and shortening one to make it fit is the
+        defect the gate exists to catch. Compress mode changes WHO shortened the panel and WHEN
+        (the copy model, before any render was submitted, to the style's declared budget); it does
+        not license this stage to shorten anything.
+        """
         env = self.env
-        # A vision RE-RENDER (`plan is not None`) can fail without losing anything: the slide it
-        # was improving is already on disk and already shipping. Its failures are therefore logged
-        # but kept out of `self.reasons`, which is the deck's ledger of slides that are MISSING —
-        # a "slide 3: declined by the spend cap" line beside `missing_slide_numbers: [5]` told the
-        # operator slide 3 was lost when slide 3 was delivered (FR-73/FR-105).
-        lost = plan is None
+        # A gauntlet RE-RENDER can fail without losing anything: the slide it was improving is
+        # already on disk and already shipping. Its failures are therefore logged but kept out of
+        # `self.reasons`, which is the deck's ledger of slides that are MISSING — a "slide 3:
+        # declined by the spend cap" line beside `missing_slide_numbers: [5]` told the operator
+        # slide 3 was lost when slide 3 was delivered (FR-73).
+        lost = not fix
         if env.halted:  # re-read before EVERY submission (FR-201/108)
             self.abandoned = self.abandoned or not self.outcomes
             return self._note(f"slide {number}: interrupted before submission", lost=lost)
         if env.credits_exhausted:
             return self._note(f"slide {number}: {_CREDITS}", lost=lost)
-        refs = self._refs(number, anchor)
-        prompt = self._prompt(number, anchor=anchor, refs=refs, plan=plan)
+        if self.doomed:  # D51: nothing more is ordered for a deck that can no longer be whole
+            return self._note(f"slide {number}: {_UNSALVAGEABLE}", lost=lost)
+        refs = await self._refs(number, anchor, rerender=bool(fix))
+        prompt = self._prompt(number, anchor=anchor, refs=refs, fix=fix)
         if prompt is None:
+            # A defect of OUR making, and a deterministic one: the same context will not fill the
+            # same template on a second ask, so this slide is permanently lost (D51).
             return self._note(f"slide {number}: prompt_assembly_failed — unresolved placeholder "
-                              "(FR-260)", error=True, lost=lost)
+                              "(FR-260)", error=True, lost=lost, defect=True)
         urls = [ref.url for ref in refs]
         # FR-241 decides the route by exactly this test inside `render/profiles.py`, so recording
         # it here is an observation of the same fact rather than a second opinion about it.
@@ -471,13 +642,34 @@ class _Deck:
                                    priority=priority, lost=lost)
         if outcome is None:
             return False
+        return await self._store(number, outcome, lost=lost)
+
+    async def _store(self, number: int, outcome: RenderOutcome, *, lost: bool) -> bool:
+        """One finished job -> one slide file on disk. True when that slide is deliverable.
+
+        Shared by the first pass and by the gauntlet's fix loop, which is the whole reason it is a
+        method: both have to hold the result URL for a neighbour reference, both have to re-point
+        the anchor when slide 1 moves, and both have to answer a full disk the same way. Two copies
+        of that would be two decks that disagree about which slide 1 the body pages copy.
+        """
+        env = self.env
         url = outcome.result_urls[0] if outcome.result_urls else ""
         if outcome.kind is not RenderOutcomeKind.SUCCESS or not url:
             # FR-242: a `success` with nothing behind it is a failure that lies.
             cause = outcome.fail_cause.value if outcome.fail_cause else outcome.kind.value
+            # D51: this is a terminal render failure AFTER FR-317's one resubmit, so the slide is
+            # permanently lost — unless the run itself stopped underneath it (a halt, an exhausted
+            # balance), which is an abandonment and keeps 10 §10's partial-deck behaviour. A runway
+            # refusal never reaches here at all: `_submit` returns `None` for it. A GAUNTLET fix
+            # re-render is never a defect either (`lost=False`): the slide it was improving is
+            # already on disk, so nothing was lost and the deck stays salvageable.
+            defect = lost and not (env.halted or env.credits_exhausted
+                                   or outcome.fail_cause is RenderFailCause.CREDITS_EXHAUSTED
+                                   or outcome.fail_cause is RenderFailCause.NO_RUNWAY)
             return self._note(f"slide {number}: {cause} — "
                               f"{outcome.fail_message or 'no usable result'}", error=True,
-                              lost=lost)
+                              lost=lost, defect=defect)
+        self.urls[number] = url  # FR-323: referenceable by its neighbours while the deck is built
         if number == 1:
             self.anchor_url = url  # the deck anchors to the FINAL slide 1 (10 §5)
         if env.disk_full:  # 10 §10: further downloads STOP rather than thrash a full disk
@@ -488,6 +680,9 @@ class _Deck:
         except PackagingError as exc:  # one lost slide, never a lost deck
             if exc.reason == "disk_full":  # the one failure that outlives this creative
                 env.disk_full = True
+            # NOT a D51 defect, either shape. A full disk is 10 §10's run-wide condition, and a
+            # failed download is our end of a job the PROVIDER completed — both describe the
+            # workstation rather than the render, and both keep the partial deck that ships.
             return self._note(f"slide {number}: {exc.reason}", error=True, lost=lost)
         self.delivered.add(number)
         return True
@@ -537,6 +732,10 @@ class _Deck:
         * a moderation refusal — FR-97 owns that failure and answering it with the identical
           request would buy the identical refusal;
         * a declined submission (`None`) — nothing was ordered, so there is nothing to re-order;
+        * a RUNWAY refusal (`NO_RUNWAY`, D51) — excluded BY NAME even though `_submit` already
+          converts one to `None`, because this predicate is the guarantee and the conversion is an
+          implementation detail: a refusal that cost nothing may never burn the one attempt FR-317
+          grants a job that really failed, and a clock that had no room a moment ago has less now;
         * a halted or credit-exhausted run — `env.halted` is re-read HERE, immediately before the
           resubmission, because the first attempt may have spent the whole timeout inside the
           window where Ctrl+C landed (FR-201/108/167).
@@ -547,8 +746,11 @@ class _Deck:
         came back.
         """
         env = self.env
+        if self.doomed:  # D51: a sibling slide is already permanently lost — buy nothing more
+            return outcome
         if (outcome is None or outcome.kind is RenderOutcomeKind.SUCCESS
                 or outcome.fail_cause is RenderFailCause.MODERATION
+                or outcome.fail_cause is RenderFailCause.NO_RUNWAY
                 or number in self.resubmitted):
             return outcome
         cause = outcome.fail_cause.value if outcome.fail_cause else outcome.kind.value
@@ -575,6 +777,18 @@ class _Deck:
         self, prompt: str, urls: list[str], *, kind: ReserveKind, priority: RenderPriority,
         label: str, lost: bool = True,
     ) -> RenderOutcome | None:
+        """One submission through the caller's money door, and the three ways nothing was ordered.
+
+        All three return `None` — no outcome joins `self.outcomes`, because none of them cost
+        anything — but they are three different sentences to the operator, and the audit found the
+        deck saying "declined by the spend cap" for two of them:
+
+        * the 402 (`KieOutOfCredits`): the balance is gone, run-wide (FR-167);
+        * the CAP declining discretionary spend (FR-106c): there is money, just not for this;
+        * the RUNWAY declining it (`NO_RUNWAY`, D51): there is money and no clock. Nothing was
+          reserved and nothing reached Kie, so it is not a failed render either — filing it as one
+          would put a $0 job with no taskId in `self.outcomes` and in the meta's job list.
+        """
         try:
             outcome = await self.submit(
                 self.entry, RenderParams(prompt=prompt, aspect_ratio=self.entry.aspect_ratio),
@@ -587,129 +801,365 @@ class _Deck:
         if outcome is None:
             self._note(f"{label}: declined by the spend cap (FR-106c)", lost=lost)
             return None
+        if outcome.fail_cause is RenderFailCause.NO_RUNWAY:
+            self.starved = True
+            refusal = outcome.fail_message or "no_runway — no time left before the run deadline"
+            self._note(f"{label}: {refusal} — nothing was ordered and nothing was billed",
+                       lost=lost)
+            return None
         self.outcomes.append(outcome)
         return outcome
 
-    # -------------------------------------------------------------------- vision check (FR-105)
+    # ------------------------------------------------------------------- the gauntlet (D49)
 
-    async def _check(self, numbers: list[int], priority: RenderPriority) -> None:
-        """Check these slides, re-render whatever is flagged, then re-check what was re-rendered.
+    async def _anchor_gate(self) -> None:
+        """FR-95/D49: judge slide 1 alone, and fix it once, before any slide is ordered to copy it.
 
-        Three call shapes, all batched (FR-105/107): one call for the whole set, at most one
-        discretionary re-render per flagged slide (FR-106c), and ONE further call carrying every
-        slide whose re-render landed. A slide already re-rendered in an earlier pass keeps its
-        one retry (NFR-4) and stays `retried_failed` if it is still flagged.
+        Spec §1: there is NO separate anchor entry point — this is `run_single` with a replaced
+        config and the `brief` + `craft` critics. `system` is dropped because its whole subject is
+        cross-frame consistency and a deck of one has none.
+
+        TWO rounds, which is FR-324's "one extra round of re-renders, on the deck budget" spelled
+        as the loop counts them: round 1 judges, the fix loop re-renders the cover once, round 2
+        judges the replacement, and that is the ceiling (spec §2 breaks before the fix when
+        `round == rounds_max`). The code shipped `rounds_max=1` and thereby forbade the one
+        re-render the PRD grants — the 2026-08-14 live run blocked a whole deck on a missing page
+        counter, a single-defect, entirely fixable cover, having never bought the render that would
+        have fixed it. A cover is the cheapest frame in the deck to repair and the most expensive
+        one to get wrong, so the round that repairs it is bought here rather than skipped.
+
+        `rounds_max_image` is replaced too, and deliberately: `run_single` takes the MINIMUM of the
+        two (a lone frame that needs three rounds is a copy problem), so a config that gates
+        standalone images at one round — the shipped default — would silently take the pre-gate's
+        fix round back. The spec pins the anchor's own ceiling, and replacing both is what makes it
+        the value in force.
+
+        What this call buys beyond the fix is the EARLY REFUSAL: a BLOCKED cover means the deck is
+        unpublishable before a single body page has been bought. Every slide 2..N would copy that
+        cover's template, its palette and, in the case the leakage tier exists for, its leaked mark
+        or handle. Stopping here saves N renders on a deck nobody will ever see; a cover that merely
+        fails on contract or craft is not stopped, because the deck-level loop that follows has
+        rounds to fix it in.
         """
-        if not self._checking or not numbers:
+        if not self._gate or self.doomed or 1 not in self.delivered:
             return
-        first = await self._verdicts(numbers)
-        flagged = [n for n in numbers
-                   if n not in self.retried and (v := first.get(n)) is not None and v.flagged]
-        self.retried.update(flagged)
-        landed = [number for number, delivered in zip(flagged, await asyncio.gather(
-            *(self._rerender(number, first[number], priority) for number in flagged)))
-            if delivered]
-        # A declined or failed re-render never earns a second look — `verdict_result` then reads
-        # a flagged first verdict with no second one and says so (FR-27's `retried_failed`).
-        after = await self._verdicts(landed)
-        self._log_rechecks(landed, after)
-        self.checks.extend(
-            vision_check.verdict_result(first.get(n), after.get(n), retried=n in flagged)
-            for n in numbers)
+        cfg = replace(self.env.config.run.gauntlet, rounds_max=2, rounds_max_image=2,
+                      critics={name: critic
+                               for name, critic in self.env.config.run.gauntlet.critics.items()
+                               if name in ("brief", "craft")})
+        report = await self._run(cfg, [1], RenderPriority.WAVE1, single=True)
+        blocked = report.result == "blocked"
+        self.env.log.event(
+            "gauntlet_anchor", f"{self.entry.asset_id}: anchor pre-gate {report.result}"
+            + (f"; slides 2-{len(self.texts)} are NOT ordered — the whole deck would copy this "
+               "cover (FR-325)" if blocked
+               else f"; slides 2-{len(self.texts)} are ordered next"),
+            asset_id=self.entry.asset_id, result=report.result, rerenders=report.rerenders,
+            critic_cost_usd=round(report.critic_cost_usd, 6),
+            rerender_cost_usd=round(report.rerender_cost_usd, 6))
 
-    def _log_rechecks(
-        self, numbers: list[int], after: dict[int, vision_check.ImageVerdict | None]
-    ) -> None:
-        """FR-321d: the SECOND verdict, on the record, per re-rendered slide.
+    async def _gauntlet(self) -> None:
+        """The whole deck through the critic panel, fix loop included (spec §2).
 
-        `vision_check_result` claims one of four states and `retried_passed` is the only one that
-        asserts a defect was fixed. Until now that assertion rested on a verdict nothing logged, so
-        the operator could read the claim and not the evidence. This is the evidence: one
-        `vision_recheck` line per slide that was actually re-rendered and re-checked, carrying the
-        same three defect flags the first pass logged under `vision_check_flagged`. It is a record,
-        not a decision — the verdict it prints is already the one `verdict_result` is about to use,
-        and there is never a third render whatever it says.
+        ONE call per critic per round covers every delivered slide, so an eight-slide deck costs
+        three calls a round rather than twenty-four. Missing slides are not judged: a frame that was
+        never delivered has no pixels to look at, and listing it would earn a `missing_text` verdict
+        for a slide the deck already reports as missing.
+
+        Nothing runs once the deck is unsalvageable (D51). A critic call is metered LLM spend and a
+        fix is another render; buying either for a deck that will never be published is the exact
+        waste the viability gate exists to stop, and "further work" there means the analysis as much
+        as the pixels.
         """
+        if not self._gate or self.doomed or self._blocked or not self.delivered:
+            return
+        await self._run(self.env.config.run.gauntlet, sorted(self.delivered),
+                        RenderPriority.WAVE2, single=False)
+
+    async def _run(self, cfg: Any, numbers: list[int], priority: RenderPriority, *,
+                   single: bool) -> gauntlet.GauntletReport:
+        """One gauntlet call — deck or anchor — with this deck's contract and money seam.
+
+        Both reports land on `self.report`: the deck's overwrites the anchor's, because the deck
+        run judged slide 1 again as part of the set and its rounds are the ones `meta.yaml` should
+        carry. The anchor's spend is carried forward rather than lost, so `meta.yaml.gauntlet`'s two
+        cost fields are the deck's WHOLE gauntlet bill and not merely its second half.
+        """
+        env = self.env
+        frames = [gauntlet.FrameUnderTest(number=n, source=self._input(n)) for n in numbers
+                  if self._input(n)]
+        if not frames:
+            return gauntlet.GauntletReport(result="skipped")
+        contract = self._contract(numbers)
+        rerender = self._fix_render(priority)
+        call = gauntlet.run_single if single else gauntlet.run_deck
+        report = await call(frames[0] if single else frames, contract, rerender,  # type: ignore[arg-type]
+                            cfg=cfg, call=env.llm_call, log=env.log, engine=env.engine)
+        before = self.report
+        if before is not None:  # the anchor pre-gate's bill is part of this deck's gauntlet bill
+            report.critic_cost_usd += before.critic_cost_usd
+            report.rerender_cost_usd += before.rerender_cost_usd
+            report.rerenders += before.rerenders
+            report.degraded_gate = report.degraded_gate or before.degraded_gate
+        self.report = report
+        return report
+
+    @property
+    def _gate(self) -> bool:
+        """D49: the post-render gate is on AND a metered LLM call exists to run it with."""
+        return contracts.gate_on(self.env)
+
+    @property
+    def _blocked(self) -> bool:
+        """Has the gate already refused this deck? Nothing further is ordered for it (FR-325)."""
+        return self.report is not None and self.report.result == "blocked"
+
+    def _contract(self, numbers: Sequence[int]) -> gauntlet.DeckContract:
+        """What these frames were ORDERED to be — the referent every verdict is judged against.
+
+        Assembled from the same values the render prompts were assembled from: the slide's verbatim
+        text, its counter, slide 1's wordmark, the D-A sanction list, the style's DNA and zones. The
+        FORBIDDEN side (FR-330) is the expensive half and is built from three sources — the
+        competitor list this deck's prompts already suppress, the source creator's identity in every
+        spelling the payload offers (FR-312), and every mark the sanction gate refused.
+        """
+        facts = contracts.panel_facts(self.env, self.entry)
+        frames = [
+            contracts.frame_contract(
+                number, self.texts[number - 1] if 1 <= number <= len(self.texts) else "",
+                style=self.style, counter=self._counter(number),
+                # M12: the deck is signed on the anchor alone, so the signature is slide 1's own
+                # and every other frame lists none — an unlisted wordmark reads as invented text,
+                # and a listed one nobody ordered reads as a missing string.
+                signature=self.wordmark if number == 1 else "",
+                wordless_reason=facts.get(number, {}).get("wordless_reason", ""),
+                truncation_suspect=bool(facts.get(number, {}).get("truncation_suspect")))
+            for number in numbers]
+        sanctioned = [name for number in numbers for name in self._sanctioned_marks(number)]
+        return contracts.deck_contract(
+            frames, entry=self.entry, style=self.style, wordmark=self.wordmark,
+            counter=self._counter(1),
+            required_marks=list(dict.fromkeys(sanctioned)),
+            forbidden=contracts.forbidden_terms(
+                competitors=self._competitors,
+                creator_forms=contracts.creator_forms(self.source_post),
+                unsanctioned_marks=self._unsanctioned_marks(numbers),
+                sanctioned=sanctioned))
+
+    def _unsanctioned_marks(self, numbers: Sequence[int]) -> list[str]:
+        """Every brand mark the source panels showed that D-A REFUSED to sanction (FR-330).
+
+        The sanction gate already decided these may not be drawn — a competitor, the creator's own
+        logo, platform chrome — so a render that drew one anyway is precisely the leakage the
+        `brief` critic exists to catch, and naming them is what lets it. Read off the same
+        intelligence `_sanctioned_marks` reads, so the two lists partition one set rather than
+        describing two.
+        """
+        intel = self._intel()
+        allowed = {name.casefold() for number in numbers
+                   for name in self._sanctioned_marks(number)}
+        out: list[str] = []
         for number in numbers:
-            verdict = after.get(number)
-            state = "clean" if verdict is not None and not verdict.flagged else (
-                "still flagged" if verdict is not None else "no verdict returned")
-            self.env.log.event(
-                "vision_recheck",
-                f"{self.entry.asset_id} slide {number} re-checked after its one re-render: "
-                f"{state}", asset_id=self.entry.asset_id, slide=number, attempt=2,
-                checked=verdict is not None,
-                flagged=bool(verdict is not None and verdict.flagged),
-                text_broken=bool(verdict is not None and verdict.text_broken),
-                fake_ui=bool(verdict is not None and verdict.fake_ui),
-                text_mismatch=bool(verdict is not None and verdict.text_mismatch),
-                detail=(verdict.detail if verdict is not None else ""))
+            slide = intel.slide(number) if intel is not None else None
+            for raw in list(getattr(slide, "brand_marks", ()) or ())[:_MAX_MARKS_READ]:
+                name = mark_name(str(raw or ""))
+                if name and name.casefold() not in allowed and name not in out:
+                    out.append(name)
+        return out
 
-    async def _verdicts(
-        self, numbers: list[int]
-    ) -> dict[int, vision_check.ImageVerdict | None]:
-        """ONE multi-image call for these slides — N slides never cost N calls (FR-105/107).
+    def _fix_render(self, priority: RenderPriority) -> gauntlet.RerenderFn:
+        """The MONEY SEAM (spec §1): one fix-loop re-render, and the six ways it does not happen.
 
-        Each slide travels beside the words it was ORDERED to carry (FR-105 v2.1.1). Without that
-        referent the third question — does the render say what the source panel said? — cannot be
-        asked at all, and a slide that renders clean-but-wrong copy passes: the 2026-08-13 audit
-        shipped exactly that. A wordless mapped panel sends an EMPTY string, which is the stronger
-        statement of the two: nothing may appear there.
+        The gauntlet owns the loop and this closure owns every dollar in it. In order, because the
+        order is the point — each refusal below is free, and the cheapest refusal comes first:
 
-        The slide's SANCTIONED marks travel with it too (D-A, v2.1.2), and for the mirror reason:
-        the check's fake-UI question is asked about a slide we deliberately ordered a real Notion
-        logo on, and the mismatch question about lettering that is part of that logo rather than
-        typeset copy. Ordering a mark and then flagging it would spend the retry undoing the
-        fidelity that ordered it.
+        * `env.halted` — Ctrl+C or the deadline. Nothing new is ordered (FR-201/108) -> `halted`,
+          which the gauntlet reads as a deadline stop.
+        * exhausted credits or an unsalvageable deck -> `failed`: there is nothing to buy and
+          nothing to buy it for.
+        * the PER-DECK cap (`run.gauntlet.deck_budget_usd`) -> `declined_deck_budget`. RESERVED
+          before the submit and settled after it (F4), so the cap is a ceiling on what this deck
+          can spend rather than a description of what it already has — and one every concurrent
+          re-render of the same round measures against the same claimed total.
+        * D51's RUNWAY -> `declined_runway`. A ten-minute job with four minutes of deadline left is
+          a purchased certainty of a timeout, and this refusal costs nothing.
+        * the RUN cap declining the discretionary reserve (FR-106c) -> `declined_budget`.
+        * anything the provider did to the job itself -> `failed`, and the frame keeps its standing
+          defects into the terminal policy.
+
+        FR-317 exclusivity (spec §7) is structural: this goes through `_submit`, NOT `_call`, so a
+        fix re-render is a FRESH submission with its own ledger rows that is never itself
+        resubmitted and never gets a second poll window. `lost=False` throughout — the slide being
+        improved is already on disk, so nothing here can put it in the missing-slide ledger.
         """
-        if not numbers:
-            return {}
-        report = await vision_check.check(
-            [self._input(n) for n in numbers],
-            expected=[self._expected(n) for n in numbers],
-            sanctioned_marks=[self._sanctioned_marks(n) for n in numbers],
-            call=self.env.llm_call, engine=self.env.engine, log=self.env.log)
-        return {number: report.verdict_for(position)
-                for position, number in enumerate(numbers, start=1)}
+        async def rerender(number: int, fix: str) -> gauntlet.RerenderResult:
+            env = self.env
+            if env.halted:
+                return gauntlet.RerenderResult(status="halted")
+            if env.credits_exhausted or self.doomed:
+                return gauntlet.RerenderResult(status="failed")
+            projected = self._projection()
+            if not await self._claim(projected, number):
+                return gauntlet.RerenderResult(status="declined_deck_budget")
+            billed = 0.0
+            try:
+                if not self._runway():
+                    return gauntlet.RerenderResult(status="declined_runway")
+                anchor = self.anchored and number != 1
+                refs = await self._refs(number, anchor, rerender=True)
+                prompt = self._prompt(number, anchor=anchor, refs=refs, fix=fix)
+                if prompt is None:
+                    return gauntlet.RerenderResult(status="failed")
+                starved = self.starved
+                outcome = await self._submit(
+                    prompt, [ref.url for ref in refs], kind="discretionary", priority=priority,
+                    lost=False,
+                    label=f"gauntlet re-render · slide {number} · {self.entry.asset_id}")
+                if outcome is None:
+                    return gauntlet.RerenderResult(
+                        status="declined_runway" if self.starved and not starved
+                        else "declined_budget")
+                billed = float(outcome.cost_usd or 0.0) or projected
+                stored = await self._store(number, outcome, lost=False)
+                if not stored:
+                    return gauntlet.RerenderResult(status="failed", cost_usd=billed)
+                self.rerendered.add(number)
+                return gauntlet.RerenderResult(
+                    status="delivered", cost_usd=billed,
+                    frame=gauntlet.FrameUnderTest(number=number, source=self._input(number)))
+            finally:
+                # Every path out of the claim — the four refusals, the delivery, an exception
+                # nobody here expects — gives the reservation back and accrues what was actually
+                # billed. A `finally` rather than a line per branch because a leaked claim is a
+                # deck refusing its own next fix over money it never spent, and there are five
+                # returns to leak it from.
+                await self._settle(projected, billed)
 
-    async def _rerender(
-        self, number: int, verdict: vision_check.ImageVerdict, priority: RenderPriority,
-    ) -> bool:
-        """FR-105's single discretionary re-render of one flagged slide, in place."""
-        self.env.log.warn("vision_check_flagged",
-                          f"{self.entry.asset_id} slide {number} flagged: {verdict.detail}",
-                          asset_id=self.entry.asset_id, slide=number,
-                          text_broken=verdict.text_broken, fake_ui=verdict.fake_ui,
-                          text_mismatch=verdict.text_mismatch)
-        # D-F: the verdict travels into the plan, so the re-render is told WHICH defect was seen.
-        # "Shorter text, larger type" is the remedy for a garbled glyph and a no-op for a render
-        # that invented words or drew a fake interface — the two failures that earned this retry
-        # most often in the 2026-08-13 audit.
-        plan = self._retry_plan(number, verdict)
-        # What the RE-CHECK must compare against is what the re-render was ordered to carry, which
-        # is the plan's text — identical to the panel under the FR-304 carve-out, shorter when the
-        # deck composed its own words. Recording it here keeps the second verdict honest instead
-        # of flagging a legitimately shortened line as a mismatch with the original.
-        self.ordered[number] = plan.slide_text
-        return await self._slide(number, anchor=self.anchored and number != 1,
-                                 kind="discretionary", priority=priority, plan=plan)
+        return rerender
+
+    async def _claim(self, projected: float, number: int) -> bool:
+        """F4: hold `projected` against `run.gauntlet.deck_budget_usd`, or refuse the re-render.
+
+        The pattern is `Budget.reserve`'s, one scope down (`budget.py`): decide and debit under one
+        lock, so concurrent callers can never jointly exceed the cap. It has to be, because the
+        gauntlet re-renders a round's failing frames CONCURRENTLY — the 2026-08-14 run gathered
+        eleven of them, every one read `gauntlet_spend` before any of them had accrued, and eleven
+        $0.03 jobs shipped against a $0.30 cap. Checking a number that only moves after the awaits
+        have finished is not a cap; it is a description of the previous round.
+
+        The projection is the same figure the money door prices the submission with
+        (`_projection`), and it is what is HELD; `_settle` swaps it for the provider's own figure
+        once the job comes back. A cap of `0` (or an absent one) is off, as before, and a caller
+        with no `price_job` seam projects `$0`, which claims nothing and refuses nothing.
+
+        Returns:
+            True when the money is claimed and the caller may submit; False when the cap refuses
+            it — nothing is held in that case, and the caller owes no settlement it did not make.
+        """
+        cap = float(getattr(self.env.config.run.gauntlet, "deck_budget_usd", 0.0) or 0.0)
+        async with self.gauntlet_lock:
+            if cap > 0 and self.gauntlet_spend + self.gauntlet_reserved + projected > cap:
+                self.env.log.warn(
+                    "gauntlet_budget_stop",
+                    f"{self.entry.asset_id} slide {number}: the per-deck gauntlet budget "
+                    f"({cap:.2f}) is spent ({self.gauntlet_spend:.2f} billed, "
+                    f"{self.gauntlet_reserved:.2f} claimed by re-renders still in flight) — no "
+                    "further fix re-render is ordered for this deck "
+                    "(run.gauntlet.deck_budget_usd)",
+                    asset_id=self.entry.asset_id, slide=number, spent_usd=self.gauntlet_spend,
+                    reserved_usd=self.gauntlet_reserved, projected_usd=projected, cap_usd=cap)
+                return False
+            self.gauntlet_reserved += projected
+            return True
+
+    async def _settle(self, projected: float, billed: float) -> None:
+        """F4's other half: release the claim and accrue what the provider actually charged.
+
+        Under the same lock as `_claim`, and never below zero — a float that drifted a claim into
+        `-0.0000001` would make the next round's arithmetic marginally generous, which is exactly
+        the failure mode this pair exists to close. `billed` is `0.0` for every path that never
+        reached a submission, so a declined or failed re-render costs the deck its claim back and
+        nothing else.
+        """
+        async with self.gauntlet_lock:
+            self.gauntlet_reserved = max(0.0, self.gauntlet_reserved - projected)
+            self.gauntlet_spend += billed
+
+    def _projection(self) -> float:
+        """What ONE more slide render costs, asked of the money door rather than computed here.
+
+        `Env.price_job` is the same `budget.job_projection` the metered `submit` prices every
+        submission with, exposed as a seam precisely so this module can measure a per-deck ceiling
+        without importing `budget` or touching `env.budget` — the module contract above stands.
+        A caller that wires no seam (a preview, a unit test) projects `$0`, which turns the per-deck
+        cap into a no-op rather than into a silent refusal of every fix.
+        """
+        price = getattr(self.env, "price_job", None)
+        return float(price(self.entry, "slide") or 0.0) if callable(price) else 0.0
+
+    def _runway(self) -> bool:
+        """D51 before the submit, not after it: has the clock room for one more image job?
+
+        Asked of `Env.runway_ok`, the same predicate the metered door enforces, so a fix re-render
+        and a first-pass slide answer the question identically. `True` with no seam wired: a run
+        with no deadline has infinite runway by definition (previews, unit tests).
+        """
+        ok = getattr(self.env, "runway_ok", None)
+        return bool(ok("slide")) if callable(ok) else True
 
     # --------------------------------------------------------------------------------- inputs
 
-    def _refs(self, number: int, anchor: bool) -> list[Reference]:
-        """Slide 1 leads for slides 2–N (FR-95 PRIMARY), then the brief's photos, then FR-315's
-        mark patches, then the hard cap.
+    async def _refs(self, number: int, anchor: bool, *,
+                    rerender: bool = False) -> list[Reference]:
+        """Slide 1 leads for slides 2–N (FR-95 PRIMARY), a re-render also gets its nearest
+        delivered NEIGHBOUR, then the brief's photos, then FR-315's mark patches, then the hard cap.
 
         Order is the contract: the anchor is `Image 1` and outranks everything (FR-190 rewrites its
-        role line from `carousel_anchor_instruction.md` over position 0), and the patches come last
-        because they are the narrowest attachments in the set — one logo each, contributing nothing
-        but their own pixels. The cap is the provider's, applied once at the end, so a deck with a
-        photo-heavy brief loses patches rather than losing its anchor.
+        role line from `carousel_anchor_instruction.md` over position 0), the neighbour sits
+        immediately under it, and the patches come last because they are the narrowest attachments
+        in the set — one logo each, contributing nothing but their own pixels. The cap is the
+        provider's, applied once at the end, so a deck with a photo-heavy brief loses patches
+        rather than losing its anchor.
+
+        The neighbour is a RE-RENDER's reference and only a re-render's (FR-323/FR-18 as amended
+        v2.2.0). A first pass is chained to the cover by design and a deck of slides each copying
+        the slide before it would drift by construction; a slide being rendered a second time,
+        however, is being fitted back INTO a deck that already exists around it, and the cover
+        alone is a poor description of what page four looks like. It is one of our own rendered
+        artifacts (D46-compatible — never a source byte), and it costs nothing: the URL is already
+        held.
         """
         refs = ([Reference(self.anchor_url, _ANCHOR_ROLE), *self.attached]  # role -> ROLE_ANCHOR
                 if anchor and self.anchor_url else list(self.attached))
+        if rerender and (neighbour := await self._neighbour_ref(number)) is not None:
+            refs.insert(1 if anchor and self.anchor_url else 0, neighbour)
         refs.extend(self._patch_refs(number))
         return refs[:self._limit]
+
+    async def _neighbour_ref(self, number: int) -> Reference | None:
+        """The nearest ALREADY DELIVERED slide, as a look-and-layout reference, or `None`.
+
+        Nearest by distance, earlier slide winning a tie — the page before is the page a reader
+        sees immediately before this one, so it is the stronger continuity claim. The anchor is
+        excluded: it is already attached in its own right on a chained deck, and the whole value of
+        this reference is that it is NOT the cover.
+
+        Prefers the provider URL we are already holding and falls back to uploading the delivered
+        file (`refs.upload_local`, which is memoised per run) when there is none to hold — a slide
+        stored from a URL that has since expired, or a deck long enough that Kie's ~24 h window
+        matters. A failed upload costs the reference and nothing else: the re-render still carries
+        the anchor, the brief's photos and its patches, exactly as it did before this existed.
+        """
+        candidates = sorted((n for n in self.delivered if n not in (number, 1)),
+                            key=lambda n: (abs(n - number), n > number))
+        for near in candidates:
+            url = self.urls.get(near, "")
+            if not url and (path := self.paths.get(near)) is not None:
+                url = await upload_local(path, self.env,
+                                         label=f"{self.entry.asset_id} slide {near} neighbour ref")
+            if url:
+                return Reference(url, _NEIGHBOUR_ROLE.format(number=near))
+        return None
 
     def _patch_refs(self, number: int) -> list[Reference]:
         """FR-315: this slide's sanctioned marks that have pixels, as MARK PATCH references.
@@ -725,12 +1175,12 @@ class _Deck:
         if not sanctioned:
             return []
         # BOTH sides of the join run the same two functions in the same order (v2.1.4). The patch
-        # table is keyed `_collapse(_mark_name(box_name))` at upload; matching a sanctioned name
-        # with `_collapse` alone made the join depend on the two strings having been *written* the
+        # table is keyed `collapse(mark_name(box_name))` at upload; matching a sanctioned name
+        # with `collapse` alone made the join depend on the two strings having been *written* the
         # same way, and in glz0 they were not — box `"Claude"`, sanctioned `"Claude logo/wordmark"`,
-        # no match, no patch, a recoloured logo. `_mark_name` is idempotent, so applying it to an
+        # no match, no patch, a recoloured logo. `mark_name` is idempotent, so applying it to an
         # already-cleaned name is free and the symmetry is now structural rather than incidental.
-        keys = {name: _collapse(_mark_name(name)) for name in sanctioned}
+        keys = {name: collapse(mark_name(name)) for name in sanctioned}
         refs = [Reference(self.patches[keys[name]], _MARK_PATCH_ROLE.format(name=name))
                 for name in sanctioned if keys[name] in self.patches]
         self.env.log.event(
@@ -741,20 +1191,31 @@ class _Deck:
             name_only=[name for name in sanctioned if keys[name] not in self.patches])
         return refs[:_MAX_MARK_PATCHES]
 
-    def _prompt(
-        self, number: int, *, anchor: bool, refs: list[Reference],
-        plan: vision_check.RetryPlan | None,
-    ) -> str | None:
-        """One slide's finished prompt, or `None` when it cannot be filled (FR-260)."""
+    def _prompt(self, number: int, *, anchor: bool, refs: list[Reference],
+                fix: str = "") -> str | None:
+        """One slide's finished prompt, or `None` when it cannot be filled (FR-260).
+
+        `fix` is the gauntlet's canned remedy suffix on a fix-loop re-render (FR-323) and `""`
+        otherwise. It goes through the ENGINE's `suffix` rather than being appended afterwards,
+        because the provider measures the whole string: three glz0 retry prompts were built by
+        appending a block to a prompt already at the limit, and each bought an HTTP 500.
+
+        The TEXT is identical on both passes, and so is the RULEBOOK around it (F1-C): the fix
+        suffix's room is reserved on every pass, so a re-render is assembled against exactly the
+        body budget its first render had. A gauntlet re-render changes the REQUEST, never the
+        words: the strings are locked contract strings (FR-304 — a verbatim quote of the source
+        panel, or its D54-compressed text) and the fix channel is removal-side and layout-side by
+        construction.
+        """
         env = self.env
-        copyset = plan.copy if plan is not None else self.copy
-        text = plan.slide_text if plan is not None else self.texts[number - 1]
+        copyset = self.copy
+        text = self.texts[number - 1]
         if copyset is not None and not text.strip():
             # FR-304: a wordless source panel renders wordless. `prompts_engine._onimage_text`
             # falls back to `copy.headline` when a carousel slide's text is empty (`slide_text or
             # headline`) — the last repeat path left in the deck — so this slide's context gets a
             # headline-free copy of the CopySet. A local blanking, not a mutation: the deck's own
-            # copy is what the caption, the retry plan and every other slide still read.
+            # copy is what the caption and every other slide still read.
             copyset = replace(copyset, headline="")
         urls = [ref.url for ref in refs]
         try:
@@ -788,7 +1249,6 @@ class _Deck:
                 # which is what makes the template state the absence instead.
                 slide_counter=self._counter(number),
                 text_budgets=env.config.run.text_budgets,
-                budget_scale=plan.budget_scale if plan is not None else 1.0,
                 reference_roles=roles,
                 slide_index=f"{number} of {len(self.texts)}",  # 50 §6's fill convention
                 slide_text=text,
@@ -803,13 +1263,8 @@ class _Deck:
             context["render_prompt"] = self._guided(context["render_prompt"], number)
             prompt = env.engine.render(
                 ROLE_SLIDE, context, profile=env.config.models.image_profile,
-                max_chars=self._limits.max_prompt_chars,  # 50 §7
-                # FR-193: the retry repeats the preserve list and adds one line. It goes through
-                # the engine rather than being appended after it, because the provider measures
-                # the whole string: three glz0 retry prompts were built by appending this block to
-                # a prompt already at the limit, so nothing guarded them and each bought an HTTP
-                # 500 that FR-317 then bought twice.
-                suffix=plan.instruction if plan is not None else "")
+                max_chars=self._prompt_cap(fix),  # 50 §7, with F1-C's fix reservation
+                suffix=fix)
         except (UnresolvedPlaceholderError, MissingTemplateError, ValueError, LookupError) as exc:
             env.log.error("prompt_assembly_failed", f"{self.entry.asset_id} slide {number}: {exc}",
                           asset_id=self.entry.asset_id, slide=number, role=ROLE_SLIDE)
@@ -820,7 +1275,7 @@ class _Deck:
                       verbose_only=True, asset_id=self.entry.asset_id, slide=number,
                       source_panel=number if self.source_post is not None else None,
                       onimage_text=bool(text.strip()),
-                      references=len(urls), retry=plan is not None, prompt=prompt)
+                      references=len(urls), retry=bool(fix), prompt=prompt)
         return prompt
 
     def _guided(self, render_prompt: str, number: int) -> str:
@@ -838,42 +1293,6 @@ class _Deck:
         key = GUIDANCE_COVER if number == 1 else GUIDANCE_SLIDE
         guidance = self.style.per_format_guidance.get(key, "").strip()
         return f"{render_prompt} {guidance}".strip() if guidance else render_prompt
-
-    def _retry_plan(
-        self, number: int, verdict: vision_check.ImageVerdict | None = None
-    ) -> vision_check.RetryPlan:
-        """FR-105's retry: a different request, not a plea — and never a trimmed quote.
-
-        On a panel-mapped deck (`source_post is not None`, the same test `_panel_note` and
-        `_panel_source_line` make) this slide's line IS source panel *i*, verbatim under FR-304,
-        so it passes through untouched and the retry varies the layout instead (v2.1.1). The
-        −40% cut survives only for a deck that composed its own words — measured against the
-        `slide` budget that governs a deck slide, never against `image_headline`, which is where
-        a 131-character panel came back as a 53-character mid-sentence stub.
-
-        `verdict` (D-F) is the first pass's answer for THIS slide; it changes the instruction only
-        — an invented word is forbidden by name, a fake interface is forbidden by name — and never
-        the text, which stays governed by the verbatim rule above.
-        """
-        return vision_check.retry_plan(
-            self.copy or CopySet(asset_id=self.entry.asset_id, language=self.entry.language),
-            "carousel", self.env.config.run.text_budgets, slide_text=self.texts[number - 1],
-            verbatim=self.source_post is not None, verdict=verdict)
-
-    def _expected(self, number: int) -> str:
-        """The words this slide was ordered to carry — the check's referent (FR-105 v2.1.1).
-
-        `ordered` wins over `texts` for a slide already re-rendered under a retry plan, and slide 1
-        carries the deck's wordmark because that is the one signed slide (M12) and the signature
-        renders through the TEXT block (B1) — an unlisted wordmark would read as an invented word.
-        The counter is listed for the same reason and on every slide (D-D): the badge was ORDERED
-        as a locked string, so an unlisted "3/5" is three invented characters per slide.
-        """
-        return vision_check.expected_text(
-            self.copy, "carousel",
-            slide_text=self.ordered.get(number, self.texts[number - 1]),
-            wordmark=self.wordmark if number == 1 else "",
-            slide_counter=self._counter(number))
 
     # ------------------------------------------------------------------------------ packaging
 
@@ -906,14 +1325,77 @@ class _Deck:
             # machine-readable fact the spend table and the gallery header then state.
             "slides_ordered": len(self.texts),
             "missing_slide_numbers": missing,
-            "vision_check_result": self._verdict(),
+            # FR-328 (spec §6): the gate's own receipt, on EVERY terminal path it touched — pass,
+            # blocked, degraded, budget stop, deadline stop. `None` when the gate never ran.
+            "gauntlet": contracts.report_meta(self.report),
+            # The same verdict in FR-27's four-state vocabulary, which the gallery badge, the spend
+            # surfaces and a Phase-2 publisher all read (see `contracts.verdict_result`).
+            "vision_check_result": contracts.verdict_result(
+                self.report, rerendered=bool(self.rerendered)),
         }
+        if self.report is not None:  # the operator-readable critic record, beside the artifacts
+            self.folder.write_gauntlet_report(
+                contracts.report_rows(self.report, asset_id=entry.asset_id))
+        if self.doomed and self.delivered:
+            # D51: the deck rendered slides and can still never ship as the deck that was approved.
+            # It is a FAILURE that keeps every paid artifact (FR-74) — the operator can open the
+            # folder and see what was bought — and it is deliberately not `incomplete`, because
+            # `incomplete` means "this partial deck ships" and this one does not.
+            reason = (f"deck_viability_loss: {self.doomed} — a carousel is our slide i for their "
+                      f"panel i (FR-304), so a slide lost to a render defect cannot be shipped "
+                      f"around; {len(self.delivered)} paid slide(s) are kept but the deck is not "
+                      f"published (D51)")
+            entry.status = PlanEntryStatus.FAILED
+            entry.skip_reason = entry.skip_reason or reason
+            fields["event_id"] = env.log.error(
+                "deck_viability_loss", f"{entry.asset_id}: {reason}", asset_id=entry.asset_id,
+                delivered=sorted(self.delivered), missing_slide_numbers=missing,
+                cost_usd=fields["actual_cost_usd"],
+                # EVERY loss, like `carousel_incomplete`'s field and for the same reason: the
+                # numbers and their explanations are two halves of one line and must agree.
+                detail="; ".join(self.reasons))
+            return self.folder.skip(reason, DECK_VIABILITY_LOSS, **fields)
         if not self.delivered:
             reason = "; ".join(self.reasons[:3]) or "carousel produced no slides"
             entry.status = PlanEntryStatus.ABANDONED if self.abandoned else PlanEntryStatus.FAILED
             entry.skip_reason = entry.skip_reason or reason
-            return self.folder.skip(
-                reason, DegradationTag.ABANDONED if self.abandoned else None, **fields)
+            tag = DegradationTag.ABANDONED if self.abandoned else (
+                DECK_VIABILITY_LOSS if self.doomed else None)
+            return self.folder.skip(reason, tag, **fields)
+        if self.report is not None and self.report.result == "blocked":
+            # FR-325: the deck RENDERED — every slide is on disk and every dollar is spent — and a
+            # standing defect the fix loop could not clear means it is not published. Deliberately
+            # neither `finish()` nor `skip()`: `skip()` means "this creative did not happen", and
+            # this one happened in full. `PlanEntryStatus.BLOCKED` is a non-success everywhere
+            # success matters — the trend-history window does not burn this deck's source post, the
+            # `latest` pointer is not claimed on its account, and the run exits 1.
+            reason = ("gauntlet_blocked: the post-render critic panel found standing defect(s) "
+                      f"after {len(self.report.rounds)} round(s) and {self.report.rerenders} "
+                      "re-render(s); every paid slide is kept and nothing is published (FR-325). "
+                      "See BLOCKED.txt and GAUNTLET_REPORT.yaml")
+            entry.status = PlanEntryStatus.BLOCKED
+            entry.skip_reason = entry.skip_reason or reason
+            fields["event_id"] = env.log.error(
+                "gauntlet_blocked", f"{entry.asset_id}: {reason}", asset_id=entry.asset_id,
+                slides=len(self.delivered), rounds=len(self.report.rounds),
+                rerenders=self.report.rerenders, cost_usd=fields["actual_cost_usd"],
+                critic_cost_usd=round(self.report.critic_cost_usd, 6),
+                rerender_cost_usd=round(self.report.rerender_cost_usd, 6))
+            return self.folder.block(reason, contracts.blocked_text(self.report), **fields)
+        if self.report is not None and self.report.craft_only:
+            # FR-325 tier 3: the only standing failures are craft OPINIONS about quality. The deck
+            # ships and says so — `cfg.craft_blocks: true` is what turns this into the branch above.
+            self.folder.mark(GAUNTLET_CRAFT)
+        if self.report is not None and (self.report.degraded_gate
+                                        or self.report.result == "degraded"):
+            # Every degraded ship carries the tag (fixed 2026-08-20, live gap found the day
+            # `fail_action: degrade` became the shipped policy). Causes: D3 (a critic that could
+            # not be parsed was dropped, gate thinner than configured), FR-325's cosmetic /
+            # low-confidence / final-round-grace demotions (degraded_gate), and a contract-tier
+            # `fail_action: degrade` outcome (result alone — degraded_gate stays False there so
+            # the console can still tell the causes apart). Either way the deck ships and the
+            # tag is what stops that reading as a clean pass.
+            self.folder.mark(GAUNTLET_DEGRADED)
         if missing:  # 10 §10: completed slides ship, the deck says which ones did not
             self.folder.mark(DegradationTag.INCOMPLETE)
             env.log.warn("carousel_incomplete",
@@ -929,7 +1411,9 @@ class _Deck:
         fields["event_id"] = env.log.event(
             "creative_delivered", f"{entry.asset_id} deck of {len(self.delivered)} slide(s)",
             asset_id=entry.asset_id, slides=len(self.delivered),
-            cost_usd=fields["actual_cost_usd"], vision_check=fields["vision_check_result"].value)
+            cost_usd=fields["actual_cost_usd"],
+            gauntlet=(self.report.result if self.report is not None else "not_run"),
+            vision_check=fields["vision_check_result"].value)
         return self.folder.finish(**fields)
 
     def _route_ids(self) -> list[str]:
@@ -1054,11 +1538,11 @@ class _Deck:
         two-letter handle would swallow half of any English sentence, and a brief scrubbed to
         nothing is a slide that renders content-free for no reason.
         """
-        ident = _collapse(getattr(self.source_post, "author", "") or "")
+        ident = collapse(getattr(self.source_post, "author", "") or "")
         if len(ident) < _MIN_AUTHOR_IDENT:
             return brief
         kept = [part.strip() for part in _SENTENCE_SPLIT.split(brief)
-                if part.strip() and ident not in _collapse(part)]
+                if part.strip() and ident not in collapse(part)]
         scrubbed = " ".join(kept)
         if scrubbed != brief.strip():
             self.env.log.warn(
@@ -1122,14 +1606,14 @@ class _Deck:
         # logo drawn in full brand colour on our slide.
         blocked = tuple(word for word in (c.strip().casefold() for c in self._competitors)
                         if len(word) >= 2)
-        author = _collapse(str(getattr(self.source_post, "author", "") or ""))
+        author = collapse(str(getattr(self.source_post, "author", "") or ""))
         out: list[str] = []
         for raw in list(getattr(slide, "brand_marks", ()) or ())[:_MAX_MARKS_READ]:
-            name = _mark_name(str(raw or ""))
+            name = mark_name(str(raw or ""))
             folded = name.casefold()
             if not name or _is_chrome(str(raw)) or any(word in folded for word in blocked):
                 continue
-            if author and author in _collapse(name):
+            if author and author in collapse(name):
                 continue
             if folded not in {existing.casefold() for existing in out}:
                 out.append(name)
@@ -1154,14 +1638,50 @@ class _Deck:
         return f"source panel {number} of {width}"
 
     @property
-    def _checking(self) -> bool:
-        """FR-27: the check runs only when it is on AND a metered LLM call exists to make it."""
-        return bool(self.env.config.run.vision_check) and self.env.llm_call is not None
-
-    @property
     def _limits(self) -> Any:
         """This deck's render-profile limits — reference ceiling and 50 §7's prompt bound."""
         return render.get_profile(self.env.config.models.image_profile).limits
+
+    def _prompt_cap(self, fix: str) -> int | None:
+        """50 §7's prompt ceiling, with the fix suffix's room RESERVED on every pass (F1-C).
+
+        The problem this closes. `PromptEngine.render(suffix=...)` counts the suffix inside
+        `max_chars` — correctly, because the provider counts it — so passing the raw profile limit
+        gave a first render `cap` characters of body and a re-render `cap - len(fix) - 2`. The
+        assembler drops the assembled TAIL first, and this template's tail is the back half of its
+        CONSTRAINTS: the @handle/URL ban, the exclusions, the text budgets, the no-duplicate rule.
+        Round 2 was therefore judged against rules round 2 was never sent, which is a loop that
+        oscillates instead of converging — measured at 924–1,248 characters of lost rulebook per
+        fix round in the 2026-08-14 acceptance run, and one of the defects behind its blocked decks.
+
+        The formula. Hold `gauntlet.fix_reserve` back always, then hand the actual suffix's room
+        BACK when there is one, and never exceed the provider's own limit::
+
+            (cap - reserve) + (len(fix) + 2 if fix else 0), capped at cap
+
+        First render: `cap - reserve` of body and no suffix. Re-render: the same `cap - reserve` of
+        body, with the real fix riding in the space that was reserved for it. Identical body
+        budgets, which is the point — the deck's slides must be assembled the same way whichever
+        round they were rendered in.
+
+        Args:
+            fix: the gauntlet's canned remedy suffix, or `""` on a first pass.
+
+        Returns:
+            The `max_chars` to render under, or `None` for a profile that declares no limit (the
+            reservation would be arithmetic on an absent number, and a suffix cannot overflow a
+            wall that does not exist).
+        """
+        cap = self._limits.max_prompt_chars
+        if not cap:
+            return None
+        if self.fix_reserve_chars < 0:  # once per deck: the sheet is a file read, not a constant
+            self.fix_reserve_chars = gauntlet.fix_reserve(self.env.engine)
+        room = int(cap) - self.fix_reserve_chars + (len(fix) + _SUFFIX_SEPARATOR if fix else 0)
+        # The floor is paranoia about configuration, not about this run: a profile whose declared
+        # limit is smaller than the fix channel itself would otherwise ask the assembler for a
+        # negative budget. One character of body is a hard-truncation event the operator sees.
+        return max(1, min(int(cap), room))
 
     @property
     def _limit(self) -> int:
@@ -1176,12 +1696,8 @@ class _Deck:
         """A check input at NATIVE resolution — the local file when it landed, else its URL."""
         return self.paths.get(number) or (self.anchor_url if number == 1 else "")
 
-    def _verdict(self) -> VisionCheckResult:
-        """One deck-level state out of every verdict it collected, worst first (FR-27)."""
-        return next((state for state in _SEVERITY if state in self.checks),
-                    VisionCheckResult.NOT_CHECKED)
-
-    def _note(self, reason: str, *, error: bool = False, lost: bool = True) -> bool:
+    def _note(self, reason: str, *, error: bool = False, lost: bool = True,
+              defect: bool = False) -> bool:
         """Record one setback and log it. Always False, so callers can `return self._note(...)`.
 
         Two different events wear one shape here, and only one of them is a LOSS. `lost=True` is a
@@ -1192,7 +1708,17 @@ class _Deck:
         line belongs in the log and NOT in the loss ledger: `missing_slide_numbers` and `detail`
         are read as one sentence, and a re-render's failure in `detail` names a slide that is not
         missing.
+
+        `defect=True` is the third distinction and D51's whole trigger: this loss is a RENDER
+        DEFECT that has already used everything the pipeline has for it (FR-317's resubmit, and for
+        slide 1 FR-95's replacement anchor), so the slide is never coming and the deck can never be
+        whole. It is set only by the paths that know that — a terminal provider failure, a
+        deterministic prompt failure, a packaging failure that is not a full disk — and never by
+        the ones that describe the RUN stopping rather than the render failing: halt, deadline,
+        runway refusal, exhausted credits, full disk. Those keep 10 §10's partial deck.
         """
+        if defect and lost and not self.doomed:
+            self.doomed = reason
         if not lost:
             self.env.log.warn(
                 "vision_retry_unavailable",
@@ -1206,5 +1732,6 @@ class _Deck:
         return False
 
 
-__all__ = ["GUIDANCE_COVER", "GUIDANCE_SLIDE", "PANELS_TRUNCATED", "ROLE_ANCHOR", "ROLE_SLIDE",
-           "ReserveKind", "Submit", "render_carousel"]
+__all__ = ["DECK_VIABILITY_LOSS", "GAUNTLET_CRAFT", "GAUNTLET_DEGRADED", "GUIDANCE_COVER",
+           "GUIDANCE_SLIDE", "PANELS_TRUNCATED", "ROLE_ANCHOR", "ROLE_SLIDE", "ReserveKind",
+           "Submit", "render_carousel"]

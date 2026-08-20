@@ -441,16 +441,25 @@ def test_the_m15_strip_guidance_is_stated_to_the_model_in_the_pinned_words() -> 
         in stated
 
 
-def test_the_template_names_exactly_the_two_placeholders_this_role_may_resolve() -> None:
-    """`topic_items` and `competitor_list` are allowlisted for this role AND NOWHERE ELSE (§1.5
-    B4). A third slot here would be a channel into the one prompt that reads raw competitor text —
-    and one of the two missing would leave the screen judging topics it was never shown."""
+def test_the_template_names_only_placeholders_this_role_may_resolve_and_no_one_else_may() -> None:
+    """`topic_items`, `competitor_list` and (v2.2.0) `audience_profile` are allowlisted for this
+    role AND NOWHERE ELSE (§1.5 B4). A slot outside that row would be a channel into the one prompt
+    that reads raw competitor text — and one of the first two missing would leave the screen
+    judging topics it was never shown.
+
+    Relaxed to a SUBSET for one wave while the allowlist row (code) existed and the template bytes
+    naming the slot did not, and RESTORED here now that the screen actually asks for the audience:
+    the row and the template are equal again, so a slot allowlisted but never shown to the model —
+    or shown but not allowlisted — fails right here rather than degrading the screen silently. The
+    exclusive-holder check below is the part that guards the leak.
+    """
     from hypesocials import prompts_engine
 
+    allowed = prompts_engine.allowlist("topic_filter_system.md")
     names = set(prompts_engine._names(_filter_template()))
 
-    assert names == {"topic_items", "competitor_list"}
-    assert prompts_engine.allowlist("topic_filter_system.md") == frozenset(names)
+    assert names == allowed
+    assert allowed == frozenset({"topic_items", "competitor_list", "audience_profile"})
     holders = {role for role in prompts_engine._ALLOWLIST
-               if names & prompts_engine.allowlist(role)}
+               if allowed & prompts_engine.allowlist(role)}
     assert holders == {"topic_filter_system.md"}

@@ -45,7 +45,7 @@ import pytest
 import yaml
 from PIL import Image
 
-from hypesocials import render, styles
+from hypesocials import gauntlet, render, styles
 from hypesocials.config import BrandingConfig, Config
 from hypesocials.generate import carousel as carousel_module
 from hypesocials.generate import refs as refs_module
@@ -71,6 +71,7 @@ from hypesocials.models import (
 )
 from hypesocials.outputs import AssetFolder, PackagingError, packager
 from hypesocials.prompts_engine import PromptEngine, style_dna
+from hypesocials.sources import mark_names
 from hypesocials.sources.slide_intel import MarkBox, SlideIntel, SourceSlide
 from hypesocials.render import KieOutOfCredits
 
@@ -144,37 +145,75 @@ def failed(cause: RenderFailCause = RenderFailCause.PROVIDER_FAIL, cost: float =
                          fail_message="provider said no", cost_usd=cost)
 
 
-class VisionStub:
-    """A `models.StructuredCall` that answers the vision check from a per-call flag table.
+class CriticStub:
+    """A `models.StructuredCall` answering the GAUNTLET's per-critic schema from a fail table.
 
-    `defect` names WHICH of FR-105's three questions comes back true for a flagged image. It
-    defaults to `text_broken` so every pre-v2.1.1 test reads unchanged, and `text_mismatch` — the
-    defect the 2026-08-13 audit shipped unseen — is selected by name where it is the subject.
-    `carriers` keeps each call's user turn, which is where the expected text rides.
+    `rounds` is one entry per call made to the critic that OWNS `code` — a set of 1-based
+    ATTACHMENT SLOTS that fail in that round. Keying on the owning critic is what makes the table
+    round-accurate without the stub having to model FR-324's scoping: all three critics run
+    concurrently every round, but only one of them can emit a given code (the per-critic enums are
+    a partition), so "the second time `brief` was asked" IS "round 2".
+
+    `code` therefore selects both the defect and the critic that reports it: `invented_text` is
+    leakage (`brief`, always blocks), `style_layout` is contract (`system`), `contrast` is craft
+    (ships unless `craft_blocks`). `unavailable` makes a critic answer unusably, which is how the
+    degraded-gate path is exercised.
     """
 
-    def __init__(self, flags: list[set[int]] | None = None,
-                 events: list[str] | None = None, defect: str = "text_broken",
-                 detail: str = "garbled") -> None:
-        self.flags = flags or []
-        self.defect = defect
-        #: What the model says it SAW. D-F quotes it into the re-render's instruction, so a test
-        #: about the defect-aware retry needs to be able to plant a sentinel here.
+    def __init__(self, rounds: list[set[int]] | None = None, events: list[str] | None = None,
+                 code: str = "garbled", detail: str = "doubled type",
+                 confidence: str = "high", unavailable: Sequence[str] = ()) -> None:
+        self.rounds = [set(entry) for entry in (rounds or [])]
+        self.code = code
         self.detail = detail
-        self.calls: list[int] = []
-        self.carriers: list[str] = []
+        self.confidence = confidence
+        self.unavailable = set(unavailable)
+        self.calls: list[int] = []  # frames attached, per call, in order
+        self.critics: list[str] = []  # which critic each call was
+        self.roles: list[str] = []  # the LLM role each call rode
+        self.systems: list[str] = []  # each call's rendered critic prompt
         self.events = events if events is not None else []
+        self._owner_calls = 0
+
+    @property
+    def owner(self) -> str:
+        """The one critic whose enum carries `code` — the partition makes this unambiguous."""
+        return next(name for name, codes in gauntlet.CRITIC_CODES.items() if self.code in codes)
+
+    @property
+    def rounds_run(self) -> int:
+        """How many rounds actually judged — one per call to the owning critic."""
+        return self._owner_calls
+
+    def frames_for(self, critic: str) -> list[int]:
+        """How many frames each of that critic's calls carried, in order (FR-324's scoping)."""
+        return [count for count, name in zip(self.calls, self.critics) if name == critic]
+
+    def prompt_for(self, critic: str, index: int = 0) -> str:
+        """That critic's rendered system prompt on its `index`-th call — the contract on the wire."""
+        return [system for system, name in zip(self.systems, self.critics)
+                if name == critic][index]
 
     async def __call__(self, role, messages, json_schema, images=None) -> ParsedResult:
+        name = str(json_schema["name"]).removeprefix("gauntlet_")
         count = len(images or [])
         self.calls.append(count)
-        self.carriers.append(next(m["content"] for m in reversed(messages) if m["role"] == "user"))
-        self.events.append(f"check:{count}")
-        flagged = self.flags[len(self.calls) - 1] if len(self.calls) <= len(self.flags) else set()
-        return ParsedResult(parsed={"verdicts": [
-            {"image": i, "text_broken": False, "fake_ui": False, "text_mismatch": False,
-             self.defect: i in flagged, "detail": self.detail}
-            for i in range(1, count + 1)]}, raw_text="{}")
+        self.critics.append(name)
+        self.roles.append(role)
+        self.systems.append(next(m["content"] for m in messages if m["role"] == "system"))
+        self.events.append(f"critic:{name}:{count}")
+        if name in self.unavailable:
+            return ParsedResult(parsed=None, raw_text="not json at all", degraded=True,
+                                reason="the critic returned prose")
+        failing: set[int] = set()
+        if name == self.owner:
+            index, self._owner_calls = self._owner_calls, self._owner_calls + 1
+            failing = self.rounds[index] if index < len(self.rounds) else set()
+        return ParsedResult(parsed={"frames": [
+            {"frame": slot, "pass": slot not in failing,
+             "defects": ([{"code": self.code, "zone": "middle", "confidence": self.confidence,
+                           "detail": self.detail}] if slot in failing else [])}
+            for slot in range(1, count + 1)]}, raw_text="{}")
 
 
 class Log:
@@ -442,7 +481,16 @@ def give_source_slides(tmp_path: Path, count: int = 3, post_id: str = "post-a") 
     folder = tmp_path / "source" / post_id
     folder.mkdir(parents=True, exist_ok=True)
     for position in range(1, count + 1):
-        Image.new("RGB", (400, 600), color=(30, 30, 60)).save(folder / f"slide_{position:02d}.jpg")
+        slide = Image.new("RGB", (400, 600), color=(30, 30, 60))
+        # TEXTURED, not flat (v2.2.0). `logo_crops._crop_valid` refuses a crop that is one flat
+        # colour — that is how it rejects the black-letterbox patches run `…_m39f` uploaded as
+        # logos — so a single-colour fixture would make every mark-patch test here a test of that
+        # refusal instead of of the thing it is about.
+        for top in range(0, 600, 20):
+            for left in range(0, 400, 20):
+                if ((left // 20) + (top // 20)) % 2:
+                    slide.paste((225, 205, 185), (left, top, left + 20, top + 20))
+        slide.save(folder / f"slide_{position:02d}.jpg")
     return folder
 
 
@@ -772,59 +820,167 @@ async def test_an_unbranded_deck_carries_no_wordmark_and_no_colour_block(tmp_pat
     assert "BRANDING" in submit.slide(1).prompt, "the labelled line stays, empty (ignore-if-empty)"
 
 
-# --------------------------------------------------------------- FR-105 ordering (barrier item)
+# ------------------------------------------------------ D49 gauntlet ordering (barrier item)
 
 
-async def test_fr105_anchor_checked_before_slides_submitted(tmp_path: Path) -> None:
-    """The anchor is a chained artifact: checking it after the deck is checking it N renders too
-    late (FR-95/105). Slide 1 renders alone, is checked, and only then do slides 2–N go out."""
+async def test_the_anchor_is_gated_before_slides_two_onward_are_submitted(tmp_path: Path) -> None:
+    """The anchor is a chained artifact: judging it after the deck is judging it N renders too
+    late (FR-95/D49). Slide 1 renders alone, faces the pre-gate, and only then do slides 2-N go.
+
+    Spec §1: the pre-gate is `run_single` with the `brief` + `craft` critics only — `system` judges
+    cross-frame consistency and a deck of one has none — and FR-324's ceiling of one extra round.
+    A cover that PASSES its first round (this deck's) returns there and never buys the second, so
+    the pre-gate is still exactly one call per critic here.
+    """
     entry, events = make_entry(slides=4), []
     env = make_env(tmp_path, entry)
-    env.config.run.vision_check = True
-    env.llm_call = VisionStub(events=events)
+    env.llm_call = CriticStub(events=events)
     submit = FakeSubmit(events=events)
 
     record = await render_carousel(entry, env, make_folder(tmp_path, entry), submit=submit)
 
-    anchor_check = events.index("check:1")
+    gate = next(index for index, name in enumerate(events) if name.startswith("critic:"))
     assert events[0] == "submit:1:projected", "slide 1 renders first and alone (FR-95)"
-    assert events[1] == "check:1", "nothing else is ordered before the anchor verdict"
     later = [index for index, name in enumerate(events) if name.startswith("submit:")
              and not name.startswith("submit:1:")]
-    assert later and min(later) > anchor_check, "no slide 2–N is submitted before the check"
-    assert env.llm_call.calls == [1, 4], "one anchor call, then ONE call for the whole deck"
+    assert later and min(later) > gate, "no slide 2-N is submitted before the anchor is judged"
+    assert env.llm_call.frames_for("brief") == [1, 4], "anchor alone, then the whole deck"
+    assert env.llm_call.frames_for("system") == [4], "no cross-frame verdict on a deck of one"
     assert record.status is AssetStatus.SUCCESS
+    assert record.gauntlet["result"] == "pass"
     assert record.vision_check_result is VisionCheckResult.PASSED
 
 
-async def test_deck_check_is_one_call_carrying_every_delivered_slide(tmp_path: Path) -> None:
-    """N slides never cost N calls, and the estimate prices it the same way (FR-105/107)."""
+async def test_fr324_a_cover_that_fails_its_first_round_buys_exactly_one_re_render_before_the_deck(
+    tmp_path: Path,
+) -> None:
+    """F3 (Session 5.5): the pre-gate's ONE extra round, which the code used to forbid.
+
+    `prds/10-pipeline.md` (FR-324) grants "≤1 anchor re-render, on the deck budget"; `_anchor_gate`
+    shipped `rounds_max=1`, and a round ceiling of 1 breaks BEFORE the fix loop — so a cover with a
+    single fixable defect went straight to its terminal verdict having never bought the render that
+    would have fixed it. The 2026-08-14 acceptance run blocked a whole deck that way, on a missing
+    page counter. Two rounds is what the PRD says and what this pins: judge, fix the cover once,
+    judge the replacement — and only then order the pages that will copy it.
+
+    The ordering assertion is the point of doing it here rather than in the deck loop. Every slide
+    2-N is rendered against slide 1 as its PRIMARY reference (FR-95), so a cover repaired after the
+    deck was ordered is a repair nine pages never see.
+    """
+    entry, events = make_entry(slides=3), []
+    env = make_env(tmp_path, entry, texts=["Wired backwards", "Two", "Three"])
+    # `garbled` is a CRAFT code, and craft is one of the pre-gate's two critics. Entry 0 is the
+    # pre-gate's round 1 (slide 1 fails), entry 1 its round 2 (the replacement is clean), entry 2
+    # the deck round that follows.
+    env.llm_call = CriticStub(rounds=[{1}, set(), set()], code="garbled", events=events)
+    submit = FakeSubmit(events=events)
+
+    record = await render_carousel(entry, env, make_folder(tmp_path, entry), submit=submit)
+
+    fixes = [call for call in submit.calls if call.kind == "discretionary"]
+    assert len(fixes) == 1, [call.kind for call in submit.calls]
+    assert fixes[0].slide == 1 and fixes[0].priority is RenderPriority.WAVE1, \
+        "the cover's repair is wave-1 work: the deck is waiting on it"
+    assert submit.calls.index(fixes[0]) < min(
+        index for index, call in enumerate(submit.calls) if call.slide != 1), \
+        "the cover is repaired BEFORE slides 2-N are ordered to reproduce it"
+    assert env.llm_call.frames_for("craft") == [1, 1, 3], \
+        "two pre-gate rounds over the cover alone, then one deck round over every frame"
+    assert record.gauntlet["rerenders"] == 1, "the anchor's round is counted in the deck's receipt"
+    assert record.status is AssetStatus.SUCCESS and record.slide_count == 3
+    assert env.log.fields("gauntlet_anchor")["result"] == "pass"
+    assert env.log.fields("gauntlet_anchor")["rerenders"] == 1
+
+
+async def test_fr324_a_cover_still_failing_after_its_one_re_render_is_final_and_buys_no_deck(
+    tmp_path: Path,
+) -> None:
+    """The other half of the ceiling: ONE extra round, never two.
+
+    Round 2 judges the replacement and, if the defect is still standing, that verdict is terminal —
+    there is no third render, and on the leakage tier there is no deck either. Stopping here is
+    what the pre-gate is FOR: every page would have copied this cover's template, its palette and
+    the mark it leaked, so refusing at slide 1 saves N renders on a deck nobody could publish.
+    """
+    entry = make_entry(slides=4)
+    env = make_env(tmp_path, entry, texts=["Wired backwards", "Two", "Three", "Four"])
+    # `invented_text` is a BRIEF code — leakage, and brief is the pre-gate's other critic. The
+    # cover fails round 1, is re-rendered once, and fails round 2 the same way.
+    env.llm_call = CriticStub(rounds=[{1}, {1}], code="invented_text", detail="ZZ extra words")
+    folder = make_folder(tmp_path, entry)
+    submit = FakeSubmit()
+
+    record = await render_carousel(entry, env, folder, submit=submit)
+
+    assert [call.kind for call in submit.calls] == ["projected", "discretionary"], \
+        "one cover, one repair, and nothing else was ever ordered"
+    assert env.llm_call.frames_for("brief") == [1, 1], "two rounds, both over the cover alone"
+    assert record.gauntlet["rerenders"] == 1 and record.gauntlet["result"] == "blocked"
+    assert record.status is AssetStatus.BLOCKED and entry.status is PlanEntryStatus.BLOCKED
+    assert (folder.path / packager.BLOCKED_FILE).exists()
+    anchor_line = next(message for name, message in env.log.records if name == "gauntlet_anchor")
+    assert "blocked" in anchor_line and "slides 2-4 are NOT ordered" in anchor_line
+
+
+async def test_fr324_the_anchor_re_render_is_charged_to_the_decks_own_gauntlet_budget(
+    tmp_path: Path,
+) -> None:
+    """FR-324's money clause: the extra round is bought "on the deck budget", not beside it.
+
+    A pre-gate that spent from its own purse would double `deck_budget_usd` on every carousel. The
+    proof is a cap that fits exactly one re-render: the cover takes it, and the deck round's own
+    fix is then declined for want of the money the anchor already spent.
+    """
+    entry = make_entry(slides=3)
+    env = make_env(tmp_path, entry, texts=["Wired backwards", "Two", "Three"])
+    env.config.run.gauntlet.deck_budget_usd = 0.05  # room for exactly one $0.03 re-render
+    env.price_job = lambda _entry, _job: 0.03
+    env.llm_call = CriticStub(rounds=[{1}, set(), {2}], code="garbled")
+    submit = FakeSubmit(rule=lambda call: ok(call, cost=0.03))
+
+    record = await render_carousel(entry, env, make_folder(tmp_path, entry), submit=submit)
+
+    fixes = [call for call in submit.calls if call.kind == "discretionary"]
+    assert [call.slide for call in fixes] == [1], "the cover's repair, and no second one"
+    assert record.gauntlet["result"] == "budget_stop"
+    # Two lines share this event type — the gauntlet's round-level stop and the deck's own refusal.
+    # The refusal is the one carrying the arithmetic, and the arithmetic is what this test is about.
+    stop = next(data for name, data in env.log.data
+                if name == "gauntlet_budget_stop" and "spent_usd" in data)
+    assert stop["spent_usd"] == pytest.approx(0.03), \
+        "the deck round measured the cap against money the ANCHOR round spent"
+    assert stop["cap_usd"] == pytest.approx(0.05) and stop["slide"] == 2
+    assert record.status is AssetStatus.SUCCESS, "a craft opinion never costs the deck (FR-325)"
+
+
+async def test_the_deck_gate_is_one_call_per_critic_for_the_whole_deck(tmp_path: Path) -> None:
+    """N slides never cost N calls per critic, and the estimate prices it the same way (FR-326)."""
     entry = make_entry(slides=5)
     env = make_env(tmp_path, entry, texts=["a", "b", "c", "d", "e"])
-    env.config.run.vision_check = True
-    env.llm_call = VisionStub()
+    env.llm_call = CriticStub()
 
     await render_carousel(entry, env, make_folder(tmp_path, entry), submit=FakeSubmit())
 
-    assert env.llm_call.calls == [1, 5]
+    assert env.llm_call.frames_for("system") == [5], "one call, every frame"
+    assert env.llm_call.frames_for("craft") == [1, 5], "the anchor pre-gate, then the deck"
+    assert env.llm_call.roles == ["critic"] * len(env.llm_call.calls), "the new LLM role"
 
 
-async def test_vision_check_off_never_calls_the_model(tmp_path: Path) -> None:
-    """`run.vision_check` is the switch, and OFF still means off — even now that it ships ON.
+async def test_the_gate_switched_off_never_calls_the_model(tmp_path: Path) -> None:
+    """`run.gauntlet.enabled` is the switch, and OFF means NO post-render gate at all.
 
-    The default flipped to `true` (v2.1.1): run `20260813_143420_oyo4` shipped every creative with
-    `vision_check_result: not_checked` purely because the flag was down, which is the check being
-    priced in the estimate and never taken. So this test now turns it off EXPLICITLY — an operator
-    who says no must still get no LLM call, whatever the default is.
+    Not a fallback to the FR-105 single-shot check — that machinery is deleted (D49). Renders ship
+    exactly as Kie returned them, unread, and the receipt says so by being absent.
     """
     entry = make_entry(slides=3)
     env = make_env(tmp_path, entry, texts=["a", "b", "c"])
-    env.config.run.vision_check = False
-    env.llm_call = VisionStub()  # a call is available; the flag is what declines it
+    env.config.run.gauntlet.enabled = False
+    env.llm_call = CriticStub()  # a call is available; the flag is what declines it
 
     record = await render_carousel(entry, env, make_folder(tmp_path, entry), submit=FakeSubmit())
 
     assert env.llm_call.calls == []
+    assert record.gauntlet is None, "no gate ran, so meta claims no verdict"
     assert record.vision_check_result is VisionCheckResult.NOT_CHECKED
 
 
@@ -893,32 +1049,40 @@ def test_the_chained_anchor_carries_an_explicit_role_and_never_a_blank_line() ->
 async def test_anchor_failure_falls_back_to_independent_slides_precommitted(
     tmp_path: Path,
 ) -> None:
-    """Slide 1 failing degrades the deck to independent generation — and that fallback is
-    PRE-COMMITTED work, never discretionary: the cap may not split a deck (FR-95/FR-106b).
+    """Slide 1 failing THREE times degrades the deck to independent generation — and that fallback
+    is PRE-COMMITTED work, never discretionary: the cap may not split a deck (FR-95/FR-106b).
 
-    The anchor has to fail TWICE to reach this path since v2.1.3/D48: FR-317 grants a
-    non-moderation failure exactly one automatic resubmit, and a deck that anchors on the second
-    attempt is strictly better than one that falls back (the sibling test below pins that half).
-    So the rule fails both attempts by INDEX rather than by slide number — the fallback's own
-    slide 1 is still slide 1, and it must land.
+    The anchor has to fail three times to reach this path since v2.2.0. FR-317 grants a
+    non-moderation failure one automatic resubmit (v2.1.3/D48), and FR-95 then grants ONE
+    replacement anchor before the deck gives up on being chained — an unchained deck is the defect
+    the anchor exists to prevent, so one more cover render against a deck of four is the cheapest
+    repair there is. A deck that anchors on either of those attempts is strictly better than one
+    that falls back (the sibling tests below pin both halves), so the rule fails all three by INDEX
+    rather than by slide number — the fallback's own slide 1 is still slide 1, and it must land.
     """
     entry = make_entry(slides=4)
     style = make_style(tmp_path)
     env = make_env(tmp_path, entry, style=style)
-    submit = FakeSubmit(rule=lambda call: failed() if call.index in (0, 1) else ok(call))
+    submit = FakeSubmit(rule=lambda call: failed() if call.index in (0, 1, 2) else ok(call))
 
     record = await render_carousel(entry, env, make_folder(tmp_path, entry), submit=submit)
 
-    assert len(submit.calls) == 6, "the anchor, its FR-317 resubmit, then N independent slides"
-    assert [call.kind for call in submit.calls[:2]] == ["projected", "discretionary"]
-    fallback = submit.calls[2:]
+    assert len(submit.calls) == 7, \
+        "the anchor, its FR-317 resubmit, FR-95's replacement anchor, then N independent slides"
+    assert [call.kind for call in submit.calls[:3]] == [
+        "projected", "discretionary", "precommitted"], \
+        "the replacement anchor is pre-committed too — the cap may not decide whether a deck chains"
+    assert [call.slide for call in submit.calls[:3]] == [1, 1, 1]
+    fallback = submit.calls[3:]
     assert [call.slide for call in fallback] == [1, 2, 3, 4]
     assert {call.kind for call in fallback} == {"precommitted"}, "never discretionary"
     assert {call.priority for call in fallback} == {RenderPriority.WAVE2}
     assert all(call.image_urls == [] for call in fallback), \
         "no anchor to chain to, and a style ships no pictures of its own (F3)"
-    assert "carousel_anchor_fallback" in env.log.types()
-    assert record.status is AssetStatus.SUCCESS and record.slide_count == 4
+    assert "carousel_anchor_retry" in env.log.types()
+    assert "carousel_anchor_fallback_unchained" in env.log.types()
+    assert record.status is AssetStatus.SUCCESS and record.slide_count == 4, \
+        "three dead covers are not a dead deck: the unchained burst is slide 1's last path (FR-95)"
 
 
 async def test_fr317_an_anchor_that_fails_once_is_resubmitted_and_the_deck_still_chains(
@@ -952,6 +1116,64 @@ async def test_fr317_an_anchor_that_fails_once_is_resubmitted_and_the_deck_still
     fields = env.log.fields("image_job_resubmit")
     assert fields["slide"] == 1 and fields["attempt"] == 2 and fields["cause"] == "timeout"
     assert record.status is AssetStatus.SUCCESS and record.slide_count == 4
+
+
+async def test_fr95_a_replacement_anchor_that_lands_chains_the_deck_instead_of_unchaining_it(
+    tmp_path: Path,
+) -> None:
+    """FR-95 (v2.2.0): the anchor's ONE replacement, and what it buys when it lands.
+
+    Until now a cover that failed twice condemned every remaining slide to reference-free
+    generation — the visual drift FR-95 exists to prevent, bought for a single unlucky render. One
+    more cover costs one image against a deck of four, the Confirm gate already prices it (the
+    anchor contingency is two units, FR-107), and when it lands slides 2–N chain off it exactly as
+    if the first attempt had worked.
+    """
+    entry = make_entry(slides=4)
+    env = make_env(tmp_path, entry)
+    submit = FakeSubmit(rule=lambda call: failed(RenderFailCause.TIMEOUT)
+                        if call.index in (0, 1) else ok(call))
+
+    record = await render_carousel(entry, env, make_folder(tmp_path, entry), submit=submit)
+
+    assert len(submit.calls) == 6, "the anchor, its FR-317 resubmit, its replacement, slides 2-4"
+    replacement = submit.calls[2]
+    assert replacement.slide == 1 and replacement.kind == "precommitted", \
+        "pre-committed: the cap may not be the thing that decides whether a deck chains (FR-106b)"
+    assert replacement.priority is RenderPriority.WAVE1, "still the wave the anchor belongs to"
+    assert [call.image_urls for call in submit.calls[3:]] == [[replacement.url]] * 3, \
+        "slides 2-4 chain to the anchor the REPLACEMENT produced (FR-95)"
+    assert "carousel_anchor_fallback_unchained" not in env.log.types(), "the deck anchored"
+    assert env.log.fields("carousel_anchor_retry")["slide"] == 1
+    assert record.status is AssetStatus.SUCCESS and record.slide_count == 4
+
+
+async def test_fr323_a_re_render_references_the_anchor_and_its_nearest_delivered_neighbour(
+    tmp_path: Path,
+) -> None:
+    """A slide rendered a SECOND time is being fitted back into a deck that already exists.
+
+    The cover alone is a poor description of what page four looks like — it is a cover — so a
+    re-render also carries the nearest already-delivered page, our own rendered artifact and never
+    a source byte (FR-18/FR-323, D46-compatible). Nearest by distance with the earlier page winning
+    a tie: the page before is the one a reader sees immediately before this one.
+    """
+    entry = make_entry(slides=4)
+    env = make_env(tmp_path, entry, texts=["one", "two", "three", "four"])
+    env.llm_call = CriticStub(rounds=[{3}], code="style_layout")
+    submit = FakeSubmit()
+
+    await render_carousel(entry, env, make_folder(tmp_path, entry), submit=submit)
+
+    rerender = next(call for call in submit.calls if call.kind == "discretionary")
+    assert rerender.slide == 3
+    anchor_url, neighbour_url = submit.slide(1).url, submit.slide(2).url
+    assert rerender.image_urls[:2] == [anchor_url, neighbour_url], \
+        "the anchor stays Image 1 (FR-190) and the nearest delivered neighbour sits under it"
+    role = next(line.strip() for line in rerender.prompt.splitlines()
+                if line.strip().startswith("Image 2"))
+    assert "the finished slide 2 of this same deck" in role
+    assert "not its words" in role, "a neighbour contributes look, never copy"
 
 
 # ------------------------------------------------------- FR-304 panel-mapped decks (§0.4′)
@@ -1132,6 +1354,11 @@ async def test_an_incomplete_deck_names_every_lost_slide_not_the_first_three(
     operator to guess which two slides died of what, on the single line written to tell them. The
     cap bought nothing: this is a structured field in events.jsonl, not a console line with a
     width to protect, and the loss it truncates is exactly the loss it exists to report.
+
+    The obligation belongs to the terminal line whatever the terminal IS. Losing five slides to
+    provider failures is a D51 viability loss now rather than an incomplete ship (the deck is not
+    published), so the numbers and their explanations are asserted on `deck_viability_loss` — the
+    line that replaced `carousel_incomplete` for this deck — and they must still agree.
     """
     entry = make_entry(slides=6)
     env = make_env(tmp_path, entry, texts=[f"line {n}" for n in range(1, 7)])
@@ -1140,10 +1367,13 @@ async def test_an_incomplete_deck_names_every_lost_slide_not_the_first_three(
     record = await render_carousel(entry, env, make_folder(tmp_path, entry), submit=submit)
 
     assert record.missing_slide_numbers == [2, 3, 4, 5, 6] and record.slide_count == 1
-    detail = env.log.fields("carousel_incomplete")["detail"]
+    fields = env.log.fields("deck_viability_loss")
+    assert fields["missing_slide_numbers"] == [2, 3, 4, 5, 6]
+    detail = fields["detail"]
     assert sorted(int(number) for number in _SLIDE_NO.findall(detail)) == [2, 3, 4, 5, 6], \
         "every missing number in the same line has its own explanation"
-    assert detail.count("provider_fail") == 5
+    assert detail.count("provider_fail") == 1 and detail.count("not ordered") == 4, \
+        "the slide that died says how; the four never ordered each say why not"
 
 
 async def test_a_deck_that_delivers_nothing_keeps_its_paid_artifacts(tmp_path: Path) -> None:
@@ -1196,9 +1426,15 @@ async def test_a_refused_reference_free_slide_is_never_resubmitted(tmp_path: Pat
     """FR-97's remedy is dropping references, so a job that carried NONE has no remedy left.
 
     Post-D46 that is the ordinary anchor: an unbriefed slide 1 renders text-to-image, and a
-    moderation refusal on it must fail straight through to the independent-slide fallback rather
-    than buy a byte-identical resubmission at full price. Every fallback slide is likewise
-    reference-free, so not one of them retries either.
+    moderation refusal on it must fail straight through to FR-95's replacement anchor and then to
+    the independent-slide fallback, rather than buy a byte-identical resubmission at full price.
+    Every fallback slide is likewise reference-free, so not one of them retries either.
+
+    The deck's ENDING moved with D51 and the shape is asserted here beside the retry rule: a cover
+    refused on all three of its attempts is a slide with no path left, so the deck is unsalvageable
+    and nothing further is ordered for it — slides 2 and 3 are never bought at all, which is the
+    whole saving the viability gate exists for. What was already submitted is never cancelled; here
+    that is the three refused covers, each of which is in the ledger and cost what it cost.
     """
     entry = make_entry(slides=3)
     env = make_env(tmp_path, entry, texts=["a", "b", "c"])
@@ -1207,11 +1443,20 @@ async def test_a_refused_reference_free_slide_is_never_resubmitted(tmp_path: Pat
 
     record = await render_carousel(entry, env, make_folder(tmp_path, entry), submit=submit)
 
-    assert [call.kind for call in submit.calls] == ["projected", *["precommitted"] * 3], \
-        "one refused anchor, then the fallback deck — no discretionary retry anywhere"
+    assert [call.kind for call in submit.calls] == ["projected", *["precommitted"] * 2], \
+        "one refused anchor, its replacement, its unchained third — no discretionary retry anywhere"
+    assert [call.slide for call in submit.calls] == [1, 1, 1], \
+        "slides 2 and 3 are never ordered for a deck whose cover has no path left (D51)"
     assert "moderation_retry" not in env.log.types()
-    assert "refs_dropped_moderation" not in [tag.value for tag in record.degradations]
-    assert "carousel_anchor_fallback" in env.log.types()
+    # `getattr(tag, "value", tag)`, not `tag.value`: `deck_viability_loss` rides as a plain string
+    # until `DegradationTag` carries the member (`carousel.DECK_VIABILITY_LOSS`, the same
+    # convention as `PANELS_TRUNCATED`), and meta.yaml holds identical bytes either way.
+    tags = [str(getattr(tag, "value", tag)) for tag in record.degradations]
+    assert "refs_dropped_moderation" not in tags
+    assert "carousel_anchor_retry" in env.log.types()
+    assert "carousel_anchor_fallback_unchained" in env.log.types()
+    assert record.status is AssetStatus.FAILED, "a deck with no cover is never published (D51)"
+    assert "deck_viability_loss" in tags
 
 
 async def test_halt_before_the_deck_orders_nothing_and_packages_honestly(
@@ -1266,207 +1511,364 @@ async def test_out_of_credits_packages_the_deck_instead_of_raising(tmp_path: Pat
     assert record.status is AssetStatus.SUCCESS
 
 
-# --------------------------------------------------------------------- FR-105 retries & verdicts
+# ------------------------------------------------- D49 the gauntlet: fix loop and three tiers
 
 
-async def test_flagged_anchor_with_a_declined_retry_ships_and_records_retried_failed(
+async def test_a_failing_frame_is_re_rendered_with_a_canned_fix_and_never_new_words(
     tmp_path: Path,
 ) -> None:
-    """A flagged anchor whose discretionary re-render the cap declines still anchors the deck —
-    one retry is the cap everywhere — but the verdict stays honest (FR-95/FR-106c/FR-27)."""
-    entry = make_entry(slides=3)
-    env = make_env(tmp_path, entry, texts=["a", "b", "c"])
-    env.config.run.vision_check = True
-    env.llm_call = VisionStub(flags=[{1}])  # anchor flagged; the deck call comes back clean
-    submit = FakeSubmit(rule=lambda call: None if call.kind == "discretionary" else ok(call))
+    """FR-323: the fix channel is CANNED remedies keyed by `(code, zone)`, and it may not touch
+    the words. A quote shortened to make it fit is the defect the gate exists to catch.
 
-    record = await render_carousel(entry, env, make_folder(tmp_path, entry), submit=submit)
-
-    declined = [call for call in submit.calls if call.kind == "discretionary"]
-    assert len(declined) == 1 and declined[0].slide == 1, "exactly one re-render was attempted"
-    assert record.slide_count == 3, "the flagged anchor ships and the deck is built on it"
-    assert record.vision_check_result is VisionCheckResult.RETRIED_FAILED
-
-
-async def test_a_flagged_anchor_re_render_replaces_slide_one_with_shorter_text(
-    tmp_path: Path,
-) -> None:
-    """FR-105's retry changes the INPUT: less text, a tighter stated budget, larger type.
-
-    This deck binds NO source post, so its lines are text the copy stage composed and the −40% cut
-    still applies to them — measured against `slide` (300), the budget that governs a deck slide,
-    never against `image_headline` (v2.1.1). The mapped-panel case is the sibling test below.
+    The critic's own `detail` never reaches the payload either — it goes to the report, the events
+    and the console only, because an operator-authored override sheet is the boundary that makes
+    that rule worth enforcing rather than assuming.
     """
-    long_line = " ".join(["overlong"] * 25)  # 224 characters: over slide(300) × 0.6 = 180
-    entry = make_entry(slides=3)
-    env = make_env(tmp_path, entry, texts=[long_line, "b", "c"])
-    env.config.run.vision_check = True
-    env.llm_call = VisionStub(flags=[{1}])
-    submit = FakeSubmit()
-
-    record = await render_carousel(entry, env, make_folder(tmp_path, entry), submit=submit)
-
-    first, retry = submit.calls[0], submit.calls[1]
-    assert retry.slide == 1 and retry.kind == "discretionary"
-    assert retry.priority is RenderPriority.WAVE1, "the deck is still waiting on this anchor"
-    assert "re-render of an image whose text came back broken" in retry.prompt
-    assert long_line in first.prompt and long_line not in retry.prompt, "the INPUT changed"
-    kept = quoted_text(retry.prompt)
-    assert 0 < len(kept) <= 180 and long_line.startswith(kept), "−40% of slide(300), word boundary"
-    assert submit.calls[2].image_urls[0] == retry.url, "the deck anchors to the FINAL slide 1"
-    assert env.llm_call.calls == [1, 1, 3], "check, re-render, RE-CHECK, then the deck call"
-    assert record.vision_check_result is VisionCheckResult.RETRIED_PASSED
-    assert dna_block(first.prompt) == dna_block(retry.prompt), \
-        "a retry changes the TEXT, never the deck's style DNA"
-
-
-async def test_a_mapped_panels_re_render_keeps_its_text_byte_for_byte(tmp_path: Path) -> None:
-    """FR-304 > FR-105 (v2.1.1): a verbatim quote is never trimmed, on retry included.
-
-    The audited run cut a 131-character source panel to a 53-character mid-sentence stub — this
-    module committing, deliberately, the exact defect the check exists to catch. On a panel-mapped
-    deck the retry's "materially different input" is layout-side only.
-    """
-    panel = ("Claude reads your whole vault every single time and Obsidian's index does not — "
+    panel = ("Claude reads your whole vault every single time and Obsidian's index does not - "
              "that one swap is where the 71.5x saving comes from.")
     entry = make_entry(slides=3, source_post_id="post-a")
     env = make_env(tmp_path, entry, texts=[panel, "two", "three"], trends=make_trends(panels=3))
-    env.config.run.vision_check = True
-    env.llm_call = VisionStub(flags=[{1}])
+    # `garbled` is a CRAFT code, so the owning critic also runs in the anchor pre-gate: the
+    # first entry is that pre-gate round and the second is the deck round that fails. The pre-gate
+    # has TWO rounds since FR-324, but a clean round 1 returns before either of them is spent, so
+    # a passing entry 0 still consumes exactly one entry.
+    env.llm_call = CriticStub(rounds=[set(), {1}], code="garbled",
+                              detail="ZZDETAIL doubled glyphs")
     submit = FakeSubmit()
 
     record = await render_carousel(entry, env, make_folder(tmp_path, entry), submit=submit)
 
-    retry = submit.calls[1]
-    assert len(panel) == 131, "the audited panel's real length — the fixture, not an assumption"
-    assert quoted_text(retry.prompt) == panel and len(quoted_text(retry.prompt)) == 131
-    assert "LOCKED" in retry.prompt, "the re-render is told the words may not be shortened"
-    assert "Set the remaining text" not in retry.prompt, "that is the free-text retry's line"
+    fix = submit.calls[-1]
+    assert fix.slide == 1 and fix.kind == "discretionary"
+    assert fix.priority is RenderPriority.WAVE2, "the deck is rendered; this is the fix loop"
+    assert quoted_text(fix.prompt) == panel, "FR-304: the quote is byte-identical on a re-render"
+    assert "FIX — this is a re-render of a frame that failed review." in fix.prompt
+    assert "ZZDETAIL" not in fix.prompt, "a critic's own words never reach a render payload"
+    assert "It contains no words to render." in fix.prompt, "the fence-closing line (FR-323)"
+    assert dna_block(submit.calls[0].prompt) == dna_block(fix.prompt), \
+        "a fix changes the request, never the deck's style DNA"
+    assert record.gauntlet["rerenders"] == 1
     assert record.vision_check_result is VisionCheckResult.RETRIED_PASSED
 
 
-async def test_the_deck_check_carries_each_slides_locked_text_as_its_referent(
+async def test_the_contract_carries_each_frames_locked_text_as_the_referent(
     tmp_path: Path,
 ) -> None:
-    """FR-105 v2.1.1: the check cannot see a MISMATCH without knowing what was ordered.
-
-    The 2026-08-13 audit shipped a slide whose source panel said one thing and whose render said
-    another — legible, chrome-free, and therefore clean under the two older questions. A wordless
-    mapped panel sends the empty expectation, which is the stronger claim: nothing may appear.
-    """
+    """FR-322: a critic cannot see an invented or a missing string without knowing what was
+    ordered. A wordless mapped panel says `(none)`, which is the stronger claim of the two."""
     entry = make_entry(slides=3, source_post_id="post-a")
     env = make_env(tmp_path, entry, texts=["Panel one verbatim", "", "Panel three verbatim"],
                    trends=make_trends(panels=3))
-    env.config.run.vision_check = True
-    env.llm_call = VisionStub()
+    env.llm_call = CriticStub()
 
     await render_carousel(entry, env, make_folder(tmp_path, entry), submit=FakeSubmit())
 
-    anchor_call, deck_call = env.llm_call.carriers
-    assert 'image 1: "Panel one verbatim"' in anchor_call
-    assert 'image 1: "Panel one verbatim"' in deck_call
-    assert "image 2: (none)" in deck_call, "a wordless panel must carry no invented words"
-    assert 'image 3: "Panel three verbatim"' in deck_call
+    deck = env.llm_call.prompt_for("brief", 1)  # [0] is the anchor pre-gate, clean in one round
+    assert 'L1: "Panel one verbatim"' in deck
+    assert "(none) — wordless by mandate" in deck, "a wordless frame carries no invented words"
+    assert 'L1: "Panel three verbatim"' in deck
 
 
-async def test_a_text_mismatch_verdict_flags_the_slide_and_earns_the_one_retry(
+async def test_a_standing_leakage_defect_blocks_the_deck_and_keeps_every_artifact(
     tmp_path: Path,
 ) -> None:
-    """The third defect is a flag on its own: clean, legible, and not what we ordered (FR-105)."""
-    entry = make_entry(slides=3, source_post_id="post-a")
-    env = make_env(tmp_path, entry, texts=["one", "two", "three"], trends=make_trends(panels=3))
-    env.config.run.vision_check = True
-    # anchor clean; the deck call says slide 3 renders words nobody asked for
-    env.llm_call = VisionStub(flags=[set(), {3}], defect="text_mismatch")
+    """FR-325 tier 1: `invented_text` standing after the last round BLOCKS, whatever `fail_action`
+    says, and blocking withholds publication rather than deleting anything (FR-74).
+
+    The plan entry goes `BLOCKED` — a non-success everywhere success matters, so the source post is
+    not burnt in the history window and the run exits 1 — and the folder gains the two files that
+    explain it.
+    """
+    entry = make_entry(slides=3)
+    env = make_env(tmp_path, entry, texts=["a", "b", "c"])
+    env.config.run.gauntlet.rounds_max = 2
+    # `invented_text` is a BRIEF code, so the owning critic runs in the anchor pre-gate too:
+    # entry 0 is that pre-gate round — clean, so the pre-gate returns after it and never reaches
+    # the fix round FR-324 grants it — and entries 1-2 are the deck's two rounds. Round 2 names
+    # SLOT 1 rather than slot 2 because FR-324 scopes brief to the RE-RENDERED frames alone, so
+    # the one frame attached in round 2 is slide 2 - the scoping made visible.
+    env.llm_call = CriticStub(rounds=[set(), {2}, {1}], code="invented_text",
+                              detail="ZZ extra words")
+    folder = make_folder(tmp_path, entry)
+
+    record = await render_carousel(entry, env, folder, submit=FakeSubmit())
+
+    assert record.status is AssetStatus.BLOCKED and entry.status is PlanEntryStatus.BLOCKED
+    assert record.gauntlet["result"] == "blocked"
+    assert record.slide_count == 3, "every paid slide is kept on disk"
+    assert sorted(path.name for path in folder.path.glob("slide_*.jpg")) == [
+        "slide_01.jpg", "slide_02.jpg", "slide_03.jpg"]
+    blocked = (folder.path / packager.BLOCKED_FILE).read_text(encoding="utf-8")
+    assert "BLOCKED" in blocked and "NOT published" in blocked
+    assert "invented_text on frame" in blocked, "the paragraph names the standing defect"
+    report = yaml.safe_load(
+        (folder.path / packager.GAUNTLET_REPORT_FILE).read_text(encoding="utf-8"))
+    assert report["result"] == "blocked" and len(report["rounds"]) == 2
+    assert any(row["code"] == "invented_text" and row["detail"] == "ZZ extra words"
+               for round_row in report["rounds"] for row in round_row["defects"]), \
+        "the critic's own wording belongs in the report a PERSON reads, and only there"
+
+
+async def test_a_craft_only_standing_failure_ships_tagged_rather_than_blocking(
+    tmp_path: Path,
+) -> None:
+    """FR-325 tier 3: craft is an opinion about quality, and blocking a deck on one costs more
+    than the defect. The deck ships, carries `GAUNTLET_CRAFT`, and says so in its receipt."""
+    entry = make_entry(slides=3)
+    env = make_env(tmp_path, entry, texts=["a", "b", "c"])
+    env.config.run.gauntlet.rounds_max = 1
+    env.llm_call = CriticStub(rounds=[set(), {2}], code="contrast", detail="pale on pale")
+    folder = make_folder(tmp_path, entry)
+
+    record = await render_carousel(entry, env, folder, submit=FakeSubmit())
+
+    assert record.status is AssetStatus.SUCCESS and entry.status is PlanEntryStatus.SUCCESS
+    assert record.gauntlet["result"] == "pass" and record.gauntlet["craft_only"] is True
+    assert carousel_module.GAUNTLET_CRAFT in record.degradations
+    assert not (folder.path / packager.BLOCKED_FILE).exists()
+
+
+async def test_a_low_confidence_craft_opinion_never_fails_a_frame_at_all(
+    tmp_path: Path,
+) -> None:
+    """Spec §3: `craft` defects at `confidence: low` are RECORDED and never fail the frame — the
+    publish bar is "would a reasonable operator refuse to publish this", and unsure means yes."""
+    entry = make_entry(slides=3)
+    env = make_env(tmp_path, entry, texts=["a", "b", "c"])
+    env.llm_call = CriticStub(rounds=[set(), {2}], code="composition", confidence="low")
     submit = FakeSubmit()
 
     record = await render_carousel(entry, env, make_folder(tmp_path, entry), submit=submit)
 
-    retries = [call for call in submit.calls if call.kind == "discretionary"]
-    assert [call.slide for call in retries] == [3], "a mismatch alone earns the one re-render"
-    assert env.llm_call.calls == [1, 3, 1], "anchor call, deck call, one re-check of the re-render"
-    assert env.log.fields("vision_check_flagged").get("text_mismatch") is True
-    assert record.vision_check_result is VisionCheckResult.RETRIED_PASSED
+    assert [call for call in submit.calls if call.kind == "discretionary"] == []
+    assert record.gauntlet["result"] == "pass" and record.gauntlet["rerenders"] == 0
 
 
-async def test_a_failed_vision_re_render_is_not_reported_as_a_lost_slide(tmp_path: Path) -> None:
-    """A re-render that never happens loses NOTHING — the slide it was improving already shipped.
+async def test_the_per_deck_budget_stops_the_fix_loop_and_the_deck_still_ships(
+    tmp_path: Path,
+) -> None:
+    """The money seam (spec §1): `run.gauntlet.deck_budget_usd` is a REAL gate the caller enforces,
+    and the gauntlet maps the refusal to `budget_stop`. The frames already on disk still ship."""
+    entry = make_entry(slides=3)
+    env = make_env(tmp_path, entry, texts=["a", "b", "c"])
+    env.config.run.gauntlet.deck_budget_usd = 0.01  # under one render's projection
+    env.price_job = lambda _entry, _job: 0.04
+    env.llm_call = CriticStub(rounds=[{2}], code="style_layout")
+    submit = FakeSubmit()
 
-    `missing_slide_numbers` and `carousel_incomplete.detail` are read as one sentence, so a
-    "slide 2: declined by the spend cap" line beside `missing: [3]` told the operator slide 2 was
-    lost when slide 2 is on disk. The two uses are separated: a declined retry is
-    `vision_retry_unavailable` in the log and nothing at all in the loss ledger.
+    record = await render_carousel(entry, env, make_folder(tmp_path, entry), submit=submit)
+
+    assert [call for call in submit.calls if call.kind == "discretionary"] == [], \
+        "nothing was ordered once the per-deck cap was reached"
+    assert record.gauntlet["result"] == "budget_stop"
+    assert record.status is AssetStatus.SUCCESS and record.slide_count == 3
+    assert "gauntlet_budget_stop" in env.log.types()
+
+
+async def test_f4_concurrent_fix_re_renders_can_never_jointly_outspend_the_per_deck_cap(
+    tmp_path: Path,
+) -> None:
+    """F4 (Session 5.5): the cap is a RESERVATION, not a reading of what was already billed.
+
+    `gauntlet._rerender_all` gathers every failing frame of a round CONCURRENTLY, and the old check
+    read `gauntlet_spend` — a number that only moves after the awaits finish. On 2026-08-14 that
+    let eleven $0.03 re-renders ship against a $0.30 cap: eight of the eleven checks each saw
+    $0.00. `_claim` now decides and debits under one lock and `_settle` releases in a `finally`,
+    which is `Budget.reserve`'s own pattern one scope down.
+
+    Eight frames fail at once against a cap that fits six. WHICH two are declined is not the claim
+    — it depends on the order `gather` happens to resume the closures in — so the assertions are
+    counts and totals, which are deterministic: six times $0.03 is the largest multiple of the
+    projection that fits under $0.20, and the seventh claim is refused before it can be submitted.
+    """
+    entry = make_entry(slides=8)
+    env = make_env(tmp_path, entry, texts=[f"line {n}" for n in range(1, 9)])
+    env.config.run.gauntlet.deck_budget_usd = 0.20
+    env.price_job = lambda _entry, _job: 0.03
+    # `style_layout` is a SYSTEM code, and system does not sit on the anchor pre-gate — so the
+    # pre-gate passes untouched and entry 0 IS the deck's round 1, failing all eight frames.
+    env.llm_call = CriticStub(rounds=[set(range(1, 9))], code="style_layout")
+    submit = FakeSubmit(rule=lambda call: ok(call, cost=0.03))
+
+    record = await render_carousel(entry, env, make_folder(tmp_path, entry), submit=submit)
+
+    fixes = [call for call in submit.calls if call.kind == "discretionary"]
+    declined = [data for name, data in env.log.data
+                if name == "gauntlet_rerender" and data.get("status") == "declined_deck_budget"]
+    assert len(fixes) == 6, (
+        f"{len(fixes)} re-renders = ${0.03 * len(fixes):.2f} against a $0.20 cap")
+    assert len(declined) == 2, "every frame the cap could not pay for is refused, not skipped"
+    assert len(fixes) + len(declined) == 8, "eight frames failed; each one got an answer"
+    assert record.gauntlet["rerender_cost_usd"] == pytest.approx(0.18)
+    assert record.gauntlet["rerender_cost_usd"] <= env.config.run.gauntlet.deck_budget_usd
+    assert record.gauntlet["rerenders"] == 6 and record.gauntlet["result"] == "budget_stop"
+    assert record.status is AssetStatus.SUCCESS and record.slide_count == 8, \
+        "a deck that ran out of fix money still ships every slide it paid for"
+
+
+async def test_f4_a_declined_claim_is_given_back_so_the_next_round_can_still_spend_it(
+    tmp_path: Path,
+) -> None:
+    """The `finally` half of F4: a claim that never became a submission is RELEASED.
+
+    A leaked reservation is a deck refusing its own next fix over money it never spent, and there
+    are five returns to leak one from. Here the runway refusal fires after the claim, so every
+    frame of round 1 claims, refuses and gives the money back — and the cap is untouched.
     """
     entry = make_entry(slides=3)
     env = make_env(tmp_path, entry, texts=["a", "b", "c"])
-    env.config.run.vision_check = True
-    env.llm_call = VisionStub(flags=[set(), {2}])  # slide 2 of the DELIVERED pair [1, 2]
-    # slide 3 genuinely fails; every discretionary job (the vision retry) is declined by the cap.
-    submit = FakeSubmit(rule=lambda call: None if call.kind == "discretionary"
-                        else failed() if call.slide == 3 else ok(call))
+    env.config.run.gauntlet.deck_budget_usd = 0.20
+    env.price_job = lambda _entry, _job: 0.03
+    env.runway_ok = lambda _job: False  # refused AFTER `_claim`, which is the leak site
+    env.llm_call = CriticStub(rounds=[{2, 3}], code="style_layout")
+    submit = FakeSubmit()
+
+    record = await render_carousel(entry, env, make_folder(tmp_path, entry), submit=submit)
+
+    assert [call for call in submit.calls if call.kind == "discretionary"] == []
+    assert record.gauntlet["rerender_cost_usd"] == pytest.approx(0.0), "nothing was billed"
+    assert "gauntlet_budget_stop" not in env.log.types(), \
+        "no frame was ever refused for money: both claims were handed straight back"
+    assert record.gauntlet["result"] == "deadline_stop"
+
+
+def test_f1c_a_fix_re_render_is_assembled_against_the_same_body_budget_as_its_first_render(
+    tmp_path: Path,
+) -> None:
+    """F1-C: `_prompt_cap` reserves the fix channel on EVERY pass, so the rulebook never moves.
+
+    `PromptEngine.render(suffix=...)` counts the suffix inside `max_chars` — correctly, because the
+    provider counts it — so passing the raw profile limit gave a first render `cap` characters of
+    body and a re-render `cap - len(fix) - 2`. This template's assembled tail is the back half of
+    CONSTRAINTS, so round 2 was judged against rules round 2 was never sent: 924-1,248 characters
+    of lost rulebook per fix round in the 2026-08-14 run, and a loop that oscillates rather than
+    converging. Hold the reservation always, hand the real suffix's room back when there is one,
+    and never exceed the wall.
+    """
+    entry = make_entry(slides=3)
+    env = make_env(tmp_path, entry, texts=["a", "b", "c"])
+    deck = carousel_module._Deck(entry, env, make_folder(tmp_path, entry), FakeSubmit())
+    wall = deck._limits.max_prompt_chars
+    reserve = gauntlet.fix_reserve(env.engine)
+    fix = "F" * (reserve - carousel_module._SUFFIX_SEPARATOR)  # the longest suffix reserved for
+
+    first, retry = deck._prompt_cap(""), deck._prompt_cap(fix)
+
+    assert first == wall - reserve, (first, wall, reserve)
+    assert retry - (len(fix) + carousel_module._SUFFIX_SEPARATOR) == first, \
+        "the body budget moved between passes — this is the defect F1-C closed"
+    assert retry <= wall, "the provider's wall is never exceeded, whatever the sheet says"
+    assert deck._prompt_cap("a short remedy") - len("a short remedy") - 2 == first, \
+        "an ordinary suffix rides in the space already held back for it"
+
+
+async def test_f1c_a_real_fix_round_assembles_the_same_rulebook_the_first_render_carried(
+    tmp_path: Path,
+) -> None:
+    """F1-C end to end: the fix rides AFTER an unchanged rulebook, not instead of its tail.
+
+    The two prompts are not identical and must not be — a re-render legitimately gains FR-323's
+    nearest-delivered-neighbour reference. What must not move is the CONSTRAINTS block, because
+    that is what the assembler dropped when the suffix ate into the budget and what the critics
+    judge the replacement against.
+    """
+    entry = make_entry(slides=3)
+    env = make_env(tmp_path, entry, texts=["Wired backwards", "Two", "Three"])
+    env.llm_call = CriticStub(rounds=[{2}], code="style_layout")
+    submit = FakeSubmit()
+
+    await render_carousel(entry, env, make_folder(tmp_path, entry), submit=submit)
+
+    wall = render.get_profile(env.config.models.image_profile).limits.max_prompt_chars
+    first = next(call for call in submit.calls
+                 if call.slide == 2 and call.kind != "discretionary")
+    fix = next(call for call in submit.calls if call.kind == "discretionary")
+    assert len(first.prompt) <= wall and len(fix.prompt) <= wall
+    body, _, suffix = fix.prompt.partition("\n\nFIX — this is a re-render")
+    assert suffix, "the canned remedy is a SUFFIX, appended after the finished prompt"
+    assert body.split("CONSTRAINTS:", 1)[1] == first.prompt.split("CONSTRAINTS:", 1)[1], \
+        "round 2 was assembled against a different rulebook than round 1"
+    assert quoted_text(fix.prompt) == quoted_text(first.prompt), "FR-304: the words never move"
+
+
+async def test_an_expired_runway_declines_the_fix_rather_than_buying_a_certain_timeout(
+    tmp_path: Path,
+) -> None:
+    """D51 inside the money seam: a job the clock cannot pay for is refused BEFORE the reservation,
+    which is what makes the refusal free. The gauntlet maps it to `deadline_stop`."""
+    entry = make_entry(slides=3)
+    env = make_env(tmp_path, entry, texts=["a", "b", "c"])
+    env.runway_ok = lambda _job: False
+    env.llm_call = CriticStub(rounds=[{2}], code="style_layout")
+    submit = FakeSubmit()
+
+    record = await render_carousel(entry, env, make_folder(tmp_path, entry), submit=submit)
+
+    assert [call for call in submit.calls if call.kind == "discretionary"] == []
+    assert record.gauntlet["result"] == "deadline_stop"
+    assert record.status is AssetStatus.SUCCESS, "the deck ships what the clock already paid for"
+
+
+async def test_a_failed_fix_re_render_is_not_reported_as_a_lost_slide(
+    tmp_path: Path, downloads: SimpleNamespace
+) -> None:
+    """A fix that never happens loses NOTHING - the slide it was improving already shipped.
+
+    `missing_slide_numbers` and `carousel_incomplete.detail` are read as one sentence, so a
+    "slide 2: declined by the spend cap" line beside `missing: [3]` told the operator slide 2 was
+    lost when slide 2 is on disk. A declined fix is a log line and nothing in the loss ledger.
+
+    Slide 3 is lost to its DOWNLOAD rather than to its render, deliberately: a slide lost to a
+    render defect stops the deck outright (D51) and there would be no fix left to decline, while a
+    failed download is our end of a job the provider completed - 10 §10's partial deck.
+    """
+    entry = make_entry(slides=3)
+    env = make_env(tmp_path, entry, texts=["a", "b", "c"])
+    env.llm_call = CriticStub(rounds=[{2}], code="style_layout")
+    downloads.fail_contains = "slide-3-"  # slide 3 renders and never lands on disk
+    submit = FakeSubmit(rule=lambda call: None if call.kind == "discretionary" else ok(call))
 
     record = await render_carousel(entry, env, make_folder(tmp_path, entry), submit=submit)
 
     assert record.missing_slide_numbers == [3], "only the slide that never rendered is missing"
     detail = env.log.fields("carousel_incomplete")["detail"]
     assert "slide 3" in detail and "slide 2" not in detail, "a delivered slide is not a loss"
-    assert "vision_retry_unavailable" in env.log.types(), "the declined retry is still visible"
-    assert record.vision_check_result is VisionCheckResult.RETRIED_FAILED, "and still honest"
+    assert "vision_retry_unavailable" in env.log.types(), "the declined fix is still visible"
+    assert record.gauntlet["result"] == "budget_stop"
 
 
-async def test_a_successful_re_render_is_re_checked_before_it_earns_retried_passed(
-    tmp_path: Path,
-) -> None:
-    """FR-27's `retried_passed` is only honest when a real second verdict says so, and the
-    estimator already prices the vision-retry allowance as render PLUS re-check."""
+async def test_an_unreadable_critic_is_dropped_and_the_deck_still_ships(tmp_path: Path) -> None:
+    """D3: a broken checker never blocks delivery. An unparseable critic is dropped for the whole
+    deck, the round is judged on the survivors, and `degraded_gate` says the gate was thinner."""
     entry = make_entry(slides=3)
     env = make_env(tmp_path, entry, texts=["a", "b", "c"])
-    env.config.run.vision_check = True
-    env.llm_call = VisionStub(flags=[{1}])  # anchor flagged once; later calls come back clean
-    submit = FakeSubmit()
+    env.llm_call = CriticStub(unavailable=["brief"])
 
-    record = await render_carousel(entry, env, make_folder(tmp_path, entry), submit=submit)
+    record = await render_carousel(entry, env, make_folder(tmp_path, entry), submit=FakeSubmit())
 
-    assert env.llm_call.calls == [1, 1, 3], "the re-rendered anchor is re-checked, once"
-    assert record.vision_check_result is VisionCheckResult.RETRIED_PASSED
-    assert len([call for call in submit.calls if call.kind == "discretionary"]) == 1
+    assert record.status is AssetStatus.SUCCESS
+    assert record.gauntlet["degraded_gate"] is True
+    assert "brief" in record.gauntlet["rounds"][0]["unavailable"]
+    assert carousel_module.GAUNTLET_DEGRADED in record.degradations
 
 
-async def test_re_renders_are_re_checked_in_one_batched_call(tmp_path: Path) -> None:
-    """FR-105 call economics hold for the re-check too: two re-rendered slides, ONE further call.
-    The slide whose re-render still comes back flagged stays `retried_failed` (FR-27 honesty)."""
+async def test_the_receipt_records_every_round_on_the_terminal_path(tmp_path: Path) -> None:
+    """FR-328/spec §6: `meta.yaml.gauntlet` carries the whole shape on EVERY terminal path."""
     entry = make_entry(slides=3)
     env = make_env(tmp_path, entry, texts=["a", "b", "c"])
-    env.config.run.vision_check = True
-    # anchor clean · deck flags slides 2 and 3 · the re-check flags the FIRST re-rendered slide
-    env.llm_call = VisionStub(flags=[set(), {2, 3}, {1}])
-    submit = FakeSubmit()
+    env.config.run.gauntlet.rounds_max = 2
+    env.llm_call = CriticStub(rounds=[{3}], code="style_layout")
+    folder = make_folder(tmp_path, entry)
 
-    record = await render_carousel(entry, env, make_folder(tmp_path, entry), submit=submit)
+    record = await render_carousel(entry, env, folder, submit=FakeSubmit())
 
-    assert env.llm_call.calls == [1, 3, 2], "one re-check carrying both re-rendered slides"
-    assert [call.slide for call in submit.calls if call.kind == "discretionary"] == [2, 3]
-    assert record.vision_check_result is VisionCheckResult.RETRIED_FAILED, "slide 2 still broken"
-    assert record.slide_count == 3, "a flagged slide still ships — one retry, then it goes (D3)"
-
-
-async def test_a_flagged_slide_in_the_deck_check_gets_one_discretionary_re_render(
-    tmp_path: Path,
-) -> None:
-    """Each flagged slide earns at most one re-render, and it is discretionary spend (FR-106c)."""
-    entry = make_entry(slides=3)
-    env = make_env(tmp_path, entry, texts=["a", "b", "c"])
-    env.config.run.vision_check = True
-    env.llm_call = VisionStub(flags=[set(), {3}])  # anchor clean, slide 3 flagged post-deck
-    submit = FakeSubmit()
-
-    record = await render_carousel(entry, env, make_folder(tmp_path, entry), submit=submit)
-
-    retries = [call for call in submit.calls if call.kind == "discretionary"]
-    assert [call.slide for call in retries] == [3]
-    assert retries[0].image_urls[0] == submit.calls[0].url, "still template-locked to the anchor"
-    assert env.llm_call.calls == [1, 3, 1], "anchor call, deck call, one re-check of the re-render"
-    assert record.vision_check_result is VisionCheckResult.RETRIED_PASSED
+    gate = record.gauntlet
+    assert set(gate) == {"result", "degraded_gate", "craft_only", "rounds", "rerenders",
+                         "rerender_cost_usd", "critic_cost_usd"}
+    assert gate["result"] == "pass" and gate["rerenders"] == 1
+    assert gate["rounds"][0]["failed_frames"] == [3] and gate["rounds"][0]["rerendered"] == [3]
+    stored = yaml.safe_load((folder.path / packager.META_FILE).read_text(encoding="utf-8"))
+    assert stored["gauntlet"]["result"] == "pass", "and it survives the YAML round trip"
 
 
 async def test_disk_full_stops_further_downloads_and_flags_the_run(
@@ -1517,8 +1919,8 @@ async def test_a_counted_source_deck_numbers_every_slide_over_our_own_length(
     for call in submit.calls:
         assert "counter (render verbatim)" in text_block(call.prompt), \
             "the badge renders through the TEXT block, never as a layout instruction"
-        assert "spelled out: 0" in text_block(call.prompt), \
-            "it is a locked string like any other — spelling aid included"
+        assert "spelled out" not in text_block(call.prompt), \
+            "Session 5.5/F1-B: digits and a slash carry no accent, so no letter-by-letter echo"
 
 
 async def test_an_uncounted_source_deck_orders_no_badge_at_all(tmp_path: Path) -> None:
@@ -1532,8 +1934,7 @@ async def test_an_uncounted_source_deck_orders_no_badge_at_all(tmp_path: Path) -
     entry = make_entry(slides=3, source_post_id="post-a")
     env = make_env(tmp_path, entry, texts=["one", "two", "three"], trends=make_trends(panels=3))
     give_intel(env, panels=3, chrome=["@knox | skool.com/knox", "swipe on", ""])
-    env.config.run.vision_check = True
-    env.llm_call = VisionStub()
+    env.llm_call = CriticStub()
     submit = FakeSubmit()
 
     await render_carousel(entry, env, make_folder(tmp_path, entry), submit=submit)
@@ -1541,31 +1942,32 @@ async def test_an_uncounted_source_deck_orders_no_badge_at_all(tmp_path: Path) -
     for call in submit.calls:
         assert "counter (render verbatim)" not in call.prompt
         assert "this deck carries no slide counter" in call.prompt.lower()
-    assert all("/ 03" not in carrier for carrier in env.llm_call.carriers), \
-        "and the check is told to expect no badge either"
+    assert all("/ 03" not in system for system in env.llm_call.systems), \
+        "and every critic is told to expect no badge either"
 
 
-async def test_the_counter_travels_into_the_checks_expected_text(tmp_path: Path) -> None:
-    """A badge we ORDERED is ordered words: unlisted, it is a text mismatch on every slide.
+async def test_the_counter_travels_into_the_gauntlet_contract(tmp_path: Path) -> None:
+    """A badge we ORDERED is ordered words: unlisted, it reads as invented text on every frame.
 
-    The third vision question compares the rendered words against the expected ones, so a deck
-    that renders "2/3" exactly as instructed would be flagged for three invented characters — and
-    each flagged slide would buy a discretionary re-render against a defect nobody has.
+    The `brief` critic compares what is drawn against what was ordered, so a deck that renders
+    "2/3" exactly as instructed would be failed for three invented characters — and every failing
+    frame would buy a discretionary fix re-render against a defect nobody has. The counter is its
+    own contract row rather than a body line, which is also why a wordless panel of a COUNTED deck
+    is still `(none)` for its words and still carries its badge.
     """
     entry = make_entry(slides=3, source_post_id="post-a")
     env = make_env(tmp_path, entry, texts=["Panel one", "", "Panel three"],
                    trends=make_trends(panels=3))
     give_intel(env, panels=3, chrome=["1/3", "2/3", "3/3"])
-    env.config.run.vision_check = True
-    env.llm_call = VisionStub()
+    env.llm_call = CriticStub()
 
     await render_carousel(entry, env, make_folder(tmp_path, entry), submit=FakeSubmit())
 
-    anchor_call, deck_call = env.llm_call.carriers
-    assert 'image 1: "Panel one\n1/3"' in anchor_call
-    assert 'image 2: "2/3"' in deck_call, \
-        "a wordless panel of a counted deck is not wordless — the badge is still ordered"
-    assert 'image 3: "Panel three\n3/3"' in deck_call
+    deck = env.llm_call.prompt_for("brief", 1)
+    assert 'L1: "Panel one"' in deck and 'counter: "1/3"' in deck
+    assert 'counter: "2/3"' in deck, \
+        "a wordless panel of a counted deck still carries the badge it was ordered"
+    assert 'L1: "Panel three"' in deck and 'counter: "3/3"' in deck
 
 
 async def test_a_deck_with_no_slide_intelligence_counts_nothing(tmp_path: Path) -> None:
@@ -1623,104 +2025,43 @@ async def test_a_panels_own_product_logo_is_sanctioned_and_everything_else_is_no
         "a panel that showed no mark sanctions none — the line stays empty (ignore-if-empty)"
 
 
-async def test_the_sanctioned_marks_travel_to_the_vision_check_too(tmp_path: Path) -> None:
-    """Ordering a Notion logo and then flagging it as fake UI spends the retry undoing the order.
-
-    The check's second question asks whether the image carries platform chrome or an invented
-    interface; a real product logo we deliberately sanctioned is neither, and the question template
-    can only know that if the names ride the call.
+async def test_the_sanctioned_marks_travel_into_the_gauntlet_contract_both_ways(
+    tmp_path: Path,
+) -> None:
+    """FR-330, both directions. Ordering a Notion logo and then failing the frame for drawing one
+    spends the whole fix budget undoing FR-315, so a sanctioned mark is REQUIRED; everything the
+    D-A gate refused — a competitor, the creator's own mark, platform chrome — is FORBIDDEN, and
+    its presence is the leakage the `brief` critic exists to catch.
     """
     entry = make_entry(slides=2, source_post_id="post-a")
     env = make_env(tmp_path, entry, texts=["one", "two"], trends=make_trends(panels=2))
     give_intel(env, panels=2, marks=[["Notion logo"], ["Figma icon", "Instagram watermark"]])
-    env.config.run.vision_check = True
-    env.llm_call = VisionStub()
+    env.llm_call = CriticStub()
 
     await render_carousel(entry, env, make_folder(tmp_path, entry), submit=FakeSubmit())
 
-    anchor_call, deck_call = env.llm_call.carriers
-    assert "SANCTIONED MARKS" in anchor_call and "image 1: Notion" in anchor_call
-    assert "image 2: Figma" in deck_call
-    assert "Instagram" not in deck_call, "platform chrome is never sanctioned, on either wire"
+    deck = env.llm_call.prompt_for("brief", 1)
+    required = deck.split("REQUIRED marks", 1)[-1].split("FORBIDDEN", 1)[0]
+    forbidden = deck.split("FORBIDDEN terms and marks", 1)[-1]
+    assert "Notion" in required and "Figma" in required
+    assert "Instagram" not in required, "platform chrome is never sanctioned"
+    assert "Instagram" in forbidden, "and what the gate refused is what the critic looks for"
 
 
 async def test_a_deck_without_intelligence_sanctions_no_mark(tmp_path: Path) -> None:
     """The pre-D-A rule is the DEFAULT: every company, product and app mark stays generic."""
     entry = make_entry(slides=2)
     env = make_env(tmp_path, entry, texts=["one", "two"])
-    env.config.run.vision_check = True
-    env.llm_call = VisionStub()
+    env.llm_call = CriticStub()
     submit = FakeSubmit()
 
     await render_carousel(entry, env, make_folder(tmp_path, entry), submit=submit)
 
     assert all(marks_line(call.prompt) == "" for call in submit.calls)
-    assert all("SANCTIONED MARKS" not in carrier for carrier in env.llm_call.carriers)
-
-
-# ------------------------------------------------------ D-F the defect-aware retry (v2.1.2)
-
-
-async def test_a_mismatch_re_render_is_told_what_it_invented_and_forbidden_to_repeat_it(
-    tmp_path: Path,
-) -> None:
-    """D-F: the re-render's instruction names the defect the first verdict actually reported.
-
-    "Set the remaining text noticeably larger" is a remedy for garbled glyphs and a no-op for a
-    render that invented copy — which, on a panel-mapped deck, is the defect that earned the retry.
-    The verdict's own `detail` is quoted in, so the second attempt is a different REQUEST.
-    """
-    entry = make_entry(slides=3, source_post_id="post-a")
-    env = make_env(tmp_path, entry, texts=["Panel one verbatim", "two", "three"],
-                   trends=make_trends(panels=3))
-    env.config.run.vision_check = True
-    env.llm_call = VisionStub(flags=[{1}], defect="text_mismatch",
-                              detail="ZZDEFECT it shows BUILD IN PUBLIC instead")
-    submit = FakeSubmit()
-
-    record = await render_carousel(entry, env, make_folder(tmp_path, entry), submit=submit)
-
-    retry = submit.calls[1]
-    assert retry.kind == "discretionary" and retry.slide == 1
-    assert "ZZDEFECT it shows BUILD IN PUBLIC instead" in retry.prompt
-    assert "Render the invented words nowhere" in retry.prompt
-    assert "LOCKED" in retry.prompt, "the verbatim lever is still the base — the clause is added"
-    assert quoted_text(retry.prompt) == "Panel one verbatim", "FR-304: a quote is never trimmed"
-    assert record.vision_check_result is VisionCheckResult.RETRIED_PASSED
-
-
-async def test_a_fake_ui_re_render_is_forbidden_the_chrome_it_drew(tmp_path: Path) -> None:
-    """The other clause: a smaller headline does not remove an invented like counter."""
-    entry = make_entry(slides=2)
-    env = make_env(tmp_path, entry, texts=["one", "two"])
-    env.config.run.vision_check = True
-    env.llm_call = VisionStub(flags=[{1}], defect="fake_ui", detail="ZZUI a fake like counter")
-    submit = FakeSubmit()
-
-    await render_carousel(entry, env, make_folder(tmp_path, entry), submit=submit)
-
-    retry = submit.calls[1]
-    assert "ZZUI a fake like counter" in retry.prompt
-    assert "platform interface chrome" in retry.prompt
-    assert "Set the remaining text" in retry.prompt, "the base text lever still applies"
-
-
-async def test_a_broken_text_re_render_keeps_the_instruction_it_always_had(
-    tmp_path: Path,
-) -> None:
-    """`text_broken`'s remedy IS the base wording; repeating it would dilute the real clauses."""
-    entry = make_entry(slides=2)
-    env = make_env(tmp_path, entry, texts=["one", "two"])
-    env.config.run.vision_check = True
-    env.llm_call = VisionStub(flags=[{1}])  # the default defect is `text_broken`
-    submit = FakeSubmit()
-
-    await render_carousel(entry, env, make_folder(tmp_path, entry), submit=submit)
-
-    retry = submit.calls[1]
-    assert "Set the remaining text" in retry.prompt
-    assert "invented or altered words" not in retry.prompt
-    assert "platform interface chrome" not in retry.prompt
+    # And the contract says so too: with nothing sanctioned, the REQUIRED side is `(none)`, which
+    # is the strict reading — every logo a critic sees on these frames is an unsanctioned one.
+    required = env.llm_call.prompt_for("brief", 0).split("REQUIRED marks", 1)[-1]
+    assert required.split("FORBIDDEN", 1)[0].strip().endswith("(none)")
 
 
 # ------------------------------------------ FR-315 mark patches: the mark's own pixels (D48)
@@ -1786,7 +2127,10 @@ async def test_fr315_a_slide_never_carries_more_than_four_patches_or_breaks_the_
 
     await render_carousel(entry, env, make_folder(tmp_path, entry), submit=submit)
 
-    assert len(uploads.paths) == 6, "every distinct mark is cropped and uploaded once"
+    assert len(uploads.paths) == 4, \
+        "only the marks a slide may actually DRAW are cropped: the sanction cap is the crop " \
+        "allowlist (v2.2.0), so the two marks beyond `_MAX_MARKS` never become pixels, never " \
+        "reach the source store's `marks/` folder and never reach Kie"
     for call in submit.calls:
         assert len(mark_patch_urls(call)) <= carousel_module._MAX_MARK_PATCHES == 4
         assert len(call.image_urls) <= 16, "the provider's hard ceiling, applied last (FR-272)"
@@ -1882,24 +2226,26 @@ async def test_fr315_a_croppable_mark_that_the_sanction_filter_rejected_never_re
     assert marks_line(submit.slide(1).prompt) == "Notion"
 
 
-# ------------------------------ FR-317: the resubmit ledger, separate from the vision retry's
+# ----------------------------- FR-317: the resubmit ledger, separate from the gauntlet fix's
 
 
-async def test_fr317_a_slide_may_burn_its_vision_retry_and_its_resubmit_independently(
+async def test_fr317_a_slide_may_burn_its_gauntlet_fix_and_its_resubmit_independently(
     tmp_path: Path,
 ) -> None:
-    """NFR-4's "one retry per class", with the classes actually separated.
+    """NFR-4's "one retry per class", with the classes actually separated (spec §7).
 
-    They answer different questions. FR-105's retry is about the PICTURE — the render came back
+    They answer different questions. The GAUNTLET's fix is about the PICTURE — the render came back
     with broken glyphs, so a different request is made. FR-317's is about the JOB — the request
-    never came back at all, so the identical request is made once more. A slide that times out,
-    is resubmitted, lands, and is then flagged has done nothing wrong twice: it is entitled to one
-    of each, and a shared ledger would silently deny the second.
+    never came back at all, so the identical request is made once more. A slide that times out, is
+    resubmitted, lands, and is then failed by a critic has done nothing wrong twice: it is entitled
+    to one of each, and a shared ledger would silently deny the second. A gauntlet fix is itself
+    never resubmitted — it is a fresh submission with its own ledger rows.
     """
     entry = make_entry(slides=2)
     env = make_env(tmp_path, entry, texts=["one", "two"])
-    env.config.run.vision_check = True
-    env.llm_call = VisionStub(flags=[{1}])  # the anchor is flagged AFTER its resubmit landed
+    # `garbled` is a craft code and craft also runs the anchor pre-gate, so entry 0 is that
+    # round: the anchor is failed by the DECK round, after its FR-317 resubmit already landed.
+    env.llm_call = CriticStub(rounds=[set(), {1}], code="garbled")
     submit = FakeSubmit(rule=lambda call: failed(RenderFailCause.TIMEOUT)
                         if call.index == 0 else ok(call))
 
@@ -1908,12 +2254,13 @@ async def test_fr317_a_slide_may_burn_its_vision_retry_and_its_resubmit_independ
     kinds = [(call.slide, call.kind) for call in submit.calls]
     assert kinds == [(1, "projected"),        # the anchor, timed out
                      (1, "discretionary"),    # FR-317's resubmit — the SAME request
-                     (1, "discretionary"),    # FR-105's re-render — a DIFFERENT request
-                     (2, "precommitted")]
+                     (2, "precommitted"),     # the body page, chained to the anchor that landed
+                     (1, "discretionary")]    # the gauntlet's fix — a DIFFERENT request
     assert submit.calls[1].prompt == submit.calls[0].prompt, "a resubmit changes nothing"
-    assert submit.calls[2].prompt != submit.calls[0].prompt, "a vision retry changes the request"
+    assert submit.calls[3].prompt != submit.calls[0].prompt, "a fix changes the request"
     assert "image_job_resubmit" in env.log.types()
-    assert "vision_check_flagged" in env.log.types()
+    assert "gauntlet_rerender" in env.log.types()
+    assert record.gauntlet["rerenders"] == 1
     assert record.vision_check_result is VisionCheckResult.RETRIED_PASSED
     assert record.slide_count == 2, "the deck is whole — both retries did their job"
 
@@ -1924,9 +2271,11 @@ async def test_fr317_a_second_failure_after_the_resubmit_is_final_and_the_slide_
     """The ceiling. `self.resubmitted` guarantees there is never a third attempt, so the slide
     flows into the ordinary lost-slide path carrying the SECOND job's own cause.
 
-    Losing one slide is not losing the deck (FR-95): the rest ships, `carousel_incomplete` names
-    the gap, and the record carries the missing number so the gallery can leave a labelled hole
-    rather than closing it.
+    What that path ENDS in moved with D51 (v2.2.0): a slide that has used its resubmit and still
+    has nothing is permanently lost, and our slide *i* is their panel *i* (FR-304), so the deck
+    cannot be shipped around the hole. The deck is therefore a `deck_viability_loss` — every paid
+    slide kept on disk (FR-74), the missing number recorded, nothing further ordered — rather than
+    an incomplete ship. Slide 4 is the measurable half of that: it is never bought.
     """
     entry = make_entry(slides=4)
     env = make_env(tmp_path, entry, texts=["one", "two", "three", "four"])
@@ -1937,10 +2286,11 @@ async def test_fr317_a_second_failure_after_the_resubmit_is_final_and_the_slide_
 
     assert [call.kind for call in submit.calls if call.slide == 3] == [
         "precommitted", "discretionary"], "two attempts on slide 3, and only two"
-    assert record.missing_slide_numbers == [3]
-    assert record.slide_count == 3
-    assert "carousel_incomplete" in env.log.types()
-    assert "timeout" in env.log.fields("carousel_incomplete")["detail"]
+    assert record.missing_slide_numbers == [3, 4]
+    assert record.slide_count == 2
+    assert record.status is AssetStatus.FAILED, "an unsalvageable deck is not published (D51)"
+    assert "deck_viability_loss" in env.log.types()
+    assert "timeout" in env.log.fields("deck_viability_loss")["detail"]
     assert env.log.types().count("image_job_resubmit") == 1
 
 
@@ -2007,6 +2357,10 @@ async def test_fr321_the_meta_records_what_the_deck_was_ORDERED_to_be_beside_wha
     A 7 is a 7 whether eight were ordered or seven were, which is how a truncated deck reached the
     spend table as an unqualified `yes` and the gallery header as "delivered 6 of 6". Recording
     both makes "7 of 8" a machine-readable fact those two surfaces then state instead of derive.
+
+    The pair is written on EVERY terminal, which is what this deck now exercises: slide 4 is
+    refused by moderation, that is a permanent render defect, and the deck ends as a D51 viability
+    loss — kept on disk, not published, and still stating three of four.
     """
     entry = make_entry(slides=4)
     env = make_env(tmp_path, entry, texts=["one", "two", "three", "four"])
@@ -2020,7 +2374,8 @@ async def test_fr321_the_meta_records_what_the_deck_was_ORDERED_to_be_beside_wha
     stored = yaml.safe_load((folder.path / packager.META_FILE).read_text(encoding="utf-8"))
     assert stored["slide_count"] == 3 and stored["slides_ordered"] == 4
     assert stored["missing_slide_numbers"] == [4]
-    assert stored["status"] == "success", "an incomplete deck still ships (FR-95)"
+    assert stored["status"] == "failed", "a deck missing a panel is not published (D51)"
+    assert "deck_viability_loss" in stored["degradations"]
 
 
 async def test_fr321_a_whole_deck_records_the_same_number_twice_rather_than_omitting_one(
@@ -2038,64 +2393,6 @@ async def test_fr321_a_whole_deck_records_the_same_number_twice_rather_than_omit
     assert record.slide_count == record.slides_ordered == 3
     stored = yaml.safe_load((folder.path / packager.META_FILE).read_text(encoding="utf-8"))
     assert stored["slides_ordered"] == 3 and stored["missing_slide_numbers"] == []
-
-
-async def test_fr321d_the_second_verdict_is_logged_as_evidence_for_retried_passed(
-    tmp_path: Path,
-) -> None:
-    """FR-321d: `vision_check_result` claims one of four states, and `retried_passed` is the only
-    one that asserts a defect was FIXED.
-
-    Until this line that assertion rested on a verdict nothing logged — the operator could read
-    the claim and not the evidence. `vision_recheck` is the evidence: one line per slide actually
-    re-rendered and re-checked, `attempt=2`, carrying the same three defect flags the first pass
-    logged under `vision_check_flagged`. It is a record, not a decision: the verdict it prints is
-    already the one `verdict_result` is about to use, and there is never a third render.
-    """
-    entry = make_entry(slides=3)
-    env = make_env(tmp_path, entry, texts=["one", "two", "three"])
-    env.config.run.vision_check = True
-    env.llm_call = VisionStub(flags=[{1}])  # anchor flagged, the re-check comes back clean
-    submit = FakeSubmit()
-
-    record = await render_carousel(entry, env, make_folder(tmp_path, entry), submit=submit)
-
-    rechecks = [data for name, data in env.log.data if name == "vision_recheck"]
-    assert len(rechecks) == 1, "one line per re-rendered slide, not per checked slide"
-    assert rechecks[0]["slide"] == 1 and rechecks[0]["attempt"] == 2
-    assert rechecks[0]["checked"] is True and rechecks[0]["flagged"] is False
-    assert (rechecks[0]["text_broken"], rechecks[0]["fake_ui"], rechecks[0]["text_mismatch"]) == (
-        False, False, False), "the same three defect flags the first pass logged"
-    assert "re-checked after its one re-render: clean" in \
-        next(message for name, message in env.log.records if name == "vision_recheck")
-    assert record.vision_check_result is VisionCheckResult.RETRIED_PASSED
-
-
-async def test_fr321d_a_re_render_that_is_still_flagged_says_so_and_stays_retried_failed(
-    tmp_path: Path,
-) -> None:
-    """The honest half, and the reason the line is worth having: the SECOND verdict decides.
-
-    A re-render that comes back with the same defect is `retried_failed` and the recheck line says
-    "still flagged" with the flag set — so a run whose summary claims a fix and whose evidence
-    says otherwise is a contradiction the operator can see, rather than a claim they must trust.
-    """
-    entry = make_entry(slides=3)
-    env = make_env(tmp_path, entry, texts=["one", "two", "three"])
-    env.config.run.vision_check = True
-    # anchor clean, deck flags slide 2, then the re-check flags the re-rendered slide again
-    env.llm_call = VisionStub(flags=[set(), {2}, {1}], defect="text_mismatch",
-                              detail="still shows the wrong line")
-    submit = FakeSubmit()
-
-    record = await render_carousel(entry, env, make_folder(tmp_path, entry), submit=submit)
-
-    (recheck,) = [data for name, data in env.log.data if name == "vision_recheck"]
-    assert recheck["slide"] == 2 and recheck["attempt"] == 2
-    assert recheck["flagged"] is True and recheck["text_mismatch"] is True
-    assert recheck["detail"] == "still shows the wrong line"
-    assert record.vision_check_result is VisionCheckResult.RETRIED_FAILED
-    assert record.slide_count == 3, "one re-render, one re-check, then it ships (D3/NFR-4)"
 
 
 # ------------------------------------- FR-316: the visual brief, cleaned at the CHOKEPOINT
@@ -2239,7 +2536,7 @@ def test_a_mark_name_peels_joined_descriptors_without_rewriting_the_brand(
     with its original joiner, which is why the last three rows matter as much as the first: a brand
     whose name contains an ampersand is a brand, not a list, and "AT&T" may never become "AT T".
     """
-    assert carousel_module._mark_name(raw) == name
+    assert mark_names.mark_name(raw) == name
 
 
 async def test_fr315_a_slash_joined_descriptor_still_finds_its_uploaded_patch(
@@ -2249,7 +2546,7 @@ async def test_fr315_a_slash_joined_descriptor_still_finds_its_uploaded_patch(
 
     The two strings are written by the same vision call and are routinely written DIFFERENTLY —
     `mark_boxes[].name` is the tool, `brand_marks[]` is what the model saw. Both sides of the join
-    now run `_mark_name` before collapsing, so the descriptor's spelling stops deciding whether a
+    now run `mark_name` before collapsing, so the descriptor's spelling stops deciding whether a
     logo we already cropped and paid to upload actually reaches the render.
     """
     entry = make_entry(slides=2, source_post_id="post-a")

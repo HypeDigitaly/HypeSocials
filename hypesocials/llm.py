@@ -108,7 +108,12 @@ class RoleSettings:
     max_tokens: int = 4096
     max_tokens_floor: int = 0  # NFR-111 — clamped UP to this at construction, with a warning
     max_output_ceiling: int = 0  # 0 = unknown; FR-127's widened retry is clamped here (see `_output_ceiling`)
-    reasoning_effort: str | None = None  # "low" | "medium" | "high"; None omits `reasoning`
+    #: "low" | "medium" | "high". `None` omits the `reasoning` field from the request entirely —
+    #: which is NOT "no reasoning": a thinking model left unbidden thinks at its own default
+    #: effort and bills it (Sonnet-5 bills those tokens inside `completion_tokens`, where no cap
+    #: of ours distinguishes them from the answer). A role that wants a cheap answer must SAY
+    #: `low`; the runner's `_ROLE_EFFORT` map is where each role's answer to that lives (F5).
+    reasoning_effort: str | None = None
     temperature: float | None = None
     temperature_supported: bool = False  # FR-129 conflict gate — see module docstring
     seed: int | None = None  # Luna advertises it, Sonnet 5 does not; None omits it

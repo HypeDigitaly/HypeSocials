@@ -18,6 +18,10 @@ Invariants:
   `aspect_ratio_requested` / `native_size_rendered`.
 - A failed creative keeps its paid artifacts: `skip()` writes `SKIP_REASON.txt` and a
   `status: failed` meta, it never deletes the folder (FR-74, 10 §10).
+- **A BLOCKED creative keeps them too** (FR-325/FR-74, v2.2.0): `block()` is the THIRD terminal —
+  the render happened in full and is being withheld, not lost — so it writes `BLOCKED.txt` (why, in
+  plain English) beside `GAUNTLET_REPORT.yaml` (every critic defect, per frame, per round) and
+  flips `status: blocked`. Nothing is deleted; the operator can look and disagree.
 - **`source/<post_id>/` is analysis-and-display only (FR-71/FR-306, D46 §0.13).** The slides a
   carousel was sourced FROM are downloaded here once per run so the gallery can show them offline
   and the vision pass can read them; they are never published (FR-72/FR-213) and never uploaded to
@@ -53,6 +57,12 @@ from hypesocials.util import atomic_write, read_text, slugify
 META_FILE = "meta.yaml"
 CAPTION_FILE = "caption.txt"
 SKIP_REASON_FILE = "SKIP_REASON.txt"
+#: FR-325/FR-328 (v2.2.0, D49): a creative the post-render gate refused. `BLOCKED.txt` is the plain
+#: paragraph an operator reads first; `GAUNTLET_REPORT.yaml` is every defect every critic named, per
+#: frame, per round. Both sit BESIDE the artifacts, which are kept (FR-74) — blocking withholds
+#: publication, it never deletes what was paid for.
+BLOCKED_FILE = "BLOCKED.txt"
+GAUNTLET_REPORT_FILE = "GAUNTLET_REPORT.yaml"
 REFS_DIR = "refs"
 #: FR-71's run-level source-slide store: `output/<run_id>/source/<post_id>/slide_NN.jpg` plus one
 #: `source.yaml` per post. Run-level rather than per-asset because two sibling creatives may quote
@@ -275,6 +285,42 @@ class AssetFolder:
             self.record.degradations.append(tag)
         return self.update(status=AssetStatus.FAILED, skip_reason=line, **field_values)
 
+    def write_gauntlet_report(self, payload: Mapping[str, Any]) -> Path:
+        """`GAUNTLET_REPORT.yaml` — the gate's full per-frame, per-critic, per-round record.
+
+        Written whenever the gate RAN, not only when it blocked: a deck that passed in round 2 is a
+        deck whose round 1 found something, and that is exactly what an operator tuning a style
+        wants to read. The CALLER owns the schema, for the same reason `AssetRecord` owns
+        `meta.yaml`'s and the source store owns `source.yaml`'s — one producer, one place to read
+        the key names. This guarantees only that the file is whole (temp+rename), UTF-8, and written
+        in declaration order.
+
+        It is the one place a critic's own words are written to disk. That is deliberate and it is
+        safe: FR-323 forbids critic free text in a RENDER payload, not in a report a person reads.
+        """
+        return _write_bytes(self.path / GAUNTLET_REPORT_FILE,
+                            _dump(_plain(dict(payload))).encode("utf-8"))
+
+    def block(self, reason: str, explanation: str, tag: DegradationTag | str | None = None,
+              **field_values: Any) -> AssetRecord:
+        """FR-325's terminal: rendered, paid for, KEPT on disk (FR-74) — and not published.
+
+        The third terminal state, beside `finish()` and `skip()`, and deliberately neither of them.
+        A `skip()` says "this creative did not happen" and writes `SKIP_REASON.txt`; a blocked one
+        happened in full — every slide is on disk, the caption is written, the money is spent — and
+        is being withheld because a critic panel found a defect the fix loop could not clear. The
+        operator is entitled to open the folder and disagree.
+
+        `reason` is the one machine-readable line `meta.yaml.skip_reason` carries; `explanation` is
+        the plain-language paragraph `BLOCKED.txt` carries. Both are written before the status flips,
+        so a kill between the two leaves a folder that still explains itself.
+        """
+        line = " ".join(str(reason).split()) or "blocked by the post-render quality gate"
+        _write_bytes(self.path / BLOCKED_FILE, str(explanation).encode("utf-8"))
+        if tag is not None and tag not in self.record.degradations:
+            self.record.degradations.append(tag)  # type: ignore[arg-type]
+        return self.update(status=AssetStatus.BLOCKED, skip_reason=line, **field_values)
+
     def mark(self, tag: DegradationTag) -> AssetRecord:
         """Record one degradation without changing status — e.g. `refs_dropped_moderation`."""
         if tag not in self.record.degradations:
@@ -296,6 +342,20 @@ def read_meta(asset_dir: str | Path) -> dict[str, Any]:
     """
     try:
         loaded = yaml.safe_load(read_text(Path(asset_dir) / META_FILE))
+    except (OSError, yaml.YAMLError):
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def read_gauntlet_report(asset_dir: str | Path) -> dict[str, Any]:
+    """Parse an asset's `GAUNTLET_REPORT.yaml`, or `{}` — never raises, like `read_meta`.
+
+    The console's GAUNTLET rollup reads this rather than holding the verdicts in memory, which is
+    what makes the printed line verifiable: an operator can open the file and find the same defect
+    codes. A creative the gate never touched simply has no file, and `{}` is that answer.
+    """
+    try:
+        loaded = yaml.safe_load(read_text(Path(asset_dir) / GAUNTLET_REPORT_FILE))
     except (OSError, yaml.YAMLError):
         return {}
     return loaded if isinstance(loaded, dict) else {}

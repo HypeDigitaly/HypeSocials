@@ -29,6 +29,28 @@ Four claims, in the order they can cost money:
    content sentence without ever touching the copy object. The sentinel tests below assemble the
    real gpt-image-2 and seedance roles and assert the brand appears in none of them.
 
+**What D54 compress mode (v2.3.0, FR-331) does and does not change here, because the two halves
+of claim 3 part company on that path.** A compressed carousel deck's slides are the copy model's
+own bytes rather than a quote of the post's, so:
+
+* **Claim 1 does not apply to it and is not asserted to.** `_compressed` returns
+  `_Written(quoted=())`, which is the same shape an override brief has always returned, and
+  `_verify`'s byte-substring half self-skips on an empty pool — a compressed line is not a
+  substring of anything and reporting it as a deviation would tag every deck in the mode. The
+  receipts that replace the substring claim are `CopyProvenance.copy_mode == "compress"`, every
+  `panel_map` row's `compressed: True`, and `source_text_original` beside `source_text` in each
+  row. `tests/test_copywrite.py` owns those; this file owns what follows.
+* **Claim 2 is mode-INDEPENDENT and still fail-closed, which is the half that matters most on
+  this path.** `_verify`'s blocklist half reads the `CopySet`, not the quoted pool, so it audits
+  every compressed slide, the compressed caption and every hashtag exactly as it audits a quote —
+  and `_compress_field` applies `apply_blocklist` to the model's line BEFORE anything else, since
+  a model that read a competitor's name in the fenced trend texts can write it into a slide the
+  source panel never mentioned. The sentinel at the end of this file seeds a brand into a compress
+  payload and proves it reaches neither the `CopySet` nor any assembled render prompt.
+* **Claim 4 is unchanged in every respect.** The prompt is still where the barrier is enforced,
+  and the channels `build_context` builds from the TOPIC are the same ones whatever contract wrote
+  the copy.
+
 No network: the `llm.structured_call` seam is a stub matching `models.StructuredCall`, and no test
 here writes outside `tmp_path`.
 """
@@ -565,14 +587,17 @@ async def test_the_no_call_tier_strips_the_blocklist_from_the_caption_it_ships()
 
 
 async def test_a_topic_with_no_quotable_caption_falls_back_to_our_own_words_and_claims_nothing() -> None:
-    """When there is nothing to quote the honest answer is ours: the topic name plus the standing
-    niche line. No provenance label is recorded for it, because it is not a quote."""
+    """When there is nothing to quote the honest answer is ours: the topic's own name, and since
+    v2.2.0 THAT ALONE. The niche descriptor used to ride along and shipped the operator's config
+    file as caption copy on a paid creative (08-14 audit, FR-99/FR-307 caption forms). No
+    provenance label is recorded for it either way, because it is not a quote."""
     bare = TrendItem(history_key="t1", monitor_id="m1", name="AI Trends Tracker", topic_key="t1")
 
     result = await write([entry()], DeadCall(), trends={"t1": bare})
 
     caption = result.copy["a1"].caption
-    assert "AI Trends Tracker" in caption and "AI automation for Czech SMBs" in caption
+    assert caption == "AI Trends Tracker"
+    assert NICHE not in caption and "AI automation for Czech SMBs" not in caption
     assert result.provenance["a1"].refs == {}
     assert result.tags["a1"] == (DegradationTag.COPY_DEGRADED, DegradationTag.NO_ONIMAGE_TEXT)
 
@@ -622,7 +647,9 @@ async def test_virlos_own_summary_is_now_banned_from_every_output_not_merely_fro
     assert "Virlo says" not in " ".join(c.text for c in offer.onimage + offer.captions)
     assert "Virlo says" not in shipped_strings(result.copy["a1"]), "not through a ref"
     assert "Virlo says" not in shipped_strings(degraded.copy["a2"]), "not through the degrade tier"
-    assert result.copy["a1"].caption.startswith("AI tool stacks"), "our own assembled caption"
+    assert result.copy["a1"].caption.startswith("A real hook"), (
+        "the post's own hook under our attribution (FR-99/FR-307 caption forms), not the summary")
+    assert NICHE not in result.copy["a1"].caption, "and never the operator's niche descriptor"
 
 
 async def test_a_caption_of_hashtags_and_three_words_is_not_a_caption(
@@ -630,8 +657,10 @@ async def test_a_caption_of_hashtags_and_three_words_is_not_a_caption(
     """D46 §0.7, the operator-settled floor: a caption is a caption only when at least 25
     non-hashtag characters survive the trailing-tag split. Six of the eight creatives in the first
     paid run shipped a tag dump as their caption, which is what the source posts actually carried
-    under the picture — so the engine now falls back to the assembled caption (topic name plus the
-    standing niche line) instead, exactly as it does when a post has no caption at all.
+    under the picture — so the engine now captions the creative with its own bound post's best
+    remaining line plus a neutral attribution (FR-99/FR-307 caption forms, v2.2.0), exactly as it
+    does when a post has no caption at all. What it may never fall back to is the operator's niche
+    descriptor: that string steers the copy prompt and is not caption copy.
 
     The two captions below differ by ONE character — a full stop — and that is the whole boundary:
     24 non-hashtag characters is a tag dump, 25 is a caption.
@@ -652,7 +681,9 @@ async def test_a_caption_of_hashtags_and_three_words_is_not_a_caption(
     real = await write([entry()], ScriptedCall({"a1": [refs(caption_ref="P1.caption")]}),
                        trends={"t1": just_enough})
 
-    assert spam.copy["a1"].caption == f"AI tool stacks — {NICHE}"
+    assert spam.copy["a1"].caption == "A real hook — from a post trending this week", (
+        "the bound post's own best line plus a neutral attribution, never the niche descriptor")
+    assert NICHE not in spam.copy["a1"].caption
     assert spam.copy["a1"].hashtags == [], "we did not adopt the tag dump either"
     assert spam.provenance["a1"].refs == {}, "our own words claim no provenance"
     assert log.warned("copy_caption_unavailable")
@@ -669,7 +700,9 @@ async def test_the_substance_floor_applies_to_the_no_call_tier_too() -> None:
 
     result = await write([entry()], DeadCall(), trends={"t1": source})
 
-    assert result.copy["a1"].caption == f"AI tool stacks — {NICHE}"
+    assert result.copy["a1"].caption == "AI tool stacks", (
+        "the no-model tier assembles the topic name and its slug tags — nothing of ours besides")
+    assert NICHE not in result.copy["a1"].caption
     assert result.provenance["a1"].refs == {} and result.provenance["a1"].post_id == ""
     assert set(result.tags["a1"]) == {DegradationTag.COPY_DEGRADED,
                                       DegradationTag.NO_ONIMAGE_TEXT}
@@ -900,10 +933,19 @@ async def test_a_panel_line_that_echoes_the_decks_chrome_is_dropped_as_well() ->
     into `chrome_text`, apart from the slide's words — but Virlo's own `panel_texts` carry the same
     cue on `virlo_text`, so "SWIPE ❮❮" reaches the deck through the front door. It is the creator's
     furniture, it tells our reader to swipe on a deck whose slides do not swipe that way, and the
-    collapse makes their glyphs and ours the same cue."""
+    collapse makes their glyphs and ours the same cue.
+
+    The PAGE COUNTER on panel 2 is the second half, renegotiated in Session 5.5 (F2). Layer 3
+    cannot take it and never could — "1/8" collapses to two characters, below `_CREATOR_MIN_CHARS`
+    — and until F2 that was the end of the story: the badge shipped as our slide's words, reached
+    `panel_map.source_text`, became a line of the gauntlet's frame contract and BLOCKED the deck
+    for `missing_text` because the renderer had rightly not drawn the source's page number. The
+    shape strip at admission takes it now, on its own flag, and the identifier assertion below
+    stays exactly as it was — it is the reason a second mechanism had to exist.
+    """
     log = Recorder()
     source = creator_deck("SWIPE <<\nHere is the real content of slide one",
-                          "A second panel with real words")
+                          "1/8\nA second panel with real words")
 
     result = await write_deck(source, log=log, chrome_lines={"p1": ["SWIPE ❮❮", "1/8"]})
 
@@ -911,10 +953,82 @@ async def test_a_panel_line_that_echoes_the_decks_chrome_is_dropped_as_well() ->
                                              "A second panel with real words"]
     warning = log.warned("panel_creator_line_stripped")[0]
     assert "'SWIPE <<' == the chrome identifier 'swipe'" in warning
+    rows = result.provenance["d1"].panel_map
+    assert rows[1]["chrome_counter_stripped"] is True, "its own flag, never creator_stripped"
+    assert rows[1]["creator_stripped"] is False, "a page number is nobody's brand"
+    assert rows[1]["source_text_original"] == "1/8\nA second panel with real words", \
+        "provenance keeps the counter — the original bytes are never rewritten"
+    assert "'1/8'" in log.warned("panel_counter_stripped")[0]
     assert copywrite._creator_identifiers(source.posts[0], ["1/8", ""]) == {
         "emirailab": "author"}, \
         "a page counter collapses to two characters and an empty chrome field to none — neither " \
-        "becomes an identifier, and only the author's own handle is left"
+        "becomes an identifier, so layer 3 is not what removes it"
+
+
+async def test_f2_the_counter_strip_leaves_the_map_the_prompt_and_the_verifier_holding_one_string(
+) -> None:
+    """F2's byte-consistency invariant, and why the strip sits ABOVE both writes.
+
+    `_offer_for` writes the admitted panel into two places at once: `kept[]`, which becomes
+    `offer.panels` and from there `panel_map.source_text` and the render prompt's locked TEXT
+    block, and `haystack`, which becomes the FR-100/101 verifier's pool of quotable bytes. A strip
+    applied to one of that pair and not the other is how a run false-flags its own correct
+    behaviour: the shipped string stops being a byte-substring of anything the creative was
+    entitled to quote, and the audit tags an otherwise perfect deck `copy_not_verbatim`.
+
+    Observable through the public surface exactly as an operator would read it: the `CopySet` this
+    deck renders, the provenance rows `meta.yaml` carries and the audit's own verdict all describe
+    the same bytes, and the label each slide resolved through is the panel's own.
+    """
+    log = Recorder()
+    czech = "Sedm nástrojů, které používá každý"
+    source = creator_deck(f"01 / 06\n{czech}", "02 / 06\nA second panel with real words")
+
+    result = await write_deck(source, log=log)
+
+    copyset, provenance = result.copy["d1"], result.provenance["d1"]
+    rows = provenance.panel_map
+    assert copyset.slide_texts == [czech, "A second panel with real words"]
+    assert copyset.slide_texts == [row["source_text"] for row in rows], \
+        "the panel map and the rendered words are one string, not two spellings of one"
+    assert [provenance.refs[f"slide_{n}"] for n in (1, 2)] == [row["ref_label"] for row in rows]
+    assert rows[0]["source_text_original"] == f"01 / 06\n{czech}", \
+        "provenance keeps the counter: it records what the source said, not what we admitted"
+    assert not log.warned("copy_not_verbatim"), \
+        "the verifier's pool was stripped with the panels, so nothing looks retyped"
+    assert DegradationTag.COPY_NOT_VERBATIM not in result.tags.get("d1", ())
+    assert "01 / 06" not in shipped_strings(copyset), "no badge of theirs becomes pixels of ours"
+
+
+async def test_f2_a_panel_that_was_ONLY_a_page_counter_renders_wordless_in_its_own_position(
+) -> None:
+    """F2 joined to FR-304's alignment rule, and to the tag it must NOT earn.
+
+    A panel whose every line was chrome goes to "" and KEEPS ITS ROW — the row is the alignment,
+    and closing the gap would tell the gallery our slide 2 renders their slide 3. The flag on that
+    row is `chrome_counter_stripped` and deliberately not `creator_stripped`: the latter tags the
+    creative `competitor_stripped`, which is a claim that somebody's BRAND was removed from it. A
+    page number is nobody's brand, and a deck labelled that way for losing one would have an
+    operator hunting a competitor that was never there.
+    """
+    log = Recorder()
+    source = creator_deck("01 / 06", "The second panel, with real words",
+                          "A third panel, also real")
+
+    result = await write_deck(source, slides=3, log=log)
+
+    rows = result.provenance["d1"].panel_map
+    assert result.copy["d1"].slide_texts == ["", "The second panel, with real words",
+                                             "A third panel, also real"]
+    assert [row["source_position"] for row in rows] == [1, 2, 3], "nothing slid up"
+    assert rows[0]["source_text"] == "" and rows[0]["source_text_original"] == "01 / 06"
+    assert rows[0]["drop_reason"] == "empty", "the strip emptied it; the verdict is honest"
+    assert rows[0]["chrome_counter_stripped"] is True
+    assert rows[0]["creator_stripped"] is False, "a page number is nobody's brand"
+    assert DegradationTag.COMPETITOR_STRIPPED not in result.tags.get("d1", ())
+    assert "slide_1" not in result.provenance["d1"].refs, "a wordless slide quotes nothing"
+    assert "'01 / 06'" in log.warned("panel_counter_stripped")[0]
+    assert not log.warned("panel_creator_line_stripped"), "layer 3 is not what removed it"
 
 
 async def test_a_panel_that_was_ONLY_the_creators_name_renders_wordless_in_its_own_position(
@@ -953,7 +1067,19 @@ async def test_the_panel_map_row_says_creator_stripped_and_keeps_the_pre_strip_p
     assert rows[1] == {"slide": 2, "source_position": 2,
                        "source_text": "A second panel with real words",
                        "source_text_original": "A second panel with real words",
-                       "ref_label": "P1.panel.2", "drop_reason": "", "creator_stripped": False}
+                       "ref_label": "P1.panel.2", "drop_reason": "", "creator_stripped": False,
+                       # F2 (Session 5.5): the seventh key, and the reason it is not the sixth —
+                       # a page counter is chrome, not a creator's name, so it never rides
+                       # `creator_stripped` into a `competitor_stripped` tag. This panel had none.
+                       "chrome_counter_stripped": False,
+                       # FR-304c (v2.2.0): the eighth key. A panel that reads as finished is not
+                       # a suspect, and a suspect would still have shipped in full.
+                       "truncation_suspect": False,
+                       # D54 (v2.3.0): the ninth. This deck was written in verbatim mode, where
+                       # the walk quotes and never compresses, so the key is False by
+                       # construction — but it is WRITTEN, because both walks emit one row
+                       # schema and the FR-73 reader may never have to ask which one it got.
+                       "compressed": False}
 
 
 async def test_the_caption_loses_the_creators_name_at_word_boundaries() -> None:
@@ -1416,3 +1542,125 @@ async def test_fr312_the_cta_strip_never_reaches_a_panel_a_hook_or_an_overlay() 
     assert result.copy["d1"].slide_texts == ["Swipe all 7 slides",
                                              "Comment \"SCALE\" for the link"]
     assert not log.warned("caption_cta_stripped")
+
+
+# ------------------------------------- D54/FR-331: the same barrier, on the contract that WRITES
+#
+# Every sentinel above seeds a competitor into a post and proves the ENGINE never resolves it into
+# a creative. Compress mode adds a second door and it is the more dangerous one: the model is
+# handed the fenced trend texts and asked to produce bytes, so it can write a brand name into a
+# slide the source panel never mentioned. The strip therefore runs on the way OUT as well — layer
+# 1 first of `_compress_field`'s three backstops, `_verify`'s blocklist half over what shipped —
+# and the substring half self-skips because a compressed line quotes nothing.
+
+
+def compressed_answer(**overrides: Any) -> dict[str, Any]:
+    """One `CopyCompressed` answer — the compress contract's shape (text out, not labels)."""
+    payload: dict[str, Any] = {"headline": "", "caption": "", "hashtags": [], "slide_texts": [],
+                               "through_line": "", "narrative_arc": ""}
+    payload.update(overrides)
+    return payload
+
+
+async def test_d54_a_compressed_deck_ships_quoted_nothing_and_skips_the_substring_audit() -> None:
+    """The claim-1 carve-out, asserted rather than assumed.
+
+    `_verify`'s half 1 runs only `if written.quoted`, so a contract that quotes nothing is exempt
+    by construction — the same door the free-text override brief has always used. What proves the
+    exemption is real is the deck itself: every shipped slide differs from its source panel (that
+    is what compression IS), and not one of them is tagged `copy_not_verbatim`. Without the
+    carve-out the tag would fire on every creative in the mode and mean nothing thereafter.
+    """
+    source = creator_deck("A source panel written out at the length a real page carries.",
+                          "A second source panel, likewise long enough to be worth shortening.",
+                          author="@somebodyelse")
+    call = ScriptedCall({"d1": [compressed_answer(
+        caption="The tools, in the order that matters.",
+        slide_texts=["The first panel, shortened.", "The second panel, shortened."])]})
+
+    result = await write([deck(slides=2)], call, trends={"t1": source},
+                        carousel_copy_mode="compress",
+                        styles={STYLE_KEY: style(max_onimage_chars={"headline": 90,
+                                                                    "slide": 300})})
+
+    copyset, provenance = result.copy["d1"], result.provenance["d1"]
+    assert copyset.slide_texts == ["The first panel, shortened.", "The second panel, shortened."]
+    assert all(shipped not in source.posts[0].panel_texts for shipped in copyset.slide_texts), \
+        "the control: these really are NOT byte-substrings of the panels they came from"
+    assert DegradationTag.COPY_NOT_VERBATIM not in result.tags.get("d1", ())
+    assert provenance.copy_mode == "compress"
+    assert all(row["compressed"] is True for row in provenance.panel_map)
+    assert all(row["source_text_original"] and row["source_text"] != row["source_text_original"]
+               for row in provenance.panel_map), "the row carries both sides of the compression"
+
+
+async def test_d54_a_competitor_seeded_into_a_compress_payload_reaches_neither_copy_nor_prompt(
+) -> None:
+    """The sentinel, re-aimed at the door compress mode opens.
+
+    Here the BRAND is not in the panels at all — it is in the topic name, the fenced trend texts
+    and the summary, exactly where a compressing model would read it — and the scripted answer
+    writes it into a slide, the headline, the caption and a hashtag, which is the worst case the
+    contract allows. §1.5 layer 1 is FAIL-CLOSED and unguarded, so none of the four may survive
+    into the `CopySet`, and the assembled render prompts (claim 4, unchanged by the mode) may not
+    carry it either. The control at the end proves the assembly WOULD have carried it, so this is
+    measuring the strip rather than a topic that never mentioned the brand.
+    """
+    log = Recorder()
+    source = creator_deck("A clean source panel about pricing pages.",
+                          "A second clean source panel about onboarding.",
+                          author="@somebodyelse")
+    source.name = f"{BRAND} pricing changes"
+    source.hook_texts = [BRAND_HOOK]
+    source.video_descriptions = [f"a creator explains what {BRAND} shipped"]
+    call = ScriptedCall({"d1": [compressed_answer(
+        headline=f"{BRAND} changed pricing",
+        caption=f"{BRAND} changed everything this quarter.",
+        hashtags=["#ai", f"#{BRAND.lower()}"],
+        slide_texts=[f"{BRAND} raised prices on the pricing page.", "Onboarding, shortened."])]})
+
+    result = await write([deck(slides=2)], call, trends={"t1": source}, log=log,
+                        competitors=[BRAND], carousel_copy_mode="compress",
+                        styles={STYLE_KEY: style(max_onimage_chars={"headline": 90,
+                                                                    "slide": 300})})
+
+    copyset = result.copy["d1"]
+    assert BRAND.casefold() not in shipped_strings(copyset).casefold(), \
+        "a competitor the MODEL wrote is still a competitor — layer 1 is fail-closed either way"
+    assert f"#{BRAND.lower()}" not in copyset.hashtags, "a hashtag is one token, dropped whole"
+    assert DegradationTag.COMPETITOR_STRIPPED in result.tags["d1"]
+    assert log.warned("competitor_stripped")
+
+    prompts = render_prompts(copyset, source, slide_count=2, competitors=(BRAND,))
+    leaks = [role for role, prompt in prompts.items() if BRAND.casefold() in prompt.casefold()]
+    assert leaks == [], f"a competitor's name reached a paid render prompt: {leaks}"
+    unfiltered = render_prompts(copyset, source, slide_count=2)
+    assert any(BRAND.casefold() in prompt.casefold() for prompt in unfiltered.values()), \
+        "the control: the same assembly without the strip really does carry it"
+
+
+async def test_d54_the_blocklist_half_of_the_verifier_still_audits_a_compressed_deck() -> None:
+    """Claim 2 is mode-independent, and this is the assertion that says so at the VERIFIER.
+
+    `_verify`'s half 2 reads the `CopySet` rather than the quoted pool, so it cannot be skipped by
+    a contract that quotes nothing. Driven directly here — with a `CopySet` that carries the brand
+    and an empty quoted pool, the shape `_compressed` produces — because the engine's own strip
+    would (correctly) never let such a set exist, and the point is that the audit behind the strip
+    is still armed.
+    """
+    log = Recorder()
+    run = copywrite._Run(call=None, engine=PromptEngine(), budgets=TextBudgets(),  # type: ignore[arg-type]
+                        styles={STYLE_KEY: style()}, conventions={}, onimage_languages={},
+                        niche_descriptor=NICHE, brand_context="", competitors=(BRAND,),
+                        strip_brands={}, carousel_copy_mode="compress", log=log)
+    written = copywrite._Written(
+        copyset=CopySet(asset_id="d1", language="en", trend_key="t1",
+                        caption="A caption.", slide_texts=[f"{BRAND} raised prices."]),
+        source=copywrite.CopyProvenance(post_id="p1", copy_mode="compress"),
+        quoted=())  # the compress shape: nothing claims to be a byte-substring of anything
+
+    tags = copywrite._verify(written, deck(slides=1), run)
+
+    assert DegradationTag.COPY_NOT_VERBATIM in tags, \
+        "the blocklist half fires on a compressed string exactly as it does on a quoted one"
+    assert log.warnings, "and it is reported, not merely tagged"

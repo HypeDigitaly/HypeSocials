@@ -23,7 +23,7 @@ TEXT (locked asset — this is the exact content of the creative):
   real post and is never translated, re-worded, shortened or "corrected". Add
   no words. Repeat no words. Invent no caption, no tagline, no label, no
   signature, no sticker text. Render no text that is not quoted above.
-  Where a string is echoed letter by letter (for example "R-y-c-h-l-e-j-š-í"),
+  Where a word is echoed letter by letter (for example "R-y-c-h-l-e-j-š-í"),
   that echo is a spelling aid for you alone: read it, use it to get every
   accent right, and never draw the hyphenated form onto the image.
   Typography, weight, case and placement come from the LAYOUT AND STYLE

@@ -28,9 +28,17 @@ import pytest
 import yaml
 
 from hypesocials import styles
-from hypesocials.config import BrandingConfig, Config, RunConfig, StylesConfig
+from hypesocials.config import (
+    CONFIGS_DIR,
+    BrandingConfig,
+    Config,
+    RunConfig,
+    StylesConfig,
+    TextBudgets,
+    load_config,
+)
 from hypesocials.generate import refs as refs_module
-from hypesocials.models import LayoutZone, MetaStyle, PlanEntry
+from hypesocials.models import LayoutZone, ListMode, MetaStyle, PlanEntry
 from hypesocials.styles import StyleRegistry, StyleRegistryError
 
 REPO = Path(__file__).resolve().parents[1]
@@ -193,6 +201,109 @@ def test_fr295_an_unusable_registry_refuses_the_run_in_one_line_instead_of_defau
     line = str(caught.value)
     assert "styles.yaml" in line
     assert line.strip() and "\n" not in line.strip()
+
+
+# ------------------------------------------------------- FR-304b: the style's list treatment
+#
+# A REFLOW TRIGGER, never a ceiling (D50). Nothing below may drop, shorten or refuse a word: the
+# only thing a tripped trigger changes is the layout prose `prompts_engine` appends to
+# `{{layout_zones}}`, and the only thing a malformed block changes is that the run never starts.
+
+_LIST_MODE = {
+    "reflow_over_chars": 180,
+    "max_rows": 6,
+    "layout": "Rows set as one left-aligned column of label + value pairs inside a single card.",
+    "overflow": "reflow",
+}
+
+
+def test_a_style_declaring_a_list_mode_parses_it_whole(tmp_path: Path) -> None:
+    """The frozen §4b shape, read as authored — the four values reach `MetaStyle.list_mode` and
+    `overflow` defaults to `reflow` when the author leaves it out."""
+    _write_registry(tmp_path, [dict(_MINIMAL, list_mode=dict(_LIST_MODE)),
+                               dict(_MINIMAL, key="defaulted",
+                                    list_mode={k: v for k, v in _LIST_MODE.items()
+                                               if k != "overflow"})])
+
+    first, second = styles.load_registry([tmp_path]).styles
+
+    assert first.list_mode is not None
+    assert (first.list_mode.reflow_over_chars, first.list_mode.max_rows) == (180, 6)
+    assert first.list_mode.layout.startswith("Rows set as one left-aligned column")
+    assert first.list_mode.overflow == "reflow"
+    assert second.list_mode is not None and second.list_mode.overflow == "reflow"
+
+
+def test_a_style_with_no_list_mode_is_legal_and_simply_has_none(tmp_path: Path) -> None:
+    """Absent is the norm — most styles have no list treatment, and the key's absence must never
+    be a finding, a default or a refusal."""
+    _write_registry(tmp_path, [dict(_MINIMAL)])
+
+    style = styles.load_registry([tmp_path]).styles[0]
+
+    assert style.list_mode is None
+    clean = _registry(style, _style("b"), _style("c"))
+    assert styles.validate(clean, _config(formats={"image": 1})) == ([], [])
+
+
+@pytest.mark.parametrize("mode, id_", [
+    ("not a mapping", "scalar"),
+    ({**_LIST_MODE, "overflow": "truncate"}, "an overflow value that would drop text"),
+    ({**_LIST_MODE, "overflow": "drop_rows"}, "another one"),
+    ({k: v for k, v in _LIST_MODE.items() if k != "max_rows"}, "missing a trigger"),
+    ({k: v for k, v in _LIST_MODE.items() if k != "layout"}, "missing the layout"),
+    ({**_LIST_MODE, "layout": "   "}, "an empty layout"),
+    ({**_LIST_MODE, "reflow_over_chars": "long"}, "a non-numeric threshold"),
+    ({**_LIST_MODE, "max_rows": -1}, "a negative threshold"),
+    ({**_LIST_MODE, "max_rows": True}, "a YAML boolean where a count belongs"),
+])
+def test_fr295_a_malformed_list_mode_refuses_the_run_at_zero_dollars(
+    tmp_path: Path, mode: object, id_: str,
+) -> None:
+    """Every half-read `list_mode` fails the same way every other registry defect does: exit 2 at
+    pre-flight, one operator-facing line naming the file, the style and the key. Two of these cases
+    are the load-bearing ones — an `overflow` word outside the frozen pair would be a spelling of
+    "lose a row", and D50 says no such spelling exists."""
+    _write_registry(tmp_path, [dict(_MINIMAL, list_mode=mode)])
+
+    with pytest.raises(StyleRegistryError) as caught:
+        styles.load_registry([tmp_path])
+
+    line = str(caught.value)
+    assert "list_mode" in line and "minimal" in line, id_
+
+
+def test_a_list_mode_that_can_never_fire_is_a_warning_not_a_refusal() -> None:
+    """Both triggers off is a block with no effect — worth saying out loud, not worth refusing a
+    run over: nothing renders differently because of it."""
+    style = _style("dead", list_mode=ListMode(reflow_over_chars=0, max_rows=0,
+                                                     layout="Rows in a card."))
+
+    errors, warnings = styles.validate(_registry(style, _style("b"), _style("c")),
+                                       _config(formats={"image": 1}))
+
+    assert not errors
+    assert any("no panel can ever be a list" in line for line in warnings)
+
+
+def test_the_list_trigger_reads_length_and_rows_independently_and_zero_turns_one_off() -> None:
+    """`is_list_panel` is the registry's own reading of its own thresholds, so the one consumer
+    (`prompts_engine._style_zones`) never re-derives it. Either threshold fires alone; `0` disables
+    its own trigger — the INVERTED sense of `max_onimage_chars`' "0 = no ceiling"."""
+    long_only = _style("l", list_mode=ListMode(reflow_over_chars=20, max_rows=0,
+                                                      layout="Card."))
+    rows_only = _style("r", list_mode=ListMode(reflow_over_chars=0, max_rows=2,
+                                                      layout="Card."))
+    four_rows = "a\nb\nc\nd"
+
+    assert styles.is_list_panel(long_only, "x" * 21) is True
+    assert styles.is_list_panel(long_only, "x" * 20) is False
+    assert styles.is_list_panel(long_only, four_rows) is False, "0 rows means no row trigger"
+    assert styles.is_list_panel(rows_only, four_rows) is True
+    assert styles.is_list_panel(rows_only, "x" * 500) is False, "0 chars means no length trigger"
+    assert styles.is_list_panel(_style("plain"), "x" * 500) is False, "no list_mode, never a list"
+    assert styles.is_list_panel(None, "x" * 500) is False, "no style at all (an override brief)"
+    assert styles.is_list_panel(long_only, "   ") is False, "an empty panel is not a list"
 
 
 # --------------------------------------------------------------------------- validate: errors
@@ -450,6 +561,75 @@ def test_a_brand_affine_style_never_serves_the_other_brand_while_neutral_styles_
 
     assert _keys(digitaly) == ["neutral"] * 4
     assert _keys(lead) == ["neutral", "lead", "neutral", "lead"]
+
+
+# ------------------------------------------------- v2.2.0: the rotation's per-run seed (FR-291)
+
+
+def test_the_default_and_the_fixed_mode_both_reproduce_the_pre_v220_rotation() -> None:
+    """The escape hatch and the no-run-id default are the SAME rotation the module always had.
+
+    Every caller with no run of its own (a harness, a re-derivation, every test above this line)
+    keeps file order, and an operator who wants that back sets `styles.rotation: fixed`. Pinned
+    because it is the fallback the seeded path is judged against.
+    """
+    reg = _registry(_style("s0"), _style("s1"), _style("s2"))
+    default, fixed = _entries(range(6)), _entries(range(6))
+
+    styles.assign_styles(default, reg, "hypedigitaly")  # no run id: offset 0
+    styles.assign_styles(fixed, reg, "hypedigitaly", run_id="20260814_101500_ab12",
+                         rotation="fixed")
+
+    assert _keys(default) == _keys(fixed) == ["s0", "s1", "s2", "s0", "s1", "s2"]
+
+
+def test_the_seeded_rotation_moves_where_a_run_starts_without_shuffling_what_follows() -> None:
+    """The audit's "rotation repeats across runs" finding, fixed as an OFFSET, not a shuffle.
+
+    Two runs of one config open on different styles; inside either run the pool is still walked in
+    FILE order, consecutive orders still land on consecutive styles, and the assignment is still a
+    pure function of `entry.order`. That last part is what keeps every other guarantee in this file
+    true — a trim still cannot reshuffle a survivor.
+    """
+    reg = _registry(_style("s0"), _style("s1"), _style("s2"))
+    monday, tuesday, again = _entries(range(6)), _entries(range(6)), _entries(range(6))
+
+    styles.assign_styles(monday, reg, "hypedigitaly", run_id="20260814_090000_aaaa")
+    styles.assign_styles(tuesday, reg, "hypedigitaly", run_id="20260814_090000_dddd")
+    styles.assign_styles(again, reg, "hypedigitaly", run_id="20260814_090000_aaaa")
+
+    assert _keys(monday) == _keys(again), "one run id is one assignment, always"
+    # Two ids whose seeds land on different slots of a 3-style pool. Neighbouring run ids CAN
+    # collide — an offset over N styles has N outcomes, and the point is that a batch stops always
+    # opening on style 1, not that consecutive runs are guaranteed to differ.
+    assert _keys(monday) != _keys(tuesday), "the seed must move where a run opens"
+    for keys in (_keys(monday), _keys(tuesday)):
+        assert keys[3:] == keys[:3], "still a rotation over the pool in FILE order"
+        assert len(set(keys)) == 3, "an offset uses the whole pool, exactly like file order did"
+
+
+def test_a_gapped_order_still_picks_what_that_order_picks_in_a_dense_seeded_plan() -> None:
+    """The seed shifts the START of every scan by one shared amount, so the gap-proofness the
+    no-cursor design bought survives it: `_confirm` trims and `_select` drops still cannot move a
+    surviving creative's look."""
+    reg = _registry(_style("s0"), _style("s1"), _style("s2"), _style("s3"))
+    dense, gapped = _entries(range(6)), _entries([0, 2, 5])
+
+    styles.assign_styles(dense, reg, "hypedigitaly", run_id="20260814_090000_aaaa")
+    styles.assign_styles(gapped, reg, "hypedigitaly", run_id="20260814_090000_aaaa")
+
+    dense_by_order = {entry.order: entry.style_key for entry in dense}
+    assert _keys(gapped) == [dense_by_order[order] for order in (0, 2, 5)]
+
+
+def test_the_seed_is_a_stable_checksum_and_never_pythons_salted_hash() -> None:
+    """Cross-PROCESS determinism, which builtin `hash()` does not give for `str`: the same run id
+    must seed identically in the run that assigned the styles and in anything re-deriving them
+    later (a replay, a test, a second process reading meta.yaml)."""
+    assert styles.rotation_seed("20260814_090000_aaaa") == 572_962_395  # crc32 of those bytes
+    assert styles.rotation_seed("20260814_090000_aaaa", "fixed") == 0
+    assert styles.rotation_seed("", "seeded") == 0
+    assert styles.rotation_seed("  ", "seeded") == 0
 
 
 def test_an_empty_pool_raises_rather_than_assigning_nothing() -> None:
@@ -892,3 +1072,187 @@ def test_style_for_answers_the_exact_key_and_names_an_unknown_one(tmp_path: Path
     with pytest.raises(StyleRegistryError) as caught:
         styles.style_for(reg, "vanished")
     assert "vanished" in str(caught.value)
+
+
+# --------------------------------------------------- D55: the SHIPPED registry, read as it ships
+#
+# Every test above builds a synthetic registry, deliberately: a suite whose assertions move when a
+# style is re-authored is a suite that stops being run. These few read `prompts/styles.yaml`
+# itself, because three facts about it are not properties of the module at all — they are the
+# operator's decisions of 2026-08-20 (D55), and the run refuses at pre-flight (FR-295, exit 2, $0)
+# the day the file and the shipped configs disagree about them.
+
+SHIPPED_STYLES = 9
+#: D55's selection, pinned as data: the four keys the three brand configs enable. The list is here
+#: rather than read from a config so a config edit that silently drops a key fails a test with a
+#: name instead of quietly narrowing the rotation.
+ENABLED_FOUR = ["anime-noir-statement", "letterpress-print-carousel", "meme-caricature-panels",
+                "quiet-luxury-night-photoreal"]
+
+
+def _shipped() -> StyleRegistry:
+    """The real registry, loaded exactly as a run loads it (FR-174's `prompts_dir` seam)."""
+    return styles.load_registry([REPO / "prompts"])
+
+
+def test_d55_the_shipped_registry_parses_and_holds_nine_uniquely_keyed_styles() -> None:
+    """There is NO fallback (FR-295): a registry that will not parse is exit 2 and $0, not a
+    built-in default set. So "it parses" is a real assertion about the shipped bytes, and the
+    count is what catches a style added or removed without anyone updating the configs that
+    enable it."""
+    registry = _shipped()
+    keys = [style.key for style in registry.styles]
+
+    assert len(registry.styles) == SHIPPED_STYLES
+    assert len(set(keys)) == SHIPPED_STYLES, f"duplicate style key in the registry: {keys}"
+    assert "quiet-luxury-night-photoreal" in keys, "D55's new style"
+    assert registry.origin.endswith("styles.yaml") and registry.content_hash
+
+
+def test_d55_the_new_style_is_a_full_density_registry_entry_and_not_a_stub() -> None:
+    """The style was authored from two Inspiration frames, TEXT ONLY (D46/F3: the inspiration
+    informs the authorship and never becomes a render reference), so every field a run reads has
+    to be filled in words — there is no picture behind it to make up the difference.
+
+    `subject_mode: scene_fixed` is the load-bearing one: this is ONE resolved scene (the penthouse
+    desk before a night skyline), and a deck of it is the same room from a different distance
+    rather than a new room per slide. `text_density: minimal` is what makes it a compress-mode
+    style at all — one small sentence in a dark frame is exactly the look a 1,000-character panel
+    destroys, which is the measurement D54 was adopted from.
+    """
+    style = styles.style_for(_shipped(), "quiet-luxury-night-photoreal")
+
+    assert style.subject_mode == "scene_fixed"
+    assert style.text_density == "minimal"
+    assert style.motion_profile == "photographic"
+    assert style.brand_affinity == [] and style.brand_slot is False, "no brand owns this look"
+    for field in ("render_prompt", "typography", "text_placement", "image_treatment",
+                  "visual_pacing"):
+        assert len(str(getattr(style, field)).strip()) > 40, f"{field} is a stub"
+    # The registry's palette convention is `ROLE name #HEX: where it goes` per colour, plus any
+    # number of rule lines that name no colour at all ("no saturated hue; …"). Both shapes are
+    # legitimate, so the assertion counts the ones that carry a hex rather than demanding one of
+    # every entry — a rule line is what stops the model reading the list as a licence.
+    hexed = [entry for entry in style.palette if "#" in entry]
+    assert len(hexed) >= 4, f"a full-density palette names its colours: {style.palette}"
+    assert all(":" in entry for entry in hexed), \
+        "each colour states WHERE it goes, per the registry's own convention"
+    assert style.layout_zones and all(isinstance(zone, LayoutZone) for zone in style.layout_zones)
+    assert len(style.exclusions) >= 4
+    assert style.per_format_guidance.get("carousel_cover")
+    assert style.per_format_guidance.get("carousel_slide")
+
+
+def test_d55_the_new_styles_budgets_are_minimal_density_and_the_slide_cap_is_the_tightest() -> None:
+    """`max_onimage_chars` is half of the `min(config, style)` arithmetic FR-259 enforces and the
+    number D54's compress prompt asks the model to fit, so it is the one field where a typo is
+    money: a slide cap left at a headline's size would make every compressed line trip the
+    engine's backstop trim, and one left wide would defeat the whole reason this style exists."""
+    caps = styles.style_for(_shipped(), "quiet-luxury-night-photoreal").max_onimage_chars
+
+    assert set(caps) == {"headline", "subline", "slide", "overlay"}
+    assert all(isinstance(value, int) and value > 0 for value in caps.values()), caps
+    assert caps["slide"] == 160
+    assert caps["slide"] < TextBudgets().slide, \
+        "a style may only LOWER the config ceiling, never raise it (FR-259)"
+    assert caps["headline"] <= TextBudgets().image_headline
+    assert caps["overlay"] <= caps["slide"], "the reel overlay is the smallest slot on this look"
+
+
+def test_d55_the_new_style_carries_a_list_mode_so_a_list_panel_reflows_rather_than_overflows(
+) -> None:
+    """FR-304b/FR-329: a source panel that is a LIST has to be set as one, or the render model
+    breaks label/value pairs across lines and the craft critic reports a defect nobody caused.
+    Every carousel-affine style needs the treatment; this pins the new one's trigger and shape."""
+    style = styles.style_for(_shipped(), "quiet-luxury-night-photoreal")
+
+    assert isinstance(style.list_mode, ListMode)
+    assert style.list_mode.reflow_over_chars == 110 and style.list_mode.max_rows == 4
+    assert len(style.list_mode.layout.strip()) > 40, "the layout instruction is prose, not a flag"
+    # The trigger is a real predicate over a real panel, so it is asserted as one.
+    assert styles.is_list_panel(style, "1. One\n2. Two\n3. Three\n4. Four\n5. Five") is True
+    assert styles.is_list_panel(style, "One short line.") is False
+
+
+def test_d55_the_new_style_is_carousel_affine_and_may_anchor_a_deck() -> None:
+    """Carousel affinity alone is not enough: under anchor chaining slide 1 IS the deck's style, so
+    a `carousel_role: slides_only` entry is never assigned to a carousel at all. This style has no
+    such marker, which is what makes it one of the three keys the shipped rotation can actually
+    draw for a deck."""
+    style = styles.style_for(_shipped(), "quiet-luxury-night-photoreal")
+
+    assert "carousel" in style.format_affinity
+    assert style.per_format_guidance.get("carousel_role") is None
+    assert styles.fmt_affine(style, "carousel") is True
+    assert styles.fmt_affine(style, "image") is True and styles.fmt_affine(style, "reel") is True
+
+
+def test_d55_the_four_key_selection_validates_clean_under_the_shipped_brand() -> None:
+    """S1 and S2 had to land in the SAME change: an `styles.enabled` key the registry lacks is a
+    pre-flight exit 2 on EVERY run of that config (FR-314/FR-295). This is that barrier, asserted
+    against the real registry and the real four-key list — no errors, and no warnings either.
+    """
+    registry = _shipped()
+    config = _config(brand="hypelead", formats={"image": 0, "carousel": 6, "reel": 0},
+                     enabled=ENABLED_FOUR)
+
+    errors, warnings = styles.validate(registry, config)
+
+    assert errors == [], f"the shipped selection would refuse a run: {errors}"
+    assert warnings == [], f"and it earns not even the thin-pool warning: {warnings}"
+    assert [style.key for style in styles.usable_styles(registry, "hypelead", ENABLED_FOUR)] == [
+        "letterpress-print-carousel", "meme-caricature-panels", "anime-noir-statement",
+        "quiet-luxury-night-photoreal"], "FILE order, never the order the config typed"
+
+
+def test_d55_the_three_shipped_brand_configs_all_enable_exactly_those_four_keys() -> None:
+    """The configs and the registry are one decision in two files; this is where they are checked
+    against each other. Read through `load_config` rather than by parsing YAML, so a key that
+    loads to something different from what it looks like on disk is caught here."""
+    registry = _shipped()
+    registry_keys = {style.key for style in registry.styles}
+
+    for name in ("hypedigitaly", "hypedigitaly-cs", "hypedigitaly-fresh"):
+        config = load_config(name, configs_dir=CONFIGS_DIR)
+        assert config.styles.enabled == ENABLED_FOUR, f"{name} drifted from D55's selection"
+        assert set(config.styles.enabled) <= registry_keys, \
+            f"{name} enables a style the registry does not define — exit 2 on every run"
+        assert styles.validate(registry, config)[0] == [], f"{name} would refuse at pre-flight"
+
+
+def test_d55_meme_caricature_is_enabled_but_INERT_and_never_dresses_a_carousel() -> None:
+    """The operator kept `meme-caricature-panels` in the list knowing it cannot be assigned while
+    the configs are all-carousel (`carousel_role: slides_only`): it is there to activate the day
+    image posts return, and keeping it costs nothing because `fmt_affine` drops it per format.
+
+    So the effective carousel rotation is THREE, and this pins that it is three of the right ones
+    — an inert key that silently became assignable would put a caricature panel on a deck's anchor
+    slide, which is the exact outcome `carousel_role` exists to prevent.
+    """
+    registry = _shipped()
+    pool = styles.usable_styles(registry, "hypelead", ENABLED_FOUR)
+    entries = _entries(range(9), fmt="carousel")
+
+    styles.assign_styles(entries, registry, "hypelead", enabled=ENABLED_FOUR)
+
+    assert "meme-caricature-panels" in {style.key for style in pool}, "selected and brand-clean…"
+    assert styles.fmt_affine(styles.style_for(registry, "meme-caricature-panels"),
+                             "carousel") is False, "…and still never affine to a deck"
+    assert set(_keys(entries)) == {"letterpress-print-carousel", "anime-noir-statement",
+                                   "quiet-luxury-night-photoreal"}
+    assert "meme-caricature-panels" not in _keys(entries)
+
+
+def test_d55_the_brand_card_is_absent_from_the_selection_and_would_be_dropped_anyway() -> None:
+    """Two independent reasons, and the test asserts both because either alone would be a
+    coincidence. `hypelead-brand-card` is not in the four keys; and `branding.enabled` is false in
+    all three shipped configs, so `brand_ok` drops a `brand_slot` style regardless. Branded
+    entries sign through the TEXT block on any style (FR-318/FR-292), which is why excluding the
+    card costs the run no signature it would otherwise have carried."""
+    registry = _shipped()
+
+    assert "hypelead-brand-card" not in ENABLED_FOUR
+    with_switch_off = styles.usable_styles(registry, "hypelead", branding_enabled=False)
+    assert "hypelead-brand-card" not in {style.key for style in with_switch_off}
+    for name in ("hypedigitaly", "hypedigitaly-cs", "hypedigitaly-fresh"):
+        assert load_config(name, configs_dir=CONFIGS_DIR).branding.enabled is False

@@ -48,7 +48,7 @@ from contextlib import suppress
 from hypesocials import cli, plan, preflight, runner, styles, topic_filter
 from hypesocials.budget import format_usd
 from hypesocials.config import Config, ConfigError, load_config
-from hypesocials.copywrite import CopyResult
+from hypesocials.copywrite import MODE_COMPRESS, CopyResult
 from hypesocials.models import PlanEntry, PlanEntryStatus, TrendItem
 from hypesocials.outputs import read_history
 from hypesocials.prompts_engine import PROMPTS_DIR
@@ -205,7 +205,14 @@ async def _deep_stages(session: runner._Session, trends: Sequence[TrendItem],
     registry = _registry(session)
     styles.assign_styles(live, registry, config.branding.brand,
                          enabled=config.styles.enabled,  # FR-314: preview the SELECTED rotation
-                         branding_enabled=config.branding.enabled)  # FR-318: and the SIGNED pool
+                         branding_enabled=config.branding.enabled,  # FR-318: and the SIGNED pool
+                         # v2.2.0: the preview seeds off its OWN run id, like any run. Under
+                         # `styles.rotation: seeded` that makes the receipt below a forecast of the
+                         # rotation's SHAPE — which formats get which kind of look, how many styles
+                         # a batch spans — rather than of the paid run's key-by-key assignment,
+                         # which cannot be forecast before that run's id exists. `fixed` restores
+                         # exact preview↔run agreement, and is what to set when that matters.
+                         run_id=session.run_id, rotation=config.styles.rotation)
     styles.assign_branding(live, config.branding.brand_ratio, enabled=config.branding.enabled)
     _record_style_forecast(session, live, registry, dropped=len(assignment.dropped))
 
@@ -338,16 +345,29 @@ def _brand_line(registry: styles.StyleRegistry) -> str:
 
 
 def _copy_block(copy_result: CopyResult, live: Sequence[PlanEntry]) -> str:
-    """FR-140's headline display: the copy, verbatim, in the language of the post it was taken from.
+    """FR-140's headline display: the copy, in the language of the post it was taken from.
 
-    Every string here is a byte-for-byte quote from a `SourcePost` (§1.7 resolves references to
-    bytes rather than asking a model to retype), so it is WRAPPED and never truncated — reading
-    the actual words is the entire reason to spend the copy call before the render call. The `refs`
-    row names which candidate each field resolved from (`P1.hook.2`), which is what makes the
-    quote checkable against the post roster printed above.
+    On the verbatim path every string here is a byte-for-byte quote from a `SourcePost` (§1.7
+    resolves references to bytes rather than asking a model to retype), so it is WRAPPED and never
+    truncated — reading the actual words is the entire reason to spend the copy call before the
+    render call. The `refs` row names which candidate each field resolved from (`P1.hook.2`), which
+    is what makes the quote checkable against the post roster printed above.
+
+    Under D54 compress mode (FR-331) a bound deck's slides are the copy model's compressions of
+    that post's panels rather than quotes of them, so the header says which contract produced the
+    words and the per-creative row says `compressed` instead of `quoted`. Nothing else changes:
+    this is the mode's cheapest possible review — `--preview-analysis` costs the copy call and
+    nothing else, and reading the compressed slides here is what tells the operator whether a paid
+    run is worth submitting.
     """
-    lines = [f"Copy — {len(copy_result.copy)} creative(s), quoted verbatim in the language",
-             "  of the post each string came from; nothing was rendered (FR-140)"]
+    compressed = sum(1 for prov in copy_result.provenance.values()
+                     if prov.copy_mode == MODE_COMPRESS)
+    lines = ([f"Copy — {len(copy_result.copy)} creative(s), quoted verbatim in the language",
+              "  of the post each string came from; nothing was rendered (FR-140)"]
+             if not compressed else
+             [f"Copy — {len(copy_result.copy)} creative(s), {compressed} deck(s) compressed",
+              "  from the source post's panels to the style's budget, in the post's own",
+              "  language; the rest quoted verbatim, nothing rendered (FR-140/FR-331)"])
     for entry in live:
         copy = copy_result.copy.get(entry.asset_id)
         if copy is None:
@@ -375,11 +395,20 @@ def _copy_block(copy_result: CopyResult, live: Sequence[PlanEntry]) -> str:
 
 
 def _source_rows(copy_result: CopyResult, asset_id: str) -> list[str]:
-    """FR-298's provenance for one creative: which post it quoted, and which strings of it."""
+    """FR-298's provenance for one creative: which post it quoted, and which strings of it.
+
+    A D54-compressed deck says `compressed` rather than `quoted` and carries no `refs` row — it
+    resolved no labels, so there are none to print (FR-302 as amended). The post is named either
+    way: the provenance claim is the same, only the transform between that post and our slides is.
+
+    `compressed` is the FIRST label in this module wider than `_ROW_LABEL`'s column, which is why
+    `_rows` below now guarantees a separator instead of trusting the padding to supply one.
+    """
     provenance = copy_result.provenance.get(asset_id)
     if provenance is None:
         return []
-    rows = _rows("quoted", provenance.post_id or "(free text — no post quoted)")
+    kind = "compressed" if provenance.copy_mode == MODE_COMPRESS else "quoted"
+    rows = _rows(kind, provenance.post_id or "(free text — no post quoted)")
     if provenance.refs:
         rows += _rows("refs", " ".join(f"{slot}={label}"
                                        for slot, label in sorted(provenance.refs.items())))
@@ -393,8 +422,20 @@ def _rows(label: str, text: str) -> list[str]:
     paid run would burn into pixels: a caption cut at 60 characters answers a question nobody
     asked of `--preview-analysis`. FR-286's ceiling is met by wrapping instead — 6 spaces of
     indent plus a 9-column label plus 61 columns of text is 76.
+
+    **The separator is guaranteed rather than assumed (D54 fix).** `:<{_ROW_LABEL}}` pads a SHORT
+    label out to the column and supplies the gap as a side effect; it does nothing at all for a
+    label that already fills the column, and `compressed` (10) ran straight into its value —
+    `compressedp1`. So a label at or over the column width gets one explicit space. Every label
+    this module has ever printed is eight characters or fewer (`on-image`, `slide 12`, `caption`,
+    `quoted`, `overlay`, `motion`, `refs`, `tags`), so this branch is unreachable for all of them
+    and their rows stay byte-identical — which is why the fix lives here rather than in
+    `_ROW_LABEL`. Widening the column would have re-padded every row in every preview this tool
+    has ever printed to buy one character for one mode. The worst case is still inside FR-286: 6
+    indent + 10 label + 1 space + 61 text = 78.
     """
-    return [f"      {label if first else '':<{_ROW_LABEL}}{part}"
+    head = f"{label} " if len(label) >= _ROW_LABEL else label
+    return [f"      {head if first else '':<{_ROW_LABEL}}{part}"
             for first, part in wrapped(text, _ROW_WIDTH)]
 
 

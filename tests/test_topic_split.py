@@ -364,6 +364,8 @@ def _documented_field_map() -> dict[str, str]:
         # Skip the header row, its `---` rule, and the identity row (four fields, one cell).
         if attribute.startswith("-") or "/" in attribute or attribute == "SourcePost":
             continue
+        if source.startswith("("):  # a documented-ABSENT row: `author_name`, mapped from nothing
+            continue
         rows[attribute] = source
     return rows
 
@@ -409,6 +411,61 @@ def test_the_documented_field_map_is_the_one_the_code_actually_applies() -> None
     # many slides a source deck had while it was rendering one.
     assert post.panel_count == 2 and post.intelligence_status == "ready"
     assert post.image_urls == ["https://cdn.virlo.test/1.jpg", "https://cdn.virlo.test/2.jpg"]
+    # DOCUMENTED-ABSENT (v2.2.0): Virlo exposes no display name anywhere — its nested `author`
+    # object carries `username`, `verified`, `followers`, `country` and `avatar_url`, and the MCP
+    # wrapper forwards two of those. So this row maps from nothing and the field is `""` on every
+    # live payload. It is mapped anyway because the consumer already exists (FR-312's identity
+    # strip in `copywrite`), and the two halves of that promise are pinned in the test below.
+    assert post.author_name == ""
+
+
+def test_the_display_name_is_absent_from_every_virlo_payload_and_maps_the_day_it_is_not() -> None:
+    """FR-312's second identity form: `SourcePost.author_name`, populated-or-documented-absent.
+
+    The strip pass that keeps a creator's identity out of our caption compares against BOTH the
+    @handle and the display name, because a caption says "The Roman Knox" as readily as
+    "@theromanknox". Virlo's payload carries only the handle — measured 2026-08-14 over the whole
+    fixture corpus (`tests/fixtures/virlo/*.json`) and both wrapper normalizers — so the display
+    name is documented-absent, not populated, and `""` is what the strip degrades to.
+
+    Both halves are pinned together on purpose. The `""` half is today's behaviour and the reason
+    the strip must survive an empty name; the mapped half is the day an upstream adds the field,
+    which is exactly the kind of change that otherwise arrives silently and does nothing.
+    """
+    fixture = json.loads(
+        (Path(__file__).parent / "fixtures" / "virlo" / "slideshows_views_desc_limit100.json")
+        .read_text(encoding="utf-8"))
+    authors = [row["author"] for row in _rows(fixture) if isinstance(row.get("author"), dict)]
+    assert authors, "the fixture corpus carries author objects to make a claim about"
+    assert not any(key in author for author in authors
+                   for key in ("name", "nickname", "display_name", "full_name")), \
+        "if Virlo ever adds a display name to `author`, map it in `_norm_video`/`_norm_slideshow`"
+
+    absent = virlo._source_post({"id": "p-1", "author_username": "@theromanknox", "views": 1},
+                                MONITOR, 0, is_slideshow=True)
+    assert absent.author_name == "", "the live shape: handle only, display name empty"
+
+    for key in virlo._AUTHOR_NAME_KEYS:
+        post = virlo._source_post(
+            {"id": "p-1", "author_username": "@theromanknox", "views": 1,
+             key: "  The Roman Knox  "},
+            MONITOR, 0, is_slideshow=True)
+        assert post.author_name == "The Roman Knox", f"{key} maps, edges stripped and nothing else"
+        assert post.author == "@theromanknox", "the handle is untouched beside it"
+
+
+def _rows(payload: object) -> list[dict]:
+    """Every dict in a fixture that looks like a post row — the corpus, flattened."""
+    found: list[dict] = []
+    if isinstance(payload, dict):
+        if "author" in payload:
+            found.append(payload)
+        for value in payload.values():
+            found.extend(_rows(value))
+    elif isinstance(payload, list):
+        for value in payload:
+            found.extend(_rows(value))
+    return found
 
 
 def test_a_source_string_is_stored_exactly_as_it_arrived_diacritics_and_emoji_included() -> None:

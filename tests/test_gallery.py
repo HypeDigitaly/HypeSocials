@@ -749,3 +749,331 @@ def test_a_failed_creative_still_gets_a_card_saying_what_it_would_have_been(
     assert html_text.count('<div class="gap">slide not delivered</div>') == 2
     assert "the caption survives" in html_text
     assert "Skipped: abandoned at the deadline" in html_text
+
+
+# ------------------------------------------------- D54/FR-331: a COMPRESSED deck on the same card
+#
+# A compressed deck reaches this page with two things every deck before it lacked: `copy_mode:
+# compress` at the top of `meta.yaml`, and `compressed: true` on every `panel_map` row (FR-73 as
+# amended). It also reaches it with two things every OTHER deck has and it does not — a `ref_label`
+# on each row, and any entry in `copy_source_refs` — because a compressed slide quotes no label
+# (FR-302 as amended).
+#
+# That last pair is what makes these tests worth having. FR-309's alignment, its gap handling and
+# its routing signal must not depend on a label being there, or the mode that ships no labels would
+# ship no provenance card either — and the provenance card is the only surface on which an operator
+# can judge whether a compression kept the panel's meaning.
+
+
+def compressed_row(slide: int, position: int, *, text: str = "", original: str = "",
+                   brief: str = "", image: str | None = "") -> dict[str, Any]:
+    """One `panel_map` row as `copywrite._compressed_deck` writes it (D54/FR-331).
+
+    Three differences from `row()` above and each is contractual: `ref_label` is EMPTY (nothing was
+    quoted), `compressed` is True, and `source_text_original` carries the panel the model started
+    from — which is the length FR-309's amendment measures "compressed from N chars" off.
+    """
+    built = row(slide, position, text=text, label="", brief=brief, image=image)
+    built["ref_label"] = ""
+    built["compressed"] = True
+    built["source_text_original"] = original or text
+    return built
+
+
+def compressed_deck(run: Path, **overrides: Any) -> Path:
+    """The standard three-panel deck, written as a COMPRESS-mode run writes it."""
+    store_source(run)
+    document = meta(
+        source_post=source_post(), source_panel_count=3, slide_count=3,
+        copy_source_post_id="7412998877",
+        copy_source_refs={},  # FR-302 as amended: a compressed slide resolved no labels
+        copy_mode="compress",
+        panel_map=[
+            compressed_row(1, 1, text="Ship it, then measure.",
+                           original="Panel one. " + "It keeps explaining at length. " * 8,
+                           brief="hero image, heading centred"),
+            compressed_row(2, 2, text="Measure it, then cut.",
+                           original="Panel two. " + "It also explains at length. " * 8,
+                           brief="two-column table, four rows"),
+            compressed_row(3, 3, text="Cut it, then ship again.",
+                           original="Panel three. " + "And it explains once more. " * 8,
+                           brief="line chart, three series")])
+    document.update(overrides)
+    return asset(run, document, media=("slide_01.jpg", "slide_02.jpg", "slide_03.jpg"))
+
+
+def test_fr309_a_compressed_deck_still_gets_the_three_part_card_and_aligns_by_index(
+    tmp_path: Path,
+) -> None:
+    """The routing signal is the non-empty `panel_map`, not the presence of a ref label.
+
+    This matters because a compressed deck is the one shape whose rows carry no labels at all. If
+    the card had keyed anything off `ref_label`, D54 would have silently demoted every deck in the
+    mode to the single-card fallback — losing exactly the side-by-side view the operator needs to
+    judge whether a compression kept its panel's meaning (FR-150's fidelity check).
+    """
+    compressed_deck(tmp_path)
+
+    html_text = page(tmp_path)
+
+    head = html_text.split('<div class="pairs">')[0]
+    assert "@creator" in head and "post 7412998877" in head, "part 1: the provenance header"
+    assert f'<a href="{PERMALINK}">the original post</a>' in head
+    assert html_text.count('<div class="pair">') == 3, "one tile per OUR slide, none dropped"
+    for index in (1, 2, 3):
+        assert f"slide {index} ← source panel {index}" in html_text
+        assert f"./source/7412998877/slide_{index:02d}.jpg" in html_text
+        assert f"./0001_carousel_linkedin/slide_{index:02d}.jpg" in html_text
+    assert "“Measure it, then cut.”" in html_text, "the SHIPPED string sits on its own tile"
+    assert "two-column table, four rows" in html_text, "the FR-308 brief survives the mode"
+
+
+def test_fr73_the_compressed_receipt_survives_a_round_trip_through_meta_yaml(
+    tmp_path: Path,
+) -> None:
+    """`copy_mode` and the per-row `compressed` flag are what an auditor reads to know NOT to
+    expect byte identity, so they have to survive YAML — a bool that came back as the string
+    "True", or a key the writer dropped, turns the receipt into a guess.
+
+    Read back with the same `packager`/`yaml` pair the gallery reads with, so this pins the file
+    rather than the dataclass that produced it.
+    """
+    folder = compressed_deck(tmp_path)
+
+    document = yaml.safe_load((folder / packager.META_FILE).read_text(encoding="utf-8"))
+
+    assert document["copy_mode"] == "compress"
+    rows = document["panel_map"]
+    assert [row_["compressed"] for row_ in rows] == [True, True, True]
+    assert all(isinstance(row_["compressed"], bool) for row_ in rows), "a bool, not the word"
+    assert all(row_["ref_label"] == "" for row_ in rows), "FR-302: nothing was quoted"
+    assert all(len(row_["source_text_original"]) > len(row_["source_text"]) for row_ in rows), \
+        "both sides of the compression are on the row — FR-309 measures its label off the longer"
+    # And the gallery reads exactly these rows: the routing helper keeps every one of them.
+    assert len(gallery._panel_rows(document)) == 3
+
+
+def test_nfr22_the_card_tolerates_a_row_that_predates_the_compressed_key(tmp_path: Path) -> None:
+    """An older run's `meta.yaml` has rows with no `compressed` key at all, and its page still has
+    to build: the gallery is read on runs that finished weeks ago, and NFR-22 pays for a template
+    error with every card on the page. The pre-D54 shape is the fallback, not an error."""
+    store_source(tmp_path)
+    legacy = row(1, 1, text="Panel one")
+    assert "compressed" not in legacy, "the control: this is genuinely the older row shape"
+    asset(tmp_path, meta(source_post=source_post(), source_panel_count=1, slide_count=1,
+                         panel_map=[legacy]),  # and no `copy_mode` key either
+          media=("slide_01.jpg",))
+
+    html_text = page(tmp_path)
+
+    assert html_text.count('<div class="pair">') == 1
+    assert "slide 1 ← source panel 1" in html_text
+    assert "“Panel one”" in html_text
+
+
+# ------------------------------- FR-309 as amended (v2.3.0/D54): the three compression labels
+#
+# A compressed deck reaches this page looking exactly like a quoting one — same three-part card,
+# same pairs, same pictures — and the ONE thing an operator must not have to infer is that the
+# words beside each source panel are not that panel's words. FR-309's amendment puts that fact on
+# three surfaces, at three scales, and each answers a different question:
+#
+#   header  "how far did this deck's compression have to travel"   -> the LONGEST original
+#   chip    "how far did THIS slide's"                             -> that row's own original
+#   receipt "what is the receipt for a deck that quoted nothing"   -> the post + the panel map
+#
+# All three read `source_text_original`, which is why they can never disagree about what counts as
+# an original; all three are silent on a verbatim deck and on a pre-D54 `meta.yaml`, which is what
+# the tolerance test at the end of this section holds them to.
+
+#: The three `source_text_original` lengths `compressed_deck()` above writes, in row order. Derived
+#: rather than typed: the fixture builds its originals by repetition, and a hand-copied 259 here
+#: would silently stop matching the day somebody adds a word to the panel it measures.
+COMPRESSED_ORIGINALS = [
+    len("Panel one. " + "It keeps explaining at length. " * 8),
+    len("Panel two. " + "It also explains at length. " * 8),
+    len("Panel three. " + "And it explains once more. " * 8),
+]
+
+
+def test_fr309_a_compressed_decks_header_states_the_longest_panel_it_compressed(
+    tmp_path: Path,
+) -> None:
+    """The card's first answer, and the reason it is the LONGEST rather than an average.
+
+    The mode exists because a 1,048-character panel arrived on a style whose declared slide budget
+    was 180. An average would hide exactly that panel — the one that made the case — behind two
+    short siblings, so the header names the biggest distance travelled. The line sits with the
+    other provenance facts and before the creator's own caption, because "these are not this
+    post's words" is context for the caption directly under it.
+    """
+    compressed_deck(tmp_path)
+
+    html_text = page(tmp_path)
+
+    head = html_text.split('<div class="pairs">')[0]
+    assert f"Copy: compressed from {max(COMPRESSED_ORIGINALS)} chars" in head
+    assert ("our slides are this deck's panels compressed to the style's budget, never quoted "
+            "(D54)") in head
+    # Order inside the header: the post's facts, its permalink, then the compression note, then
+    # the creator's caption. The note is context FOR the caption, so it may not follow it.
+    assert head.index("Source deck:") < head.index("Copy: compressed from")
+    assert head.index("Copy: compressed from") < head.index("Original caption:")
+
+
+def test_fr309_each_compressed_tile_states_ITS_OWN_source_length_in_the_source_chip(
+    tmp_path: Path,
+) -> None:
+    """The per-slide answer, in the slot that always carried this row's provenance.
+
+    On a verbatim row that chip reads `source · P1.panel.3` — the label the words were quoted
+    under. A compressed row has no label to name (FR-302 as amended gives compressed slides none),
+    so the chip carries the compression instead. Same chip, same CSS, one question: how did this
+    row's text come to be. Per-row rather than per-deck because a deck whose panels ran 1,048 /
+    120 / 1,018 characters compressed three very different distances, and the tile is where an
+    operator judges whether THIS one kept its meaning.
+    """
+    compressed_deck(tmp_path)
+
+    html_text = page(tmp_path)
+
+    chips = re.findall(r'<span class="tag">source[^<]*</span>', html_text)
+    assert len(chips) == 3, chips
+    for chip, original in zip(chips, COMPRESSED_ORIGINALS):
+        assert chip == f'<span class="tag">source · compressed from {original} chars</span>'
+    assert "P1.panel." not in html_text, "FR-302: a compressed slide quotes no label to print"
+
+
+def test_fr309_a_compressed_row_with_no_original_falls_back_to_the_bare_source_chip(
+    tmp_path: Path,
+) -> None:
+    """"Compressed from 0 chars" is a sentence nobody should ever read.
+
+    A dropped panel — empty at source, or blanked by the handle/URL gate — keeps its row and its
+    position (that row IS the alignment) and reaches the card with an empty `source_text_original`
+    on some paths. The chip then says what it can say and nothing more: `source`, bare, exactly as
+    a row with no provenance has always rendered. The DECK-level header is unaffected, because it
+    measures the longest original and this row contributes none.
+    """
+    store_source(tmp_path)
+    dropped = compressed_row(2, 2, text="", original="")
+    asset(tmp_path, meta(source_post=source_post(), source_panel_count=2, slide_count=2,
+                         copy_source_post_id="7412998877", copy_source_refs={},
+                         copy_mode="compress",
+                         panel_map=[compressed_row(1, 1, text="Ship it.", original="A" * 400),
+                                    dropped]),
+          media=("slide_01.jpg", "slide_02.jpg"))
+
+    html_text = page(tmp_path)
+
+    chips = re.findall(r'<span class="tag">source[^<]*</span>', html_text)
+    assert chips == ['<span class="tag">source · compressed from 400 chars</span>',
+                     '<span class="tag">source</span>']
+    assert "compressed from 0 chars" not in html_text
+    assert "Copy: compressed from 400 chars" in html_text, "the header takes the longest, not 0"
+    assert html_text.count('<div class="pair">') == 2, "the dropped row keeps its tile and place"
+
+
+def test_fr302_a_compressed_decks_receipt_never_claims_a_quote_of_any_kind(
+    tmp_path: Path,
+) -> None:
+    """The receipt is the surface D54 could most easily have broken in silence.
+
+    A compressed deck arrives with a bound post id and an EMPTY `copy_source_refs` — which is
+    precisely the shape the "nothing was quoted" branch was built for, and that branch printed
+    `Quoted post: <id>` over a deck that quoted nothing from it. The compressed answer is checked
+    FIRST, so neither that line nor the `Quotes … verbatim as the …` line can be reached: the claim
+    on this card is the post the words were compressed FROM, and the receipt for WHICH words is the
+    panel map further down the same card.
+    """
+    compressed_deck(tmp_path)
+
+    html_text = page(tmp_path)
+
+    assert ("Compressed from post: 7412998877 — see the panel map below for what each slide was "
+            "compressed from") in html_text
+    assert "Quoted post:" not in html_text
+    assert "Quotes" not in html_text and "Also quoted:" not in html_text
+
+
+def test_fr302_a_compressed_deck_that_somehow_kept_refs_still_never_prints_a_quote_line(
+    tmp_path: Path,
+) -> None:
+    """The mode is answered BEFORE the refs branch, not inside it — so a stray label (an older
+    meta, a hand-edit, a future writer that forgets FR-302) cannot resurrect the verbatim receipt
+    on a deck whose slides were compressed. The stronger guarantee is worth having because the
+    failure it prevents is a card that tells an auditor to expect byte identity that is not
+    there."""
+    compressed_deck(tmp_path, copy_source_refs={"headline": "P1.hook.2",
+                                                "caption": "P1.caption"})
+
+    html_text = page(tmp_path)
+
+    assert "Compressed from post: 7412998877" in html_text
+    assert "Quotes P1.hook.2" not in html_text
+    assert "Quoted post:" not in html_text and "Also quoted:" not in html_text
+
+
+def test_fr309_a_verbatim_deck_is_untouched_by_all_three_compression_labels(
+    tmp_path: Path,
+) -> None:
+    """The regression half, and the one that covers the overwhelming majority of runs: verbatim is
+    the engine default. The header, the chips and the receipt must all be byte-identical to their
+    pre-D54 selves — each of the three is a one-branch addition, and a condition written the wrong
+    way round would label every quoting deck as compressed."""
+    deck(tmp_path, copy_mode="verbatim")
+
+    html_text = page(tmp_path)
+
+    assert "compressed" not in html_text.lower()
+    assert "Copy: compressed from" not in html_text
+    assert '<span class="tag">source · P1.panel.1</span>' in html_text, "the label chip is back"
+    assert "Quotes P1.panel.1 verbatim as the slide 1 · post 7412998877" in html_text,         "the pre-D54 receipt, unchanged"
+    assert "Also quoted: caption P1.caption" in html_text
+
+
+def test_nfr22_a_pre_d54_meta_renders_the_old_header_chip_and_receipt_without_raising(
+    tmp_path: Path,
+) -> None:
+    """The gallery is read on runs that finished weeks ago, and those `meta.yaml` files have no
+    `copy_mode` key and no `compressed` key on any row. All three labels must answer "there is no
+    compression here" from ABSENT data rather than from a False — a `KeyError` in a template costs
+    NFR-22 the whole page, not one card, and a truthy read of a missing key would label every
+    archived deck as compressed."""
+    store_source(tmp_path)
+    legacy = row(1, 1, text="Panel one")
+    assert "compressed" not in legacy and "source_text_original" not in legacy, \
+        "the control: this really is the pre-D54 row shape"
+    document = meta(source_post=source_post(), source_panel_count=1, slide_count=1,
+                    copy_source_post_id="7412998877", panel_map=[legacy])
+    assert "copy_mode" not in document, "…and the document really has no mode key at all"
+    asset(tmp_path, document, media=("slide_01.jpg",))
+
+    html_text = page(tmp_path)
+
+    assert "compressed" not in html_text.lower()
+    assert '<span class="tag">source · P1.panel.1</span>' in html_text
+    assert "Quoted post: 7412998877" in html_text
+    assert gallery._compressed_from(document) == 0
+    assert gallery._row_original(legacy) == 0
+
+
+def test_the_header_and_the_tile_measure_read_the_same_originals(tmp_path: Path) -> None:
+    """One reader, two scales — asserted as an identity rather than trusted.
+
+    `_compressed_from` is `max(_row_original(...))`, so the header can never name a length no tile
+    shows, and no tile can show one the header did not consider. That is the whole reason the
+    per-row reading was extracted: two independent length rules over the same rows is how a card
+    ends up saying "compressed from 1,048 chars" over three tiles that each say 259.
+    """
+    compressed_deck(tmp_path)
+    document = yaml.safe_load(
+        (tmp_path / "0001_carousel_linkedin" / packager.META_FILE).read_text(encoding="utf-8"))
+
+    per_row = [gallery._row_original(row_) for row_ in gallery._panel_rows(document)]
+
+    assert per_row == COMPRESSED_ORIGINALS
+    assert gallery._compressed_from(document) == max(per_row)
+    # …and the deck-level mode is what arms it: the same rows under `verbatim` measure nothing.
+    document["copy_mode"] = "verbatim"
+    assert gallery._compressed_from(document) == 0

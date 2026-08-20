@@ -1,32 +1,25 @@
-"""FR-105 v2.1.1 — the check's third question, and the retry that may not trim a quote.
+"""What a frame was ORDERED to carry, and the retry that may not trim a quote (FR-105/FR-322).
 
-Two defects shipped together on 2026-08-13 and both live in `hypesocials/vision_check.py`:
+`vision_check.check()` — the FR-105 single-shot gate — is DELETED (v2.2.0/D49) and replaced by the
+three-critic gauntlet, so the tests that recorded its carrier turn went with it: the expected text
+now reaches a model through `gauntlet._expected_blocks`, which `tests/test_gauntlet.py` owns. What
+survives here is what survives in the module: the pure helpers that answer "what was this asset
+ordered to say" and "how does a re-render differ from the first attempt".
 
-1. **The check could not see a text MISMATCH.** The question was rendered with an empty context and
-   asked about two defects, so a slide whose render carried clean, legible, *invented* words passed
-   — which is exactly what the audited run delivered against a source panel reading
-   "CLAUDE + OBSIDIAN = 71.5X FEWER TOKENS". The fix is a referent: the locked text now travels in
-   the call, one string per image, and an EMPTY string is the stronger statement ("this one is
-   wordless — any words are a defect").
-2. **The retry trimmed verbatim text against the wrong budget.** A 131-character mapped panel came
-   back as a 53-character mid-sentence stub, because the cut was `image_headline` (90) × 0.6 and
-   applied to a quote nobody may shorten (FR-304 > FR-105).
+The defect these were written against still binds. A 131-character mapped panel came back as a
+53-character mid-sentence stub on 2026-08-13, because the cut was `image_headline` (90) × 0.6
+applied to a quote nobody may shorten (FR-304 > FR-105). The verbatim carve-out below is that fix.
 
-Everything here is a pure unit test of that module: the LLM is a recording fake, the engine is the
-real `PromptEngine` reading the real `prompts/vision_check_question.md`, and nothing touches the
-network, the filesystem or money.
+Everything here is pure: no network, no filesystem, no money, no model.
 """
 
 from __future__ import annotations
-
-from typing import Any
 
 import pytest
 
 from hypesocials import vision_check
 from hypesocials.config import TextBudgets
-from hypesocials.models import CopySet, ParsedResult, VisionCheckResult
-from hypesocials.prompts_engine import PromptEngine
+from hypesocials.models import CopySet, VisionCheckResult
 
 #: The audited run's real source panel — 131 characters, which is over `image_headline` (90) and
 #: comfortably under the `slide` budget (300) that actually governs a deck slide.
@@ -34,137 +27,8 @@ PANEL = ("Claude reads your whole vault every single time and Obsidian's index d
          "that one swap is where the 71.5x saving comes from.")
 
 
-class RecordingCall:
-    """A `models.StructuredCall` that remembers what it was asked and answers from a table."""
-
-    def __init__(self, verdicts: list[dict[str, Any]] | None = None) -> None:
-        self.verdicts = verdicts
-        self.messages: list[list[dict[str, str]]] = []
-        self.schemas: list[dict[str, Any]] = []
-
-    async def __call__(self, role, messages, json_schema, images=None) -> ParsedResult:
-        self.messages.append([dict(message) for message in messages])
-        self.schemas.append(json_schema)
-        rows = self.verdicts if self.verdicts is not None else [
-            {"image": index, "text_broken": False, "fake_ui": False, "text_mismatch": False,
-             "detail": ""} for index in range(1, len(images or []) + 1)]
-        return ParsedResult(parsed={"verdicts": rows}, raw_text="{}")
-
-    @property
-    def user_turn(self) -> str:
-        """The carrier turn of the LAST call — where the expected text rides."""
-        return next(message["content"] for message in reversed(self.messages[-1])
-                    if message["role"] == "user")
-
-    @property
-    def system_turn(self) -> str:
-        return next(message["content"] for message in self.messages[-1]
-                    if message["role"] == "system")
-
-
 def budgets() -> TextBudgets:
     return TextBudgets()
-
-
-# ------------------------------------------------------------------ the expected text on the wire
-
-
-async def test_the_check_carries_each_images_locked_text_as_the_mismatch_referent() -> None:
-    """GAP 1, the wire half: the panel's own words appear in the call, quoted, per image.
-
-    Without this the third question is unanswerable and the model can only say "the text is
-    legible" — which the audited run's invented copy was.
-    """
-    call = RecordingCall()
-
-    report = await vision_check.check([b"\xff\xd8one", b"\xff\xd8two"],
-                                      expected=[PANEL, "Slide two says this"],
-                                      call=call, engine=PromptEngine())
-
-    assert report.checked is True
-    assert f'image 1: "{PANEL}"' in call.user_turn
-    assert 'image 2: "Slide two says this"' in call.user_turn
-    assert "EXPECTED TEXT" in call.user_turn
-    # The QUESTION stays in the template (FR-180); only the data rides the carrier.
-    assert "TEXT MISMATCH" in call.system_turn and PANEL not in call.system_turn
-
-
-async def test_a_wordless_slide_sends_an_empty_expectation_rather_than_no_line() -> None:
-    """FR-304's wordless panel is a REQUIREMENT, not an absence: nothing may appear there.
-
-    An omitted line would let the model treat invented words as unjudgeable; the `(none)` token is
-    named in the template and means the opposite.
-    """
-    call = RecordingCall()
-
-    await vision_check.check([b"\xff\xd8a", b"\xff\xd8b"], expected=[PANEL, ""],
-                             call=call, engine=PromptEngine())
-
-    assert "image 2: (none)" in call.user_turn
-    assert "(none)" in call.system_turn, "the template must teach the token the carrier sends"
-
-
-async def test_a_caller_offering_no_expected_text_sends_no_expected_block() -> None:
-    """`expected=None` is "I have no referent" — the template then answers the question false."""
-    call = RecordingCall()
-
-    await vision_check.check([b"\xff\xd8a"], call=call, engine=PromptEngine())
-
-    assert "EXPECTED TEXT" not in call.user_turn
-    assert "in the order attached." in call.user_turn
-
-
-async def test_an_image_past_a_short_expected_list_gets_no_row_rather_than_an_empty_one() -> None:
-    """"I did not say" and "it must say nothing" are opposite claims and must not collapse.
-
-    An empty expectation is the strong one; inferring it from a caller's omission would flag every
-    legitimate word on that image.
-    """
-    call = RecordingCall()
-
-    await vision_check.check([b"\xff\xd8a", b"\xff\xd8b"], expected=[PANEL],
-                             call=call, engine=PromptEngine())
-
-    assert f'image 1: "{PANEL}"' in call.user_turn
-    assert "image 2:" not in call.user_turn
-
-
-async def test_the_schema_requires_the_third_verdict_and_a_mismatch_flags_the_image() -> None:
-    """GAP 1, the verdict half: `text_mismatch` is strict-required and is a flag on its own.
-
-    A render can be perfectly legible, free of platform chrome, and still say something nobody
-    ordered — that asset must earn the same single retry as a garbled one.
-    """
-    call = RecordingCall([{"image": 1, "text_broken": False, "fake_ui": False,
-                           "text_mismatch": True, "detail": "shows unrelated copy"}])
-
-    report = await vision_check.check([b"\xff\xd8a"], expected=[PANEL], call=call,
-                                      engine=PromptEngine())
-    verdict = report.verdict_for(1)
-
-    assert call.schemas[0]["schema"]["properties"]["verdicts"]["items"]["required"] == [
-        "image", "text_broken", "fake_ui", "text_mismatch", "detail"]
-    assert verdict is not None and verdict.text_mismatch is True
-    assert verdict.text_broken is False and verdict.fake_ui is False
-    assert verdict.flagged is True, "a mismatch alone earns FR-105's one retry"
-    assert vision_check.verdict_result(verdict) is VisionCheckResult.RETRIED_FAILED
-
-
-async def test_an_unreadable_input_takes_its_expected_string_with_it() -> None:
-    """The two lists are renumbered by ONE table (`positions`) or they shift apart.
-
-    A mismatch verdict rendered against the wrong slide's text is worse than no verdict at all, and
-    this is the only place the drop is known.
-    """
-    call = RecordingCall()
-
-    report = await vision_check.check(["/no/such/file.jpg", b"\xff\xd8real"],
-                                      expected=["never rendered", PANEL],
-                                      call=call, engine=PromptEngine())
-
-    assert f'image 1: "{PANEL}"' in call.user_turn, "the surviving image keeps ITS own text"
-    assert "never rendered" not in call.user_turn
-    assert [v.index for v in report.verdicts] == [2], "verdict indices stay the CALLER's positions"
 
 
 # --------------------------------------------------------------- what the expected text is built of
@@ -252,53 +116,6 @@ def test_a_reel_retry_is_unchanged_and_cuts_against_the_seed_headline_budget() -
 
     assert len(plan.copy.overlay_text) <= 36 and hook.startswith(plan.copy.overlay_text)
     assert plan.copy.subline == "" and plan.budget_scale == pytest.approx(0.6)
-
-
-# ------------------------------------------------- D-A: the marks an image was allowed to draw
-
-
-async def test_the_check_carries_the_marks_the_image_was_sanctioned_to_draw() -> None:
-    """D-A: a Notion logo we ORDERED must not come back as `fake_ui`.
-
-    The render prompt sanctions a real mark for a slide whose source panel showed one; without the
-    same names on the check's carrier, the one question that asks "is there a logo on this image"
-    answers true for the fidelity we just paid for, and the retry spends money undoing it.
-    """
-    call = RecordingCall()
-
-    await vision_check.check([b"\xff\xd8a", b"\xff\xd8b"], expected=[PANEL, ""],
-                             sanctioned_marks=[["Notion", "Obsidian"], []],
-                             call=call, engine=PromptEngine())
-
-    assert "SANCTIONED MARKS" in call.user_turn
-    assert "image 1: Notion, Obsidian" in call.user_turn
-    assert "image 2:" not in call.user_turn.split("SANCTIONED MARKS")[1], \
-        "an image with nothing sanctioned gets no row — the strict reading is the default"
-    # The RULE stays in the template (FR-180); only the names ride the carrier.
-    assert "sanctioned" in call.system_turn.lower() and "Notion" not in call.system_turn
-
-
-async def test_a_caller_naming_no_marks_sends_no_marks_block() -> None:
-    """The pre-D-A posture, unchanged: every logo on the image is unsanctioned chrome."""
-    call = RecordingCall()
-
-    await vision_check.check([b"\xff\xd8a"], expected=[PANEL], call=call, engine=PromptEngine())
-
-    assert "SANCTIONED MARKS" not in call.user_turn
-    assert "EXPECTED TEXT" in call.user_turn
-
-
-async def test_an_unreadable_input_takes_its_sanctioned_marks_with_it() -> None:
-    """One drop table renumbers BOTH data lines, or slide 2's licence lands on slide 1's image."""
-    call = RecordingCall()
-
-    await vision_check.check(["/no/such/file.jpg", b"\xff\xd8real"],
-                             expected=["never rendered", PANEL],
-                             sanctioned_marks=[["Figma"], ["Notion"]],
-                             call=call, engine=PromptEngine())
-
-    assert "image 1: Notion" in call.user_turn, "the surviving image keeps ITS own marks"
-    assert "Figma" not in call.user_turn
 
 
 # ------------------------------------------------------------- D-D: the counter is ordered text

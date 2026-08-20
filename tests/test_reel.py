@@ -33,7 +33,7 @@ from typing import Any
 
 import pytest
 
-from hypesocials import prompts_engine, render, styles
+from hypesocials import gauntlet, prompts_engine, render, styles
 from hypesocials.config import BrandingConfig, Config
 from hypesocials.generate import reel
 from hypesocials.generate import refs as refs_module
@@ -150,21 +150,32 @@ class Submitter:
         return [call for call in self.calls if call["job"] == job]
 
 
-def vision(trace: list[str], *flags: bool) -> Any:
-    """A `models.StructuredCall` answering FR-105, one queued verdict per check call.
+def critics(trace: list[str], *flags: bool, code: str = "garbled") -> Any:
+    """A `models.StructuredCall` answering the GAUNTLET's per-critic schema, one round per flag.
 
-    Two flags express the pair the estimator prices: the first check, then the re-check of the
-    re-rendered frame. The last flag repeats if more calls arrive than were queued.
+    The seed frame is judged by every enabled critic each round, but only ONE of them can emit a
+    given code (the per-critic enums are a partition), so the flags are consumed by the critic that
+    owns `code` and every other critic always passes. That makes "the second flag" mean "round 2"
+    without the fake having to model FR-324's scoping. The last flag repeats if more rounds arrive.
+
+    `trace` records one `gauntlet` entry per ROUND, not per call, so the ordering assertions below
+    still read as "frame, judged, clip" rather than as three calls' worth of noise.
     """
     queue = list(flags) or [False]
+    owner = next(name for name, codes in gauntlet.CRITIC_CODES.items() if code in codes)
 
     async def call(role: str, messages: list[dict[str, Any]], json_schema: dict[str, Any],
                    images: list[bytes] | None = None) -> ParsedResult:
-        trace.append("vision_check")
-        flagged = queue.pop(0) if len(queue) > 1 else queue[0]
-        return ParsedResult(parsed={"verdicts": [{"image": 1, "text_broken": flagged,
-                                                  "fake_ui": False, "detail": "garbled headline"}]},
-                            raw_text="{}", cost_usd=0.01)
+        name = str(json_schema["name"]).removeprefix("gauntlet_")
+        failing = False
+        if name == owner:
+            trace.append("gauntlet")
+            failing = queue.pop(0) if len(queue) > 1 else queue[0]
+        return ParsedResult(parsed={"frames": [
+            {"frame": 1, "pass": not failing,
+             "defects": ([{"code": code, "zone": "middle", "confidence": "high",
+                           "detail": "garbled headline"}] if failing else [])}]},
+            raw_text="{}", cost_usd=0.01)
     return call
 
 
@@ -461,23 +472,24 @@ async def test_a_signed_reel_carries_the_wordmark_into_both_prompts(tmp_path: Pa
     assert "HypeDigitaly" in submit.of("clip")[0]["params"].prompt
 
 
-# ------------------------------------------------------------------------------ FR-105 ordering
+# ------------------------------------------------------------------------------ D49 ordering
 
 
-async def test_fr105_seed_frame_checked_before_seedance_submission(tmp_path: Path) -> None:
-    """The seed frame is a CHAINED artifact: checking it after the clip is submitted would mean
-    discovering a broken headline one paid video too late (FR-105)."""
+async def test_the_seed_frame_is_gated_before_seedance_is_submitted(tmp_path: Path) -> None:
+    """The seed frame is a CHAINED artifact: judging it after the clip is submitted would mean
+    discovering a broken headline one paid video too late (FR-105/D49, spec §7)."""
     trace: list[str] = []
-    env = make_env(tmp_path, trace, vision_check=True)
-    env.llm_call = vision(trace, False)
+    env = make_env(tmp_path, trace)
+    env.llm_call = critics(trace, False)
     entry, folder = make_entry(), make_folder(tmp_path)
     submit = Submitter([ok(SEED_URL, task="job_seed"), ok(CLIP_URL, task="job_clip", cost=2.85)],
                        trace)
 
     record = await reel.render_reel(entry, env, folder, submit=submit)
 
-    assert trace == ["submit:seed_frame", "vision_check", "submit:clip"]
+    assert trace == ["submit:seed_frame", "gauntlet", "submit:clip"]
     assert record.status is AssetStatus.SUCCESS
+    assert record.gauntlet["result"] == "pass"
     assert record.vision_check_result is VisionCheckResult.PASSED
     assert record.native_size_rendered == "9:16"
     assert record.kie_job_ids == ["job_seed", "job_clip"]
@@ -521,56 +533,71 @@ async def test_the_delivered_event_names_whether_a_seed_frame_was_paid_for(
     assert len(degraded.of("seed_frame")) == 2, "one resubmit, and a second failure is final"
 
 
-async def test_flagged_seed_frame_is_re_rendered_and_re_checked_once(tmp_path: Path) -> None:
-    """FR-105's retry changes the INPUT, replaces the frame the video is built from, and is
-    re-checked once so FR-27's `retried_passed` is genuinely reachable — the pair the estimator's
-    `vision_retry_allowance` prices as "render + re-check". Both still precede the clip."""
+async def test_a_failed_seed_frame_is_re_rendered_and_judged_again_before_the_clip(
+    tmp_path: Path,
+) -> None:
+    """The fix loop replaces the frame the video is built from, and the replacement is judged —
+    so `retried_passed` is evidence rather than a claim. Both still precede the clip.
+
+    `rounds_max_image` is raised to 2 because a lone frame is gated at ONE round by default (spec
+    §4: a frame that needs three rounds is a copy problem), and one round never re-renders."""
     trace: list[str] = []
-    env = make_env(tmp_path, trace, vision_check=True)
-    env.llm_call = vision(trace, True, False)  # flagged, then clean after the shorter re-render
+    env = make_env(tmp_path, trace)
+    env.config.run.gauntlet.rounds_max_image = 2
+    env.llm_call = critics(trace, True, False)  # failed, then clean after the canned fix
     entry, folder = make_entry(), make_folder(tmp_path)
     submit = Submitter([ok(SEED_URL, task="job_seed"), ok(SEED_URL_2, task="job_seed_retry"),
                         ok(CLIP_URL, task="job_clip")], trace)
 
     record = await reel.render_reel(entry, env, folder, submit=submit)
 
-    assert trace == ["submit:seed_frame", "vision_check", "submit:seed_frame", "vision_check",
+    assert trace == ["submit:seed_frame", "gauntlet", "submit:seed_frame", "gauntlet",
                      "submit:clip"]
     assert submit.of("seed_frame")[1]["kind"] == "discretionary"  # FR-106c
     assert submit.of("clip")[0]["refs"].image_urls == [SEED_URL_2]
     assert record.vision_check_result is VisionCheckResult.RETRIED_PASSED
+    assert record.gauntlet["rerenders"] == 1
     assert record.status is AssetStatus.SUCCESS
 
 
-async def test_seed_frame_still_flagged_after_its_one_re_render_ships_retried_failed(
+async def test_a_seed_frame_still_failing_after_its_rounds_ships_with_an_honest_verdict(
     tmp_path: Path,
 ) -> None:
-    """One retry is the cap everywhere: a frame flagged twice ships anyway, labelled honestly."""
+    """`rounds_max_image` is the cap: a craft defect standing after it SHIPS (FR-325 tier 3),
+    tagged, and the verdict says a defect the operator can see is still there."""
     trace: list[str] = []
-    env = make_env(tmp_path, trace, vision_check=True)
-    env.llm_call = vision(trace, True, True)
+    env = make_env(tmp_path, trace)
+    env.config.run.gauntlet.rounds_max_image = 2
+    env.llm_call = critics(trace, True, True)
     entry, folder = make_entry(), make_folder(tmp_path)
     submit = Submitter([ok(SEED_URL, task="job_seed"), ok(SEED_URL_2, task="job_seed_retry"),
                         ok(CLIP_URL, task="job_clip")], trace)
 
     record = await reel.render_reel(entry, env, folder, submit=submit)
 
-    assert trace.count("vision_check") == 2 and len(submit.of("seed_frame")) == 2
-    assert record.vision_check_result is VisionCheckResult.RETRIED_FAILED
+    assert trace.count("gauntlet") == 2 and len(submit.of("seed_frame")) == 2
+    assert record.gauntlet["result"] == "pass" and record.gauntlet["craft_only"] is True
+    # RETRIED_PASSED, not PASSED: the frame was re-rendered, so it did not come back right the
+    # first time. `craft_only` beside it is what says the standing defect is an opinion (FR-325).
+    assert record.vision_check_result is VisionCheckResult.RETRIED_PASSED
     assert record.status is AssetStatus.SUCCESS
 
 
-async def test_declined_re_render_is_never_re_checked(tmp_path: Path) -> None:
-    """A re-render the cap declined has nothing new to look at — no second check is spent."""
+async def test_a_declined_fix_stops_the_loop_and_the_first_frame_still_ships(
+    tmp_path: Path,
+) -> None:
+    """A fix the cap declined has nothing new to look at — the loop stops and the frame ships."""
     trace: list[str] = []
-    env = make_env(tmp_path, trace, vision_check=True)
-    env.llm_call = vision(trace, True)
+    env = make_env(tmp_path, trace)
+    env.config.run.gauntlet.rounds_max_image = 2
+    env.llm_call = critics(trace, True)
     entry, folder = make_entry(), make_folder(tmp_path)
     submit = Submitter([ok(SEED_URL, task="job_seed"), None, ok(CLIP_URL, task="job_clip")], trace)
 
     record = await reel.render_reel(entry, env, folder, submit=submit)
 
-    assert trace.count("vision_check") == 1
+    assert trace.count("gauntlet") == 1
+    assert record.gauntlet["result"] == "budget_stop"
     assert record.vision_check_result is VisionCheckResult.RETRIED_FAILED
     assert submit.of("clip")[0]["refs"].image_urls == [SEED_URL]  # the first frame still ships
     assert record.status is AssetStatus.SUCCESS
@@ -807,16 +834,17 @@ async def test_clip_failure_keeps_the_paid_artifacts(tmp_path: Path) -> None:
 
 
 async def test_in_model_mode_skips_the_seed_frame_entirely(tmp_path: Path) -> None:
-    """FR-24's other two values: no seed render, no check, straight to the clip."""
+    """FR-24's other two values: no seed render, no gate, straight to the clip."""
     trace: list[str] = []
-    env = make_env(tmp_path, trace, reel_overlay_text="in_model", vision_check=True)
-    env.llm_call = vision(trace, True)
+    env = make_env(tmp_path, trace, reel_overlay_text="in_model")
+    env.llm_call = critics(trace, True)
     entry, folder = make_entry(), make_folder(tmp_path)
     submit = Submitter([ok(CLIP_URL, task="job_clip")], trace)
 
     record = await reel.render_reel(entry, env, folder, submit=submit)
 
     assert trace == ["submit:clip"]
+    assert record.gauntlet is None, "no frame, nothing to judge"
     assert record.vision_check_result is VisionCheckResult.NOT_CHECKED
     assert record.status is AssetStatus.SUCCESS
     assert not (folder.path / "seed_frame.jpg").exists()

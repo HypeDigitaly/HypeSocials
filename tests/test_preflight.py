@@ -343,6 +343,51 @@ def test_fr295_a_missing_registry_refuses_the_run_and_names_where_it_looked(
     assert EXIT_PREFLIGHT == 2
 
 
+def test_fr304b_a_malformed_list_mode_refuses_the_run_through_the_same_registry_door(
+    tmp_path: Path,
+) -> None:
+    """v2.2.0: a half-read list treatment is registry-invalid, so it lands where every other
+    unusable registry lands — exit 2 at pre-flight, $0 spent, one line naming the file and key."""
+    broken = _ONE_IMAGE_STYLE + "    list_mode:\n      reflow_over_chars: 180\n      max_rows: 6\n"
+    config = _styled_config(tmp_path, registry=broken)
+    config.run.formats = {"image": 1, "carousel": 0, "reel": 0}
+
+    verdict = check(config, action="run", entries=[_entry(0)])
+
+    assert verdict.ok is False
+    found = [line for line in verdict.errors if "list_mode" in line]
+    assert len(found) == 1 and "layout" in found[0], verdict.report
+
+
+def test_a_stale_prompts_dir_screen_override_is_warned_about_and_never_refused(
+    tmp_path: Path,
+) -> None:
+    """An operator's own `topic_filter_system.md` copied before `{{audience_profile}}` existed still
+    screens — it just answers `language`/`audience_fit` from nothing, so the screen degrades
+    fail-open and off-audience topics start passing again. Nothing errors and nothing logs a break,
+    which is exactly why pre-flight has to say it out loud. A current override says nothing."""
+    config = _styled_config(tmp_path)
+    override = Path(config.prompts_dir) / "topic_filter_system.md"
+    override.write_text("Screen these topics.\n\n{{topic_items}}\n{{competitor_list}}\n",
+                        encoding="utf-8")
+    config.run.formats = {"image": 1, "carousel": 0, "reel": 0}
+    config.sources.include_videos = True  # §0.14e: an image plan needs video-sourced posts
+
+    stale = check(config, action="run", entries=[_entry(0)])
+    override.write_text("Audience: {{audience_profile}}\n{{topic_items}}\n{{competitor_list}}\n",
+                        encoding="utf-8")
+    current = check(config, action="run", entries=[_entry(0)])
+
+    warned = [line for line in stale.warnings if "audience_profile" in line]
+    assert stale.ok is True and len(warned) == 1, stale.report
+    assert str(override) in warned[0]
+    assert not [line for line in current.warnings if "audience_profile" in line]
+    # No override at all is the shipped tree's business, never an operator warning.
+    override.unlink()
+    assert not [line for line in check(config, action="run", entries=[_entry(0)]).warnings
+                if "audience_profile" in line]
+
+
 def test_fr295_a_requested_format_with_no_affine_style_refuses(tmp_path: Path) -> None:
     """"every format with a requested count >0 has ≥1 affine style under the active brand" — a
     registry that can only dress images cannot deliver the two carousels this config asks for."""
@@ -506,8 +551,9 @@ def test_f22_the_diacritics_hint_follows_the_source_post_not_the_configured_lang
     and stays silent for an override-brief plan, whose language really is config's."""
     config = _styled_config(tmp_path)
     config.run.formats = {"image": 2, "carousel": 0, "reel": 0}
-    config.run.vision_check = False  # the hint family only exists when the check is off
-    assert set(config.run.languages.values()) == {"en"} and not config.run.vision_check
+    config.run.gauntlet.enabled = False  # the hint family only exists when the gate is off
+    assert set(config.run.languages.values()) == {"en"}
+    assert not config.run.gauntlet.enabled
 
     verbatim = check(config, action="run", entries=[_entry(0)])
     brief_only = check(config, action="run", entries=[_entry(0, brief="ai-audit-cta")])
@@ -524,14 +570,14 @@ def test_f22_a_czech_config_still_gets_the_certain_hint_rather_than_the_possible
     possibility. Printing both would say the same thing twice with two confidences."""
     config = _styled_config(tmp_path, languages={"linkedin": "cs"}, platforms=["linkedin"])
     config.run.formats = {"image": 2, "carousel": 0, "reel": 0}
-    config.run.vision_check = False  # the hint family only exists when the check is off
+    config.run.gauntlet.enabled = False  # the hint family only exists when the gate is off
 
     hints = check(config, action="run", entries=[_entry(0)]).hints
 
     assert len([hint for hint in hints if "linkedin render Czech text" in hint]) == 1, hints
     assert [hint for hint in hints if "quoted verbatim" in hint] == []
     # ... and the check being ON silences the whole family: something IS reading the glyphs back.
-    config.run.vision_check = True
+    config.run.gauntlet.enabled = True
     assert check(config, action="run", entries=[_entry(0)]).hints == ()
 
 
@@ -549,7 +595,8 @@ def test_fr286_the_report_wraps_long_lines_instead_of_overflowing_the_console(
     """
     config = _styled_config(tmp_path)
     config.run.formats = {"image": 2, "carousel": 0, "reel": 0}
-    config.run.vision_check = False  # the wrap subject is the verbatim hint, which needs the check off
+    # The wrap subject is the verbatim hint, which only exists with the gate off (v2.2.0).
+    config.run.gauntlet.enabled = False
 
     report = check(config, action="run", entries=[_entry(0)]).report
     lines = report.splitlines()
@@ -565,7 +612,7 @@ def test_fr286_the_report_wraps_long_lines_instead_of_overflowing_the_console(
     continuations = [line for line in lines if line.startswith("  ")]
     assert continuations, "a wrapped grade must be visibly a continuation, not a new finding"
     # No word was cut in half by the wrap: rejoining the parts restores the original sentence.
-    assert "consider --vision-check" in " ".join(line.strip() for line in lines)
+    assert "consider --gauntlet" in " ".join(line.strip() for line in lines)
 
 
 # ------------------------------------------- (f) FR-138: the two config PAIRS, re-run post-flags
@@ -719,3 +766,103 @@ def test_refusal_is_free_nothing_but_the_disk_probe_touches_the_filesystem(
     assert list(out.iterdir()) == []  # the probe was cleaned up, nothing else was written
     assert sorted(p.name for p in tmp_path.iterdir()) == ["output"]
     assert verdict.estimated_bytes > 0  # FR-255 still sized the run it refused
+
+
+# ------------------------------------------ FR-333 / D54: the copy mode, stated before the money
+
+
+def _deck(order: int) -> PlanEntry:
+    """A trend-backed CAROUSEL — the only shape `carousel_copy_mode` can reach (FR-331 scope)."""
+    entry = _entry(order)
+    entry.creative_format = "carousel"  # type: ignore[assignment]
+    entry.aspect_ratio = "1:1"
+    entry.slide_count = 6
+    return entry
+
+
+def test_fr333_a_compress_mode_run_says_so_at_the_screen_before_the_money_moves(
+    tmp_path: Path,
+) -> None:
+    """FR-333's pre-flight display obligation, through the real `check()`.
+
+    Compress is an operator toggle, and pre-flight is the last screen before the Confirm gate — so
+    a run whose slides will carry a MODEL's shortening of somebody's panels rather than those
+    panels has to say so where the operator is already reading about what will land on a frame.
+    It rides the language hint because that is the sharper question under this mode: a compressed
+    line is written rather than copied, so drifting out of the source's language is a failure
+    verbatim mode does not have, and the `translated` defect blocks a whole deck.
+    """
+    config = _styled_config(tmp_path, registry=_TWO_STYLES)
+    config.run.formats = {"image": 0, "carousel": 2, "reel": 0}
+    config.run.gauntlet.enabled = False  # the hint family only exists when the gate is off
+    config.run.carousel_copy_mode = "compress"
+
+    verdict = check(config, action="run", entries=[_deck(0)])
+
+    hints = [hint for hint in verdict.hints if "compressed from the source post" in hint]
+    assert len(hints) == 1, verdict.report
+    assert "carousel_copy_mode: compress" in hints[0], "the KEY is named, so the cure is printed"
+    assert "in the post's own language" in hints[0]
+    assert "FR-331" in hints[0] and "consider --gauntlet" in hints[0]
+    assert [hint for hint in verdict.hints if "quoted verbatim" in hint] == [], \
+        "one hint, one confidence: the verbatim sibling must not fire alongside it"
+    assert verdict.ok, "a mode is never a refusal — it is a fact about what the run will render"
+
+
+def test_fr333_the_same_plan_in_verbatim_mode_prints_the_pre_d54_hint_unchanged(
+    tmp_path: Path,
+) -> None:
+    """The regression half. `verbatim` is the engine-wide default, so the overwhelming majority of
+    runs must see exactly the sentence they saw before D54 — the two hints are one branch, and an
+    edit to the compress arm that leaked into this one would change what every default run says
+    about its own copy at the last screen before it spends."""
+    config = _styled_config(tmp_path, registry=_TWO_STYLES)
+    config.run.formats = {"image": 0, "carousel": 2, "reel": 0}
+    config.run.gauntlet.enabled = False
+    assert config.run.carousel_copy_mode == "verbatim", "the default, not set by this test"
+
+    verdict = check(config, action="run", entries=[_deck(0)])
+
+    hints = [hint for hint in verdict.hints if "quoted verbatim" in hint]
+    assert len(hints) == 1, verdict.report
+    assert hints[0].startswith("on-image text is quoted verbatim from the source post, in that "
+                               "post's own language (FR-294)")
+    assert "compress" not in hints[0]
+
+
+def test_fr333_an_images_only_run_in_compress_mode_says_nothing_about_compressing(
+    tmp_path: Path,
+) -> None:
+    """FR-331's scope, enforced at the display: `carousel_copy_mode` governs BOUND CAROUSEL decks
+    and nothing else. Claiming a compress contract over a batch of single images would be a false
+    statement at the screen the operator is about to approve spend from — and false statements at
+    that screen are exactly what pre-flight exists to prevent."""
+    config = _styled_config(tmp_path)
+    config.run.formats = {"image": 2, "carousel": 0, "reel": 0}
+    config.run.gauntlet.enabled = False
+    config.run.carousel_copy_mode = "compress"
+
+    verdict = check(config, action="run", entries=[_entry(0)])
+
+    assert [hint for hint in verdict.hints if "compressed from the source post" in hint] == []
+    assert len([hint for hint in verdict.hints if "quoted verbatim" in hint]) == 1, verdict.report
+
+
+def test_fr333_an_override_brief_deck_in_compress_mode_is_out_of_scope_too(
+    tmp_path: Path,
+) -> None:
+    """The other half of the scope rule: an override brief binds no source post (§0.14d), so it
+    has no panels to compress and takes its own free-text path in a compress-mode run. With no
+    verbatim creative in the plan either, the whole hint family stays silent — which is the same
+    answer this plan got before D54."""
+    config = _styled_config(tmp_path, registry=_TWO_STYLES)
+    config.run.formats = {"image": 0, "carousel": 2, "reel": 0}
+    config.run.gauntlet.enabled = False
+    config.run.carousel_copy_mode = "compress"
+    brief_deck = _entry(0, brief="ai-audit-cta")
+    brief_deck.creative_format = "carousel"  # type: ignore[assignment]
+
+    verdict = check(config, action="run", entries=[brief_deck])
+
+    assert [hint for hint in verdict.hints if "compressed from the source post" in hint] == []
+    assert [hint for hint in verdict.hints if "quoted verbatim" in hint] == []

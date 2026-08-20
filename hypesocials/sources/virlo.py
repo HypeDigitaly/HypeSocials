@@ -1114,6 +1114,7 @@ def _source_post(raw: Mapping[str, Any], monitor_id: str, index: int,
     | `image_urls`    | `image_urls`         | those slides' URLs, position-sorted (analysis only) |
     | `intelligence_status` | `intelligence_status` | whether Virlo enriched this row            |
     | `views/author/url/published_at` | same names | identity and rank                         |
+    | `author_name`   | *(nothing today)*    | the creator's DISPLAY name — see `_author_name`   |
 
     ⚠️ `description` is the one field that is not the creator's words: Virlo's `intelligence`
     block writes it, so it is legitimate CONTEXT (and legitimately verbatim *from Virlo*, per
@@ -1140,6 +1141,7 @@ def _source_post(raw: Mapping[str, Any], monitor_id: str, index: int,
         post_id=_post_id(raw, monitor_id, index),
         url=str(raw.get("url") or ""),
         author=str(raw.get("author_username") or ""),
+        author_name=_author_name(raw),
         caption=str(raw.get("description") or "").strip(),
         hooks=[hook] if hook else [],
         text_overlays=[overlay] if overlay else [],
@@ -1151,6 +1153,35 @@ def _source_post(raw: Mapping[str, Any], monitor_id: str, index: int,
         panel_count=int(_num(raw.get("panel_count"))),
         image_urls=[str(url) for url in raw.get("image_urls") or [] if str(url).strip()],
         intelligence_status=str(raw.get("intelligence_status") or "").strip())
+
+
+#: Every key a display name could plausibly arrive under, tried in this order. Virlo exposes NONE
+#: of them today — measured 2026-08-14 across the whole fixture corpus and both wrapper
+#: normalizers: the API's nested `author` object carries `username`, `verified`, `followers`,
+#: `country` and `avatar_url`, and `virlo_mcp.server._norm_video/_norm_slideshow` forward the first
+#: two of those as `author_username`/`author_followers`. So `SourcePost.author_name` is
+#: DOCUMENTED-ABSENT, not populated, and `""` is its live value on every run today.
+#:
+#: The probe is here rather than the field being left unmapped because the consumer already exists
+#: (`copywrite` reads `author_name` when it strips a creator's identity out of a caption, FR-312)
+#: and because a display name is exactly the field an upstream adds without telling anyone. The day
+#: Virlo's payload — or the wrapper's flattening of it — carries one, this maps it and nothing else
+#: in the tree moves. A regression test pins both halves: `""` on today's shape, populated on a row
+#: that carries the key (`tests/test_virlo_topics.py`).
+_AUTHOR_NAME_KEYS = ("author_name", "author_nickname", "author_display_name")
+
+
+def _author_name(raw: Mapping[str, Any]) -> str:
+    """The creator's display name if the payload carries one — `""` on every payload today.
+
+    Edges stripped like every other string in `_source_post`, and nothing else done to it: this is
+    a name that a strip pass compares against caption bytes (FR-312), so a "helpful" case fold or
+    a collapsed space here becomes a missed strip there.
+    """
+    for key in _AUTHOR_NAME_KEYS:
+        if (value := str(raw.get(key) or "").strip()):
+            return value
+    return ""
 
 
 def _panels(raw: Mapping[str, Any]) -> list[str]:
@@ -1308,6 +1339,10 @@ _CONSUMED_THEME = frozenset({"name", "why_it_works", "confidence", "tactics", "e
 #: describe was the whole product (D46 §1). They are read by `_source_post` (onto `SourcePost`),
 #: by the FR-305 gate and by the slide-intelligence tier that reads the slides themselves.
 _CONSUMED_POST = frozenset({
+    # The three display-name candidates are consumed the moment one of them exists (`_author_name`);
+    # listing them keeps the ledger honest on the day a payload starts carrying one, instead of
+    # reporting a field we DO read as ignored.
+    *_AUTHOR_NAME_KEYS,
     "id", "url", "author_username", "description", "summary", "views", "likes", "shares",
     "comments", "bookmarks", "hashtags", "hook_text", "text_overlay_content", "panel_texts",
     "panel_count", "image_urls", "intelligence_status",

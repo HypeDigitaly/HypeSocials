@@ -472,7 +472,8 @@ def test_fr90_a_carousel_never_rank_falls_back_onto_video_material() -> None:
     assert result.no_fresh_post_skips == 1 and result.carousel_posts_available == 0
     assert result.fresh_post_line == (
         "1 carousel(s) found no unused source slideshow: 0 fresh post(s) were bindable across the "
-        "eligible topics and 0 of them were bound")
+        "eligible topics and 0 of them were bound (at the 3+ usable-panel floor)"), \
+        "v2.2.0: the supply figure names the ASSIGN floor it was counted at — LinkedIn's is 3"
 
 
 # ------------------------------------------------------- FR-304/FR-307 source-post binding
@@ -508,12 +509,15 @@ def test_fr304_a_video_post_inside_a_slideshow_topic_is_never_bound() -> None:
     cfg = _config(formats={"image": 0, "carousel": 1, "reel": 0}, platforms=["linkedin"])
     plan = build_plan(cfg)
     topic = _deck_topic("mixed", _post("post-video", views=9000),  # no panels at all
-                        _deck("post-deck", panels=2, views=10))
+                        # 3 panels rather than 2 since v2.2.0: this platform's ASSIGN floor is
+                        # `platforms.linkedin.min_carousel_panels` (3), and this test is about the
+                        # VIDEO post being unbindable, not about the floor.
+                        _deck("post-deck", panels=3, views=10))
 
     assign(plan.entries, select([topic], cfg), cfg)
 
     assert plan.entries[0].source_post_id == "post-deck"
-    assert plan.entries[0].slide_count == 2
+    assert plan.entries[0].slide_count == 3
 
 
 def test_fr307_a_post_burnt_by_history_is_not_bound_and_the_next_one_is() -> None:
@@ -541,13 +545,15 @@ def test_fr307_two_carousels_on_one_topic_take_two_different_posts_then_starve()
     cfg = _config(formats={"image": 0, "carousel": 3, "reel": 0}, platforms=["linkedin"],
                   max_trend_reuses_per_run=6)
     plan = build_plan(cfg)
-    topic = _deck_topic("decks", _deck("post-a", panels=2, views=900),
+    # 3 panels on `post-a`, not 2: LinkedIn's v2.2.0 ASSIGN floor is 3 and this test is about
+    # exhaustion, not about the floor.
+    topic = _deck_topic("decks", _deck("post-a", panels=3, views=900),
                         _deck("post-b", panels=4, views=200))
 
     result = assign(plan.entries, select([topic], cfg), cfg)
 
     assert [e.source_post_id for e in plan.entries] == ["post-a", "post-b", None]
-    assert [e.slide_count for e in plan.entries] == [2, 4, 5]  # the starved entry keeps its stub
+    assert [e.slide_count for e in plan.entries] == [3, 4, 5]  # the starved entry keeps its stub
     assert [d.reason for d in result.decisions] == ["affinity", "reuse", NO_FRESH_POST_AVAILABLE]
     assert plan.entries[2].status is PlanEntryStatus.SKIPPED
     assert result.no_fresh_post_skips == 1
@@ -589,6 +595,32 @@ def test_fr307_a_topic_with_no_bindable_deck_left_loses_the_entry_to_a_weaker_to
     assert result.carousel_posts_available == 1, "the burnt deck and the video are not supply"
 
 
+def test_v220_the_assign_floor_is_per_platform_so_one_post_binds_on_instagram_and_not_linkedin(
+) -> None:
+    """`platforms.<name>.min_carousel_panels` is the ASSIGN floor (v2.2.0/D49).
+
+    A two-panel post is a legitimate feed carousel and a truncated-looking LinkedIn document, so
+    the same topic supplies Instagram and starves LinkedIn in the same run. The global
+    `MIN_DECK_SLIDES` stays underneath as the minimum a floor may ever mean.
+    """
+    cfg = _config(formats={"image": 0, "carousel": 2, "reel": 0},
+                  platforms=["linkedin", "instagram"])
+    plan = build_plan(cfg)
+    topic = _deck_topic("decks", _deck("post-two", panels=2, views=900))
+
+    result = assign(plan.entries, select([topic], cfg), cfg)
+
+    linkedin, instagram = plan.entries[0], plan.entries[1]
+    assert linkedin.platform == "linkedin" and instagram.platform == "instagram"
+    assert instagram.source_post_id == "post-two" and instagram.slide_count == 2
+    assert linkedin.source_post_id is None
+    assert linkedin.status is PlanEntryStatus.SKIPPED
+    assert "3+ usable panel(s) (linkedin floor)" in (linkedin.skip_reason or "")
+    assert result.carousel_floor == MIN_DECK_SLIDES, \
+        "the supply count is screened at the LOWEST floor the plan's own carousels carry"
+    assert result.carousel_posts_available == 1
+
+
 def test_fr307_the_supply_figure_counts_each_post_once_however_many_topics_carry_it() -> None:
     """§0.9's supply arithmetic is what W5 writes into FR-307's placeholder, so it has to be the
     number of DECKS the run could actually bind — not a sum of per-topic counts.
@@ -600,7 +632,9 @@ def test_fr307_the_supply_figure_counts_each_post_once_however_many_topics_carry
                   max_trend_reuses_per_run=6)
     plan = build_plan(cfg)
     shared = _deck("post-shared", panels=4, views=900)
-    first = _deck_topic("agents", shared, _deck("post-own", panels=2, views=100), strength=0.9)
+    # `post-own` carries 3 panels since v2.2.0 — LinkedIn's ASSIGN floor — so that it still counts
+    # as supply here; the arithmetic under test is the DE-DUPLICATION of `post-shared`.
+    first = _deck_topic("agents", shared, _deck("post-own", panels=3, views=100), strength=0.9)
     second = _deck_topic("automation", shared, strength=0.4)
 
     result = assign(plan.entries, select([first, second], cfg), cfg)

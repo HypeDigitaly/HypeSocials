@@ -23,17 +23,22 @@ vocabulary name is reachable.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from hypesocials import prompts_engine as pe
 from hypesocials.config import BrandingConfig, BrandProfile, TextBudgets
 from hypesocials.models import (
+    CRITIC_PLACEHOLDERS,
     GLOBAL_TEMPLATES,
+    PENDING_TEMPLATES,
     PLACEHOLDERS,
     PROFILE_TEMPLATES,
     Brief,
     CopySet,
     LayoutZone,
+    ListMode,
     MetaStyle,
     SourcePost,
     TrendItem,
@@ -48,6 +53,20 @@ EXCISED_PLACEHOLDERS = frozenset({"style_brief_summary", "inspiration_exemplars"
                                   "engagement_numbers", "reference_image_count", "output_format"})
 
 RENDER_PROFILE = "gpt-image-2"
+
+#: D54/FR-332's `{{compress_panels}}` block, in the shape `copywrite._compress_block` writes it —
+#: a per-creative section, the language-mirror line, the caption source, and admitted panels
+#: numbered by SOURCE POSITION with their own budget on every line (position 2 is absent on
+#: purpose: an unlisted number is a slide that ships wordless). Written onto a built context by
+#: the caller rather than produced by `build_context`, exactly like `audience_profile` and the
+#: critic slots — the engine numbers no panels, because `copywrite` is the module that resolves
+#: the deck and a second numbering here would be a divergence waiting to ship the wrong string.
+COMPRESS_PANELS = """One section per creative, each carrying that creative's OWN source deck.
+
+CREATIVE a1 — language: the one these panels are written in; mirror it exactly and never translate
+caption source: Seven tools, one bill.
+1. (at most 90 characters) The first panel, at the length a real slideshow page carries.
+3. (at most 90 characters) The third panel, which is where the argument turns."""
 
 
 class Recorder:
@@ -133,9 +152,21 @@ def make_branding(**overrides: object) -> BrandingConfig:
     return branding
 
 
+def critic_values() -> dict[str, str]:
+    """The gauntlet's contract slots (`models.CRITIC_PLACEHOLDERS`), as `gauntlet._context` builds
+    them — written onto a built context rather than produced by `build_context`, exactly like
+    `audience_profile`, because their values are a post-render CONTRACT and not a render input."""
+    return {"expected_blocks": 'frame 1 (slide 1):\n  L1: "Ship it"\n  counter: (none)',
+            "required_marks": "Notion", "forbidden_terms": "Acme, @creator",
+            "list_mode": "", "sanctioned_illegible": "", "platform": "linkedin"}
+
+
 def live_roles() -> list[tuple[str, str]]:
     """Every (profile, role) a post-pivot run can actually assemble — the transition, stated."""
-    shipped = ([("", role) for role in GLOBAL_TEMPLATES]
+    # `PENDING_TEMPLATES` (v2.2.0) is subtracted: the gauntlet's four prompt names are declared in
+    # `GLOBAL_TEMPLATES` before their files exist, and a role with no bytes is not live. It is
+    # EMPTY since T2.4 shipped those four files and their built-in twins.
+    shipped = ([("", role) for role in GLOBAL_TEMPLATES if role not in PENDING_TEMPLATES]
                + [(profile, role) for profile, names in PROFILE_TEMPLATES.items()
                   for role in names])
     return list(shipped)  # every shipped role is live post-W3.5
@@ -175,8 +206,13 @@ def test_fr102_the_filter_calls_topic_blocks_are_neutralised_before_they_are_num
     engine = pe.PromptEngine()
     template = engine.template("topic_filter_system.md").text
 
-    rendered = engine.render("topic_filter_system.md",
-                             pe.build_context(topic_items=[attack], competitor_strings=("Acme",)))
+    # `audience_profile` is added to the built context by `topic_filter.build_prompt` rather than by
+    # `build_context` (it belongs to one role), so a caller rendering this template by hand supplies
+    # it the same way — see the comment at `topic_filter.py:426`.
+    context = pe.build_context(topic_items=[attack], competitor_strings=("Acme",))
+    context["audience_profile"] = "solo founders shipping AI tools"
+
+    rendered = engine.render("topic_filter_system.md", context)
 
     assert rendered.count("<<<") == template.count("<<<")
     assert rendered.count(">>>") == template.count(">>>")
@@ -227,7 +263,11 @@ def test_fr261_out_of_role_placeholder_is_unresolved_not_leaked(tmp_path) -> Non
 def test_the_allowlist_table_is_the_pinned_final_one() -> None:
     """Contracts item 3, checked as a whole rather than role by role: the table IS the FR-261 gate,
     and a row added or widened by accident is how copy-side context reaches an image model."""
-    assert pe.allowlist("topic_filter_system.md") == frozenset({"topic_items", "competitor_list"})
+    # v2.2.0: `audience_profile` is the row's third and last name — the screen's own copy of who
+    # this run writes for, without which it cannot answer `audience_fit` or judge a topic's
+    # language. Still one role, still no render role.
+    assert pe.allowlist("topic_filter_system.md") == frozenset({
+        "topic_items", "competitor_list", "audience_profile"})
     assert pe.allowlist("image_post.md") == frozenset({
         "render_prompt", "layout_zones", "onimage_text", "reference_roles", "exclusions",
         "text_budgets", "brief_directives", "niche_visual_world", "content_sentence",
@@ -236,7 +276,10 @@ def test_the_allowlist_table_is_the_pinned_final_one() -> None:
         "slide_index", "style_dna", "render_prompt", "onimage_text", "reference_roles",
         "exclusions", "text_budgets", "brief_directives", "niche_visual_world", "branding_block",
         "visual_brief", "slide_panel_source",  # D46: the panel-mapping slots (FR-304/308)
-        "tool_marks", "slide_counter"})  # v2.1.2: the sanctioned marks line and the badge string
+        "tool_marks", "slide_counter",  # v2.1.2: the sanctioned marks line and the badge string
+        # Session 5.5/F1-A: FR-304b's list treatment, in its own slot instead of appended onto a
+        # `{{layout_zones}}` value this role never named. Slides only — no other role maps a panel.
+        "list_treatment"})
     assert pe.allowlist("slide_intel_question.md") == frozenset()
     assert pe.allowlist("reel_seed_frame.md") == frozenset({
         "render_prompt", "layout_zones", "onimage_text", "reference_roles", "exclusions",
@@ -247,12 +290,54 @@ def test_the_allowlist_table_is_the_pinned_final_one() -> None:
     assert pe.allowlist("copywriter_system.md") == frozenset({
         "niche_descriptor", "brand_context", "trend_texts", "source_hooks", "sibling_list",
         "text_budgets", "platform_conventions", "brief_directives"})
+    # v2.3.0 (D54/FR-332): the compress role. Its row is the copywriter's with ONE swap —
+    # `{{source_hooks}}`, the numbered table you choose LABELS from, is replaced by
+    # `{{compress_panels}}`, the panels themselves. That swap is the whole difference between the
+    # two copy contracts expressed in the gate: a role that is handed source panel text cannot also
+    # be handed a label table to pick from, and no render role is handed either.
+    assert pe.allowlist("copy_compress_system.md") == frozenset({
+        "niche_descriptor", "brand_context", "trend_texts", "compress_panels", "sibling_list",
+        "text_budgets", "platform_conventions", "brief_directives"})
+    assert "source_hooks" not in pe.allowlist("copy_compress_system.md")
+    assert "compress_panels" not in pe.allowlist("copywriter_system.md")
     assert pe.allowlist("carousel_anchor_instruction.md") == frozenset()
-    assert pe.allowlist("vision_check_question.md") == frozenset()
-    # And the table holds exactly the nine shipped roles — the W3.5 excision left no
-    # transitional rows behind, and D46 added exactly one (the slide-intelligence question,
-    # FR-306).
-    assert len(pe._ALLOWLIST) == 9
+    # `vision_check_question.md` has NO row at all (v2.2.0/D49): the role, its file and its built-in
+    # went with `vision_check.check()`, and an allowlist row for a role nothing can render is a name
+    # no builder produces — the exact dead-vocabulary shape this table is checked against.
+    assert "vision_check_question.md" not in pe._ALLOWLIST
+    # v2.2.0 (D49/FR-322): the gauntlet's four artifacts. Each critic row is a strict subset of
+    # `models.CRITIC_PLACEHOLDERS`, and the remedy sheet resolves nothing at all.
+    assert pe.allowlist("critic_brief.md") == frozenset({
+        "expected_blocks", "forbidden_terms", "list_mode", "required_marks",
+        "sanctioned_illegible", "style_dna"})
+    assert pe.allowlist("critic_system.md") == frozenset({
+        "expected_blocks", "layout_zones", "list_mode", "required_marks", "style_dna"})
+    assert pe.allowlist("critic_craft.md") == frozenset({
+        "expected_blocks", "platform", "required_marks", "sanctioned_illegible"})
+    assert pe.allowlist("gauntlet_fix.md") == frozenset()
+    for role in ("critic_brief.md", "critic_system.md", "critic_craft.md"):
+        assert pe.allowlist(role) <= CRITIC_PLACEHOLDERS, role
+    # `forbidden_terms` is the leakage critic's alone — the FR-330 competitor/identity list has no
+    # business in a style or a craft judgement — and `layout_zones` belongs to the one critic that
+    # judges placement. `platform` exists for craft's publish-bar phrasing and nothing else.
+    assert "forbidden_terms" not in pe.allowlist("critic_system.md")
+    assert "forbidden_terms" not in pe.allowlist("critic_craft.md")
+    assert "layout_zones" not in pe.allowlist("critic_brief.md")
+    assert "layout_zones" not in pe.allowlist("critic_craft.md")
+    assert "platform" not in pe.allowlist("critic_brief.md")
+    assert "platform" not in pe.allowlist("critic_system.md")
+    # And the table holds exactly the thirteen shipped roles: eight after the W3.5 excision and
+    # D46's slide-intelligence question, plus the four v2.2.0 gauntlet artifacts, MINUS the retired
+    # `vision_check_question.md`, PLUS v2.3.0's `copy_compress_system.md`. No transitional rows are
+    # left behind. Pinned as a roster and not only as a count, because a count alone passes for a
+    # row deleted and a different one added in the same edit.
+    assert set(pe._ALLOWLIST) == {
+        "topic_filter_system.md", "slide_intel_question.md",
+        "copywriter_system.md", "copy_compress_system.md",
+        "image_post.md", "carousel_slide.md", "carousel_anchor_instruction.md",
+        "reel_seed_frame.md", "reel_director.md",
+        "critic_brief.md", "critic_system.md", "critic_craft.md", "gauntlet_fix.md"}
+    assert len(pe._ALLOWLIST) == 13
 
 
 def test_the_competitor_screens_two_slots_are_allowlisted_for_that_role_and_nowhere_else() -> None:
@@ -296,6 +381,9 @@ def test_every_shipped_live_template_stays_inside_its_role_allowlist_and_renders
         topic_items=[make_trend()], competitor_strings=("Acme",),
         branding_block="accent colours — teal.", slide_index="1 of 3",
         seed_frame_ref="@Image1", audio_cue="silent")
+    context["audience_profile"] = "solo founders shipping AI tools"  # screen-only, see topic_filter
+    context["compress_panels"] = COMPRESS_PANELS  # copy-only, see copywrite._call_compress
+    context.update(critic_values())  # gauntlet-only, see gauntlet._context
     for profile, role in live_roles():
         template = engine.template(role, profile=profile)
         assert template.origin != "built-in default", f"{role} did not resolve from prompts/"
@@ -313,6 +401,9 @@ def test_every_live_built_in_default_renders_from_a_normal_context(tmp_path) -> 
         trend=make_trend(), style=make_style(), copy=CopySet("a1", "en", headline="Hi"),
         creative_format="image", text_budgets=TextBudgets(), topic_items=[make_trend()],
         competitor_strings=("Acme",), reference_roles=["Image 1 — style"])
+    context["audience_profile"] = "solo founders shipping AI tools"  # screen-only, see topic_filter
+    context["compress_panels"] = COMPRESS_PANELS  # copy-only, see copywrite._call_compress
+    context.update(critic_values())  # gauntlet-only, see gauntlet._context
     for key, text in pe._BUILT_INS.items():
         profile, _, role = key.rpartition("/")
         names = set(pe._names(text))
@@ -539,15 +630,19 @@ def test_the_budget_line_states_the_tighter_of_the_style_and_the_config() -> Non
 def test_the_wordmark_is_quoted_in_the_text_block_with_its_spelling_aid() -> None:
     """B1: every render template declares `{{onimage_text}}` the ONLY source of renderable words
     and prohibits any other wordmark, so the signature has to travel here — under exactly the same
-    verbatim contract as the headline, spelling aid included (a wordmark rendered with the wrong
-    letterform is a wrong wordmark)."""
+    verbatim contract as the headline, spelling aid on the same terms (a wordmark rendered with the
+    wrong letterform is a wrong wordmark; one spelled `HypeLead` has no letterform to get wrong,
+    and since Session 5.5/F1-B it spends no characters saying so)."""
     signed = pe.build_context(copy=CopySet("a1", "en", headline="Wired backwards"),
                               creative_format="image", wordmark="HypeLead")
+    accented = pe.build_context(copy=CopySet("a1", "cs", headline="Wired backwards"),
+                                creative_format="image", wordmark="Přehled")
     unsigned = pe.build_context(copy=CopySet("a1", "en", headline="Wired backwards"),
                                 creative_format="image")
 
     assert 'wordmark (render verbatim): "HypeLead"' in signed["onimage_text"]
-    assert "H-y-p-e-L-e-a-d" in signed["onimage_text"]
+    assert "spelled out" not in signed["onimage_text"], "nothing here needs an accent defence"
+    assert "P-ř-e-h-l-e-d" in accented["onimage_text"], "and an accented signature still gets one"
     assert "wordmark" not in unsigned["onimage_text"]
     assert 'headline (render verbatim): "Wired backwards"' in unsigned["onimage_text"]
 
@@ -607,6 +702,57 @@ def test_dd_a_counter_slot_zone_is_emitted_only_when_the_deck_carries_a_counter(
     assert pe._NO_COUNTER_LINE not in pe.build_context(style=make_style())["layout_zones"]
 
 
+def test_fr304b_a_list_panel_gets_the_styles_list_layout_in_its_own_slot() -> None:
+    """The one value keyed on the frame's own TEXT, and since Session 5.5/F1-A a slot of its own.
+
+    A mapped panel that trips the style's trigger is a LIST, and the style's `layout` prose plus its
+    `overflow` sentence fill `{{list_treatment}}` — the slot `carousel_slide.md` carries inside its
+    SLIDE CONTENT region. It used to be APPENDED to `{{layout_zones}}`, which that role does not
+    name: the only role that maps source panels was the only one never told to set a list as one.
+    A panel that trips nothing fills nothing, and a style with no `list_mode` never says a word
+    about lists.
+    """
+    rows = "Plan: 29 USD\nSeats: 5\nStorage: 1 TB\nSupport: email\nTrial: 14 days"
+    listed = make_style(list_mode=ListMode(reflow_over_chars=0, max_rows=3,
+                                           layout="Rows as label + value pairs in one card."))
+
+    context = pe.build_context(style=listed, creative_format="carousel", slide_text=rows)
+    tripped = context["list_treatment"]
+    short = pe.build_context(style=listed, creative_format="carousel",
+                             slide_text="One line only.")["list_treatment"]
+    plain = pe.build_context(style=make_style(), creative_format="carousel",
+                             slide_text=rows)["list_treatment"]
+
+    assert "Rows as label + value pairs in one card." in tripped
+    assert "every row stays, in full, at any length" in tripped
+    assert context["layout_zones"].startswith("1. upper third"), "the zones are untouched…"
+    assert "LIST" not in context["layout_zones"], "…and no longer carry the treatment at all"
+    assert short == "" and plain == ""
+
+
+def test_fr304b_the_overflow_rule_never_offers_a_way_to_shorten_the_panel() -> None:
+    """D50, checked on the bytes that reach the model: both overflow spellings lay MORE ROWS out,
+    and the trigger changes the layout only — never the budget line, which is what would turn a
+    reflow trigger into the per-slide ceiling FR-304 removed (B6)."""
+    rows = "a: 1\nb: 2\nc: 3\nd: 4"
+    two_col = make_style(list_mode=ListMode(reflow_over_chars=0, max_rows=2, overflow="two_column",
+                                            layout="Rows in a card."))
+
+    context = pe.build_context(style=two_col, creative_format="carousel", slide_text=rows,
+                               text_budgets=TextBudgets())
+    reflowed = pe.build_context(
+        style=make_style(list_mode=ListMode(reflow_over_chars=0, max_rows=2,
+                                            layout="Rows in a card.")),
+        creative_format="carousel", slide_text=rows)["list_treatment"]
+
+    assert "two side-by-side columns" in context["list_treatment"]
+    for treatment in (context["list_treatment"], reflowed):
+        assert not any(word in treatment.lower()
+                       for word in ("shorten", "drop", "omit", "truncat", "as many as fit"))
+    assert "Rows in a card." not in context["text_budgets"], "list_mode never enters the budgets"
+    assert context["onimage_text"].count(rows) == 1, "and never touches the locked TEXT block"
+
+
 def test_the_signature_gate_and_the_counter_gate_are_independent() -> None:
     """Two optional zones, two separate values: a signed-but-uncounted deck must lose the badge and
     keep the signature. The numbering runs over what is EMITTED, so neither gap is visible."""
@@ -636,14 +782,15 @@ def test_dd_the_counter_is_a_locked_text_entry_between_the_words_and_the_signatu
 
     It used to be "show this slide's position exactly as the FORMAT line states", pointed at
     `{{slide_index}}` — orientation metadata, not content — and the models duly invented badges
-    that matched no deck. It is now locked like every other string in the block, spelling aid
-    included, and `slide_index` alone never produces one."""
+    that matched no deck. It is now locked like every other string in the block, and `slide_index`
+    alone never produces one."""
     context = pe.build_context(creative_format="carousel", slide_index="3 of 7",
                                slide_text="Panel words", slide_counter="3/7", wordmark="HypeLead")
     block = context["onimage_text"]
 
     assert 'counter (render verbatim): "3/7"' in block
-    assert "3-/-7" in block, "FR-186's spelling aid rides on the counter like every locked string"
+    assert "spelled out" not in block, \
+        "Session 5.5/F1-B: a badge of digits and a slash has no accent to defend, so no echo"
     assert block.index("panel_text") < block.index("counter") < block.index("wordmark")
     # `slide_index` is metadata: on its own it puts no counter into the frame.
     assert "counter" not in pe.build_context(
@@ -1218,3 +1365,147 @@ def test_the_json_schema_generator_serves_the_live_copy_schemas() -> None:
     assert "asset_id" not in schema["properties"]
     assert schema["required"] == list(schema["properties"])  # strict mode (RESULTS.md §E)
     assert schema["additionalProperties"] is False
+
+
+# ------------------------------------- D54/FR-332: the compress role's slot and its budget branch
+
+
+def test_the_compress_panels_slot_is_allowlisted_for_ONE_role_and_nowhere_else() -> None:
+    """The same here-and-nowhere-else enforcement `topic_items` gets, and for a sharper reason.
+
+    `{{compress_panels}}` carries a bound post's OWN PANEL STRINGS. A render role that named it
+    would be handed a block of source text to "work from" beside the locked TEXT block — two
+    sources of renderable words on one frame, which is the `invented_text` defect the post-render
+    gate blocks decks for. It is not the copywriter's either: that role SELECTS from a numbered
+    label table and has no use for the bytes.
+
+    FR-260/261 is what makes the restriction real rather than advisory — an out-of-role name is
+    unresolved, so a template that reached for it FAILS instead of quietly rendering a blank.
+    """
+    holders = {role for role in pe._ALLOWLIST if "compress_panels" in pe.allowlist(role)}
+
+    assert holders == {"copy_compress_system.md"}
+    assert "compress_panels" in PLACEHOLDERS, "it is real vocabulary, not a typo in the table"
+    # …and the enforcement, at the level that actually refuses. A render role naming it cannot
+    # resolve it, so the name is reported as unresolvable rather than silently emptied.
+    for role in ("image_post.md", "carousel_slide.md", "reel_seed_frame.md", "reel_director.md",
+                 "copywriter_system.md"):
+        assert pe._unresolvable_names("{{compress_panels}}", role) == ["compress_panels"], role
+    assert pe._unresolvable_names("{{compress_panels}}", "copy_compress_system.md") == []
+
+
+def test_compress_panels_is_never_BUILT_by_build_context_only_written_onto_it() -> None:
+    """The slot has no builder, deliberately, and this pins that it does not grow one by accident.
+
+    `copywrite._compress_block` numbers the admitted panels by SOURCE POSITION, and `copywrite` is
+    the module that resolves the answer back onto those positions. A second numbering here would
+    be two implementations of one alignment — the divergence that ships the wrong string on the
+    wrong slide — so `build_context` never produces the value and the caller writes it on, exactly
+    as `topic_filter` writes `audience_profile` and the gauntlet writes its contract slots.
+    """
+    context = pe.build_context(trend=make_trend(), style=make_style(), creative_format="carousel")
+
+    assert "compress_panels" not in context, "no builder; the copy module owns the numbering"
+    assert set(context) <= PLACEHOLDERS, "and nothing else crept in either (FR-261 condition 2)"
+
+
+def test_the_compress_carousel_budget_line_states_the_real_per_slide_ceiling() -> None:
+    """D54 inverts B6's premise, and the budget line is where that shows.
+
+    B6 withholds a per-slide number from a VERBATIM deck because a mapped panel is not text we
+    chose — quoting a ceiling gave the render model a number to shrink type towards over a string
+    it may not shorten. A COMPRESSED line is ours: it was written down from that panel to a stated
+    ceiling, so the number this branch prints is exactly the one the compress prompt asked for and
+    `copywrite._compress_field` trims to. Withholding it here would leave the model guessing at the
+    one figure the engine will measure it against.
+    """
+    budgets = TextBudgets(image_headline=90, slide=300)
+    style = make_style(max_onimage_chars={"headline": 90, "slide": 160})
+
+    line = pe.build_context(style=style, creative_format="carousel", text_budgets=budgets,
+                            carousel_copy_mode="compress")["text_budgets"]
+
+    assert "each slide's text at most 160 characters" in line, \
+        "min(config 300, style 160) — the same arithmetic `copywrite._slot_budgets` enforces"
+    assert "the headline slot at most 90 characters" in line
+    assert "300" not in line, "the config ceiling alone is never the number in force"
+    assert "meet them by cutting words, never by cutting a word or a line short" in line
+    assert "panel_text string carries no character budget" not in line, "that is the OTHER branch"
+
+
+def test_the_verbatim_budget_line_is_byte_identical_to_its_pre_d54_self() -> None:
+    """The regression guard on the branch that did NOT change.
+
+    `carousel_copy_mode` defaults to `verbatim`, so every pre-D54 caller — and the verbatim
+    partition of a compress-mode group, which passes the default explicitly — must receive the
+    same bytes it always did. Asserted as an equality between the defaulted call and the explicit
+    one, plus B6's own claims, so a future edit to the compress branch cannot leak into this one.
+    """
+    budgets = TextBudgets(image_headline=90, slide=300)
+    style = make_style(max_onimage_chars={"headline": 90, "slide": 160})
+
+    def line(**over: object) -> str:
+        return pe.build_context(style=style, creative_format="carousel", text_budgets=budgets,
+                                **over)["text_budgets"]  # type: ignore[arg-type]
+
+    assert line() == line(carousel_copy_mode="verbatim")
+    assert line() != line(carousel_copy_mode="compress"), "the control: the branch does something"
+    assert "panel_text string carries no character budget" in line()
+    assert "160" not in line() and "300" not in line(), "B6: no per-slide ceiling is quoted"
+
+
+def test_the_copy_mode_flag_is_per_CALL_and_touches_no_other_format(
+) -> None:
+    """It splits the CAROUSEL branch alone, and it is passed per call rather than per run.
+
+    The verbatim partition of a compress-mode group still passes `verbatim`, so one run can print
+    "no per-slide ceiling" for the deck that is quoting and the real ceiling for the deck that is
+    compressing to it — which is the truth in both cases. Every other format is untouched, because
+    only a carousel has slides and only a bound deck has panels to compress.
+    """
+    budgets = TextBudgets()
+    style = make_style(max_onimage_chars={"headline": 90, "slide": 160})
+
+    for creative_format in ("image", "reel", ""):
+        verbatim = pe.build_context(style=style, creative_format=creative_format,
+                                    text_budgets=budgets)["text_budgets"]
+        compressed = pe.build_context(style=style, creative_format=creative_format,
+                                      text_budgets=budgets,
+                                      carousel_copy_mode="compress")["text_budgets"]
+        assert verbatim == compressed, f"{creative_format or 'the generic line'} must not move"
+
+    # And an unrecognised value behaves as the default rather than raising: the refusal for a bad
+    # mode belongs to config load, where `Literal` validation catches it before a run costs
+    # anything — a prompt builder that raised here would turn a settled typo into a mid-run crash.
+    generic = pe.build_context(style=style, creative_format="carousel", text_budgets=budgets)
+    odd = pe.build_context(style=style, creative_format="carousel", text_budgets=budgets,
+                           carousel_copy_mode="shorten")
+    assert generic["text_budgets"] == odd["text_budgets"]
+
+
+def test_the_shipped_compress_template_renders_from_the_compress_call_shaped_context() -> None:
+    """The one role whose whole payload is a bound post's own strings, assembled for real.
+
+    Both copies are checked — the file and its FR-183 built-in twin — because a fallback that
+    dropped `{{compress_panels}}` would send the model a compress mandate with nothing to compress
+    at the exact moment the file is already broken, and the model would fill the vacuum from the
+    fenced trend texts. That is the one failure this contract cannot survive.
+    """
+    context = pe.build_context(
+        trend=make_trend(), style=make_style(), creative_format="carousel",
+        text_budgets=TextBudgets(), niche_descriptor="founders shipping AI tools",
+        brand_context="plain, declarative", carousel_copy_mode="compress",
+        sibling_list="- a1 · linkedin · carousel · 3 slides · compress post P1's panels")
+    context["compress_panels"] = COMPRESS_PANELS
+
+    shipped = pe.PromptEngine().render("copy_compress_system.md", context)
+    fallback = pe.PromptEngine(prompts_dir=Path("no-such-folder")).render(
+        "copy_compress_system.md", context)
+
+    for origin, text in (("prompts/copy_compress_system.md", shipped),
+                         ("the FR-183 built-in", fallback)):
+        assert "{{" not in text, f"{origin}: a slot was left unresolved (FR-260)"
+        assert "The third panel, which is where the argument turns." in text, \
+            f"{origin}: the panels never reached the prompt"
+        assert "each slide's text at most" in text, f"{origin}: no ceiling was stated"
+        assert "compress post P1's panels" in text, f"{origin}: the sibling line is missing"

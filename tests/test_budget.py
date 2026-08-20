@@ -7,7 +7,7 @@ file. Fixtures live here (not in `conftest.py`) because nothing else needs them 
 **FR-107's LLM bullets post-pivot (v2.0.0, folded in by T3.5).** The style-brief `analysis_call`
 line is withdrawn with the vision stage that produced it (D41) — no LLM is asked what a trend
 looks like any more — and the `analysis` ROLE survives as the VISION CHECK's role, priced through
-`_check_price` (FR-27/FR-105). In its place FR-107 gained a first bullet: one batched
+`_check_price` (FR-27/FR-105), and D49 deleted that line too. In its place FR-107 has: one
 `filter_call` for the competitor screen (FR-294), priced pre-Collect at the worst-case bound
 `len(monitors) x virlo_topics_per_monitor`. `siblings_of()` is keyed off asset ids rather than
 `pair_id` — A/B mode is withdrawn, so every creative has its own CopySet.
@@ -68,85 +68,75 @@ def one(est: Estimate, code: str) -> budget.EstimateLine:
 # --------------------------------------------------------------------------- FR-107 bullets
 
 
-def test_fr107_vision_check_calls(cfg: Config) -> None:
-    """"vision-check calls when `vision_check` is on" — and none at all when it is off.
+def test_fr326_the_gate_is_quoted_per_creative_and_not_at_all_when_it_is_off(cfg: Config) -> None:
+    """v2.2.0/D49: the FR-105 `vision_check` call lines are DELETED with the machinery they
+    priced, and the post-render gate is quoted by `gauntlet_critics` instead.
 
-    The off case is set EXPLICITLY since 2026-08-13: `vision_check` defaults to `True` now, so a
-    plan that never touches the key is the ON case, not the OFF one.
+    The off case is set explicitly because `run.gauntlet.enabled` defaults to True: a plan that
+    never touches the key is the ON case, not the OFF one. Off means NO gate at all — not a
+    fallback to the old single-shot check, which no longer exists in any form.
     """
-    cfg.run.vision_check = False
+    cfg.run.gauntlet.enabled = False
     plan = [entry(0), entry(1)]
-    assert lines(estimate(cfg, plan), "vision_check") == []
+    assert lines(estimate(cfg, plan), "gauntlet_critics") == []
+    assert lines(estimate(cfg, plan), "vision_check") == []  # the retired line, gone for good
 
-    cfg.run.vision_check = True
+    cfg.run.gauntlet.enabled = True
     est = estimate(cfg, [entry(0), entry(1)])
-    checks = lines(est, "vision_check")
-    assert len(checks) == 2
-    assert all(check.category is SpendCategory.LLM and check.quantity == 1 for check in checks)
-    assert all(check.assumed_model == cfg.models.analysis for check in checks)
+    critics = lines(est, "gauntlet_critics")
+    assert len(critics) == 2  # one row per creative, its own frame count
+    assert all(row.category is SpendCategory.LLM and row.allowance for row in critics)
+    assert all(row.assumed_model == cfg.models.critic for row in critics)
 
 
-def test_fr107_carousel_is_one_vision_call_priced_with_every_slides_image_tokens(
-    cfg: Config,
-) -> None:
-    """"A carousel is one multi-image call for the whole deck (FR-105), not one call per slide —
-    but that call is priced with the vision image tokens of every slide it carries"."""
-    cfg.run.vision_check = True
+def test_fr326_a_deck_is_one_critic_call_priced_with_every_frame_it_carries(cfg: Config) -> None:
+    """One multi-image call per critic per round covers the WHOLE deck (spec §2) — but that call
+    is priced with the image tokens of every frame it attaches."""
+    cfg.run.gauntlet.enabled = True
     cfg.run.carousel_anchor = False
 
     cfg.platforms["linkedin"] = PlatformConfig(formats=["carousel"], carousel_slides=3)
-    small = one(estimate(cfg, [entry(0, "carousel")]), "vision_check")
+    small = one(estimate(cfg, [entry(0, "carousel")]), "gauntlet_critics")
     cfg.platforms["linkedin"] = PlatformConfig(formats=["carousel"], carousel_slides=8)
-    big = one(estimate(cfg, [entry(0, "carousel")]), "vision_check")
+    big = one(estimate(cfg, [entry(0, "carousel")]), "gauntlet_critics")
 
-    assert small.quantity == big.quantity == 1  # one call, whatever the deck size
+    assert small.quantity == big.quantity  # critics x rounds, whatever the deck size
     assert big.unit_price is not None and small.unit_price is not None
-    assert big.unit_price > small.unit_price  # ... priced with all eight slides' image tokens
+    assert big.unit_price > small.unit_price  # ... priced with all eight frames' image tokens
 
 
-def test_fr107_carousel_anchor_adds_a_second_vision_call(cfg: Config) -> None:
-    """"Where `carousel_anchor` is on, the deck also costs a **second** call for the anchor check
-    of slide 1"."""
-    cfg.run.vision_check = True
-    cfg.run.carousel_anchor = True
-    est = estimate(cfg, [entry(0, "carousel")])
-    assert len(lines(est, "vision_check")) == 1
-    anchor = one(est, "vision_check_anchor")
-    assert anchor.category is SpendCategory.LLM and anchor.quantity == 1
-
-    cfg.run.carousel_anchor = False
-    assert lines(estimate(cfg, [entry(0, "carousel")]), "vision_check_anchor") == []
-
-
-def test_fr107_seed_frame_renders_and_their_vision_checks(cfg: Config) -> None:
-    """"seed-frame image renders for every reel under `reel_overlay_text: seed_frame`, plus a
-    vision check per seed frame when `vision_check` is on (FR-105)"."""
+def test_fr326_a_seed_frame_is_judged_and_a_reel_without_one_is_not(cfg: Config) -> None:
+    """"seed-frame image renders for every reel under `reel_overlay_text: seed_frame`" — and the
+    gate judges that frame (spec §7). A reel that renders no seed frame has nothing to judge: the
+    finished clip is out of gauntlet scope entirely (frame extraction would mean ffmpeg, D10)."""
     priced_reels(cfg)
-    cfg.run.vision_check = True
+    cfg.run.gauntlet.enabled = True
     cfg.run.reel_overlay_text = "seed_frame"
     est = estimate(cfg, [entry(0, "reel", platform="tiktok")])
     seed = one(est, "reel_seed_frame")
     assert seed.quantity == 1 and seed.unit_price == cfg.models.price_per_unit.image["1k"]
-    assert one(est, "vision_check").quantity == 1
+    assert one(est, "gauntlet_critics").quantity > 0
 
     cfg.run.reel_overlay_text = "none"
     without = estimate(cfg, [entry(0, "reel", platform="tiktok")])
-    assert lines(without, "reel_seed_frame") == [] and lines(without, "vision_check") == []
+    assert lines(without, "reel_seed_frame") == [] and lines(without, "gauntlet_critics") == []
 
 
-def test_fr107_compound_retry_allowance(cfg: Config) -> None:
-    """"a retry allowance covering the worst-case **compound** per checked asset: **one moderation
-    retry (FR-97) plus one vision-check re-render (FR-105)** ... sized for both rather than for
-    whichever is larger"."""
-    cfg.run.vision_check = True
+def test_fr107_the_moderation_allowance_survives_the_deleted_vision_retry(cfg: Config) -> None:
+    """FR-107's compound retry allowance lost one of its two halves and kept the other.
+
+    `vision_retry_allowance` priced "render + re-check" for FR-105's single retry; that retry is
+    gone and the gate's own re-render budget is `gauntlet_rerender_allowance`, a per-deck dollar
+    cap the operator typed. Quoting both would bill one gate twice. The MODERATION retry (FR-97)
+    is a different failure class and is unchanged.
+    """
+    cfg.run.gauntlet.enabled = True
     est = estimate(cfg, [entry(0)])
     moderation = one(est, "moderation_retry_allowance")
-    vision = one(est, "vision_retry_allowance")
 
-    assert moderation.allowance and vision.allowance
-    # Compound, not max: the worst case carries BOTH amounts, and neither is expected spend.
-    assert est.worst_case_usd - est.expected_usd >= moderation.amount_usd + vision.amount_usd
-    assert all(line.code != "vision_retry_allowance" or line.allowance for line in est.lines)
+    assert moderation.allowance
+    assert lines(est, "vision_retry_allowance") == []
+    assert est.worst_case_usd - est.expected_usd >= moderation.amount_usd
     expected_codes = {line.code for line in est.lines if not line.allowance}
     assert "moderation_retry_allowance" not in expected_codes
 
@@ -154,42 +144,45 @@ def test_fr107_compound_retry_allowance(cfg: Config) -> None:
 def test_fr107_carousel_anchor_failure_contingency(cfg: Config) -> None:
     """"When slide 1 fails, the deck falls back to independent generation of all N slides ... A
     carousel's worst case is therefore **N + 1 renders**, and the estimate carries that
-    contingency"."""
+    contingency".
+
+    TWO units since v2.2.0: FR-95's anchor-failure shape gained a step. A dead anchor now buys ONE
+    fresh anchor attempt before the reference-free burst, so the worst case is the failed slide-1
+    job PLUS the failed re-anchor PLUS the N-render burst — N+2 billed renders. Both extra jobs
+    bill on submission whether or not they land, so both belong in the estimate.
+    """
     cfg.run.carousel_anchor = True
     est = estimate(cfg, [entry(0, "carousel")])
     slides = one(est, "carousel_slides")
     contingency = one(est, "anchor_contingency_allowance")
 
     assert slides.quantity == cfg.platform("linkedin").carousel_slides
-    assert contingency.quantity == 1 and contingency.allowance
-    assert contingency.unit_price == slides.unit_price  # the N+1th render, at the same tier
+    assert contingency.quantity == 2 and contingency.allowance
+    assert contingency.unit_price == slides.unit_price  # the N+1th and N+2nd, at the same tier
 
     cfg.run.carousel_anchor = False
     assert lines(estimate(cfg, [entry(0, "carousel")]), "anchor_contingency_allowance") == []
 
 
-def test_fr107_vision_check_image_tokens_are_priced_at_native_render_resolution(
+def test_fr326_critic_image_tokens_are_priced_at_native_render_resolution(
     cfg: Config,
 ) -> None:
-    """"**vision image tokens** — **vision-check calls priced at native render resolution**"
-    (FR-107 as amended v2.0.0).
+    """"**vision image tokens** — priced at native render resolution" (FR-107/FR-326).
 
-    The bullet names the CHECK alone now. Its pre-pivot twin asserted that the style-brief
-    analysis line stayed flat across resolution tiers because FR-93 downscaled its images to
-    ~1024 px before sending them; that line, that downscale and the whole vision-analysis stage
-    are withdrawn (D41/FR-128), and the check has NEVER downscaled — it reads the render we just
-    paid for, at the size we paid for it. So the tier moves this price, and must.
+    The gate has NEVER downscaled: it reads the render we just paid for, at the size we paid for
+    it (`vision_check.load_images` sends native bytes, and that invariant outlived the check it was
+    written for). So the resolution tier moves this price, and must.
     """
-    cfg.run.vision_check = True
+    cfg.run.gauntlet.enabled = True
 
     def at_tier(tier: str) -> float:
         cfg.platforms["linkedin"] = SimpleNamespace(  # type: ignore[assignment]
             carousel_slides=5, image_resolution=tier)
-        check = one(estimate(cfg, [entry(0, trend_key="t1")]), "vision_check").unit_price
-        assert check is not None
-        return check
+        price = one(estimate(cfg, [entry(0, trend_key="t1")]), "gauntlet_critics").unit_price
+        assert price is not None
+        return price
 
-    assert at_tier("2k") > at_tier("1k")  # check images are native — the tier moves the price
+    assert at_tier("2k") > at_tier("1k")  # critic frames are native — the tier moves the price
 
 
 def test_fr107_reasoning_token_allowance_scales_with_effort(cfg: Config) -> None:
@@ -445,7 +438,7 @@ def test_fr107_unpriced_reel_refuses_planning_and_names_the_key(cfg: Config) -> 
     """"the estimate consequently **refuses to plan reels at all while it is unset** ... An
     unpriced format is an unbounded format" (FR-131). Reels ship unpriced by operator decision."""
     assert cfg.reel_price_per_second is None  # the shipped state
-    cfg.run.vision_check = True
+    cfg.run.gauntlet.enabled = True
     est = estimate(cfg, [entry(0, "reel", platform="tiktok")])
 
     clip = one(est, "reel_clip")
@@ -454,8 +447,8 @@ def test_fr107_unpriced_reel_refuses_planning_and_names_the_key(cfg: Config) -> 
     assert clip.price_key == "models.price_per_unit.reel_second.720p"
     assert est.blocked == (clip,) and clip.entry_orders == (0,)
     assert clip.price_key in clip.label and "FR-131" in clip.label  # the key is named, not guessed
-    # A blocked reel buys nothing else either: no seed frame, no check, no retry allowance.
-    assert lines(est, "reel_seed_frame") == lines(est, "vision_check") == []
+    # A blocked reel buys nothing else either: no seed frame, no gate, no retry allowance.
+    assert lines(est, "reel_seed_frame") == lines(est, "gauntlet_critics") == []
     assert est.expected_usd == 0.0 and est.per_entry_usd[0] == 0.0
 
 
@@ -604,24 +597,206 @@ def test_nfr18_estimate_is_computed_from_local_config_only(cfg: Config) -> None:
     assert est.expected_usd > 0
 
 
+# --------------------------------------------------------------------------- FR-326 the gauntlet
+
+
+def deck_plan(cfg: Config, decks: int = 1, slides: int = 8) -> list[PlanEntry]:
+    """`decks` carousels of `slides` slides each, on a platform whose hard max allows them."""
+    cfg.platforms["linkedin"] = PlatformConfig(formats=["carousel"], carousel_slides=slides)
+    return [entry(i, "carousel", trend_key=f"t{i}", slide_count=slides) for i in range(decks)]
+
+
+def test_fr106a_enabling_the_gauntlet_never_moves_expected_spend(cfg: Config) -> None:
+    """THE ACCEPTANCE TEST (gauntlet spec §5, FR-106a): the gauntlet is displayed and provisioned
+    for in the WORST CASE and is otherwise invisible to the money gate.
+
+    `expected_usd` is what FR-106a gates the batch on and what `trim()` compares against a cap, so
+    a gauntlet line leaking into it would delete real creatives to pay for re-renders that mostly
+    never happen — the quality gate deleting the creative it exists to improve. Every per-entry
+    share must be untouched for the same reason: that number is what a trim decision is logged
+    with. Only `worst_case_usd` may move, and it must actually move, or the operator is being
+    quoted a gate that looks free.
+    """
+    plan = deck_plan(cfg, decks=2)
+    cfg.run.gauntlet.enabled = False
+    off = estimate(cfg, plan)
+    off_shares = dict(off.per_entry_usd)
+
+    cfg.run.gauntlet.enabled = True
+    on = estimate(cfg, plan)
+
+    assert on.expected_usd == off.expected_usd
+    assert on.per_entry_usd == off_shares
+    assert on.worst_case_usd > off.worst_case_usd
+    assert all(line.allowance for line in on.lines if line.code.startswith("gauntlet_"))
+    # ... and the same cap that fitted without the gauntlet still trims nothing with it on.
+    assert trim(cfg, plan, cap_usd=off.expected_usd).trimmed == ()
+
+
+def test_fr326_allowance_is_the_specs_formula(cfg: Config) -> None:
+    """Spec §5: `Σ deck_budget_usd + decks x enabled_critics x rounds_max x est_call_usd`."""
+    cfg.run.gauntlet.rounds_max = 3
+    cfg.run.gauntlet.deck_budget_usd = 0.30
+    plan = deck_plan(cfg, decks=2)
+    est = estimate(cfg, plan)
+
+    panels = lines(est, "gauntlet_critics")
+    rerender = one(est, "gauntlet_rerender_allowance")
+    assert len(panels) == 2  # one line per deck, priced at that deck's own frame count
+    assert all(panel.quantity == 3 * 3 for panel in panels)  # 3 critics x 3 rounds
+    assert all(panel.category is SpendCategory.LLM and panel.unit == "call" for panel in panels)
+    assert rerender.quantity == 2 and rerender.unit_price == 0.30  # the per-deck cap IS the worst
+    assert rerender.category is SpendCategory.RENDER
+    assert rerender.amount_usd == pytest.approx(0.60)
+
+    gauntlet_usd = sum(line.amount_usd for line in est.lines if line.code.startswith("gauntlet_"))
+    est_call = panels[0].unit_price
+    assert est_call is not None
+    assert gauntlet_usd == pytest.approx(2 * 0.30 + 2 * 3 * 3 * est_call)
+
+    # Two enabled critics means two thirds of the panel spend, and nothing else changes.
+    cfg.run.gauntlet.critics["craft"].enabled = False
+    assert all(panel.quantity == 2 * 3 for panel in lines(estimate(cfg, plan), "gauntlet_critics"))
+
+
+def test_fr326_a_critic_call_is_priced_at_the_measured_one_thousand_completion_tokens(
+    cfg: Config,
+) -> None:
+    """Session 5.6/F5-tail's re-base: an 8-frame call is ~27k input tokens (the measured ≈18.3k
+    prompt side plus ~1,119/frame at the 4:5 `1k` tier) plus **1,000** completion, landing on ~$0.06.
+
+    1,000, not the 5,000 this pinned before, and not the 700 it pinned before that. 700 was a
+    guess. 5,000 was a measurement of a critic thinking at FULL effort inside `completion_tokens`,
+    taken before F5 bound the role at `models.critic_reasoning_effort: low` — Session 5.5 wrote it
+    down as provisional and promised a re-measurement. Canary `20260819_170148_2z4y` is that
+    measurement: 4,769 completion tokens over 11 calls, ≈434 a call, so 1,000 quotes ~2.3x what
+    the gate really returns. The constant is pinned here because understating it is the one
+    estimator error that is never safe (D11) — it may only ever move against a measurement, which
+    is exactly what moved it this time.
+    """
+    est = estimate(cfg, deck_plan(cfg, decks=1, slides=8))
+    panel = one(est, "gauntlet_critics")
+    assert panel.unit_price is not None
+
+    per_frame = budget._image_tokens(1024, "4:5")
+    assert per_frame == pytest.approx(1118, abs=2)  # ~1,118 tokens a frame, unchanged by F5
+    input_tokens = budget._CRITIC_PROMPT_TOKENS + 8 * per_frame
+    assert 27_000 <= input_tokens <= 28_000  # measured prompt side + this deck's own frames
+    rates = cfg.models.price_per_unit.llm["sonnet"]
+    input_usd = input_tokens / 1_000_000 * rates["input_per_mtok"]
+
+    completion_usd = panel.unit_price - input_usd
+    assert completion_usd == pytest.approx(1_000 / 1_000_000 * rates["output_per_mtok"])
+    assert budget._CRITIC_COMPLETION_TOKENS == 1000
+    # …and it is the CONSTANT that binds, not `max_tokens.critic` (8,000): the quote is what a
+    # critic call really returns, bounded by the cap, never the cap itself.
+    assert budget._CRITIC_COMPLETION_TOKENS < cfg.max_tokens_for("critic")
+    assert format_usd(panel.unit_price) == "$0.06"
+    assert panel.unit_price == pytest.approx(0.065, abs=0.001)
+
+
+def test_fr326_critic_calls_price_off_the_sonnet_block_and_say_which_model(cfg: Config) -> None:
+    """`_ROLE_PRICE_KEY["critic"]` is what stops the whole gauntlet pricing at $0 (30 §2/D49)."""
+    assert budget._ROLE_PRICE_KEY["critic"] == "sonnet"
+    panel = one(estimate(cfg, deck_plan(cfg)), "gauntlet_critics")
+    assert panel.price_key == "models.price_per_unit.llm.sonnet"
+    assert panel.assumed_model == cfg.models.critic  # its OWN role, never `models.analysis`
+
+    # And an unset rate reports rather than pretending the gate is free (FR-282).
+    cfg.models.price_per_unit.llm["sonnet"]["output_per_mtok"] = 0.0
+    unpriced = one(estimate(cfg, deck_plan(cfg)), "gauntlet_critics")
+    assert unpriced.unpriced and unpriced.amount_usd == 0.0 and unpriced.unit_price is None
+
+
+def test_fr326_images_and_seed_frames_ride_their_own_rounds_ceiling(cfg: Config) -> None:
+    """`rounds_max_image` is the standalone ceiling, and `0` means judge without re-rendering."""
+    cfg.run.gauntlet.rounds_max_image = 1
+    est = estimate(cfg, [entry(0, trend_key="t1")])
+    assert one(est, "gauntlet_critics").quantity == 3  # 3 critics x ONE round
+    # One round can never reach a re-render (the loop breaks at `rounds_max`), so no cap is quoted.
+    assert lines(est, "gauntlet_rerender_allowance") == []
+
+    cfg.run.gauntlet.rounds_max_image = 0
+    zero = estimate(cfg, [entry(0, trend_key="t1")])
+    assert one(zero, "gauntlet_critics").quantity == 3  # still judged, still paid for
+    assert lines(zero, "gauntlet_rerender_allowance") == []
+
+    # A reel is judged on its SEED FRAME only; without one it renders nothing the panel can read.
+    priced_reels(cfg, 0.315)
+    cfg.run.reel_overlay_text = "none"
+    assert lines(estimate(cfg, [entry(1, "reel", platform="tiktok")]), "gauntlet_critics") == []
+
+
+def test_no_gauntlet_lines_when_nothing_will_be_judged(cfg: Config) -> None:
+    """`gauntlet.enabled: false` is the rollback knob — no gate, and therefore no quote for one.
+
+    Every critic switched off is the same run by another route, and `deck_budget_usd: 0.00` is a
+    legal "judge, never re-render" rather than a rate that failed to load: it must not print a $0
+    row and must not raise the governance banner.
+    """
+    plan = deck_plan(cfg)
+    cfg.run.gauntlet.enabled = False
+    assert [line for line in estimate(cfg, plan).lines if line.code.startswith("gauntlet_")] == []
+
+    cfg.run.gauntlet.enabled = True
+    for critic in cfg.run.gauntlet.critics.values():
+        critic.enabled = False
+    assert [line for line in estimate(cfg, plan).lines if line.code.startswith("gauntlet_")] == []
+
+    for critic in cfg.run.gauntlet.critics.values():
+        critic.enabled = True
+    cfg.run.gauntlet.deck_budget_usd = 0.0
+    est = estimate(cfg, plan)
+    assert lines(est, "gauntlet_rerender_allowance") == [] and est.banner == ""
+    assert len(lines(est, "gauntlet_critics")) == 1  # the panel still runs and is still quoted
+
+
+def test_fr326_critic_price_gap_is_the_preflight_predicate(cfg: Config) -> None:
+    """Pre-flight's consumable check that `models.critic` resolves to a priced block (T2.4 wires
+    it): the whole sentence to report, or `None` when there is nothing to say."""
+    assert budget.critic_price_gap(cfg) is None
+
+    cfg.models.price_per_unit.llm["sonnet"]["input_per_mtok"] = 0.0
+    gap = budget.critic_price_gap(cfg)
+    assert gap is not None
+    assert "models.price_per_unit.llm.sonnet" in gap and cfg.models.critic in gap
+    assert "input_per_mtok" in gap  # names the missing rate, never a vague "unpriced"
+
+    # Silent when no critic call will be made — a rate for work that never happens is not a gap.
+    cfg.run.gauntlet.enabled = False
+    assert budget.critic_price_gap(cfg) is None
+    cfg.run.gauntlet.enabled = True
+    for critic in cfg.run.gauntlet.critics.values():
+        critic.enabled = False
+    assert budget.critic_price_gap(cfg) is None
+
+
 # --------------------------------------------------------------------------- FR-282 provenance
 
 
 def test_fr282_every_priced_line_carries_key_origin_and_assumed_model(cfg: Config) -> None:
     """FR-282: "The pre-flight cost summary SHALL print, for every priced line, which configured
-    model that price is being assumed for"."""
-    cfg.run.vision_check = True
+    model that price is being assumed for".
+
+    Every line names the config key its number came from. That key is a `price_per_unit` rate for
+    every line but one: v2.2.0's `gauntlet_rerender_allowance` is a per-deck dollar CAP the
+    operator typed at `run.gauntlet.deck_budget_usd`, not a rate the estimator multiplied out, and
+    naming the rate table there would send a reader to a key that cannot explain the figure.
+    """
+    cfg.run.gauntlet.enabled = True
     est = estimate(cfg, [entry(0, trend_key="t1"), entry(1, "carousel", trend_key="t1")])
     assert est.lines
     for line in est.lines:
         assert line.price_key and line.price_origin and line.assumed_model
-        assert line.price_key.startswith("models.price_per_unit.")
+        assert line.price_key.startswith("models.price_per_unit.") or (
+            line.code == "gauntlet_rerender_allowance"
+            and line.price_key == "run.gauntlet.deck_budget_usd")
     assert one(est, "image_render").assumed_model == cfg.models.image
-    # The `analysis_call` row went with the style-brief stage (D41). The `analysis` ROLE did not:
-    # it is the vision check's role now, which is exactly what these lines price (FR-27/FR-105),
-    # so `models.analysis` and `max_tokens.analysis` keep meaning something and keep being named.
-    assert all(check.assumed_model == cfg.models.analysis
-               for check in lines(est, "vision_check"))
+    # The `analysis_call` row went with the style-brief stage (D41) and the `vision_check` rows
+    # went with the FR-105 machinery (D49). The `critic` role is what prices the gate now, so
+    # `models.critic` is what its lines name.
+    assert all(row.assumed_model == cfg.models.critic
+               for row in lines(est, "gauntlet_critics"))
     assert one(est, "copy_call").assumed_model == cfg.models.copy
 
 

@@ -99,6 +99,14 @@ class PlanEntryStatus(str, Enum):
     SKIPPED = "skipped"  # dropped for a non-budget reason (10 §10)
     SKIPPED_BUDGET = "skipped_budget"  # trimmed or cap-blocked (FR-28/106)
     ABANDONED = "abandoned"  # left in flight by deadline or Ctrl+C (FR-108/201)
+    # FR-325 (v2.2.0, D49): the gauntlet's terminal refusal. The creative RENDERED — its slides are
+    # on disk and its money is spent — but a critic panel found a standing defect the fix loop could
+    # not clear, so it is never published. Deliberately NOT a flavour of FAILED: a failed entry has
+    # nothing to show, a blocked one has a full folder plus a `GAUNTLET_REPORT.yaml` explaining why
+    # it is being held back. It counts as a non-success everywhere success is what matters — the
+    # trend-history `record_use` window and the `set_latest` satisfaction gate both exclude it, so a
+    # blocked deck's source post is NOT burnt and the run can quote it again tomorrow.
+    BLOCKED = "blocked"
 
 
 class AssetStatus(str, Enum):
@@ -107,6 +115,11 @@ class AssetStatus(str, Enum):
     PENDING = "pending"
     SUCCESS = "success"
     FAILED = "failed"
+    #: FR-325 (v2.2.0, D49) — rendered, paid for, kept on disk (FR-74) and NOT published: the
+    #: gauntlet's three-tier terminal policy blocked it. `packager.block()` is the only writer;
+    #: the gallery draws a BLOCKED badge rather than the failed-card path, and any BLOCKED asset
+    #: makes the run exit 1. The artifacts stay precisely so an operator can look and decide.
+    BLOCKED = "blocked"
 
 
 class VisionCheckResult(str, Enum):
@@ -133,6 +146,13 @@ class SourcePost:
     post_id: str
     url: str = ""  # permalink; goes to the roster line and to trend_history (FR-297b/FR-298)
     author: str = ""
+    #: The creator's DISPLAY NAME, beside `author` (which carries the @handle form). FR-312's strip
+    #: has always had two identity shapes to erase and only ever received one: the 08-14 audit found
+    #: captions shipping "Emir | AI Lab" untouched while "@emirailab" was scrubbed, because the
+    #: display name simply never reached the engine — `copywrite` reads this field and the adapter
+    #: never wrote it. Empty is a legitimate value (an API that exposes no display name), and the
+    #: strip degrades to handle-only rather than failing; it is never a substitute for `author`.
+    author_name: str = ""
     caption: str = ""
     hooks: list[str] = field(default_factory=list)
     text_overlays: list[str] = field(default_factory=list)  # absorbs `text_overlay_contents`
@@ -296,6 +316,42 @@ class LayoutZone:
 
 
 @dataclass(slots=True)
+class ListMode:
+    """A style's LIST TREATMENT — the reflow trigger and the layout it reflows into (FR-304b).
+
+    A REFLOW TRIGGER, never a ceiling. This is the whole point and the easiest thing to get wrong:
+    a mapped panel that trips either threshold is not too long, it is a LIST, and it is SET in
+    `layout` — rendered WHOLE at any length. No value here can drop, shorten, or refuse text, which
+    is why `overflow` offers only two ways of laying more rows out and no way of losing one.
+
+    Consumed in exactly ONE render slot: `{{list_treatment}}` on `carousel_slide.md`, built by
+    `prompts_engine._list_treatment` and fired per slide when that slide's panel trips a threshold
+    (Session 5.5/F1-A — it used to be a gated append onto `{{layout_zones}}`, which the slide role
+    does not name, so it reached every render role except the only one that maps panels). The slot
+    is in no truncation set, so the rule cannot be cut off a long slide. The gauntlet reads the
+    same sentence deck-wide through `prompts_engine.list_mode_text` (`DeckContract.list_mode`), so
+    the critic judges list layout by the words the renderer was given. It never enters
+    `max_onimage_chars` or
+    `_budget_line` (B6), and it is never consulted by `copywrite._panel_verdict` (D50) — no drop
+    path gains a style input. Absent on a style is legal and means "this style has no list
+    treatment"; present but malformed is an FR-295 pre-flight exit 2, like every other registry
+    defect, because a half-parsed layout rule silently changes what a paid deck looks like.
+    """
+
+    #: A panel longer than this many characters is a list panel. `0` = NEVER reflow on length —
+    #: deliberately the INVERTED sense of `max_onimage_chars`' "0 = no ceiling", because this is a
+    #: trigger and that is a ceiling; the styles.yaml authoring block states it out loud.
+    reflow_over_chars: int = 0
+    #: A panel with more than this many lines is a list panel, whatever its length.
+    max_rows: int = 0
+    #: Prose the render prompt can execute: how rows are set, what may never separate, and how an
+    #: over-long row behaves. Free text, because it is layout direction and never becomes words.
+    layout: str = ""
+    #: `reflow` | `two_column` — the two ways more rows may be laid out. Neither drops text.
+    overflow: str = "reflow"
+
+
+@dataclass(slots=True)
 class MetaStyle:
     """One meta-style registry entry (§1.3) — the post-pivot visual authority.
 
@@ -336,6 +392,9 @@ class MetaStyle:
     # at all. `styles.fmt_affine` owns that reading — no caller re-implements it.
     per_format_guidance: dict[str, str] = field(default_factory=dict)
     exclusions: list[str] = field(default_factory=list)  # self-contained rules, file-free (D46/F3)
+    #: FR-304b (v2.2.0): this style's list/table treatment, or `None` when it has none. See
+    #: `ListMode` — a reflow trigger, never a ceiling; `styles.py` parses and validates it.
+    list_mode: ListMode | None = None
 
 
 @dataclass(slots=True)
@@ -369,6 +428,44 @@ class CopySelection:
     through_line: str = ""  # free text — never pixels
     narrative_arc: str = ""  # free text — carousel arc
     motion_beat: str = ""  # free text — ONE named physical action, reel Stage 2 (F24)
+
+
+@dataclass(slots=True)
+class CopyCompressed:
+    """The COMPRESS call's per-creative answer (D54/FR-331) — text, not references.
+
+    The third answer shape beside `CopySelection` (labels) and `CopySet` (free text), and the one
+    that needs the most explaining, because it is the shape where a model writes strings that
+    become pixels on a creative bound to somebody else's post. What makes that safe is not this
+    dataclass — it is the input it answers: `copywrite._compress_block` hands the model the bound
+    post's OWN admitted panel strings and asks for each one back shorter, in the same language,
+    with its facts intact. The model is compressing a specific string, not composing from a topic.
+
+    `slide_texts` is POSITION-INDEXED and the position is the contract: `slide_texts[i - 1]` is the
+    compression of SOURCE PANEL *i*, and an empty string means "that source panel had nothing to
+    compress" (FR-304's alignment — the row is what aligns our deck with theirs, so a list that
+    skipped an empty position would re-map every slide after it). The engine pads a short list,
+    truncates a long one, discards a line written for a position the source left empty, and never
+    consumes the list as a queue.
+
+    `headline`, `caption` and `hashtags` are here for the same reason `CopySelection` carries their
+    ref fields: a bound carousel's slides are the engine's to map, but that deck's COVER headline,
+    its caption and its hashtags were always the model's to choose (FR-304). Compress authors the
+    same three instead of selecting them — the caption compressed AND humanized, its comment/follow
+    mechanics removed (the funnel `copywrite._strip_cta` fights sentence by sentence on the
+    verbatim path).
+
+    `through_line` and `narrative_arc` are free text on every contract, because neither becomes
+    pixels. `motion_beat` is absent: compress mode is carousels only, and a reel has no panels.
+    """
+
+    asset_id: str
+    headline: str = ""  # the deck's cover headline — trimmed to the style's headline budget
+    caption: str = ""  # compressed AND humanized; engine falls back if it carries a social mark
+    hashtags: list[str] = field(default_factory=list)  # blocklist-checked, whole-token drops
+    slide_texts: list[str] = field(default_factory=list)  # slide i = compression of source panel i
+    through_line: str = ""  # free text — never pixels
+    narrative_arc: str = ""  # free text — carousel arc
 
 
 @dataclass(slots=True)
@@ -422,6 +519,15 @@ class AssetRecord:
     # Empty for override briefs and degrade paths — there was nothing quoted.
     copy_source_post_id: str = ""
     copy_source_refs: dict[str, str] = field(default_factory=dict)
+    # FR-73 (v2.3.0, D54) — WHICH copy contract produced this asset: `verbatim` (the default and
+    # every non-carousel, every override brief, every degrade path including a compress call that
+    # failed and fell back to the verbatim mapped deck) or `compress` (a bound panel-mapped deck of
+    # a `run.carousel_copy_mode: compress` run, FR-331). Per ASSET rather than per run because the
+    # mode reaches only the bound decks — an image in a compress-mode run shipped verbatim copy and
+    # says so. Read by the FR-309 gallery, which labels a compressed deck's slide column
+    # "compressed from N chars" off each `panel_map` row's `source_text_original` length, and by
+    # the FR-297c provenance block, which prints the compress receipt instead of the quoted bytes.
+    copy_mode: str = "verbatim"
     # FR-73 (v2.1.0) — the slideshow receipt, beside the refs it explains. `copy_source_post_id`
     # says WHICH post; these three say what that post WAS and how its deck maps onto ours, which is
     # what FR-309's three-part gallery card needs to lay the source strip beside our slides.
@@ -436,15 +542,22 @@ class AssetRecord:
     # 0 on every non-carousel and on override briefs.
     #
     # `panel_map` is one row per OUR slide, in slide order and position-preserving:
-    # `{slide, source_position, source_text, source_text_original, drop_reason, ref_label,
-    # visual_brief, source_image}`. The first six are the copy stage's
-    # (`copywrite.CopyProvenance.panel_map`), the last two are joined in by
+    # `{slide, source_position, source_text, source_text_original, drop_reason, creator_stripped,
+    # chrome_counter_stripped, ref_label, truncation_suspect, compressed, visual_brief,
+    # source_image}`. All but the last two are the copy stage's
+    # (`copywrite.CopyProvenance.panel_map`), and those two are joined in by
     # `generate.__init__._record()` from the slide-intelligence result (FR-306/FR-308). A slide
     # whose source panel was empty, chrome-poisoned or over the 1500-char sanity ceiling keeps its
     # row with an empty `source_text`, the pre-gate text in `source_text_original` and the cause
     # in `drop_reason` — the row is the alignment, so dropping it would silently re-map slide 3's
     # words onto slide 2, which is exactly the defect FR-304 exists to prevent. Empty list for
     # override-brief carousels and for everything that is not a deck.
+    #
+    # `compressed` (v2.3.0, D54/FR-331) is a bool on EVERY row of both walks — true when
+    # `source_text` is the copy model's compression of `source_text_original` rather than a quote
+    # of it, false on every verbatim row. One row schema always: a reader that had to ask whether
+    # the key exists before trusting `source_text` would be reading two schemas, and the gallery's
+    # alignment loop is the last place that should have to branch.
     source_post: dict | None = None
     source_panel_count: int = 0
     panel_map: list = field(default_factory=list)
@@ -463,6 +576,18 @@ class AssetRecord:
     job_completion_timestamp: str | None = None  # ISO 8601
     kie_job_ids: list[str] = field(default_factory=list)
     vision_check_result: VisionCheckResult = VisionCheckResult.NOT_CHECKED  # --- quality/skip ---
+    #: FR-328 (v2.2.0, D49) — `meta.yaml.gauntlet`: the post-render gate's own receipt, written on
+    #: EVERY terminal path the gauntlet touched (pass, blocked, degraded, budget/deadline stop,
+    #: skipped) and `None` when the gate never ran. Shape:
+    #: `{result, degraded_gate, rounds: [{round, unavailable, critics: {name: n_fails},
+    #: failed_frames, rerendered}], rerenders, rerender_cost_usd, critic_cost_usd}`.
+    #:
+    #: A PLAIN DICT on purpose, and this is a hard rule rather than a convenience: `models` is the
+    #: bottom of the import graph and `gauntlet` imports it, so a typed `GauntletReport` field here
+    #: would be a cycle. The full per-frame per-critic detail does not live here at all — it goes to
+    #: `GAUNTLET_REPORT.yaml`, which is the operator-readable report; this field is the summary a
+    #: gallery, a summary row or a Phase-2 publisher can read without parsing verdict prose.
+    gauntlet: dict | None = None
     status: AssetStatus = AssetStatus.PENDING
     skip_reason: str | None = None  # also appears as a DegradationTag
     slide_count: int | None = None  # --- format-specific: carousel slides delivered ---
@@ -564,6 +689,14 @@ class RenderFailCause(str, Enum):
     RESULT_URL_UNREACHABLE = "result_url_unreachable"  # FR-242 (404, dead host, wrong content)
     TIMEOUT = "timeout"  # per-job timeout exceeded (pairs with STUCK)
     CREDITS_EXHAUSTED = "credits_exhausted"  # HTTP 402 — whole-run condition (FR-167)
+    # D51 (v2.2.0): the run had less time left than this job's own timeout plus grace, so it was
+    # never submitted. THE ONLY UNBILLED CAUSE IN THIS ENUM — every other one describes a job that
+    # reached the provider and was therefore paid for. That is exactly why two predicates must
+    # exclude it by name: a refusal that never cost anything must not burn FR-317's single
+    # resubmit, and re-submitting into a deadline that has already expired only refuses again.
+    # Applies to `discretionary` and `projected` work only — never `precommitted`, because
+    # bookkeeping may never split a deck (FR-106b).
+    NO_RUNWAY = "no_runway"
 
 
 @dataclass(slots=True)
@@ -657,13 +790,56 @@ class BriefLoader(Protocol):
 #: FR-181 two-level template layout, level 1: the three GLOBAL role templates sit FLAT in
 #: `prompts/`. They belong to the OpenRouter roles, not to any render profile, and exist once.
 GLOBAL_TEMPLATES: tuple[str, ...] = (
-    # Post-pivot trio (W3.5, contracts item 4) — the copywriter, the vision check and the
-    # FR-294 topic filter — plus D46's slide-intelligence question (FR-306, v2.1.0), which is
-    # global for the same reason the vision check is: it belongs to the analysis role, not to
-    # any render profile, and must read identically for every post it is asked about.
-    "copywriter_system.md", "vision_check_question.md", "topic_filter_system.md",
-    "slide_intel_question.md",
+    # The copywriter and the FR-294 topic filter, plus D46's slide-intelligence question (FR-306,
+    # v2.1.0), which is global for the same reason they are: it belongs to the analysis role, not
+    # to any render profile, and must read identically for every post it is asked about.
+    # `vision_check_question.md` was the fourth and is DELETED (v2.2.0, D49): FR-105's single-shot
+    # check is the gauntlet's work now, so the file, its built-in twin and its allowlist row went
+    # with the `vision_check.check()` machinery rather than lingering as a role nothing calls.
+    "copywriter_system.md", "topic_filter_system.md", "slide_intel_question.md",
+    # v2.2.0 (D49, FR-322/FR-323): the gauntlet's four prompt artifacts. The three critics belong
+    # to the `critic` role — a global role, exactly like the vision check they replace — and each
+    # must read identically for every frame it judges. `gauntlet_fix.md` is the odd one: it
+    # resolves NOTHING (its canned remedy sentences are selected in code and keyed by
+    # `(code, zone)`), which is the same shape `vision_check_question.md` has always had.
+    "critic_brief.md", "critic_system.md", "critic_craft.md", "gauntlet_fix.md",
+    # v2.3.0 (D54, FR-331/FR-332): the carousel COMPRESS call. Global for the same reason
+    # `copywriter_system.md` is — it belongs to the `copy` role rather than to any render profile,
+    # and it must read identically for every deck it compresses. It is a SECOND template for one
+    # role, which is new here and is the point: the two are different contracts (select a label
+    # versus compress a string), the operator chooses between them per run, and giving the second
+    # its own file is what lets either be hot-edited (FR-181) without disturbing the other.
+    "copy_compress_system.md",
 )
+
+#: The subset of `GLOBAL_TEMPLATES` that is DECLARED here but whose file and FR-183 built-in twin
+#: have not been authored yet — an artifact of the v2.2.0 wave order, in which the name rows land
+#: (T1.0) two waves ahead of the prompt bytes (T2.2) and their built-in twins (T2.4). It exists so
+#: the registry can be honest about the full role set the moment the schema freezes, without the
+#: parity checks reading a file that is not written yet.
+#:
+#: **This set must be EMPTY when the gauntlet ships.** Removing a name here is what puts that
+#: prompt under `test_template_parity`'s byte/placeholder checks, so the last wave to author these
+#: files empties this tuple in the same commit.
+#:
+#: EMPTIED at v2.2.0/T2.4, in the commit that added the four built-in twins: all four prompts now
+#: ship bytes AND an FR-183 fallback, so every parity and placeholder check applies to them. The
+#: constant itself is kept (rather than deleted) as the sequencing seam the next schema freeze will
+#: use — it costs one empty frozenset and it is what the trip-wire in `test_template_parity` reads.
+PENDING_TEMPLATES: frozenset[str] = frozenset()
+
+#: FROZEN (spec §3): the complete vocabulary the three critic roles may resolve between them —
+#: nothing outside this set, and every per-critic `_ALLOWLIST` row is a SUBSET of it. Declared here
+#: rather than only in `prompts_engine` because the name rows and the placeholder sets are one
+#: contract that four parallel tasks build against, and because it is what lets the reachability
+#: check tell "not wired up yet" apart from "dead vocabulary" while `PENDING_TEMPLATES` is
+#: non-empty. `gauntlet_fix.md` is deliberately absent from the consumers: it resolves NOTHING —
+#: its canned remedy sentences are selected in code and keyed by `(code, zone)`, exactly as
+#: `vision_check_question.md`'s carrier turn always was.
+CRITIC_PLACEHOLDERS: frozenset[str] = frozenset({
+    "expected_blocks", "required_marks", "forbidden_terms", "style_dna", "layout_zones",
+    "list_mode", "sanctioned_illegible", "platform",
+})
 
 #: Level 2: per-profile render sets under `prompts/<profile>/` (FR-181/262). A new profile ships
 #: its own complete set in its own subfolder; shipped profiles have built-in defaults (FR-183),
@@ -720,6 +896,18 @@ PLACEHOLDERS: frozenset[str] = frozenset(
         #   layout zone, so the shipped template names no slot of its own for it; the name lives
         #   here because `build_context` carries the value (FR-261 condition 2) and an override
         #   template may name it.
+        # Session 5.5/F1-A — carousel slides ONLY, and empty on every frame that is not a list:
+        "list_treatment",  # FR-304b's list layout as one executable sentence — the lead label, the
+        #   style author's own `layout` prose and the `overflow` rule — gated on THIS frame's mapped
+        #   panel (`prompts_engine._list_treatment`). It had no name here until F1-A because it was
+        #   APPENDED onto the assembled `{{layout_zones}}` value, and `carousel_slide.md` names no
+        #   `{{layout_zones}}` slot: the one role that maps source panels was the one role never
+        #   told to set a list as a list, while the gauntlet's `system` critic judged its slides
+        #   against the rule. A missing row here is not a loud failure — a template naming an
+        #   out-of-vocabulary slot is refused by `prompts_engine._unresolvable_names`, and the role
+        #   falls back to its `_BUILT_INS` twin with one WARN line, i.e. the whole deck renders from
+        #   the OLD template bytes. Deliberately absent from `_TRUNCATION_ORDER`: uncuttable, like
+        #   the TEXT block whose setting it describes.
         "niche_visual_world",  # `niche.visual_world` ALONE — the operator's standing art direction
         #   in the only shape a render prompt may carry it. Deliberately NOT `niche_descriptor`,
         #   which also carries `audience`: copy-side context must not leak into a render prompt,
@@ -734,9 +922,53 @@ PLACEHOLDERS: frozenset[str] = frozenset(
         #   1..N assigned by _topic_items(), never raw topic_key (a crafted name must not spoof
         #   another topic's verdict). Allowlisted for topic_filter_system.md ALONE.
         "competitor_list",  # FR-294: branding.competitors for the same call, same single role.
+        "audience_profile",  # v2.2.0: `NicheConfig.as_text()` for the SCREEN, and the only place
+        #   the niche is read outside the copy path. topic_filter_system.md ALONE allowlists it,
+        #   on the `competitor_list` precedent: the screen cannot judge `audience_fit` or a topic's
+        #   language without knowing who this run writes for, and no render role may ever see it —
+        #   that is what `niche_visual_world` exists for. `topic_filter._system_prompt` writes the
+        #   value onto the built context after `build_context` returns, exactly as `copywrite` does
+        #   with `source_hooks`, so the name lives in the vocabulary without a builder of its own.
         "motion_profile",  # F24: the registry's photographic|graphic switch — selects the reel
         #   director's LOOK/CAMERA paragraph. reel_director.md only.
         "motion_beat",  # F24: CopySelection.motion_beat — ONE named physical action for the
         #   reel's Stage 2. reel_director.md only; free text that never becomes pixels.
+        # --- v2.2.0 (D49, FR-322): the gauntlet critics' vocabulary. These are CONTRACT slots, not
+        # render slots: they carry what a frame was ORDERED to contain to a model that is looking at
+        # what came back, and they are allowlisted for the three `critic_*.md` roles alone. Two
+        # names already in this set — `style_dna` and `layout_zones` — are reused rather than
+        # duplicated, which is also the honest caveat FR-322 states out loud: those two blocks are
+        # render-prompt text, so the "fresh context" a critic gets is fresh of everything EXCEPT the
+        # only referent a style judgement could possibly have. `gauntlet_fix.md` names none of
+        # these; it resolves nothing at all.
+        "expected_blocks",  # the per-frame enumerated line blocks — `L1:`/`L2:`… plus `counter:`
+        #   and `signature:` rows, `(none)` for a frame that is wordless BY MANDATE. This is the
+        #   referent for every "missing" and every "invented" verdict, and the one thing that can
+        #   tell a wordless frame apart from a frame whose words failed to render: the picture
+        #   cannot, the contract can.
+        "required_marks",  # FR-330's REQUIRED side: the FR-315 sanctioned tool marks this deck
+        #   ordered as real logos. Absent from a frame = `missing_mark`.
+        "forbidden_terms",  # FR-330's FORBIDDEN side, and the expensive one: creator identity
+        #   forms, competitor names, unsanctioned brand marks, §0.12 flag names. Present in a
+        #   frame = `forbidden_mark`/`identity_leak`, and the critics are told to fail when unsure.
+        "list_mode",  # the style's list treatment as flattened prose ("" when it has none), so a
+        #   list frame is judged against the layout it was actually ordered into (FR-329).
+        "sanctioned_illegible",  # derived from the style: what this style DELIBERATELY renders
+        #   unreadable (greeked bars, texture lettering). Without it a critic reads a style's own
+        #   signature as a `garbled` defect and blocks a deck for looking correct.
+        "platform",  # the target platform, for the craft critic's publish-bar phrasing.
+        # --- v2.3.0 (D54, FR-331/FR-332): the compress call's one slot. ---
+        "compress_panels",  # the bound deck's OWN admitted panel strings, numbered by SOURCE
+        #   position with the per-slide budget and the language-mirror line, written onto the built
+        #   context by `copywrite._call_compress` AFTER `build_context` returns — the same
+        #   after-the-fact shape `source_hooks` and `audience_profile` already use, and for the same
+        #   reason: the module that resolves the answer owns the block the question was asked with,
+        #   so there is one implementation and nothing to drift. `copy_compress_system.md` ALONE
+        #   allowlists it, which is the enforcement that matters: no render role can ever be handed
+        #   a block of source panel text to "work from", and no other copy role can either.
+        #   The name has to live HERE and not only in `prompts_engine._ALLOWLIST`, because
+        #   `_unresolvable_names()` checks this vocabulary FIRST — a template naming a slot absent
+        #   from it is refused as unusable, the role falls back silently to its FR-183 built-in
+        #   twin, and every operator hot-edit of the file (FR-181) stops reaching a model.
     }
 )

@@ -13,8 +13,17 @@ inputs — the source picker (Virlo is the only source) and the mode picker (gen
 - **The step counters are DERIVED.** They were seven literal `"1/7"`…`"7/7"` strings at seven call
   sites; deleting two steps that way prints a wizard that cannot count. `_live_steps()` is the
   ordered list and `_step()` reads a position out of it, so numerator and denominator move
-  together. Asserted both end-to-end (`1/5`…`5/5`, `1/1` for `--quick`) and structurally (drop a
+  together. Asserted both end-to-end (`1/6`…`6/6`, `1/1` for `--quick`) and structurally (drop a
   step from a copied list and every later counter shifts).
+
+**v2.3.0 (D54/FR-333) put that derivation to its real test: a step came BACK.** "Carousel copy
+mode" is step 3, and it cost no call site anything — which is the whole return on FR-300's work.
+It is also the first step whose presence depends on an ANSWER rather than on a flag: it is live
+only when the run plans carousels, and the count is not settled until the counts prompt is
+answered. So the live list is re-derived once, at that point, and FR-300 as amended says in so
+many words what a carousel-free walk then prints — `1/6 2/6` (the honest prediction: every
+shipped config is all-carousel) followed by `3/5 4/5 5/5`. The denominator is what you are
+actually being asked, and it is allowed to shrink when your own answer shortens the list.
 - **The two dead steps are gone, help keys included.** No prompt mentions either, and
   `wizard_help.md` has no section for them — orphaned help prose is how a deleted step comes back.
 - **A picker row now answers RUNNABILITY, not just identity** (FR-295): `cs · 2 mon · 4/2/1 ·
@@ -51,36 +60,48 @@ from hypesocials.menu import Console, run_menu
 #: FR-286's ceiling for every line the tool controls.
 WIDTH = 78
 
-#: Each prompt of the FIVE-input flow, keyed by step, matched on the text the wizard prints. Text
-#: rather than position, because a step may legitimately ask nothing (an absent briefs folder) and
+#: Each prompt of the SIX-input flow (five when no carousels are planned — D54/FR-300), keyed by
+#: step, matched on the text the wizard prints. Text rather than position, because a step may
+#: legitimately ask nothing (an absent briefs folder, or `copy_mode` on a carousel-free run) and
 #: positional scripts would then shift every later answer. `confirm` prompts for nothing — it is a
 #: notice — so it is a live step with no entry here.
 _PROMPT = {
     "action": "pick an action",
     "config": "pick a config",
     "counts": "edit the line [images",
+    "copy_mode": "pick a copy mode",
     "cap": "dollars for this run",
     "briefs": "pick as <number>:<count>",
 }
 #: The two prompts v2.0.0 deleted, in the wording they used to print (FR-300a and the mode picker).
+#: `"edit the line [mode"` is the DELETED generation-mode picker and is unrelated to D54's copy
+#: mode, which is a `pick a copy mode` prompt — the two never shared a wording.
 _DEAD_PROMPTS = ("pick one or more", "edit the line [mode", "generation mode", "sources")
-#: One answer per step that must be accepted.
+#: One answer per step that must be accepted. `copy_mode` takes a bare Enter (FR-57: the pre-fill
+#: is the word in effect, so Enter hands the config's own value back unchanged); `1`, `2`,
+#: `verbatim` and `compress` are accepted too and are pinned by their own test below.
 _VALID = {
     "action": "1",
     "config": "1",
     "counts": "images=1 carousels=0 reels=0",
+    "copy_mode": "",
     "cap": "3.75",
     "briefs": "1:2",
 }
 #: One answer per step that must be re-asked. `0.01` is the cap that killed the tool's first ever
-#: run (`20260810_123057_g0pg`); the floor is $0.03, the cheapest priced image tier.
+#: run (`20260810_123057_g0pg`); the floor is $0.03, the cheapest priced image tier. `3` is not a
+#: copy mode: there are exactly two, and a third key is a typo the step must not resolve.
 _INVALID = {
     "action": "9",
     "config": "9",
     "counts": "images=lots",
+    "copy_mode": "3",
     "cap": "0.01",
     "briefs": "9:1",
 }
+#: The counts answer a walkthrough needs when it wants the copy-mode step to be LIVE (FR-333: no
+#: carousels, no question). Every other step is asked either way.
+_CAROUSEL_COUNTS = "images=1 carousels=2 reels=0"
 
 _READY = """label: "ready pack - CZECH captions, one monitor"
 niche:
@@ -276,24 +297,37 @@ def _longest(printed: Sequence[str]) -> str:
     return max(printed, key=len, default="")
 
 
-# --------------------------------------------------------------------------- FR-300: five inputs
+# ---------------------------------------------------------------------------- FR-300: six inputs
 
 
-def test_fr300_the_guided_run_asks_five_inputs_and_counts_them_1_of_5_through_5_of_5() -> None:
-    """NFR-16 re-enumerated: config, counts, cap, briefs, confirm. The counters used to read
-    `1/7`…`7/7` at seven hardcoded call sites, so deleting the source and mode steps would have
-    printed a wizard whose numerator stopped at 5 and whose denominator still said 7."""
+def test_fr300_the_guided_run_asks_six_inputs_and_shrinks_to_five_without_carousels() -> None:
+    """NFR-16 re-enumerated a second time (v2.3.0/D54): config, counts, COPY MODE, cap, briefs,
+    confirm. The counters used to read `1/7`…`7/7` at seven hardcoded call sites, so deleting the
+    source and mode steps would have printed a wizard whose numerator stopped at 5 and whose
+    denominator still said 7; the derived counter is why ADDING one back cost no call site.
+
+    The walkthrough this file scripts answers `carousels=0`, and FR-300 as amended says in so many
+    words what that has to print: the two prompts ahead of the counts answer state the wizard's
+    full six-step shape (the honest prediction — every shipped config is all-carousel), and from
+    the moment carousels are declined the copy-mode step leaves the live list and the denominator
+    shrinks with it. `3/5` after `2/6` is the contract, not a miscount: the denominator is what you
+    are actually being asked, re-derived once the answer that decides it is in.
+    """
     wizard = _wizard(config="3")  # hypedigitaly: a runnable shipped config with a briefs folder
 
     result = run_menu(cli.Options(), console=wizard.console, configs_dir=CONFIGS_DIR)
 
     assert result is not None
-    assert menu._live_steps(quick=False) == ("config", "counts", "cap", "briefs", "confirm")
-    assert _counters(wizard.printed) == ["1/5", "2/5", "3/5", "4/5", "5/5"]
+    assert menu._live_steps(quick=False) == (
+        "config", "counts", "copy_mode", "cap", "briefs", "confirm")
+    assert menu._live_steps(quick=False, carousels=0) == (
+        "config", "counts", "cap", "briefs", "confirm"), \
+        "FR-333: no carousels, no copy-mode question — its answer could reach no creative"
+    assert _counters(wizard.printed) == ["1/6", "2/6", "3/5", "4/5", "5/5"]
     # Anchored like `_counters` above, because a counter is a line PREFIX. An unanchored search
     # also matched the picker row's own `0/6/0` format triple once the shipped configs went
     # all-carousels (D46 §0.3) — a format count is not a step counter.
-    assert not any(re.match(r"^\d+/[67]\s", line) for line in wizard.printed), \
+    assert not any(re.match(r"^\d+/7\s", line) for line in wizard.printed), \
         "a leftover seven-step counter anywhere in the output"
 
 
@@ -323,8 +357,8 @@ def test_fr300_a_counter_is_a_position_in_the_live_list_not_a_number_anybody_typ
             menu._step(io, steps, key)
 
     counters = _counters([line for block in said for line in block.split("\n")])
-    assert counters[:len(full)] == ["1/5", "2/5", "3/5", "4/5", "5/5"]
-    assert counters[len(full):] == ["1/4", "2/4", "3/4", "4/4"]
+    assert counters[:len(full)] == ["1/6", "2/6", "3/6", "4/6", "5/6", "6/6"]
+    assert counters[len(full):] == ["1/5", "2/5", "3/5", "4/5", "5/5"]
     assert menu._step.__doc__ is not None and "DERIVED" in menu._step.__doc__
     with pytest.raises(ValueError):  # a step that is not live is a programmer error, loudly
         menu._step(io, shorter, "counts")
@@ -650,7 +684,10 @@ def test_fr284_a_question_mark_explains_the_step_and_RE_ASKS_it(step: str, tmp_p
     shows two at best — and on most steps one, because the pre-fill validates.
     """
     configs = _configs(tmp_path, ready=_READY, unready=_UNREADY)
-    wizard = _wizard(**{step: ["?", _INVALID[step], _VALID[step]]})
+    scripted: dict[str, str | Sequence[str]] = {step: ["?", _INVALID[step], _VALID[step]]}
+    if step == "copy_mode":
+        scripted["counts"] = _CAROUSEL_COUNTS  # FR-333: no carousels, no copy-mode step to help
+    wizard = _wizard(**scripted)
 
     result = run_menu(cli.Options(), console=wizard.console, configs_dir=configs)
 
@@ -821,8 +858,13 @@ def test_fr232_the_fidelity_rating_is_optional_and_never_waits_on_an_unattended_
 # --------------------------------------------------------------------------- FR-286: line width
 
 
+#: All FOUR shipped configs, in the order the picker lists them (file name order). The mapping was
+#: hardcoded at three rows and went stale the day `hypedigitaly-fresh.yaml` was added: index 3
+#: stopped being `hypedigitaly` and the parametrisation failed on clean HEAD ever after. Every
+#: shipped config is walked now, so adding a fifth breaks this row rather than a row's meaning.
 @pytest.mark.parametrize("index,name",
-                         [(1, "default"), (2, "hypedigitaly-cs"), (3, "hypedigitaly")])
+                         [(1, "default"), (2, "hypedigitaly-cs"), (3, "hypedigitaly-fresh"),
+                          (4, "hypedigitaly")])
 def test_fr286_no_printed_line_exceeds_78_characters_on_any_shipped_config(
     index: int, name: str,
 ) -> None:
@@ -884,3 +926,179 @@ def test_fr286_no_colour_no_box_drawing_no_check_marks_and_no_arrow_glyph() -> N
     assert not set(text) & set("✓✗│─┌┐└┘├┤┬┴┼█▀▄")
     for character in set(text):
         assert character.isascii() or character in "·—…←", repr(character)
+
+
+# ---------------------------------------------------- FR-333 / D54: the carousel copy-mode step
+
+
+def test_fr333_a_run_that_plans_carousels_walks_all_six_counters(tmp_path: Path) -> None:
+    """The other half of the counter test at the top of this file, and the shape every SHIPPED
+    config actually takes: carousels are planned, the copy-mode step is live from first prompt to
+    last, and the counters run `1/6` through `6/6` with no shrink anywhere.
+
+    `_READY` plans six carousels, and the counts answer here keeps them, so nothing removes a step
+    from the live list mid-walk.
+    """
+    configs = _configs(tmp_path, ready=_READY)
+    wizard = _wizard(counts=_CAROUSEL_COUNTS)
+
+    result = run_menu(cli.Options(), console=wizard.console, configs_dir=configs)
+
+    assert result is not None
+    assert _counters(wizard.printed) == ["1/6", "2/6", "3/6", "4/6", "5/6", "6/6"]
+    assert wizard.count("copy_mode") == 1, "asked once, answered once"
+
+
+def test_fr333_a_carousel_free_run_never_asks_the_copy_mode_step_at_all(tmp_path: Path) -> None:
+    """"No carousels, no question": `run.carousel_copy_mode` governs bound carousel decks and
+    nothing else, so on an images-and-reels run its answer could not reach a single creative.
+
+    The `Wizard` harness is what enforces this — an unscripted prompt raises by name — so the
+    positive assertion is that the walkthrough completed with the copy-mode queue untouched, and
+    the config's own value survived to the resolved options.
+    """
+    configs = _configs(tmp_path, ready=_READY)
+    wizard = Wizard(action="1", config="1", counts="images=2 carousels=0 reels=0",
+                    cap="3.75", briefs="1:2")  # NO copy_mode entry: it must never be asked
+
+    result = run_menu(cli.Options(), console=wizard.console, configs_dir=configs)
+
+    assert result is not None
+    assert not any("copy mode" in question.lower() for question in wizard.asked)
+    assert result.options.counts == {"image": 2, "carousel": 0, "reel": 0}
+    assert result.config is not None
+    assert result.config.run.carousel_copy_mode == "verbatim", "the file's value, unasked"
+
+
+def test_fr57_a_bare_enter_at_the_copy_mode_step_keeps_the_configs_own_value(
+    tmp_path: Path,
+) -> None:
+    """FR-57: the prompt's pre-fill IS the value in effect, and Enter hands it straight back.
+
+    That is why the step accepts the WORDS as well as `1`/`2` — the pre-fill it prints is
+    `compress`, and a step that only understood digits would reject its own default the moment an
+    operator typed what they could see in the brackets.
+    """
+    configs = _configs(tmp_path, ready=_READY.replace(
+        "run:\n", "run:\n  carousel_copy_mode: compress\n"))
+    wizard = _wizard(counts=_CAROUSEL_COUNTS, copy_mode="")
+
+    result = run_menu(cli.Options(), console=wizard.console, configs_dir=configs)
+
+    assert result is not None and result.config is not None
+    assert result.config.run.carousel_copy_mode == "compress", "Enter kept it"
+    prompt = next(q for q in wizard.asked if "pick a copy mode" in q)
+    assert "[compress]" in prompt, "the pre-fill is the WORD in effect, not the key that picks it"
+    assert result.options.copy_mode == "compress", "and it round-trips onto the CLI options"
+
+
+@pytest.mark.parametrize(("answer", "expected"),
+                         [("1", "verbatim"), ("2", "compress"),
+                          ("verbatim", "verbatim"), ("compress", "compress"),
+                          ("COMPRESS", "compress"), (" 2 ", "compress")])
+def test_fr333_the_copy_mode_step_takes_either_the_number_or_the_word(
+    answer: str, expected: str, tmp_path: Path,
+) -> None:
+    """30 §4 promises `1`/`2`; FR-57 forces the words to work too (see above). Case and stray
+    spaces are forgiven for the same reason every other picker forgives them — an operator
+    retyping what the prompt just printed must not be told they are wrong."""
+    configs = _configs(tmp_path, ready=_READY.replace(
+        "run:\n", "run:\n  carousel_copy_mode: compress\n"))
+    wizard = _wizard(counts=_CAROUSEL_COUNTS, copy_mode=answer)
+
+    result = run_menu(cli.Options(), console=wizard.console, configs_dir=configs)
+
+    assert result is not None and result.config is not None
+    assert result.config.run.carousel_copy_mode == expected
+    assert wizard.count("copy_mode") == 1, "a valid answer advances; it is never re-asked"
+
+
+def test_fr333_an_unknown_copy_mode_answer_is_refused_by_name_and_the_step_re_asks(
+    tmp_path: Path,
+) -> None:
+    """A third key is a typo, and the refusal names both real options rather than saying 'invalid'
+    — the same one-line, say-what-IS-accepted shape the config loader uses for the same key."""
+    configs = _configs(tmp_path, ready=_READY)
+    wizard = _wizard(counts=_CAROUSEL_COUNTS, copy_mode=["3", "2"])
+
+    result = run_menu(cli.Options(), console=wizard.console, configs_dir=configs)
+
+    assert result is not None and result.config is not None
+    assert result.config.run.carousel_copy_mode == "compress", "the second answer landed"
+    assert wizard.count("copy_mode") == 2, "the bad answer re-asked rather than advancing"
+    refusals = [line for line in wizard.printed if "is not 1 (verbatim) or 2 (compress)" in line]
+    assert len(refusals) == 1 and "'3'" in refusals[0]
+
+
+def test_fr284_the_copy_mode_step_prints_both_options_before_it_asks(tmp_path: Path) -> None:
+    """FR-284's purpose line, plus the two options as facts — because "compress" alone tells an
+    operator nothing about whether the words on the frames will still be the post's own."""
+    configs = _configs(tmp_path, ready=_READY)
+    wizard = _wizard(counts=_CAROUSEL_COUNTS)
+
+    assert run_menu(cli.Options(), console=wizard.console, configs_dir=configs) is not None
+
+    printed = "\n".join(wizard.printed)
+    assert "Carousel copy mode" in printed, "the purpose heading (FR-284)"
+    assert "[1] verbatim - each source panel's own words, rendered as they stand" in printed
+    assert "[2] compress - the same panel, shortened to the style's budget and" in printed
+    assert "in effect: verbatim" in printed, "the value being kept is stated, not only pre-filled"
+
+
+def test_fr284_the_copy_mode_step_has_both_of_its_wizard_help_sections() -> None:
+    """Every live step owns two sections in `wizard_help.md` — `purpose.<key>` for the line
+    printed above the prompt and `<key>` for the fuller `?` text. A step shipped with neither
+    prints "no help text for 'copy_mode'" at the moment the operator asked for help about the one
+    answer that changes what the slides SAY."""
+    text = menu._HELP_FILE.read_text(encoding="utf-8")
+
+    assert "\n## purpose.copy_mode\n" in text
+    assert "\n## copy_mode\n" in text
+    assert menu._explain("copy_mode") != "  no help text for 'copy_mode' — see README.md"
+    assert menu._explain("purpose.copy_mode").strip().startswith("Carousel copy mode")
+    body = menu._explain("copy_mode")
+    assert "[1] verbatim" in body and "[2] compress" in body
+    assert "A good value:" in body and "If you get it wrong:" in body, "the house shape (FR-284)"
+
+
+def test_fr333_the_confirm_notice_states_the_mode_whenever_carousels_are_planned(
+    tmp_path: Path,
+) -> None:
+    """This is the last screen before money moves, so the mode is restated as a FACT there — in
+    one clause that says what it does to the slides rather than only naming itself. `--quick`
+    reaches this notice having asked nothing, which makes it the only place the mode is stated
+    before the price on that path."""
+    configs = _configs(tmp_path, ready=_READY)
+    wizard = _wizard(counts=_CAROUSEL_COUNTS, copy_mode="2")
+
+    assert run_menu(cli.Options(), console=wizard.console, configs_dir=configs) is not None
+
+    line = next(line for line in wizard.printed if "carousel copy mode:" in line)
+    assert "compress" in line and "panels shortened to the style budget" in line
+    assert len(line) <= WIDTH
+
+    # And on a carousel-free run there is nothing true to say, so the line is absent entirely.
+    quiet = _wizard(counts="images=1 carousels=0 reels=0")
+    assert run_menu(cli.Options(), console=quiet.console, configs_dir=configs) is not None
+    assert not any("carousel copy mode:" in line for line in quiet.printed)
+
+
+def test_fr285_the_quick_run_never_asks_the_copy_mode_step_either(tmp_path: Path) -> None:
+    """`--quick` asks nothing before the price (FR-285) and D54 did not change that: the new step
+    is wizard-only, `_QUICK_STEPS` is still the confirm notice alone, and the config's own value
+    is what the run uses."""
+    configs = _configs(tmp_path, ready=_READY.replace(
+        "run:\n", "run:\n  carousel_copy_mode: compress\n"))
+    wizard = Wizard()
+
+    result = run_menu(cli.Options(quick=True), console=wizard.console, configs_dir=configs)
+
+    assert result is not None and wizard.asked == []
+    assert menu._live_steps(quick=True) == ("confirm",)
+    assert menu._live_steps(quick=True, carousels=6) == ("confirm",), \
+        "the carousel count never lengthens the quick list"
+    assert _counters(wizard.printed) == ["1/1"]
+    assert result.config is not None
+    assert result.config.run.carousel_copy_mode == "compress"
+    assert any("carousel copy mode: compress" in line for line in wizard.printed), \
+        "asked nothing, so the notice is the ONLY place this run states its copy contract"

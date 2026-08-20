@@ -40,11 +40,39 @@ prompt-level:
    slide budget does not gate it, only `PANEL_SANITY_CHARS` and the @handle/URL backstop do (FIX
    2, 2026-08-13) — and every row of the panel map carries both the original panel and a
    `drop_reason`. The model still chooses that deck's cover headline, its caption and its hashtags.
+5. **Compress mode is a THIRD contract, opted into per run (D54/FR-331, operator decision
+   2026-08-20).** Under `carousel_copy_mode: "compress"` the bound decks of point 4 take a
+   different call: the engine hands the model the ADMITTED panel strings themselves rather than
+   labels, and asks for each one back COMPRESSED to that style's own slide budget, humanized, in
+   the source post's own language. It is a deliberate, dated, partial reversal of D50's "reflow,
+   never shorten" — narrower than the A20 reversal above and opted into the same way. What it is
+   written against is measured: run `20260820_001158_2ard` rendered 1,048-, 1,023- and
+   1,018-character source panels onto `anime-noir-statement`, whose declared slide budget is 180,
+   and the decks came back as walls of text the post-render critics blocked.
+
+   The reversal gives up ONE thing — the byte-substring claim on those slides — and keeps every
+   safety rule that was never about length: the blocklist strip (fail-closed, layers 1 and 2), the
+   FR-319 social-mark backstop, the FR-312 creator-line drop, the F2 page-counter drop, the
+   `PANEL_SANITY_CHARS` INPUT guard, and FR-304's position preservation with its three drop
+   reasons unchanged. The engine re-applies the first three to what comes BACK, because a model
+   asked to rewrite a panel can put anything in it. What replaces the byte-substring receipt is
+   `CopyProvenance.copy_mode`, each panel-map row's `compressed: True`, and its
+   `source_text_original` — the source panel the compressed line was authored from, still on the
+   row beside what shipped.
+
+   Scope is deliberately small: only a BOUND, non-override, panel-mapped carousel (`_panel_mapped`)
+   changes behaviour. Images, reels, override briefs, unbound decks, every free-text field and
+   every other run stay on the selection contract above, and `verbatim` remains the engine-wide
+   default. A failed compress call costs the deck nothing — it falls back to point 4's verbatim
+   mapping, tagged `copy_degraded`, with no second call and no extra spend.
 
 Public API:
-    await write_copy(entries, trends=..., styles=..., call=..., engine=...) -> CopyResult
+    await write_copy(entries, trends=..., styles=..., call=..., engine=...,
+                     carousel_copy_mode="verbatim") -> CopyResult
     CopyResult(copy, tags, provenance) — `.degraded` / `.trimmed` are views over `tags`
-    CopyProvenance(post_id, refs) — FR-298's `copy_source_post_id` / `copy_source_refs`
+    CopyProvenance(post_id, refs, copy_mode) — FR-298's `copy_source_post_id` /
+        `copy_source_refs`, plus FR-73's per-asset `copy_mode`
+    NoSafeCaptionError — pre-spend refusal: an offer path had no caption it was allowed to ship
     COPY_ROLE, PANEL_SANITY_CHARS
 
 Invariants:
@@ -93,7 +121,42 @@ Invariants:
   leading swipe cue, "link in my bio", `Comment "SCALE"`, "DM me", "tap the link" — is dropped
   whole. Not their name but their FUNNEL: glz0 published all three of those under our brand,
   instructing our audience to swipe seven slides of a five-slide deck and to visit someone else's
-  bio. Captions only, five named patterns, every removal warned with the sentence it took.
+  bio. Captions only, and since v2.2.0 the same sentence gate also removes the DANGLING
+  PROMO family (keyword-less comment bait, community/programme pitches, "you won't find this
+  anywhere else", first-person money/metric claims); every removal is warned with the sentence it
+  took.
+- **A source PAGE COUNTER never becomes our slide's words (F2, Session 5.5).** A panel line that
+  is nothing but the source deck's badge — `01 / 06`, `2 of 7`, `// 03` — is dropped at the same
+  admission site, by shape rather than by identity (`sources.slide_intel.counter_line`), full-line
+  only, so "3/4 of teams fail at this" is content and ships whole. Two failures, one strip: their
+  page number printed on our shorter deck is a lie the operator sees first (FR-313 exists to
+  re-base it onto OUR length), and a counter left in `panel_map.source_text` becomes a line of the
+  gauntlet's frame contract — so the critic demands a badge the renderer was right to omit and
+  BLOCKS the deck for `missing_text`. The counter stays in `panel_map.source_text_original` (the
+  provenance doctrine below: original bytes are never rewritten), the row says
+  `chrome_counter_stripped`, and the creative is NOT tagged `competitor_stripped` — nobody's brand
+  was removed.
+- **The caption never says what the OPERATOR configured (FR-99/FR-307 as amended, v2.2.0).** The
+  niche descriptor steers the copy PROMPT and nothing else: no path from `run.niche_descriptor` to
+  a shipped caption exists any more. The 08-14 audit found "AI tool stacks — AI automation for
+  Czech SMBs; audience: operations leads who buy outcomes." published as a caption — our config
+  file, verbatim, under our brand. The four caption fallbacks now have four scoped forms instead
+  of one: an offer path (`_resolve`, `_mapped_fallback`) assembles the BOUND post's own best
+  post-strip line plus a neutral, creator-less attribution; the refused path (`_refused`) ships
+  the topic name ALONE, because FR-307 forbids quoting the post it just refused; the no-model
+  tier (`_fallback_copy`) ships the top post's caption, else the topic name and its slug hashtags.
+  An offer path left with nothing usable does not improvise: it raises `NoSafeCaptionError`
+  (`NO_SAFE_CAPTION`) while the run is still pre-spend.
+- **OCR repair is the ONE sanctioned mutation, applied at ONE boundary (FR-100/101, v2.2.0).**
+  Panels, hooks and captions are admitted through `ocr_repair.repair_confusables` — an
+  uppercase-token-scoped confusable fix ("Al agents" -> "AI agents") — and the repaired bytes are
+  what the candidate table, the prompt, the verifier's pool and `panel_map.source_text` ALL see.
+  Repairing one of those and not the others would report our own repair as `copy_not_verbatim`,
+  which is why the repair happens once, at admission, in `_offer_for` (and in `_scrubbed` for the
+  offer-less tier). `panel_map.source_text_original` keeps the UNREPAIRED bytes and every
+  correction is logged `ocr_repaired`. A panel that looks CUT rather than finished is FLAGGED
+  (`panel_map.truncation_suspect`) and never blanked, shortened or dropped — the flag is contract
+  data for the post-render critic, and FR-304's alignment is not a heuristic's to break.
 - **The verifier is an audit, not a gate (A20 polarity flip).** Every shipped string is checked as
   a byte-substring of its post's (stripped) fields and against the blocklist; a deviation logs and
   tags `copy_not_verbatim` and the creative ships anyway. The creative is already paid for; the
@@ -120,6 +183,7 @@ from typing import Any
 from hypesocials.config import TextBudgets
 from hypesocials.models import (
     Brief,
+    CopyCompressed,
     CopySelection,
     CopySet,
     DegradationTag,
@@ -129,12 +193,19 @@ from hypesocials.models import (
     StructuredCall,
     TrendItem,
 )
+from hypesocials.ocr_repair import repair_confusables, truncation_suspect
 from hypesocials.prompts_engine import (
     PromptEngine,
     build_context,
     json_schema_for,
     trim_words,
 )
+#: The counter family lives with the module that models the source deck's counting convention
+#: (D-D). Imported from the MODULE rather than the `hypesocials.sources` facade, exactly as
+#: `generate/carousel.py` imports `detect_counter`/`CounterSpec`: the facade's own contract is the
+#: adapter seam (fetch/brand/monitors), and pulling a pure string predicate through it would make
+#: a chrome test look like a data fetch to every reader of this import block.
+from hypesocials.sources.slide_intel import counter_line
 from hypesocials.topic_filter import apply_blocklist, collapse, fuzzy_strip
 from hypesocials.util import slugify
 
@@ -180,8 +251,23 @@ _CAPTION_KINDS = ("caption",)
 #: creatives in the first paid run were captioned with a hashtag run and three words; measured
 #: after the trailing run is peeled and after every remaining `#tag` token is discounted, a caption
 #: under this many characters is spam rather than copy, and the creative takes the assembled
-#: caption (topic name + the standing niche line) instead. Operator-settled, 2026-08-13.
+#: caption instead (its own post's best line under our attribution — see `_offer_caption`).
+#: Operator-settled, 2026-08-13; the assembled form amended v2.2.0.
 _CAPTION_MIN_CHARS = 25
+#: The floor a SOURCE LINE promoted into a caption has to clear (FR-99/FR-307 caption forms,
+#: v2.2.0). Deliberately far below `_CAPTION_MIN_CHARS`: that floor asks "is this a caption or a
+#: hashtag dump", and a hook — "7 tools that replaced my stack" — is a caption's worth of words by
+#: construction. This one only asks whether a line is a SENTENCE at all, so a two-word panel scrap
+#: ("Step 3", "1/8") cannot become the creative's caption while a real hook can. Kept low on
+#: purpose: every character of headroom here is a creative that captions itself from its own post
+#: instead of raising `NO_SAFE_CAPTION` and stopping the run.
+_FALLBACK_LINE_MIN_CHARS = 8
+#: The attribution clause appended to a promoted source line. Ours, and NAMELESS on purpose: the
+#: line is the source creator's, so the caption says where it came from without saying WHO — FR-312
+#: forbids our creatives naming another account, and `SourcePost` carries no platform field to name
+#: instead. A caption assembled this way makes no verbatim claim: it joins the verifier's pool as
+#: our own words (`_Written.quoted`), exactly like the other assembled captions.
+_NEUTRAL_ATTRIBUTION = "— from a post trending this week"
 
 # ---------------------------------------------------------------------------------------------
 # On-image pre-filters (§1.7.1, F23, relaxed for panels by D46 §0.14b, split by FR-319). A string
@@ -224,7 +310,8 @@ _TRAILING_TAG = re.compile(r"(?:\s|^)(#[^\s#]+)\s*$")
 _HASHTAG_TOKEN = re.compile(r"(?<!\w)#\S+")
 
 # ---------------------------------------------------------------------------------------------
-# FR-312 (v2.1.4) — the CTA strip. Caption-scoped, sentence-shaped, five named patterns.
+# FR-312 (v2.1.4, extended v2.2.0) — the CTA strip. Caption-scoped, sentence-shaped, named
+# patterns only.
 #
 # A caption is the one place this engine ships a stranger's prose to our audience unedited, and in
 # the glz0 run that prose was carrying their funnel: swipe cues counting THEIR deck, "link in my
@@ -259,6 +346,43 @@ _CAPTION_CTA: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("comment_keyword_bare", re.compile(r"(?i:comment)\s+[A-Z]{2,}(?:\s+[A-Z]{2,})*\b")),
     ("dm_me", re.compile(r"\bDM\s+(?:me|us)\b", re.IGNORECASE)),
     ("tap_the_link", re.compile(r"\btap\s+(?:the|this|my|our)\s+link\b", re.IGNORECASE)),
+    # ---- v2.2.0, the DANGLING PROMO family (08-14 carousel audit, FR-312 as amended) ----------
+    # The four above catch an instruction with a mechanism in it. What the audit found shipping
+    # under our brand was the same funnel with the mechanism left implicit: a promise addressed to
+    # an account that is not ours, printed where our reader cannot act on it. Each pattern below
+    # still has to see the SHAPE of the pitch, never merely its subject matter.
+    #
+    # `comment_bait` is the keyword-less sibling of `comment_keyword`: a sentence that OPENS with
+    # "comment" (or "drop a comment", or "let me know in the comments") is asking our audience to
+    # feed somebody else's reply automation. Anchored at the sentence start so "the comment I got
+    # was brutal" and "people comment this every time" are untouched.
+    ("comment_bait", re.compile(
+        r"^\W*(?:comment\b|drop\s+a\s+comment\b|let\s+me\s+know\s+in\s+the\s+comments\b)",
+        re.IGNORECASE)),
+    # A pitch to JOIN something of theirs. The possessive is load-bearing: "join our community" is
+    # their funnel, "the community moved to Discord" is an observation about the market, and the
+    # required verb + possessive + venue triple is what separates the two.
+    ("community_pitch", re.compile(
+        r"\b(?:join|sign\s+up\s+(?:for|to)|enrol?l\s+in|apply\s+(?:to|for))\s+"
+        r"(?:my|our|the)\s+(?:free\s+|new\s+|private\s+|paid\s+)?"
+        r"(?:community|programme?|cohort|academy|mastermind|bootcamp|newsletter|waitlist|"
+        r"challenge|course|group|channel|discord|server|club|membership)\b", re.IGNORECASE)),
+    # "You won't find this anywhere else." — an exclusivity claim about THEIR material that reads,
+    # under our brand, as a claim about ours. It is never a statement of fact we can stand behind.
+    ("exclusivity_claim", re.compile(
+        r"\byou\s+(?:won'?t|will\s+not|can'?t|cannot|wont)\s+(?:find|see|get|hear)\s+"
+        r"th(?:is|ese|at|ose)\b", re.IGNORECASE)),
+    # A first-person achievement claim — "I made $12k with this", "we grew it to 40k followers".
+    # Two guards keep it narrow: the pronoun is matched CASE-SENSITIVELY (a bare lowercase "i" is
+    # an ordinary Czech conjunction, and IGNORECASE here would fire on half of every Czech
+    # caption), and a money or metric token must appear within the same clause. Without the
+    # number it is prose about the author's work; with it, it is a result our audience is being
+    # invited to attribute to us.
+    ("first_person_claim", re.compile(
+        r"(?:\bI\b|(?i:\bwe\b))\s+(?i:made|earned|grew|built|scaled|generated|hit|added|took)\s"
+        r"[^.!?\n]{0,60}?"
+        r"(?:[$€£]\s?\d|\d[\d.,]*\s*(?i:k\b|m\b|%|followers|subscribers|clients|customers|"
+        r"users|views|leads|sales|revenue))")),
 )
 
 # ---------------------------------------------------------------------------------------------
@@ -348,6 +472,19 @@ _DROP_EMPTY = "empty"
 _DROP_MARKS = "contains_handle_or_url"
 _DROP_OVER_BUDGET = "over_budget"
 
+#: The two copy contracts an operator may choose between for a BOUND carousel deck (D54/FR-331,
+#: config key `run.carousel_copy_mode`). `verbatim` is the engine-wide default and is what every
+#: other creative in the run uses whatever this says — the mode reaches exactly one predicate,
+#: `_compress_wanted`, and that predicate additionally requires `_panel_mapped`.
+MODE_VERBATIM = "verbatim"
+MODE_COMPRESS = "compress"
+#: The compress call's own template (FR-332). Rendered exactly the way the verbatim call renders
+#: `copywriter_system.md`, through the same engine and the same allowlist mechanism; a missing or
+#: unresolvable template warns `copy_prompt_failed` and the group falls to `_mapped_fallback`,
+#: which is the verbatim mapped deck — a failure of the compress path never costs a deck its words.
+_COMPRESS_TEMPLATE = "copy_compress_system.md"
+_COMPRESS_CARRIER_TURN = "Return the compression JSON for the creatives listed above now."
+
 
 @dataclass(slots=True)
 class CopyProvenance:
@@ -366,7 +503,8 @@ class CopyProvenance:
 
         {"slide": 3, "source_position": 3, "source_text": "",
          "source_text_original": "Ask @creator for the template", "ref_label": "",
-         "drop_reason": "contains_handle_or_url", "creator_stripped": False}
+         "drop_reason": "contains_handle_or_url", "creator_stripped": False,
+         "truncation_suspect": False, "compressed": False}
 
     The row is the alignment. A deck that dropped its empty rows would tell the gallery that our
     slide 3 came from their slide 4, which is the precise failure FR-304 is written against.
@@ -379,16 +517,30 @@ class CopyProvenance:
     (audit of run 20260813_143420_oyo4). `drop_reason` is `""` on a slide that shipped, else
     `empty`, `contains_handle_or_url` or `over_budget`.
 
+    `truncation_suspect` (FR-304c) is the seventh key and the only one that is a QUESTION rather
+    than a record: the admitted panel ends in a way that reads as cut (ellipsis, hanging hyphen,
+    mid-word stop). The slide shipped in full regardless — the flag exists so the post-render
+    critic, which can see the frame, can settle what a heuristic cannot.
+
     `creator_stripped` (FR-312) is the fifth key and the one that can be true on a slide that
     SHIPPED: the panel named its own creator — a brand header, a chrome echo — that line was
     dropped and the remainder rendered. It is a per-row fact rather than a drop reason precisely
     because the slide is usually still full of words.
+
+    `copy_mode` (FR-73/FR-331, v2.3.0) says WHICH copy contract produced this creative —
+    `"verbatim"` or `"compress"` — and it is per ASSET rather than per run on purpose: compress
+    mode reaches only the bound panel-mapped carousels of a run, so an image, a reel, an override
+    brief and a deck that fell back to `_mapped_fallback` all still report `verbatim`, which is
+    exactly what each of them shipped. It is the receipt that replaces the byte-substring audit on
+    a compressed creative (`_verify` skips half 1 when nothing was quoted), together with each
+    panel-map row's `compressed` flag and its `source_text_original`.
     """
 
     post_id: str = ""
     refs: dict[str, str] = field(default_factory=dict)
     panel_map: list[dict[str, Any]] = field(default_factory=list)
     source_panel_count: int = 0
+    copy_mode: str = MODE_VERBATIM
 
 
 @dataclass(slots=True)
@@ -446,6 +598,7 @@ async def write_copy(
     merged_panels: Mapping[str, Sequence[str]] | None = None,
     chrome_lines: Mapping[str, Sequence[str]] | None = None,
     burnt_post_ids: Sequence[str] = (),
+    carousel_copy_mode: str = MODE_VERBATIM,
     progress: dict[str, int] | None = None,
     log: Any = None,
 ) -> CopyResult:
@@ -501,6 +654,12 @@ async def write_copy(
             `reason="no_fresh_post_available"` in the log) rather than re-pointed at a neighbour,
             because the alternative is a creative whose provenance, history record and panel map
             all name different posts.
+        carousel_copy_mode: `"verbatim"` (default) or `"compress"` — `config.run.carousel_copy_mode`,
+            D54/FR-331. It is an OPERATOR TOGGLE and never a heuristic: nothing in this module may
+            switch it on by measuring a panel. It reaches exactly one predicate
+            (`_compress_wanted`), which additionally requires `_panel_mapped`, so an unrecognised
+            value simply behaves as `verbatim` here — the refusal for a bad value belongs to config
+            load, where `Literal` validation catches it before the run costs anything.
         progress: OPTIONAL live tally for FR-299's COPY heartbeat — this function keeps
             `{"total", "done", "in_flight"}` current while the group calls run and never reads
             it back. The runner's silence-breaker prints from it; `None` costs nothing.
@@ -516,7 +675,8 @@ async def write_copy(
                strip_brands=strip_brands or {}, merged_panels=merged_panels or {},
                chrome_lines=chrome_lines or {},
                burnt_posts=frozenset(str(post_id) for post_id in burnt_post_ids
-                                     if str(post_id).strip()), log=log)
+                                     if str(post_id).strip()),
+               carousel_copy_mode=str(carousel_copy_mode or MODE_VERBATIM), log=log)
     groups = _build_groups(entries, trends or {}, campaign_briefs or {})
 
     async def _tracked(group: _Group) -> Any:
@@ -566,6 +726,9 @@ class _Run:
     chrome_lines: Mapping[str, Sequence[str]] = field(default_factory=dict)  # post_id -> that
     #   deck's `chrome_text` strings — layer 3's chrome identifiers (FR-312)
     burnt_posts: frozenset[str] = frozenset()  # post ids an earlier run already quoted (FR-307)
+    #: D54/FR-331 — `verbatim` (default) or `compress`. Run-scoped because the operator sets it
+    #: once per run; consumed per CREATIVE by `_compress_wanted`, which is the only reader.
+    carousel_copy_mode: str = MODE_VERBATIM
     log: Any = None
 
 
@@ -645,6 +808,25 @@ class _Offer:
     #: `stripped_panels` on purpose: `panel_emptied_by_strip` is a competitor finding and must not
     #: start reporting creator headers, which have their own event and their own row flag.
     creator_stripped_panels: frozenset[int] = frozenset()
+    #: 1-based positions a PAGE COUNTER line was dropped from at admission (F2, Session 5.5). Its
+    #: own set for the same reason as the one above: a counter is the source deck's furniture, not
+    #: a competitor and not another creator's name, so it may not feed a flag that tags the
+    #: creative `competitor_stripped`. Rides `panel_map.chrome_counter_stripped`.
+    chrome_counter_panels: frozenset[int] = frozenset()
+    #: 1-based positions whose ADMITTED text looks CUT rather than finished (`ocr_repair.
+    #: truncation_suspect`). A flag and nothing else: the panel renders in full, keeps its
+    #: position, and the boolean rides `panel_map.truncation_suspect` to the post-render critic,
+    #: which can see the frame and tell an authored ellipsis from a clipped container (FR-304c).
+    truncation_suspect_panels: frozenset[int] = frozenset()
+    #: This post's own lines, ranked, that may stand in for a caption the post never offered —
+    #: hooks first, then overlays, then panels, each as POST-STRIP bytes and each free of social
+    #: marks. Ordered by how caption-like the kind is rather than by length: a hook is written to
+    #: be read on its own, a panel is one slide out of a sequence. Consumed by `_offer_caption`
+    #: (FR-99/FR-307 caption forms) and by nothing else.
+    caption_fallbacks: tuple[str, ...] = ()
+    #: The author terms `_offer_for` built for THIS post's caption strips, kept so a promoted line
+    #: (above) faces the same caption-scoped scrub the post's own caption would have faced.
+    caption_terms: tuple[str, ...] = ()
     #: True when this post came from `entry.source_post_id` (the plan bound it at ASSIGN) rather
     #: than from the deprecated modulo rotation. FR-304's panel mapping applies to bound decks
     #: alone: an unbound carousel has no promise that this post's slides are the deck's slides.
@@ -685,6 +867,11 @@ def _offer_for(entry: PlanEntry, group: _Group, run: _Run) -> _Offer:
     this creative's own budgets, and the caption side additionally has to survive §0.7's substance
     floor. `panels` is built alongside them and is neither table: it is the index-aligned deck the
     FR-304 mapping walks, empty slots included.
+
+    This function is also the OCR repair boundary (FR-100/101 as amended, v2.2.0): every panel,
+    hook and caption is admitted through `_repaired` before any strip runs, so one reading of the
+    post reaches the table, the prompt, the verifier's pool and the panel map. The raw bytes
+    survive in `panels_original`, and a panel that looks cut is flagged rather than touched.
     """
     posts = list(group.trend.posts) if group.trend else []
     if not posts:
@@ -709,13 +896,26 @@ def _offer_for(entry: PlanEntry, group: _Group, run: _Run) -> _Offer:
     pre_creator: list[str] = list(panels)  # the same deck before layer 3, for the panel map
     cut: set[int] = set()
     creator_cut: set[int] = set()
+    chrome_cut: set[int] = set()       # panels a page-counter line was dropped from (F2)
+    counter_hits: list[str] = []       # the counter lines themselves, for the one WARN below
     hits: list[tuple[str, str, str]] = []  # (dropped line, identifier, channel) — the FR-312 log
     caption_named = False  # the caption said the creator's name and layer 3 took it out
     haystack: list[str] = []
+    suspect: set[int] = set()          # panels that look CUT rather than finished (flag only)
+    promotable: dict[str, list[str]] = {"hook": [], "overlay": [], "panel": []}
     for kind, raw, ordinal in _numbered_fields(post, panels):
-        text, stripped = _apply_strip(raw, brands)
+        # THE SANCTIONED ADMISSION BOUNDARY (FR-100/101 as amended, v2.2.0). The repair happens
+        # here, once, BEFORE every strip and every table — so the candidate table, the prompt, the
+        # verifier's pool and the panel map all quote the same bytes. Repairing further downstream
+        # would leave two readings of one panel and report our own repair as a deviation.
+        admitted = _repaired(raw, kind=kind, ordinal=ordinal, asset_id=entry.asset_id,
+                             post_id=str(post.post_id), log=run.log)
+        text, stripped = _apply_strip(admitted, brands)
         if kind == "panel":
-            pre_creator[ordinal - 1] = text
+            # `source_text_original` is the RAW panel (doctrine: the unrepaired bytes always
+            # survive in provenance), minus only the competitor strip — a blocklisted name may not
+            # reach meta.yaml either. Identical to `text` on every panel nothing repaired.
+            pre_creator[ordinal - 1] = (_apply_strip(raw, brands)[0] if admitted != raw else text)
         # Layer 3 runs on EVERY quotable kind, not on panels alone: a hook or an overlay that is
         # nothing but the creator's brand header is the same leak wearing a different label.
         found = _creator_line_hits(text, creators)
@@ -745,14 +945,40 @@ def _offer_for(entry: PlanEntry, group: _Group, run: _Run) -> _Offer:
             creator_dropped = creator_dropped or name_cut or fuzzy_cut
             caption_named = caption_named or name_cut
         if kind == "panel":
+            # CHROME, LAST STRIP BEFORE THE TABLES (F2, Session 5.5). A page counter typeset on
+            # its own line — `01 / 06`, `2 of 7`, `// 03` — is the source deck's furniture, and
+            # Virlo hands it over as copy because its adapter has no `chrome_text` field to split
+            # it into. Left in, it becomes our slide's words, then `panel_map.source_text`, then a
+            # line of the frame contract the gauntlet expects to SEE rendered — and the deck is
+            # blocked for `missing_text` because the renderer rightly never drew the source's page
+            # number. It is dropped HERE, above both `kept[]` and `haystack.append` below, so the
+            # panel map, the render prompt and the FR-100/101 verifier's pool hold identical
+            # bytes; a strip on one side of that pair alone is how a run false-flags itself
+            # `copy_not_verbatim`. `pre_creator` was captured further up and KEEPS the counter —
+            # provenance records what the source said, never what we admitted.
+            text, counters = _strip_counter_lines(text)
+            if counters:
+                chrome_cut.add(ordinal)
+                counter_hits.extend(counters)
             kept[ordinal - 1] = text  # empty when the whole panel WAS the brand: a wordless slide
             if stripped:
                 cut.add(ordinal)
             if creator_dropped:
                 creator_cut.add(ordinal)
+            if truncation_suspect(text):
+                # A FLAG and nothing more (FR-304c): the panel ships in full, in its own position.
+                # Blanking it would re-map the deck on a heuristic's say-so, which is a worse
+                # defect than any transcription cut it might be reporting.
+                suspect.add(ordinal)
         if not text.strip():
             continue  # the whole string WAS the brand — there is nothing left to quote
         haystack.append(text)
+        if kind in promotable and not _social_mark(text):
+            # Caption material of last resort (FR-99/FR-307 caption forms): the post's own words,
+            # already through layers 1 and 3, and free of anything that would put another
+            # account's identity or funnel in our caption. Nothing is decided here — `_offer_for`
+            # merely records what WOULD be quotable if this creative ends up with no caption.
+            promotable[kind].append(text)
         label = f"P{offer.post_ordinal}.{kind}" + (f".{ordinal}" if ordinal else "")
         fits = _fitting_slots(text, slots, offer.budgets, kind=kind)
         # One `stripped` flag covers both strips: it means "no longer byte-identical to the source",
@@ -770,6 +996,11 @@ def _offer_for(entry: PlanEntry, group: _Group, run: _Run) -> _Offer:
     offer.panels_original = tuple(pre_creator)
     offer.stripped_panels = frozenset(cut)
     offer.creator_stripped_panels = frozenset(creator_cut)
+    offer.chrome_counter_panels = frozenset(chrome_cut)
+    offer.truncation_suspect_panels = frozenset(suspect)
+    offer.caption_fallbacks = tuple(dict.fromkeys(
+        [*promotable["hook"], *promotable["overlay"], *promotable["panel"]]))
+    offer.caption_terms = tuple(own_name)
     if hits or caption_named:
         # DEDUPED for the message, counted in full: a brand header sits on all eight panels of a
         # deck, and printing it eight times buries the finding it is supposed to surface.
@@ -790,6 +1021,23 @@ def _offer_for(entry: PlanEntry, group: _Group, run: _Run) -> _Offer:
               identifiers=[key for _, key, _ in hits],
               caption_stripped=caption_named,
               channels=sorted({channel for _, _, channel in hits}))
+    if chrome_cut:
+        # One line per creative, like the FR-312 warning above and for the same reason: the same
+        # badge sits on every panel of a numbered deck. Deduped in the prose, counted in full, and
+        # deliberately NOT folded into `competitor_stripped` — nobody's brand was removed here.
+        _warn(run.log, "panel_counter_stripped",
+              f"{entry.asset_id}: a page counter was DROPPED from {len(chrome_cut)} panel(s) of "
+              f"post {post.post_id} at admission (F2) — "
+              + "; ".join(repr(line) for line in dict.fromkeys(counter_hits))
+              + f" on slide(s) {', '.join(str(n) for n in sorted(chrome_cut))}. The counter is the "
+                "source deck's chrome, not its words: rendered onto our slide it signs our deck "
+                "with their page numbering, and expected as a contract line it blocks a render "
+                "that correctly left it out. FR-313 still prints OUR own counter, re-based onto "
+                "this deck's length. The rest of each panel ships byte-verbatim and every panel "
+                "keeps its position; the counter itself survives in "
+                "`panel_map.source_text_original`",
+              asset_id=entry.asset_id, post_id=str(post.post_id),
+              lines=list(dict.fromkeys(counter_hits)), slides=sorted(chrome_cut))
     return offer
 
 
@@ -861,6 +1109,48 @@ def _panel_slots(post: SourcePost, run: _Run) -> list[str]:
     values = [str(text or "") for text in (post.panel_texts if merged is None else merged)]
     width = max(len(values), min(_int(post.panel_count), _MAX_PANEL_SLOTS))
     return values + [""] * (width - len(values))
+
+
+#: The kinds that pass through the OCR repair boundary (FR-100/101 as amended, v2.2.0). Panels and
+#: hooks are the two channels a vision pass writes into (`sources.slide_intel` merges its
+#: transcription into the panel payload, FR-306) and a caption arrives on the same OCR-ish path
+#: from Virlo's own extraction. `overlay` is deliberately absent: the plan's repair boundary names
+#: captions, hooks and the merged panel payload, and widening the boundary is a decision that owes
+#: the FR-100 verifier a re-examination rather than a quiet extra row here.
+_REPAIRED_KINDS = ("panel", "hook", "caption")
+
+
+def _repaired(raw: str, *, kind: str, ordinal: int = 0, asset_id: str, post_id: str,
+              log: Any) -> str:
+    """One candidate string, admitted — repaired if it carries an OCR confusable, else unchanged.
+
+    The ONE sanctioned mutation on the verbatim path (`ocr_repair`'s module contract, and FR-100/
+    101 as amended in v2.2.0). "5 Al agents that replaced my stack" is not what the slide said and
+    it is not what the operator paid to publish; the repair is uppercase-token-scoped, word-bounded
+    and logged, and the bytes it returns are the bytes EVERYTHING downstream sees — the candidate
+    table, the render prompt, `panel_map.source_text` and the verifier's pool alike. Applying it to
+    one of those and not the others is the failure mode the single boundary exists to prevent.
+
+    Every correction is reported (`ocr_repaired`) with its site, because a repair the operator
+    cannot point at afterwards is indistinguishable from the drift this module exists to stop. The
+    unrepaired bytes stay reachable: `panel_map.source_text_original` records them per row.
+    """
+    if kind not in _REPAIRED_KINDS:
+        return raw
+    text, corrections = repair_confusables(raw)
+    if not corrections:
+        return raw
+    where = f"{kind}.{ordinal}" if ordinal else kind
+    _warn(log, "ocr_repaired",
+          f"{asset_id}: {len(corrections)} OCR confusable(s) repaired in {where} of post "
+          f"{post_id} before it was admitted (FR-100/101, the one sanctioned transform) — "
+          + "; ".join(f"{c.before!r} -> {c.after!r} at character {c.index}" for c in corrections)
+          + ". The repaired bytes are what the prompt, the panel map and the verbatim verifier all "
+            "see; the raw string is kept in the panel map's source_text_original",
+          asset_id=asset_id, post_id=post_id, field=where,
+          corrections=[{"before": c.before, "after": c.after, "index": c.index}
+                       for c in corrections])
+    return text
 
 
 def _numbered_fields(
@@ -1130,10 +1420,12 @@ def _creator_identifiers(post: SourcePost,
 
     Two channels, both belonging to the SOURCE, neither ever configured by us:
 
-    - **author** — `SourcePost.author` (the handle, `@` and all; the collapse eats the `@`) plus a
-      display name if the adapter ever carries one. `SourcePost` has no display-name field today,
-      so it is read defensively through `getattr`: the day Virlo's row grows one, layer 3 picks it
-      up without a second edit here, and until then nothing changes.
+    - **author** — `SourcePost.author` (the handle, `@` and all; the collapse eats the `@`) and
+      `SourcePost.author_name`, the DISPLAY form. Both are read as real fields since v2.2.0: the
+      display name existed in this predicate's intent from the start but never in the data, and
+      the 08-14 audit measured the consequence — "Emir | AI Lab" shipping untouched beside a
+      scrubbed "@emirailab". An empty `author_name` is legitimate (an API that exposes none) and
+      simply leaves the handle carrying layer 3 on its own.
     - **chrome** — this deck's `chrome_text` strings (FR-306's separate transcription of
       watermarks, counters and swipe/follow cues). A panel line that merely echoes the chrome is
       the creator's furniture rather than their content: "SWIPE ❮❮" is on `virlo_text` in decks
@@ -1147,8 +1439,7 @@ def _creator_identifiers(post: SourcePost,
     name and chrome is reported as the author's, which is the finding that matters.
     """
     out: dict[str, str] = {}
-    names = [str(post.author or ""),
-             str(getattr(post, "author_name", "") or getattr(post, "display_name", "") or "")]
+    names = [str(post.author or ""), str(post.author_name or "")]
     for raw in names:
         key = _collapse(raw)
         if len(key) >= _CREATOR_MIN_CHARS:
@@ -1191,6 +1482,42 @@ def _strip_creator_lines(text: str, identifiers: Mapping[str, str]) -> tuple[str
     return "\n".join(kept), True
 
 
+def _strip_counter_lines(text: str) -> tuple[str, list[str]]:
+    """`(the panel without its page-counter lines, the lines that went)` — F2, Session 5.5.
+
+    Layer 3's sibling in mechanics and its opposite in subject: same whole-line rule, same
+    byte-preserving join, but the predicate is `sources.slide_intel.counter_line` — SHAPE rather
+    than identity, because a page counter names nobody. It matches only a line that is a counter
+    edge to edge, so a panel whose words merely contain a ratio ("3/4 of teams fail at this")
+    keeps every character.
+
+    Why a counter may not become our slide's words, twice over. It is the SOURCE deck's page
+    number: printed on our deck it signs a five-slide carousel "01 / 06" (their length, on our
+    frame), and FR-313 already re-bases their counting convention onto OUR length for exactly that
+    reason. And once it is in the panel map it is also in the frame contract the post-render critic
+    verifies, so the gauntlet demands a line the renderer was right to omit — the false
+    `missing_text` BLOCK that cost Session 5's Ig deck.
+
+    Everything that survives survives byte for byte (the kept lines are the original strings), and
+    only blank lines the removal orphaned at the very top or bottom go with it — a blank line
+    BETWEEN two kept lines is part of the panel's shape. A panel that was ONLY its counter comes
+    back empty and renders wordless in its own position, which is FR-304's rule for every empty
+    panel and not a special case here.
+    """
+    if not text:
+        return text, []
+    lines = text.split("\n")
+    dropped = [line for line in lines if counter_line(line)]
+    if not dropped:
+        return text, []
+    kept = [line for line in lines if not counter_line(line)]
+    while kept and not kept[0].strip():
+        kept.pop(0)
+    while kept and not kept[-1].strip():
+        kept.pop()
+    return "\n".join(kept), [line.strip() for line in dropped]
+
+
 def _creator_line_hits(text: str, identifiers: Mapping[str, str]) -> list[tuple[str, str, str]]:
     """`(the line, the identifier it equalled, which channel)` for every line layer 3 will drop.
 
@@ -1219,7 +1546,9 @@ def _creator_caption_terms(post: SourcePost, panels: Sequence[str],
 
     - the handle, `@` stripped (`@emirailab` -> `emirailab`), which catches a caption that
       @-mentions the creator without an `@`;
-    - a display name if the post carries one;
+    - `SourcePost.author_name`, the creator's DISPLAY name, when the adapter carries one — the
+      form a caption actually writes ("Emir | AI Lab"), and the one this pass was blind to until
+      the field existed (v2.2.0);
     - **the DISPLAY form found on the deck** — any panel, hook or overlay line whose collapsed
       form is an AUTHOR identifier. That is where "EMIR AI LAB" comes from: the handle alone would
       not remove it, because the spaces make it three words at word boundaries.
@@ -1230,7 +1559,7 @@ def _creator_caption_terms(post: SourcePost, panels: Sequence[str],
     """
     terms: list[str] = []
     handle = str(post.author or "").strip().lstrip("@").strip()
-    name = str(getattr(post, "author_name", "") or getattr(post, "display_name", "") or "").strip()
+    name = str(post.author_name or "").strip()
     terms += [value for value in (handle, name)
               if len(_collapse(value)) >= _CREATOR_MIN_CHARS]
     sources = [*panels, *(post.hooks or ()), *(post.text_overlays or ())]
@@ -1294,11 +1623,13 @@ def _strip_cta(text: str, asset_id: str, post_id: str, log: Any) -> str:
     Nothing matched means nothing happens — the caption comes back byte-identical, whitespace and
     line breaks included. Reflow (collapsing what is left onto single spaces) is a consequence of
     removing a sentence out of the middle, so it is paid only by the captions that were edited.
+
+    This is the REPORTING door. `_without_cta` below is the same removal with no log, and the
+    degrade tier's `_scrubbed` goes through it so the pool the verifier checks and the caption it
+    ships are built by one expression (v2.2.0 — a scrub applied to one and not the other reports a
+    successful strip as `copy_not_verbatim`).
     """
-    parts = [part for part in _CAPTION_SENTENCE.split(text) if part is not None]
-    hits = [(part, name) for part in parts if (name := _cta_pattern(part))]
-    if not hits:
-        return text
+    hits = [(part, name) for part in _sentences(text) if (name := _cta_pattern(part))]
     for sentence, pattern in hits:
         _warn(log, "caption_cta_stripped",
               f"{asset_id}: the caption sentence {' '.join(sentence.split())!r} was removed — it "
@@ -1306,8 +1637,27 @@ def _strip_cta(text: str, asset_id: str, post_id: str, log: Any) -> str:
               f"is not ours (post {post_id}, FR-312). The rest of the caption ships verbatim",
               asset_id=asset_id, post_id=post_id, sentence=" ".join(sentence.split()),
               pattern=pattern)
+    return _without_cta(text)
+
+
+def _without_cta(text: str) -> str:
+    """The CTA/promo removal itself — pure, silent, and the ONLY implementation of it.
+
+    Both callers must produce identical bytes or `_verify` turns a successful strip into a
+    `copy_not_verbatim` tag on a creative that did exactly the right thing, so the removal lives
+    here once and `_strip_cta` (loud) and `_scrubbed` (silent, pool-side) both call it. A caption
+    nothing matched comes back byte-identical.
+    """
+    parts = _sentences(text)
+    if not any(_cta_pattern(part) for part in parts):
+        return text
     kept = [" ".join(part.split()) for part in parts if not _cta_pattern(part)]
     return " ".join(part for part in kept if part)
+
+
+def _sentences(text: str) -> list[str]:
+    """A caption split into the units the CTA gate judges — sentences, and lines as sentences."""
+    return [part for part in _CAPTION_SENTENCE.split(text) if part is not None]
 
 
 def _cta_pattern(sentence: str) -> str:
@@ -1330,23 +1680,30 @@ def _creator_terms(post: SourcePost | None) -> tuple[str, ...]:
 
 def _scrubbed(text: str, brands: Sequence[str], creator_terms: Sequence[str],
               *, caption: bool = False) -> str:
-    """`text` through §1.5 layers 1 and 3 in that order, for the paths with no offer table.
+    """`text` through the admission repair and §1.5 layers 1 and 3, for the paths with no offer.
 
     One expression, so the caption a degrade tier ships and the pool the verifier checks it
     against can never be built two different ways — that mismatch is how a successful strip gets
     reported as a verbatim deviation.
 
-    `caption=True` adds FR-312's fuzzy pass, and ONLY the caller that is building a caption may ask
-    for it: the fallback tier runs this function over every quotable kind to build the verifier's
-    pool, and a fuzzy strip applied to a panel there would be a rule this codebase does not have.
-    It is silent by design — `_fuzzy_caption` is the reporting door, and the pool must not warn
-    about a string nobody is shipping.
+    The OCR repair leads, exactly as it does at `_offer_for`'s boundary: this function IS the
+    admission boundary for the tier that has no offer table, so pool and product are repaired
+    together or the repair becomes the deviation (FR-100/101 as amended). It is idempotent, so a
+    caller that has already logged the corrections it found may call this over the same bytes.
+
+    `caption=True` adds FR-312's fuzzy pass AND the CTA/dangling-promo sentence removal, and ONLY
+    the caller that is building a caption may ask for them: the fallback tier runs this function
+    over every quotable kind to build the verifier's pool, and either pass applied to a panel there
+    would be a rule this codebase does not have. Both are silent by design — `_fuzzy_caption` and
+    `_strip_cta` are the reporting doors, and the pool must not warn about a string nobody ships.
     """
-    out, _ = _apply_strip(text, brands)
+    out, _ = repair_confusables(text)
+    out, _ = _apply_strip(out, brands)
     out, _ = _strip_creator_lines(out, _creator_identifiers_from(creator_terms))
     out, _ = _apply_strip(out, creator_terms)
     if caption:
         out, _ = fuzzy_strip(out, creator_terms)
+        out = _without_cta(out)
     return out
 
 
@@ -1391,23 +1748,55 @@ async def _write_group(
     - **Free text** (override briefs, and the degenerate topic that arrived with no posts): the
       legacy `CopySet` shape, `config.languages` in force, FR-101's trim applied. §1.7.5 keeps
       exactly these two cases on the configured language; everything else follows its source.
+    - **Compress** (D54/FR-331, opt-in): the bound panel-mapped decks of a `compress`-mode run.
+      Source panel strings in, compressed strings out, resolved by `_compressed` here.
 
     A creative whose bound post was refused (burnt or absent, FR-307) is in neither shape: it is
     left OUT of the call entirely — there are no candidates to offer and no words to ask for, so
     asking would spend tokens on an answer we would have to discard — and it is written
     deterministically by `_refused` afterwards.
+
+    **The mode SPLIT (D54).** `askable` is partitioned by `_compress_wanted` and each partition
+    takes its own call, concurrently. Two calls rather than one combined schema because
+    `copywriter_system.md` is a reference-SELECTION mandate end to end ("there is no slot in your
+    answer where invented lettering can go"), and half a group being asked to compress would make
+    that instruction false for the other half; because the two failures should be independent (a
+    compress call that dies must not cost a sibling image its headline); and because it costs
+    nothing where it matters — the shipped configs are all-carousel, so a compress-mode group is
+    a PURE compress partition and still exactly one call. `budget._llm_lines` prices one copy call
+    per (topic × language); a genuinely MIXED group is the one shape that issues two, which is why
+    the estimator carries a note about it.
     """
     offers = {entry.asset_id: _offer_for(entry, group, run) for entry in group.entries}
     askable = [entry for entry in group.entries if not offers[entry.asset_id].refused]
     verbatim = any(offers[entry.asset_id].post is not None for entry in askable)
-    payloads = await _call_copy(group, askable, run, offers, verbatim) if askable else {}
+    compressing = {entry.asset_id for entry in askable
+                   if _compress_wanted(entry, offers[entry.asset_id], run)}
+    selecting = [entry for entry in askable if entry.asset_id not in compressing]
+    calls = []
+    if selecting:
+        calls.append(_call_copy(group, selecting, run, offers, verbatim))
+    if compressing:
+        calls.append(_call_compress(
+            group, [entry for entry in askable if entry.asset_id in compressing], run, offers))
+    payloads: dict[str, dict[str, Any]] = {}
+    for answered in await asyncio.gather(*calls):
+        payloads.update(answered)
     if missing := [entry for entry in askable if entry.asset_id not in payloads]:
         _warn(run.log, "copy_group_split",
               f"grouped copy call missed {len(missing)} of {len(askable)} creatives; "
               "splitting into one call each (FR-99)",
               asset_ids=[entry.asset_id for entry in missing])
+        # Each creative is re-asked through ITS OWN contract: a compress creative that a grouped
+        # compress call missed is re-asked to compress, never to select. Re-dispatching it through
+        # `_call_copy` would answer with refs into a candidate table whose panels this deck's
+        # slides are already assigned from, and the deck would silently ship verbatim under a
+        # `copy_mode: compress` receipt.
         for split in await asyncio.gather(*(
-                _call_copy(group, [entry], run, offers, verbatim) for entry in missing)):
+                _call_compress(group, [entry], run, offers)
+                if entry.asset_id in compressing
+                else _call_copy(group, [entry], run, offers, verbatim)
+                for entry in missing)):
             payloads.update(split)
 
     copies: dict[str, CopySet] = {}
@@ -1421,8 +1810,14 @@ async def _write_group(
         elif payload is None:
             # FR-99 vs FR-304 ruling (D15, SESSION G): a BOUND deck's slides are a deterministic
             # panel mapping that needs no model, so a failed copy call must not cost it its words.
+            # D54 rides this branch unchanged and deliberately: a failed COMPRESS call falls back
+            # to the same verbatim mapped deck, tagged `copy_degraded`, with no second call and no
+            # extra spend — long slides are the outcome the operator opted out of, not a loss of
+            # the deck.
             written = (_mapped_fallback(entry, offer, group, run)
                        if _panel_mapped(entry, offer) else _fallback(entry, group.trend, run))
+        elif entry.asset_id in compressing:
+            written = _compressed(entry, payload, offer, group, run)
         elif verbatim and offer.post is not None:
             written = _resolve(entry, payload, offer, group, run)
         else:
@@ -1472,12 +1867,187 @@ async def _call_copy(
     )
     if result.degraded or not isinstance(result.parsed, Mapping):
         return {}
+    return _answers(result, entries)
+
+
+def _compress_wanted(entry: PlanEntry, offer: _Offer, run: _Run) -> bool:
+    """D54/FR-331 — does THIS creative take the compress contract instead of selection?
+
+    Two conditions and no third. The run must be in compress mode (an operator toggle, never a
+    measurement — nothing here may look at how long a panel is and decide to compress it), and the
+    creative must already be a panel-mapped deck by `_panel_mapped`'s three structural tests: a
+    carousel, BOUND at ASSIGN, not an override brief. Everything else in a compress-mode run —
+    images, reels, override briefs, unbound carousels, a topic that arrived with no posts — is
+    untouched, because compression is a rule about a bound deck's own slides and those creatives
+    have none.
+
+    Riding `_panel_mapped` rather than restating its conditions is the point: the compress walk
+    produces the same `panel_map` the verbatim walk does, so the two must agree exactly on WHICH
+    decks are mapped or a run would ship a deck with a panel map under one contract and no rows
+    under the other.
+    """
+    return run.carousel_copy_mode == MODE_COMPRESS and _panel_mapped(entry, offer)
+
+
+async def _call_compress(
+    group: _Group, entries: Sequence[PlanEntry], run: _Run, offers: Mapping[str, _Offer],
+) -> dict[str, dict[str, Any]]:
+    """The D54 call: source panel strings in, compressed strings out (FR-331/FR-332).
+
+    Shaped deliberately like `_call_copy` above — same role (`COPY_ROLE`, so config's model, token
+    ceiling and reasoning effort are the ones the operator already set and the estimator already
+    priced), same engine, same failure door (`copy_prompt_failed` -> `{}` -> the caller's
+    `_mapped_fallback`), same envelope parsing. What differs is the template, the schema and one
+    context slot:
+
+    - `{{compress_panels}}` carries the panels themselves rather than labels (`_compress_block`).
+      It is allowlisted for this template and NOWHERE else, which is the enforcement that a render
+      role can never be handed a block of source panel text to "work from".
+    - `carousel_copy_mode="compress"` is passed PER CALL, not per run: the verbatim partition of a
+      compress-mode group still passes the default, so `{{text_budgets}}`'s carousel line says
+      "no per-slide ceiling" for the deck that is quoting and states the real ceiling for the deck
+      that is compressing to it.
+    """
+    style = _single_style(entries, run)
+    context = build_context(
+        trend=group.trend,
+        style=style,
+        campaign_brief=group.campaign_brief,
+        creative_format=entries[0].creative_format if len(entries) == 1 else "",
+        niche_descriptor=run.niche_descriptor,
+        brand_context=run.brand_context,
+        competitor_strings=_strip_terms(entries[0], run),  # M6: one strip pass over the fenced
+        platform_conventions=_relevant(run.conventions, entries),  # trend texts as well
+        text_budgets=run.budgets,
+        sibling_list=_sibling_list(entries, run, offers, True, compress=True),
+        carousel_copy_mode=MODE_COMPRESS,
+    )
+    context["compress_panels"] = _compress_block(entries, offers)
+    try:
+        system = run.engine.render(_COMPRESS_TEMPLATE, context)
+    except (ValueError, LookupError) as exc:  # unresolved placeholder / missing template
+        _warn(run.log, "copy_prompt_failed", str(exc))
+        return {}
+    result = await run.call(
+        COPY_ROLE,
+        [{"role": "system", "content": system},
+         {"role": "user", "content": _COMPRESS_CARRIER_TURN}],
+        _compress_schema(),
+        None,
+    )
+    if result.degraded or not isinstance(result.parsed, Mapping):
+        return {}
+    return _answers(result, entries)
+
+
+def _answers(result: Any, entries: Sequence[PlanEntry]) -> dict[str, dict[str, Any]]:
+    """`{asset_id: payload}` for the creatives THIS call asked about — the one envelope reader.
+
+    Both contracts answer in the same envelope (`{"creatives": [{asset_id, …}]}`), so the
+    unwrapping lives once. An item naming a creative this call did not ask about is dropped: a
+    model that answers for a sibling in another group would otherwise overwrite copy that group's
+    own call is about to produce.
+    """
     wanted = {entry.asset_id for entry in entries}
-    payloads = {}
+    payloads: dict[str, dict[str, Any]] = {}
     for item in result.parsed.get("creatives") or []:
         if isinstance(item, Mapping) and str(item.get("asset_id")) in wanted:
             payloads[str(item["asset_id"])] = dict(item)
     return payloads
+
+
+def _compress_block(entries: Sequence[PlanEntry], offers: Mapping[str, _Offer]) -> str:
+    """The `{{compress_panels}}` block: one section per creative, its own deck's panels, in order.
+
+    This is the compress contract's whole input, and every line of it is load-bearing:
+
+    The shape is the one `copy_compress_system.md` documents and parses (FR-332), and every part of
+    it is load-bearing:
+
+        CREATIVE <asset_id> — language: <the mirror rule>
+        caption source: <that post's own caption>
+        1. (at most 180 characters) <source panel 1>
+        3. (at most 180 characters) <source panel 3>
+
+    - **Only ADMITTED positions are listed, and they are numbered by SOURCE POSITION.** Position 2
+      is missing from the example because that source panel was empty, carried a social mark or
+      broke the sanity ceiling: an unlisted number is a wordless slide, the template says so, and
+      the engine enforces it whatever comes back (`_compressed_deck` discards a line written for an
+      unlisted position). Numbering by source position rather than re-numbering 1..N is what keeps
+      the answer alignable — the model returns one entry per slide of the deck and `""` for the
+      positions it was not given, and `slide_texts[i - 1]` is read by INDEX.
+    - **The budget is per creative and stated on every line**, taken from `offer.budgets["slide"]`,
+      which `_slot_budgets` has already reduced to `min(text_budgets.slide, style
+      max_onimage_chars.slide)` (FR-259). One number, derived once, enforced twice — the prompt
+      asks for it and `_compressed_deck`'s backstop trim cuts to the same value. It is repeated per
+      line rather than stated once because a model reading its ninth panel has stopped looking at
+      the header.
+    - **The language rule names the panels, not a language.** The engine does not detect languages
+      (§1.7.5) and must not start now — `SourcePost` carries no language field, so any code naming
+      one here would be guessing. "Mirror the language these panels are written in" is checkable by
+      the model against text it can see; "answer in Czech" would be an engine guess it must obey.
+
+    Panels are shown IN FULL and never `_display`-truncated. The verbatim table can truncate for
+    display because the engine ships the original bytes from `SourcePost`; here the shown text IS
+    the material being compressed, and a truncated panel would be compressed into a lie. A panel's
+    own line breaks survive as indented continuation lines, so the numbering stays readable without
+    reflowing the source's typography.
+    """
+    blocks: list[str] = []
+    for entry in entries:
+        offer = offers.get(entry.asset_id)
+        if offer is None or offer.post is None:
+            continue
+        budget = offer.budgets.get("slide", 0)
+        lines = [f"CREATIVE {entry.asset_id} — language: the one these panels are written in; "
+                 "mirror it exactly and never translate",
+                 "caption source: " + (_folded(offer.captions[0].text) if offer.captions else
+                                       "(none — return an empty caption and the engine "
+                                       "assembles one from this post's own words)")]
+        for position in range(1, _deck_length(entry, offer) + 1):
+            text = offer.panels[position - 1] if position <= len(offer.panels) else ""
+            if _panel_verdict(text):
+                continue  # unlisted IS the instruction: that slide ships wordless (FR-304)
+            lines.append(f"{position}. (at most {budget} characters) {_folded(text)}")
+        blocks.append("\n".join(lines))
+    if not blocks:
+        return ""
+    header = ("One section per creative, each carrying that creative's OWN source deck. These "
+              "panels are the content authority: compress them, never replace them, and never "
+              "write a slide from anything else on this page.")
+    return f"{header}\n\n" + "\n\n".join(blocks)
+
+
+def _folded(text: str) -> str:
+    """A multi-line source string on a numbered line — line 1 in place, the rest indented.
+
+    Nothing is removed, reflowed or collapsed: the panel's own line breaks are part of what the
+    model is compressing, and a slide typeset as four short lines is a different string from the
+    same words run together. The indent exists so a four-line panel cannot be misread as four
+    panels, which is the one way this block could silently re-map a deck.
+    """
+    head, *rest = text.split("\n")
+    return "\n".join([head, *(f"    {part}" for part in rest)])
+
+
+def _compress_schema() -> dict[str, Any]:
+    """The compress call's schema, generated from `CopyCompressed` (contracts item 10).
+
+    Same construction as `_selection_schema`: `asset_id` is excluded from the dataclass projection
+    and re-added first by the engine, so the ANSWER fields belong to the dataclass and identity
+    belongs to the envelope. `slide_texts` is a plain array of strings and its POSITION is the
+    contract — the engine pads or truncates it to the deck's length rather than trusting it, and a
+    schema cannot express "as long as that creative's deck" anyway.
+    """
+    fields = json_schema_for(CopyCompressed, exclude={"asset_id"})["properties"]
+    creative = {"type": "object", "properties": {"asset_id": {"type": "string"}, **fields},
+                "required": ["asset_id", *fields], "additionalProperties": False}
+    return {
+        "name": "copy_compressed",
+        "schema": {"type": "object", "properties": {"creatives": {"type": "array",
+                                                                  "items": creative}},
+                   "required": ["creatives"], "additionalProperties": False},
+    }
 
 
 def _candidate_block(entries: Sequence[PlanEntry], offers: Mapping[str, _Offer]) -> str:
@@ -1584,7 +2154,7 @@ def _display(text: str) -> str:
 
 
 def _sibling_list(entries: Sequence[PlanEntry], run: _Run, offers: Mapping[str, _Offer],
-                  verbatim: bool) -> str:
+                  verbatim: bool, *, compress: bool = False) -> str:
     """One line per creative — asset id, platform, format, and the LANGUAGE RULE in force.
 
     §1.7.5, F22: a verbatim creative's language is a property of the string it quotes, so the line
@@ -1601,6 +2171,14 @@ def _sibling_list(entries: Sequence[PlanEntry], run: _Run, offers: Mapping[str, 
     note. **Conductor: this is a real seam between T2.2 and T2.5** — the clean fix is either a
     brief-candidate section in the template (its `override` paragraph already anticipates one) or
     an explicit ruling that trendless briefs ship caption-only.
+
+    `compress` (D54/FR-331) writes the COMPRESS call's variant of the same lines, and it is a
+    keyword of this function rather than a branch inside `_call_copy` because "one line per
+    creative, stating the language rule that governs it" is one job with three answers, not three
+    jobs. The line still names the post — the model needs to know which section of
+    `{{compress_panels}}` is this creative's — and it replaces the "as-selected" language clause
+    with the mirror rule and the slide budget, which are the two things the compress contract adds.
+    Every caller that does not ask for it gets byte-identical output to the pre-D54 function.
     """
     lines = []
     for entry in entries:
@@ -1608,7 +2186,11 @@ def _sibling_list(entries: Sequence[PlanEntry], run: _Run, offers: Mapping[str, 
         line = f"- {entry.asset_id} · {entry.platform} · {entry.creative_format}"
         if entry.creative_format == "carousel" and entry.slide_count:
             line += f" · {entry.slide_count} slides"
-        if verbatim and offer is not None and offer.post is not None:
+        if compress and offer is not None and offer.post is not None:
+            line += (f" · compress post P{offer.post_ordinal}'s panels to "
+                     f"{offer.budgets.get('slide', 0)} characters per slide"
+                     " · language: the panels' own, mirrored exactly, never translated")
+        elif verbatim and offer is not None and offer.post is not None:
             line += (f" · quote post P{offer.post_ordinal}"
                      " · caption language: as-selected (source language, never translated)")
             if _panel_mapped(entry, offer):
@@ -1739,16 +2321,20 @@ def _resolve(entry: PlanEntry, payload: Mapping[str, Any], offer: _Offer, group:
         # The bound post carries no caption worth shipping: it is empty, it was entirely a
         # competitor's name, or — the case D46 §0.7 added — what remains after its trailing hashtag
         # run is peeled is under `_CAPTION_MIN_CHARS` non-hashtag characters, which is a tag dump
-        # rather than a caption. Our own words are the honest answer, and they are ours, so no
-        # verbatim claim is made about them and no provenance label is recorded. (Virlo's own
+        # rather than a caption. The honest answer is the same post's best remaining line plus our
+        # own attribution clause (`_offer_caption`) — an ASSEMBLED string, so it claims no
+        # verbatim provenance, joins the verifier's pool as ours, and records no ref label. What
+        # it may never be is our configuration (v2.2.0). (Virlo's own
         # `description` summary is NOT a candidate here any more — FR-303 removed it from the
         # grammar, so a post with nothing but a summary caption reaches exactly this branch.)
-        caption = _fallback_caption(_subject_name(entry, group), run.niche_descriptor)
+        caption = _offer_caption(offer, entry, run)
         own_words.append(caption)
         _warn(run.log, "copy_caption_unavailable",
               f"{entry.asset_id}: post P{offer.post_ordinal} offers no caption with at least "
-              f"{_CAPTION_MIN_CHARS} non-hashtag characters (§0.7); shipping the topic name and "
-              "the standing niche line instead", asset_id=entry.asset_id,
+              f"{_CAPTION_MIN_CHARS} non-hashtag characters (§0.7); the creative captions itself "
+              "with that post's own best remaining line and a neutral attribution (FR-99/FR-307 "
+              "caption forms) — never with the operator's niche descriptor",
+              asset_id=entry.asset_id,
               post_id=offer.post.post_id if offer.post else "")
 
     copyset = CopySet(
@@ -1809,6 +2395,10 @@ class _PanelDeck:
     refs: dict[str, str] = field(default_factory=dict)
     panel_map: list[dict[str, Any]] = field(default_factory=list)
     stripped: bool = False
+    #: D54 only — a compressed line came back over its budget and was cut at a word boundary
+    #: (`text_trimmed`). Always false on the verbatim walk, where an over-budget panel is never
+    #: trimmed and never can be: trimming a quote is how byte identity dies (FR-100/FIX 2).
+    trimmed: bool = False
 
 
 def _mapped_deck(entry: PlanEntry, offer: _Offer, run: _Run) -> _PanelDeck:
@@ -1848,14 +2438,26 @@ def _mapped_deck(entry: PlanEntry, offer: _Offer, run: _Run) -> _PanelDeck:
     creative, in its own event with its own honest cause, because "21 panels blanked" and "one
     panel was a watermark" are different questions and used to share one misleading sentence.
 
+    A fourth per-row fact rides alongside, and it is NOT a drop reason: `truncation_suspect`
+    (FR-304c, v2.2.0) says the admitted panel looks cut rather than finished. The panel still
+    ships, in full, in its own position — the flag is handed to the post-render critic as contract
+    data, because the critic can see the frame and this function cannot. A heuristic that could
+    blank a panel would re-map the whole deck, which is worse than any transcription defect.
+
     §1.5 layer 3 (FR-312) has already run by the time this function sees a panel: a line that was
     the creator's own name is gone from `offer.panels` and survives in `offer.panels_original`,
     which is what each row's `source_text_original` records. Layer 3 is not a fourth drop reason —
     it usually leaves a full slide behind — so it rides its own boolean, `creator_stripped`, and
     it is `_offer_for` that warns about it, once per creative, over every kind rather than over
     panels alone.
+
+    The PAGE COUNTER strip (F2, Session 5.5) has run by then too, in the same place and on the
+    same terms: a line that was only the source deck's `01 / 06` is gone from `offer.panels`,
+    survives in `source_text_original`, and rides its own boolean — `chrome_counter_stripped`.
+    Its own, and never `creator_stripped`, because that flag's finding is "our creative nearly
+    named another account" and this one's is "our contract nearly demanded their page number".
     """
-    length = max(0, _int(entry.slide_count)) or len(offer.panels)
+    length = _deck_length(entry, offer)
     deck = _PanelDeck()
     over: list[str] = []       # over the sanity ceiling — cited in characters
     marks: list[str] = []      # an @handle or a URL survived into the panel text
@@ -1890,7 +2492,25 @@ def _mapped_deck(entry: PlanEntry, offer: _Offer, run: _Run) -> _PanelDeck:
                                # FR-312: this row's panel named its creator and lost that line.
                                # `source_text_original` above is where the operator (and the
                                # FR-309 gallery) can see exactly what was taken out.
-                               "creator_stripped": creator_cut})
+                               "creator_stripped": creator_cut,
+                               # F2 (Session 5.5): this row's panel carried the SOURCE deck's page
+                               # counter on a line of its own and lost it at admission. Kept apart
+                               # from `creator_stripped` on purpose — that flag tags the creative
+                               # `competitor_stripped`, and a page number is nobody's brand. The
+                               # counter itself is still in `source_text_original` above.
+                               "chrome_counter_stripped": position in offer.chrome_counter_panels,
+                               # FR-304c (v2.2.0): the admitted panel looks CUT rather than
+                               # finished — a trailing ellipsis, a hanging hyphen, a mid-word
+                               # stop. Contract data for the post-render critic, which is looking
+                               # at the frame and can tell an authored cliff-hanger from a clipped
+                               # container. NEVER a drop reason: the panel shipped in full.
+                               "truncation_suspect": position in offer.truncation_suspect_panels,
+                               # D54 (v2.3.0): FALSE here by construction — this walk QUOTES, it
+                               # never compresses. The key is written on every row of both walks
+                               # because `generate._panel_map`'s contract is ONE row schema always,
+                               # and a gallery that had to ask whether the key exists before
+                               # reading it would be reading two schemas (FR-73 as amended).
+                               "compressed": False})
         deck.stripped = deck.stripped or (ships and (position in offer.stripped_panels
                                                      or creator_cut))
     deck.refs = {slot: label for slot, label in deck.refs.items() if label}
@@ -1918,6 +2538,23 @@ def _mapped_deck(entry: PlanEntry, offer: _Offer, run: _Run) -> _PanelDeck:
     return deck
 
 
+def _deck_length(entry: PlanEntry, offer: _Offer) -> int:
+    """How many slides this bound deck has — the PLAN's number, never a walk's own arithmetic.
+
+    `entry.slide_count` was fixed at ASSIGN from the source's `panel_count` clamped to the platform
+    ceiling (§0.4′) and is what the Confirm gate priced, so a copy stage that derived its own
+    length would spend money the operator never approved. The fallback to the source's own panel
+    count covers an entry built before ASSIGN carried the field.
+
+    Extracted (v2.3.0) because THREE walks now have to agree on it: `_mapped_deck`, D54's
+    `_compressed_deck`, and `_compress_block`, which tells the model how many positions to answer
+    for. A prompt asking for 5 slides while the walk writes 6 rows is a deck whose last slide is
+    silently wordless, and it is exactly the kind of drift a shared constant prevents and a
+    repeated expression invites.
+    """
+    return max(0, _int(entry.slide_count)) or len(offer.panels)
+
+
 def _panel_verdict(text: str) -> str:
     """`""` when this mapped panel ships verbatim, else which of the three drop reasons applies.
 
@@ -1935,6 +2572,359 @@ def _panel_verdict(text: str) -> str:
     if len(text) > PANEL_SANITY_CHARS:
         return _DROP_OVER_BUDGET
     return ""
+
+
+# --------------------------------------------------------------------------------------------
+# Compress mode — the third contract (D54/FR-331)
+# --------------------------------------------------------------------------------------------
+
+
+def _compressed(entry: PlanEntry, payload: Mapping[str, Any], offer: _Offer, group: _Group,
+                run: _Run) -> _Written:
+    """Turn one `CopyCompressed` answer into a shipped deck, its caption and its FR-304 panel map.
+
+    The sibling of `_resolve` for the compress contract, and it differs from it in exactly one
+    respect: the on-image strings are the MODEL's bytes rather than the source's, so every gate
+    `_offer_for` applied on the way IN is re-applied here on the way OUT. A model asked to rewrite
+    a panel can write anything, including a competitor's name it read in the fenced trend texts and
+    an @handle it copied off the panel it was compressing.
+
+    What is NOT re-derived here is the deck. `_compressed_deck` does one walk and returns both the
+    slide texts and the panel map, and this function never touches either afterwards — see that
+    function for why the single walk is the invariant this whole mode rests on.
+
+    Three receipts replace the byte-substring claim, and all three are written here:
+    `CopyProvenance.copy_mode = "compress"`, `panel_map[i].compressed = True`, and
+    `_Written.quoted = ()`, which is what makes `_verify` skip its substring half (the precedent is
+    the free-text creative, which quotes nothing either) while its blocklist half still audits every
+    string this function ships — slides, caption and hashtags alike.
+    """
+    brands = _strip_terms(entry, run)
+    tags: list[DegradationTag] = []
+    own_words: list[str] = []
+    deck = _compressed_deck(entry, payload, offer, run, brands)
+    headline, headline_trimmed, headline_stripped = _compress_field(
+        str(payload.get("headline") or ""), offer.budgets.get("headline", 0), brands,
+        entry, run, where="headline")
+    caption, hashtags, caption_stripped = _compressed_caption(payload, offer, entry, run, brands,
+                                                              own_words)
+    copyset = CopySet(
+        asset_id=entry.asset_id,
+        language=entry.language,
+        trend_key=entry.trend_key,
+        caption=caption,
+        hashtags=hashtags,
+        headline=headline,
+        slide_texts=deck.texts,
+        narrative_arc=str(payload.get("narrative_arc") or ""),
+        through_line=str(payload.get("through_line") or "") or _subject_name(entry, group),
+    )
+    if not (headline or any(text.strip() for text in deck.texts)):
+        tags.append(DegradationTag.NO_ONIMAGE_TEXT)
+        _warn(run.log, "no_onimage_text",
+              f"{entry.asset_id}: the compress call returned no usable text for any slide of this "
+              f"deck and no cover headline; shipping a caption-only creative (FR-331). Its "
+              f"{sum(1 for text in offer.panels if text.strip())} source panel(s) are unchanged "
+              "and a re-run in verbatim mode would render them in full",
+              asset_id=entry.asset_id, budgets=dict(offer.budgets),
+              source_panels=len(offer.panels))
+    if deck.trimmed or headline_trimmed:
+        tags.append(DegradationTag.TEXT_TRIMMED)
+    if deck.stripped or caption_stripped or headline_stripped:
+        tags.append(DegradationTag.COMPETITOR_STRIPPED)
+        _warn(run.log, "competitor_stripped",
+              f"{entry.asset_id}: a blocklisted competitor name, or the source creator's own name "
+              "(FR-312), was removed from this creative's text (§1.5). On the compress path the "
+              "strip runs on both sides — the panels the model was shown and the lines it sent "
+              "back — because a compressed line is the model's bytes, not the source's",
+              asset_id=entry.asset_id, refs={}, copy_mode=MODE_COMPRESS,
+              creator_lines=sorted(offer.creator_stripped_panels))
+    return _Written(
+        copyset=copyset,
+        source=CopyProvenance(post_id=offer.post.post_id if offer.post else "",
+                              refs={},  # FR-302 as amended: a compressed slide quotes no label
+                              panel_map=deck.panel_map,
+                              source_panel_count=len(offer.panels),
+                              copy_mode=MODE_COMPRESS),
+        tags=tags,
+        # FR-331: nothing here claims to be a byte-substring of the post, so the pool is empty and
+        # `_verify`'s half 1 self-skips. The blocklist half runs on every shipped string regardless
+        # — it reads the CopySet, not this tuple.
+        quoted=())
+
+
+def _compressed_deck(entry: PlanEntry, payload: Mapping[str, Any], offer: _Offer, run: _Run,
+                     brands: Sequence[str]) -> _PanelDeck:
+    """FR-331 — ONE walk producing this deck's `slide_texts` AND its `panel_map`.
+
+    **The single walk is the invariant, not a tidiness preference.** `gauntlet._expected_blocks`
+    builds a rendered deck's frame contract from `CopySet.slide_texts`, while the gallery, the
+    FR-309 card and the operator's audit read `panel_map`. If the two were produced by two loops,
+    a compressed line that one accepted and the other blanked would make the critic demand a line
+    the renderer was never given — the false `missing_text` BLOCK that F2 already cost this project
+    once. So there is exactly one loop, one verdict per position, and both outputs are appended
+    inside it: `deck.texts[i - 1]` and `deck.panel_map[i - 1]["source_text"]` are the same string
+    by construction, not by agreement.
+
+    Per position, in this order:
+
+    1. **The SOURCE panel faces `_panel_verdict` first, exactly as `_mapped_deck` does** — the same
+       three drop reasons (`empty`, `contains_handle_or_url`, `over_budget`), the same
+       position-preserving wordless slide, the same three warnings. `PANEL_SANITY_CHARS` stays an
+       INPUT guard: an over-ceiling panel is a transcription accident, and compressing an accident
+       produces a confident summary of noise, so it ships wordless in both modes (FR-304a as
+       amended). This is why compression cannot rescue a dropped panel and is not meant to.
+    2. **An admitted position takes `slide_texts[position - 1]`** — by INDEX, never by consuming a
+       queue, so a model that answered "" for slide 2 leaves slide 2 wordless instead of pulling
+       slide 3's line onto it. A list shorter than the deck pads with empties; a longer one is
+       truncated and warned.
+    3. **The engine's backstops run on what came back**, in the order of certainty: the blocklist
+       strip (§1.5 layers 1 and 2, fail-closed and unguarded — the model may have written a name
+       the panels never contained), then the FR-319 social-mark gate, which BLANKS the line rather
+       than editing it (a compressed sentence with its @handle cut out is a sentence nobody wrote),
+       then the word-boundary trim to the same `min(config, style)` budget the prompt asked for.
+       The trim is a backstop and not the mechanism: the model is asked to fit, and a line that
+       still overshoots is cut at a word boundary and tagged `text_trimmed`.
+    4. **A model line for a position the SOURCE dropped is DISCARDED and warned.** Compression
+       fills no vacuums: an empty source panel means the source slide had no words, and inventing
+       some is precisely the `invented_text` defect the gauntlet blocks decks for. The row keeps
+       its `drop_reason` from step 1 and the operator is told what was thrown away.
+    """
+    length = _deck_length(entry, offer)
+    answered = _positional(payload.get("slide_texts"))
+    deck = _PanelDeck()
+    over: list[str] = []        # over the sanity ceiling — cited in characters
+    marks: list[str] = []       # an @handle or a URL survived into the SOURCE panel text
+    blanked: list[str] = []     # the source claimed words here and the strip took them all
+    invented: list[str] = []    # the model wrote for a position the source left empty
+    scrubbed: list[str] = []    # a compressed line carried a social mark and was blanked
+    silent: list[str] = []      # an admitted panel came back with nothing to render
+    for position in range(1, length + 1):
+        source = offer.panels[position - 1] if position <= len(offer.panels) else ""
+        original = (offer.panels_original[position - 1]
+                    if position <= len(offer.panels_original) else source)
+        reason = _panel_verdict(source)
+        ships = not reason
+        if reason == _DROP_OVER_BUDGET:
+            over.append(f"slide {position} ({len(source)} characters, sanity ceiling "
+                        f"{PANEL_SANITY_CHARS})")
+        elif reason == _DROP_MARKS:
+            marks.append(f"slide {position} (carries {_excluded_marks(source, relaxed=True)})")
+        elif reason == _DROP_EMPTY and position in offer.stripped_panels:
+            blanked.append(f"slide {position}")
+        model_text = answered[position - 1] if position <= len(answered) else ""
+        text = ""
+        if ships:
+            text, trimmed, cut_name = _compress_field(
+                model_text, offer.budgets.get("slide", 0), brands, entry, run,
+                where=f"slide {position}", blanked_into=scrubbed)
+            deck.trimmed = deck.trimmed or trimmed
+            deck.stripped = deck.stripped or cut_name
+            if not text.strip() and not model_text.strip():
+                silent.append(f"slide {position}")
+        elif model_text.strip():
+            invented.append(f"slide {position} ({_display(model_text)})")
+        deck.texts.append(text)
+        deck.panel_map.append({"slide": position, "source_position": position,
+                               # `source_text` is what SHIPS, exactly as in verbatim mode — here
+                               # that is the COMPRESSED string, which is why the row also carries
+                               # `compressed` below. The gallery renders this beside our slide.
+                               "source_text": text,
+                               # The source panel as it arrived (pre-layer-3, per the provenance
+                               # doctrine that original bytes are never rewritten). It is the
+                               # LLM's own starting point in every row that shipped, and FR-309's
+                               # card measures "compressed from N chars" off its length.
+                               "source_text_original": original,
+                               # FR-302 as amended (v2.3.0): a compressed slide quotes no label.
+                               "ref_label": "",
+                               "drop_reason": reason,
+                               "creator_stripped": position in offer.creator_stripped_panels,
+                               "chrome_counter_stripped": position in offer.chrome_counter_panels,
+                               "truncation_suspect": position in offer.truncation_suspect_panels,
+                               # D54: this row's `source_text` is the model's compression of
+                               # `source_text_original`, not a quote of it. It is what tells the
+                               # gallery to label the column and the auditor not to expect byte
+                               # identity.
+                               "compressed": True})
+        deck.stripped = deck.stripped or (ships and (position in offer.stripped_panels
+                                                     or position in offer.creator_stripped_panels))
+    if len(answered) > length:
+        _warn(run.log, "compress_list_truncated",
+              f"{entry.asset_id}: the compress call returned {len(answered)} slide texts for a "
+              f"{length}-slide deck; the extra {len(answered) - length} are discarded. The deck's "
+              "length is the plan's (fixed at ASSIGN and priced at the Confirm gate), never the "
+              "model's — a longer answer cannot buy a slide nobody paid for (FR-331/FR-95)",
+              asset_id=entry.asset_id, answered=len(answered), slides=length)
+    if over:
+        _warn(run.log, "panel_over_budget",
+              f"{entry.asset_id}: {len(over)} source panel(s) exceed the {PANEL_SANITY_CHARS}"
+              f"-character sanity ceiling and are never compressed (FR-304a) — {'; '.join(over)}. "
+              "A panel that long is a transcription accident rather than a slide, and a confident "
+              "compression of an accident is worse than a wordless slide; those slides render "
+              "without text and keep their position", asset_id=entry.asset_id,
+              sanity_ceiling=PANEL_SANITY_CHARS, slides=over)
+    if marks:
+        _warn(run.log, "panel_handle_or_url",
+              f"{entry.asset_id}: {len(marks)} source panel(s) carry an @handle or a URL pointing "
+              f"outside the technical allowlist, and may never become pixels (FR-319) — "
+              f"{'; '.join(marks)}. They are not compressed either: the gate is about identity, "
+              "not length, and a compression of a line we may not render is still that line. "
+              "Those slides render without text and keep their position",
+              asset_id=entry.asset_id, slides=marks)
+    if blanked:
+        _warn(run.log, "panel_emptied_by_strip",
+              f"{entry.asset_id}: {len(blanked)} source panel(s) had words and lost all of them to "
+              f"the competitor strip (§1.5) — {'; '.join(blanked)}. Those slides render without "
+              "text and keep their position", asset_id=entry.asset_id, slides=blanked)
+    if invented:
+        _warn(run.log, "compress_invented_text",
+              f"{entry.asset_id}: the compress call wrote text for {len(invented)} position(s) "
+              f"whose SOURCE panel has none — {'; '.join(invented)}. Discarded: compression fills "
+              "no vacuums (FR-331). An empty source slide is a slide its author left wordless, and "
+              "a slide of ours carrying words theirs never had is the `invented_text` defect the "
+              "post-render gate blocks whole decks for",
+              asset_id=entry.asset_id, slides=invented)
+    if scrubbed:
+        _warn(run.log, "compress_scrub",
+              f"{entry.asset_id}: {len(scrubbed)} compressed line(s) carried an @handle or a URL "
+              f"outside the technical allowlist and were BLANKED — {'; '.join(scrubbed)}. The line "
+              "is removed whole rather than edited: a compressed sentence with its mark cut out is "
+              "a sentence nobody wrote and nobody proof-read (FR-319/FR-331). Those slides render "
+              "without text and keep their position", asset_id=entry.asset_id, slides=scrubbed)
+    if silent:
+        _warn(run.log, "compress_no_text",
+              f"{entry.asset_id}: {len(silent)} admitted source panel(s) came back from the "
+              f"compress call with nothing — {'; '.join(silent)}. Those slides render wordless "
+              "beside a source slide that has words, which is the failure FR-304 exists to "
+              "prevent; the panels themselves are intact and a verbatim re-run renders them in "
+              "full", asset_id=entry.asset_id, slides=silent)
+    return deck
+
+
+def _compress_field(text: str, budget: int, brands: Sequence[str], entry: PlanEntry, run: _Run,
+                    *, where: str,
+                    blanked_into: list[str] | None = None) -> tuple[str, bool, bool]:
+    """One compressed string through the engine's three backstops — `(text, trimmed, stripped)`.
+
+    The ONE implementation, used by every field the compress call writes into pixels (each slide
+    and the cover headline) so the three gates cannot be applied in two different orders on two
+    different fields. Order is the order of certainty and it matters:
+
+    1. **Blocklist** (§1.5 layers 1 and 2, fail-closed, `apply_blocklist`'s mechanics and never a
+       second implementation). It runs FIRST because a name removed from a string changes its
+       length, and trimming before stripping would measure a budget against bytes we do not ship.
+    2. **Social marks** (FR-319). The line is BLANKED, never edited — the two callers of this
+       function put words on a slide, and half a sentence is worse than no sentence. The blanking
+       is reported by the caller through `blanked_into`, aggregated per creative, because one
+       warning per slide buries the finding on an eight-slide deck.
+    3. **The word-boundary trim** to `budget` — `min(text_budgets.slide, style
+       max_onimage_chars.slide)`, the same number `_compress_block` asked the model to fit. This is
+       a BACKSTOP: the prompt is the mechanism, and a line reaching here still over the ceiling is
+       cut at the last word boundary and earns `text_trimmed` (FR-101's tag, FR-331's use of it).
+
+    `budget` of 0 means "this creative renders no such slot", which `_slot_budgets` never produces
+    for a carousel's `slide` or `headline`; the trim is skipped rather than blanking everything, so
+    a future format that reaches here with no budget loses nothing.
+
+    `stripped` reports the BLOCKLIST alone and never the trim: `competitor_stripped` means "a name
+    was removed", and a creative tagged with it because its slide was one character too long would
+    send the operator looking for a competitor nobody mentioned.
+    """
+    out = apply_blocklist(text, brands) if (text and brands) else text
+    stripped = out != text
+    if out.strip() and _social_mark(out):
+        if blanked_into is not None:
+            blanked_into.append(f"{where} (carries {_excluded_marks(out, relaxed=True)})")
+        else:
+            _warn(run.log, "compress_scrub",
+                  f"{entry.asset_id}: the compressed {where} carried "
+                  f"{_excluded_marks(out, relaxed=True)} and was BLANKED (FR-319/FR-331) — a "
+                  "compressed line is the model's own bytes, so the social-mark gate is re-applied "
+                  "to what came back, and the line is removed whole rather than edited",
+                  asset_id=entry.asset_id, field=where, text=out)
+        return "", False, stripped
+    if budget <= 0:
+        return out, False, stripped
+    trimmed_text, cut = trim_words(out, budget)
+    if cut:
+        _warn(run.log, "text_trimmed",
+              f"{entry.asset_id}: the compressed {where} came back at {len(out)} characters "
+              f"against a {budget}-character budget and was cut at the last word boundary "
+              "(FR-101). The budget is what the compress prompt asked for, so this is the model "
+              "overshooting rather than a rule being applied late",
+              asset_id=entry.asset_id, field=where, before=out, after=trimmed_text)
+    return trimmed_text, cut, stripped
+
+
+def _compressed_caption(payload: Mapping[str, Any], offer: _Offer, entry: PlanEntry, run: _Run,
+                        brands: Sequence[str], own_words: list[str]) -> tuple[str, list[str], bool]:
+    """`(caption, hashtags, whether a strip fired)` for a compressed creative (FR-331).
+
+    The caption is compressed AND humanized by the same call (operator decision, 2026-08-20): the
+    source creator's caption is written to farm their comments and their follows, and shipping it
+    verbatim under our brand is the funnel leak `_strip_cta` already fights sentence by sentence on
+    the verbatim path. Here the model is asked for the caption's MEANING without its mechanics.
+
+    Two engine backstops and one fallback:
+
+    - the blocklist runs on the caption and on every hashtag (fail-closed, and `_verify` re-checks
+      it afterwards on the shipped strings);
+    - a caption carrying a SOCIAL MARK is refused outright rather than edited — an @handle or a
+      link-in-bio URL in a caption is somebody else's funnel whatever else the sentence says;
+    - a refused or empty caption falls back to `_offer_caption`, the same assembled form
+      `_resolve` and `_mapped_fallback` use: this post's own best remaining line plus a neutral
+      attribution that names no account. It joins `own_words` because it is ours, not a quote —
+      and if that path has nothing safe either it raises `NoSafeCaptionError` while the run is
+      still pre-spend, exactly as it does in verbatim mode.
+    """
+    stripped = False
+    raw = str(payload.get("caption") or "")
+    caption = apply_blocklist(raw, brands) if (raw and brands) else raw
+    stripped = stripped or caption != raw
+    if not caption.strip() or _social_mark(caption):
+        cause = ("carries " + _excluded_marks(caption, relaxed=True) if caption.strip()
+                 else "came back empty")
+        caption = _offer_caption(offer, entry, run)
+        own_words.append(caption)
+        _warn(run.log, "compress_caption_rejected",
+              f"{entry.asset_id}: the compressed caption {cause}, so the creative captions itself "
+              "with its own post's best remaining line and a neutral attribution (FR-99/FR-307 "
+              "caption forms). A caption is the one string this engine publishes as prose, and a "
+              "mark in it points our audience at an account that is not ours",
+              asset_id=entry.asset_id, post_id=offer.post.post_id if offer.post else "")
+        return caption, [], stripped
+    hashtags: list[str] = []
+    dropped: list[str] = []
+    for tag in _strings(payload.get("hashtags")):
+        if apply_blocklist(tag, brands) != tag or _social_mark(tag):
+            dropped.append(tag)
+            continue
+        hashtags.append(tag)
+    if dropped:
+        stripped = True
+        _warn(run.log, "competitor_stripped",
+              f"{entry.asset_id}: {len(dropped)} hashtag(s) from the compress call were dropped — "
+              + ", ".join(repr(tag) for tag in dropped)
+              + ". A hashtag is one token and cannot be part-stripped, so a blocklisted or "
+                "identity-bearing tag is removed whole (§1.5, FR-319)",
+              asset_id=entry.asset_id, hashtags=dropped)
+    return caption, hashtags, stripped
+
+
+def _positional(value: Any) -> list[str]:
+    """A model's POSITIONAL list of strings — blanks KEPT, because the index is the contract.
+
+    Deliberately not `_strings`, and the difference is the whole of FR-304's alignment: `_strings`
+    drops blank items, so a model answering `["", "the second slide"]` would have its second line
+    land on slide 1 and its own slide 2 render wordless. Every other consumer in this module wants
+    the compacted reading (a list of refs, a list of hashtags); this one is a list whose *k*th
+    element IS slide *k + 1*, and losing an element re-maps the deck.
+    """
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, Sequence):
+        return [str(item or "") for item in value]
+    return []
 
 
 def _selected_deck(payload: Mapping[str, Any], offer: _Offer, entry: PlanEntry,
@@ -2140,9 +3130,13 @@ def _refused(entry: PlanEntry, group: _Group, run: _Run, offer: _Offer) -> _Writ
     This is NOT `copy_degraded`: no model call failed, and counting it as an FR-248 `llm_starved`
     loss would blame the LLM for a plan that bound a post the fetch gate had already spent. It is
     not `_fallback_copy` either — that tier quotes P1, and P1 may be the very post being refused.
-    So the creative ships what is unambiguously ours: the topic's own name plus the standing niche
-    line, hashtags assembled from the name, and NO on-image text (`no_onimage_text`, which is what
-    the operator will actually see in the frame).
+    So the creative ships what is unambiguously ours AND says nothing about the post it refused:
+    the topic's own name, hashtags assembled from that name, and NO on-image text
+    (`no_onimage_text`, which is what the operator will actually see in the frame). This is the
+    one caption path with no source line in it at all — the offer paths promote the bound post's
+    own hook, and FR-307 forbids exactly that here: the post is refused, so it may not be quoted,
+    not even for a caption. The standing niche line used to be appended and is gone (v2.2.0): the
+    operator's configuration is not caption copy.
 
     Two tags, and the second one only where it is true: `no_onimage_text` always (the frame is
     wordless whatever the reason), plus `no_fresh_post_available` when the post was BURNT — the
@@ -2152,7 +3146,7 @@ def _refused(entry: PlanEntry, group: _Group, run: _Run, offer: _Offer) -> _Writ
     line `_bound_index` already wrote.
     """
     name = _subject_name(entry, group)
-    caption = _fallback_caption(name, run.niche_descriptor)
+    caption = _fallback_caption(name)
     hashtags = _hashtags(name)
     copyset = CopySet(
         asset_id=entry.asset_id,
@@ -2168,7 +3162,8 @@ def _refused(entry: PlanEntry, group: _Group, run: _Run, offer: _Offer) -> _Writ
     )
     _warn(run.log, "copy_post_refused",
           f"{entry.asset_id}: its source post was refused ({offer.refused}); the creative ships "
-          "the topic name plus the standing niche line and renders without on-image text. No "
+          "the topic name alone (a refused post may not be quoted, FR-307) and renders "
+          "without on-image text. No "
           "other post is substituted — the plan's binding is the run's no-repeat guarantee",
           asset_id=entry.asset_id, reason=offer.refused,
           post_id=str(entry.source_post_id or ""))
@@ -2197,9 +3192,8 @@ def _mapped_fallback(entry: PlanEntry, offer: _Offer, group: _Group, run: _Run) 
     if caption_candidate is not None:
         refs["caption"] = caption_candidate.label
         caption, hashtags = caption_candidate.text, list(caption_candidate.hashtags)
-    else:  # the bound post carries no §0.7-worthy caption: our own words, claimed as ours
-        caption, hashtags = _fallback_caption(_subject_name(entry, group),
-                                              run.niche_descriptor), []
+    else:  # the bound post carries no §0.7-worthy caption: its own best line, attributed by us
+        caption, hashtags = _offer_caption(offer, entry, run), []
         own_words.append(caption)
     copyset = CopySet(
         asset_id=entry.asset_id,
@@ -2220,7 +3214,7 @@ def _mapped_fallback(entry: PlanEntry, offer: _Offer, group: _Group, run: _Run) 
           f"{sum(1 for text in deck.texts if text.strip())} mapped panel(s) verbatim (FR-304 "
           "needs no model) and ships "
           + ("its post's own caption" if caption_candidate is not None
-             else "our own standing caption")
+             else "that post's own best line under our own attribution")
           + " — lost to the failure: through-line and narrative arc only (FR-99)",
           asset_id=entry.asset_id, reason="copy_call_failed",
           copy_source_post_id=offer.post.post_id if offer.post else "")
@@ -2241,12 +3235,12 @@ def _fallback(entry: PlanEntry, trend: TrendItem | None, run: _Run) -> _Written:
     even though the content it falls back to is now legitimate), the second is what the operator
     will actually see in the frame.
     """
-    copyset = _fallback_copy(entry, trend, run.niche_descriptor, run.competitors, log=run.log)
+    copyset = _fallback_copy(entry, trend, run.competitors, log=run.log)
     top = _top_post(trend)
     # This tier quotes P1, NOT the creative's assigned post — there is no answer to honour a
     # divergence rule with, and the top post is the one the operator would have picked. Provenance
     # is recorded only when the caption really did come from it (an empty caption falls through to
-    # our own standing line, which claims nothing and is verified against itself).
+    # the topic name and its slug tags, which claim nothing and are verified against themselves).
     # Both strips, in the order `_offer_for` applies them, so the verifier's pool holds the same
     # bytes the caption above was built from. Layer 3 has to reach this tier as well (FR-312): it
     # is the ONE caption path with no offer table behind it, and a top post whose caption says
@@ -2264,7 +3258,7 @@ def _fallback(entry: PlanEntry, trend: TrendItem | None, run: _Run) -> _Written:
     refs = {"caption": "P1.caption"} if quoted else {}
     _warn(run.log, "copy_degraded",
           f"{entry.asset_id}: copy call failed; shipping "
-          + ("the top post's caption verbatim" if quoted else "our own standing caption")
+          + ("the top post's caption verbatim" if quoted else "the topic name and its slug tags")
           + " and NO on-image text (FR-99)",
           asset_id=entry.asset_id, reason="no_onimage_text",
           copy_source_post_id=top.post_id if top and quoted else "")
@@ -2275,7 +3269,7 @@ def _fallback(entry: PlanEntry, trend: TrendItem | None, run: _Run) -> _Written:
         quoted=sources if quoted else (copyset.caption, *copyset.hashtags))
 
 
-def _fallback_copy(entry: PlanEntry, trend: TrendItem | None, niche_descriptor: str = "",
+def _fallback_copy(entry: PlanEntry, trend: TrendItem | None,
                    competitors: Sequence[str] = (), *, log: Any = None) -> CopySet:
     """The no-call tier's `CopySet`: the top post's caption verbatim, and NO on-image text.
 
@@ -2290,9 +3284,16 @@ def _fallback_copy(entry: PlanEntry, trend: TrendItem | None, niche_descriptor: 
     says so via `no_onimage_text`.
 
     With no posts at all — an override brief, or a topic that arrived empty — the caption falls
-    back to what is ours: the topic's own name (the monitor's theme label) plus the niche
-    descriptor from config, and `through_line` carries the theme name so `reel_director.md` still
-    knows what the clip is about.
+    back to what is ours: the topic's own name (the monitor's theme label) and the hashtags its
+    slug yields, and `through_line` carries the theme name so `reel_director.md` still knows what
+    the clip is about. The niche descriptor was part of that assembled caption until v2.2.0 and is
+    not any more (FR-99/FR-307 caption forms): a caption is not a place to publish configuration.
+
+    The scrub the caption gets is `_scrubbed`'s, and it is the SAME expression `_fallback` builds
+    the verifier's pool with — OCR repair, the blocklist, the creator's lines and name, the fuzzy
+    near-miss pass and the CTA/dangling-promo sentence removal, in that order. Product and pool
+    diverging by one pass is how a successful strip gets reported as `copy_not_verbatim`, so the
+    only difference between the two call sites is that this one REPORTS what it removed.
 
     §0.7's substance floor applies to this tier too, and it has to: the caption that reaches here
     is unscreened by any model, so a top post whose caption is a hashtag run and three words would
@@ -2305,17 +3306,21 @@ def _fallback_copy(entry: PlanEntry, trend: TrendItem | None, niche_descriptor: 
     caption, hashtags = "", []
     if post is not None:
         terms = _creator_terms(post)
-        # Layers 1 and 3a deterministically, then FR-312's fuzzy caption pass — this IS a caption,
-        # and it is the tier with no model and no offer table between the source and the operator.
-        # `log` is optional so the function stays callable as a pure builder; when it is present,
-        # every fuzzy removal is reported the same way the main path reports its own.
+        # Layers 1 and 3a deterministically, then FR-312's fuzzy caption pass and the CTA/promo
+        # removal — this IS a caption, and it is the tier with no model and no offer table between
+        # the source and the operator. `log` is optional so the function stays callable as a pure
+        # builder; when it is present, the OCR repair, every fuzzy removal and every stripped
+        # sentence are reported exactly the way the main path reports its own.
+        _repaired(post.caption, kind="caption", asset_id=entry.asset_id,
+                  post_id=str(post.post_id), log=log)  # reports; `_scrubbed` applies it
         text, _ = _fuzzy_caption(_scrubbed(post.caption, competitors, terms), terms,
                                  entry.asset_id, str(post.post_id), log)
+        text = _strip_cta(text, entry.asset_id, str(post.post_id), log)
         body, tags = _split_trailing_hashtags(text)
         if _caption_substance(body) >= _CAPTION_MIN_CHARS:
             caption, hashtags = body, list(tags)
     if not caption.strip():
-        caption, hashtags = _fallback_caption(name, niche_descriptor), _hashtags(name)
+        caption, hashtags = _fallback_caption(name), _hashtags(name)
     return CopySet(
         asset_id=entry.asset_id,
         language=entry.language,
@@ -2343,16 +3348,89 @@ def _subject_name(entry: PlanEntry, group: _Group) -> str:
     return entry.brief_name or entry.asset_id
 
 
-def _fallback_caption(name: str, niche_descriptor: str) -> str:
-    """Our own caption: the topic's theme name plus our own standing niche line.
+def _fallback_caption(name: str) -> str:
+    """Our own caption when nothing may be quoted at all: the topic's theme name, and only that.
 
-    Both halves are ours — `NicheConfig.as_text()` is operator-authored config and the topic name
-    is the monitor's theme label — so this string makes no verbatim claim and needs none. The
-    niche line runs to a few hundred characters in real configs, so it is cut at a word boundary:
-    a caption is a caption, not a config dump.
+    **The niche descriptor is gone from here, deliberately and permanently (FR-99/FR-307 as
+    amended, v2.2.0).** It used to be appended — `NicheConfig.as_text()`, operator-authored config
+    — on the reasoning that a config string is ours and therefore safe to publish. The 08-14 audit
+    settled that: safe to publish and fit to publish are different questions, and
+    "AI tool stacks — AI automation for Czech SMBs; audience: operations leads who buy outcomes."
+    went out as a caption on a paid creative. The niche descriptor steers the copy PROMPT
+    (`build_context(niche_descriptor=...)`) and has no other business in this module.
+
+    The topic name is the monitor's own theme label, so this string still makes no verbatim claim
+    and needs none. It is the LAST resort of the two paths that may not quote: `_refused` (FR-307
+    forbids quoting the post it just refused) and `_fallback_copy` with no usable post caption,
+    where `_hashtags` adds the slug tags alongside it.
     """
-    standing = trim_words(" ".join((niche_descriptor or "").split()), 180)[0]
-    return f"{name} — {standing}" if standing else name
+    return name
+
+
+class NoSafeCaptionError(RuntimeError):
+    """An offer path had no caption it was ALLOWED to ship — raised while the run is pre-spend.
+
+    Reachable only from `_offer_caption`, i.e. only when a creative's BOUND post offered no
+    caption clearing §0.7's substance floor AND not one of its hooks, overlays or panels survived
+    the strips as a publishable line. Every safe form has been tried by then, and the two that
+    remain are both defects: improvising a caption out of config (the leak this amendment removes)
+    or shipping a creative with an empty `caption.txt` into the publisher.
+
+    So the module refuses instead, and it refuses HERE — copy runs before any render is submitted,
+    so `NO_SAFE_CAPTION` costs the operator nothing but the LLM call already made. `code` is the
+    machine-readable name the runner and the operator docs use.
+    """
+
+    code = "NO_SAFE_CAPTION"
+
+    def __init__(self, asset_id: str, post_id: str) -> None:
+        super().__init__(
+            f"{asset_id}: its bound source post ({post_id or 'unknown'}) offers no caption this "
+            "engine may ship — no caption candidate cleared the substance floor and no hook, "
+            "overlay or panel survived the competitor/creator strips as a publishable line. The "
+            "run stops here, before any render is submitted (NO_SAFE_CAPTION): a caption "
+            "assembled out of configuration is what this refusal exists to prevent")
+        self.asset_id = asset_id
+        self.post_id = post_id
+
+
+def _offer_caption(offer: _Offer, entry: PlanEntry, run: _Run) -> str:
+    """The caption for a bound creative whose own post offered none — its words, our attribution.
+
+    **The offer paths' safe form (FR-99/FR-307 caption forms, v2.2.0).** `_resolve` and
+    `_mapped_fallback` both reach a point where the model chose no caption and the post has none
+    worth §0.7: this creative is quoting that post everywhere else, so the honest caption is the
+    post's own best remaining line — a hook first (it is written to be read on its own), else an
+    overlay, else a panel — followed by a neutral attribution that names no account.
+
+    The line arrives here already through §1.5 layers 1 and 3 and free of social marks
+    (`_offer_for` collected it that way), and it goes through `_scrubbed(caption=True)` on the way
+    out because a line promoted INTO a caption must face the caption-scoped passes its neighbours
+    faced: the fuzzy creator strip and the CTA/dangling-promo removal. `_scrubbed` is the silent
+    door on purpose — the alternative is warning about lines this function then rejects — and the
+    one event it does emit names the promoted line and what shipped.
+
+    Nothing usable left raises `NoSafeCaptionError`. There is no third option that is not a leak.
+    """
+    post_id = str(offer.post.post_id) if offer.post is not None else ""
+    for line in offer.caption_fallbacks:
+        text = _scrubbed(line, run.competitors, offer.caption_terms, caption=True).strip()
+        # The same sanity fence a mapped panel faces (`PANEL_SANITY_CHARS`), for the same reason:
+        # past it the string is a transcription accident — a whole caption scraped into one panel
+        # — and a transcription accident is not a caption either. The floor below is the other
+        # end: a line has to be a sentence before it can be one.
+        if len(text) > PANEL_SANITY_CHARS or _caption_substance(text) < _FALLBACK_LINE_MIN_CHARS:
+            continue
+        caption = f"{text} {_NEUTRAL_ATTRIBUTION}"
+        _warn(run.log, "copy_caption_assembled",
+              f"{entry.asset_id}: post {post_id} offers no caption clearing the "
+              f"{_CAPTION_MIN_CHARS}-character substance floor (§0.7), so the creative captions "
+              f"itself with that post's own line {text!r} plus a neutral attribution naming no "
+              "account (FR-99/FR-307 caption forms). The operator's niche descriptor is never a "
+              "caption — it steers the prompt and nothing else",
+              asset_id=entry.asset_id, post_id=post_id, line=text)
+        return caption
+    raise NoSafeCaptionError(entry.asset_id, post_id)
 
 
 def _hashtags(name: str, want: int = 3) -> list[str]:
@@ -2424,7 +3502,13 @@ def _verify(written: _Written, entry: PlanEntry, run: _Run) -> list[DegradationT
        the second half of FR-303's ban and the reason it is enforced at the grammar rather than at
        a length filter. Ref resolution makes the check true by construction today; it is what
        notices the day someone adds a "helpful" normalisation between the candidate table and the
-       `CopySet`. It is skipped for free-text creatives, which quote nothing and claim nothing.
+       `CopySet`. It is skipped for free-text creatives, which quote nothing and claim nothing —
+       and, since D54/FR-331, for COMPRESSED ones, on exactly the same mechanism and for exactly
+       the same reason: `_compressed` returns `_Written(quoted=())`, so `written.quoted` is falsy
+       and this half never runs. That is deliberate and it is why this function needed no change
+       for compress mode. A compressed slide makes no byte-substring claim to audit; its receipts
+       are `CopyProvenance.copy_mode`, the panel map's `compressed` rows and their
+       `source_text_original`. Half 2 below is unaffected and still reads every string that ships.
     2. **Is it clean?** No blocklisted competitor may appear in ANY shipped string, on any path,
        verbatim or free text. This half is the fail-closed one and it re-checks §1.5 layer 1 at
        the very last moment before the bytes leave this module — the same asymmetry `_strip_terms`
@@ -2486,4 +3570,5 @@ def _warn(log: Any, event_type: str, message: str, **data: Any) -> None:
         log.warn(event_type, message, **data)
 
 
-__all__ = ["COPY_ROLE", "PANEL_SANITY_CHARS", "CopyProvenance", "CopyResult", "write_copy"]
+__all__ = ["COPY_ROLE", "MODE_COMPRESS", "MODE_VERBATIM", "PANEL_SANITY_CHARS", "CopyProvenance",
+           "CopyResult", "NoSafeCaptionError", "write_copy"]

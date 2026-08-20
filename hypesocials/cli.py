@@ -46,6 +46,10 @@ from hypesocials.util import wrapped
 PROG = "run.bat"  # what the operator actually launches; `python -m hypesocials` is the inner call
 _WIDTH = 78  # FR-286: help wraps here, never at the console width, which legacy conhost mangles
 _NOTION = ("off", "copy", "full")
+#: FR-333's two carousel copy modes, in the order `--help` should read them: the engine default
+#: first. Typed once here and handed to argparse as `choices`, so a misspelled mode dies at the
+#: boundary with the same one-liner `config._coerce` would have printed for the file-side key.
+_COPY_MODES = ("verbatim", "compress")
 
 
 class Action(str, Enum):
@@ -72,7 +76,18 @@ class Options:
     #   "every style", so only a real list may overwrite what the config file chose.
     budget_usd: float | None = None
     notion: str | None = None
-    vision_check: bool = False
+    #: `--copy-mode` (v2.3.0, D54/FR-333): `verbatim` | `compress` for BOUND carousel decks only.
+    #: `None` = the flag was not passed, so `run.carousel_copy_mode` from the file stands — the
+    #: three shipped brand configs pin `compress`, and a plain default of `"verbatim"` here would
+    #: quietly override them on every flagless run.
+    copy_mode: str | None = None
+    #: `--gauntlet` / `--no-gauntlet` (v2.2.0, D49) — the post-render quality gate, replacing the
+    #: removed `--vision-check`. THREE states, which is why it is not a plain bool: `None` = neither
+    #: flag was passed, so the config file's `run.gauntlet.enabled` stands untouched. The old flag
+    #: could only ever turn the check ON, so a config with it on had no way back from the command
+    #: line; the gate is now the single biggest optional cost in a run, and an operator who wants a
+    #: cheap unattended batch needs to be able to say so without editing a file.
+    gauntlet: bool | None = None
     verbose: bool = False  # `--verbose`/`-v` (FR-299): the CONSOLE tier only. Read beside
     #   `config.output.console_verbosity` by the runner — a flag, so it overrides nothing on the
     #   `Config` object and `run.log`/`events.jsonl` stay identical either way.
@@ -108,7 +123,8 @@ def parse_args(argv: Sequence[str] | None = None) -> Options:
         styles=ns.styles,  # deduped here, checked against the registry at pre-flight (FR-314)
         budget_usd=ns.budget,
         notion=ns.notion,
-        vision_check=bool(ns.vision_check),
+        copy_mode=ns.copy_mode,  # already one of `_COPY_MODES`, or None when the flag was absent
+        gauntlet=ns.gauntlet,  # None unless one of the two mutually exclusive flags was passed
         verbose=bool(ns.verbose),
         briefs=tuple(ns.brief or ()),
         yes=bool(ns.yes),
@@ -145,7 +161,19 @@ def _parser() -> argparse.ArgumentParser:
                              "over this run; omit for all of them (FR-314)")
     parser.add_argument("--budget", type=float, metavar="USD", help="override the spend cap")
     parser.add_argument("--notion", choices=_NOTION, help="Notion influence level (D7)")
-    parser.add_argument("--vision-check", action="store_true", help="enable the vision check (D3)")
+    parser.add_argument("--copy-mode", dest="copy_mode", choices=_COPY_MODES,
+                        help="how a bound carousel deck's panel text reaches its slides "
+                             "(D54): verbatim keeps the source panel as it stands, compress "
+                             "shortens it to the style's budget in the post's own language; "
+                             "images, reels and override briefs are unaffected")
+    # v2.2.0 (D49): the mirror of the removed `--vision-check`. Two flags into ONE dest so the
+    # "not passed" state stays distinguishable from "passed false" — `--no-gauntlet` must be able
+    # to turn off a gate the config file turned on, which `store_true` alone could never express.
+    gauntlet = parser.add_mutually_exclusive_group()
+    gauntlet.add_argument("--gauntlet", dest="gauntlet", action="store_true", default=None,
+                          help="run the post-render critic gate (D49; on by default)")
+    gauntlet.add_argument("--no-gauntlet", dest="gauntlet", action="store_false", default=None,
+                          help="skip the gate entirely — renders ship as Kie returned them")
     parser.add_argument("--verbose", "-v", action="store_true",
                         help="show per-topic/per-candidate detail on the console; run.log and "
                              "events.jsonl are unchanged (FR-299)")
@@ -271,9 +299,12 @@ def apply_overrides(config: Config, opts: Options) -> list[str]:
     if opts.notion:
         config.run.notion_influence = opts.notion  # type: ignore[assignment]
         applied.append(f"run.notion_influence={opts.notion}")
-    if opts.vision_check:
-        config.run.vision_check = True
-        applied.append("run.vision_check=true")
+    if opts.copy_mode:  # FR-333, flag over file (FR-61) — argparse already checked the word
+        config.run.carousel_copy_mode = opts.copy_mode  # type: ignore[assignment]
+        applied.append(f"run.carousel_copy_mode={opts.copy_mode}")
+    if opts.gauntlet is not None:  # `None` = neither flag passed; the file's own value stands
+        config.run.gauntlet.enabled = bool(opts.gauntlet)
+        applied.append(f"run.gauntlet.enabled={str(bool(opts.gauntlet)).lower()}")
     if opts.history_days is not None:  # already range-checked at the boundary by `_history_days`
         config.run.trend_history_days = int(opts.history_days)
         applied.append(f"run.trend_history_days={config.run.trend_history_days}")

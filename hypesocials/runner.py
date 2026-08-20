@@ -57,12 +57,13 @@ from hypesocials.config import LOGS_DIR, Config, ConfigError, load_config
 from hypesocials.llm import CREDITS_EXHAUSTED_REASON, LLMClient, RoleSettings
 from hypesocials.models import (
     AssetRecord, Brief, CopySet, DegradationTag, ParsedResult, PlanEntry, PlanEntryStatus,
-    SourcePost, TrendItem, VisionCheckResult)
+    SourcePost, TrendItem)
 from hypesocials.outputs import (
     Ledger,
     LogWriter,
     close_downloads,
     create_run_folder,
+    read_gauntlet_report,
     read_history,
     record_use,
     save_reference,
@@ -129,6 +130,22 @@ class _Abort(Exception):
 
 
 @dataclass(slots=True)
+class _RoleUsage:
+    """One LLM role's whole run: how many calls, how many tokens each way, and what it cost."""
+
+    calls: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    cost_usd: float = 0.0
+
+    def add(self, result: ParsedResult) -> None:
+        self.calls += 1
+        self.prompt_tokens += int(result.prompt_tokens or 0)
+        self.completion_tokens += int(result.completion_tokens or 0)
+        self.cost_usd += float(result.cost_usd or 0.0)
+
+
+@dataclass(slots=True)
 class _Session:
     """One run's mutable context — built once, threaded everywhere, never global."""
 
@@ -163,6 +180,11 @@ class _Session:
     #: and `_write` hands the SAME set to copywrite's pick-time guard (belt-and-braces; one
     #: read, two enforcement points, zero drift).
     used_post_ids: frozenset[str] = frozenset()
+    #: FR-84/FR-326 (v2.2.0): `role -> _RoleUsage` — what every metered LLM call actually cost,
+    #: accumulated at the ONE seam every call passes through (`_metered`). It exists because the
+    #: gauntlet made LLM spend the larger half of a run's bill at worst case (spec §5), and a
+    #: single `llm $0.42` line can no longer answer "which role, and how many tokens".
+    llm_usage: dict[str, _RoleUsage] = field(default_factory=dict)
     #: FR-306: `post_id -> SlideIntel` from the INTEL stage — `_write` derives `merged_panels`
     #: from it and `_create` rides it onto `generate.Env.slide_intel` for the per-slide briefs.
     slide_intel: dict[str, Any] = field(default_factory=dict)
@@ -273,8 +295,9 @@ def decide_exit_code(
 ) -> int:
     """FR-202's five codes, in one place, so a scheduler reads the same meaning every time.
 
-    `0` every planned creative delivered · `1` completed with losses (skipped, failed, trimmed or
-    abandoned) · `2` pre-flight refusal or config error, nothing spent · `3` fatal after Collect
+    `0` every planned creative delivered · `1` completed with losses (skipped, failed, trimmed,
+    abandoned, or BLOCKED by the post-render gate) · `2` pre-flight refusal or config error,
+    nothing spent · `3` fatal after Collect
     began — zero usable trends for a plan that needed them, or a transport-dead source · `4`
     interrupted by SIGINT.
 
@@ -318,6 +341,13 @@ def decide_exit_code(
         return EXIT_NOTHING_USABLE
     if not entries:
         return EXIT_PREFLIGHT  # a zero-creative plan never starts (FR-64)
+    # FR-325 (v2.2.0, D49): ANY blocked creative is a code-1 run, stated as its own branch rather
+    # than left to fall out of the `whole` arithmetic below. It would fall out of it today — a
+    # BLOCKED entry is not SUCCESS — but "a deck the quality gate refused makes the run exit 1" is
+    # a contract a scheduler reads, and a contract that holds by accident is a contract one
+    # refactor away from not holding. The creative rendered and was paid for; it is not published.
+    if any(entry.status is PlanEntryStatus.BLOCKED for entry in entries):
+        return EXIT_PARTIAL
     whole = [entry for entry in delivered
              if not entry.skip_reason
              and not _DELIVERED_LOSS_TAGS.intersection(tags.get(entry.asset_id, ()))]
@@ -466,7 +496,12 @@ def _assign_visuals(session: _Session, live: Sequence[PlanEntry],
     if session.registry is not None and styled:
         styles.assign_styles(styled, session.registry, branding.brand,
                              enabled=session.config.styles.enabled,  # FR-314 selector
-                             branding_enabled=branding.enabled)  # FR-318 master switch
+                             branding_enabled=branding.enabled,  # FR-318 master switch
+                             # v2.2.0: the rotation's per-run offset. The run id is the seed, so
+                             # two runs of one config no longer open with the same style; the
+                             # receipt lines below still show exactly what was assigned.
+                             run_id=session.run_id,
+                             rotation=session.config.styles.rotation)
     styles.assign_branding(live, branding.brand_ratio, enabled=branding.enabled)
     topic_count = len({entry.trend_key for entry in live if entry.trend_key})
     used = len({entry.style_key for entry in live if entry.style_key})
@@ -564,22 +599,81 @@ def _configure_llm(session: _Session) -> None:
     """
     config = session.config
     session.llm = LLMClient(
-        {role: _role_settings(config, role) for role in ("analysis", "copy")},
+        # v2.2.0 (D49): `critic` joins the roster. `llm.py:169` RAISES on an unregistered role, so
+        # a critic call would take the whole gate down rather than degrade it — registration is
+        # what makes `models.critic or models.analysis` a runtime fact instead of a config comment.
+        {role: _role_settings(config, role) for role in _live_roles(config)},
         max_inflight_llm_calls=config.models.max_inflight_llm_calls,
         http_max_attempts=config.models.http_max_attempts,
         on_warning=session.log.warn)
 
 
+#: Which model each LLM role rides. A DICT rather than the two-way ternary this was, because
+#: v2.2.0 added a third role and a ternary cannot grow a third arm without silently mis-answering
+#: for the one it does not name (an unknown role would have resolved to `models.copy`, so every
+#: critic call would have gone out on Luna at Luna's token cap). `critic` resolves at REGISTRATION,
+#: not at the call site: `models.StructuredCall` takes a role NAME and never a model id, and
+#: `models.critic or models.analysis` is spec §4's stated fallback for a config that never set it.
+_ROLE_MODEL = {
+    "analysis": lambda models: models.analysis,
+    "copy": lambda models: models.copy,
+    "critic": lambda models: models.critic or models.analysis,
+}
+
+#: Which `models.*` knob bounds each role's REASONING — same dict shape as `_ROLE_MODEL`, and a
+#: dict for the same reason. A role absent from this map sends no `reasoning` field at all, and on
+#: a thinking model that is not "no thinking": it is the model's own full effort, billed inside
+#: `completion_tokens` where no per-role cap of ours can see it. That omission is exactly what made
+#: the Session 5 acceptance run spend $1.30 on critic calls (F5) — `critic` is bounded at `low` by
+#: default here, and the per-critic `critic:<name>` overrides inherit it because they are a choice
+#: of MODEL, never a second thinking budget. `analysis` is deliberately still absent: its 12,000
+#: token cap was sized around the unbidden reasoning it already bills (30 §2), and bounding it is a
+#: separate measurement, not a free ride on this one.
+_ROLE_EFFORT = {
+    "copy": lambda models: models.reasoning_effort,
+    "critic": lambda models: models.critic_reasoning_effort,
+}
+
+
+def _live_roles(config: Config) -> list[str]:
+    """Every LLM role THIS run may call, including the per-critic overrides (spec §1/§4).
+
+    `critic:<name>` exists only when that critic carries its own `model:` in config. The gauntlet
+    asks for that role by name and falls back to the plain `critic` role when it is not registered
+    (`gauntlet._invoke`), so an unregistered override costs a per-critic model and never a critic —
+    but registering the ones that ARE configured is what makes the override work at all.
+    """
+    critics = getattr(config.run.gauntlet, "critics", {}) or {}
+    return ["analysis", "copy", "critic",
+            *(f"critic:{name}" for name, critic in sorted(critics.items())
+              if getattr(critic, "model", None))]
+
+
 def _role_settings(config: Config, role: str) -> RoleSettings:
     """One LLM role from config. `temperature` stays opt-in — RESULTS.md §E: neither shipped
-    model advertises it, and sending it under `require_parameters` is a 404 (FR-129 conflict)."""
+    model advertises it, and sending it under `require_parameters` is a 404 (FR-129 conflict).
+
+    A `critic:<name>` role is the shared `critic` role with ONE field replaced — the model. Its
+    token caps, floors, reasoning effort and temperature support are the critic role's, because a
+    per-critic override is a choice of model and never a second budget: `max_tokens.critic` sizes a
+    critic's answer (spec §4), and a defect report is the same shape whichever model writes it.
+
+    `reasoning_effort` comes from `_ROLE_EFFORT` and is `None` only for a role that has no knob —
+    see that map for why "no knob" is the expensive answer rather than the free one (F5).
+    """
+    models = config.models
+    base, _, critic_name = role.partition(":")
+    override = ((getattr(config.run.gauntlet, "critics", {}) or {}).get(critic_name)
+                if base == "critic" and critic_name else None)
+    effort = _ROLE_EFFORT.get(base)
     return RoleSettings(
-        model=config.models.analysis if role == "analysis" else config.models.copy,
-        max_tokens=config.max_tokens_for(role),
-        max_tokens_floor=config.models.max_tokens_floor.get(role, 0),
-        reasoning_effort=config.models.reasoning_effort if role == "copy" else None,
-        temperature=config.models.temperature.get(role),
-        temperature_supported=role in config.models.temperature)
+        model=(getattr(override, "model", None)
+               or _ROLE_MODEL.get(base, _ROLE_MODEL["analysis"])(models)),
+        max_tokens=config.max_tokens_for(base),
+        max_tokens_floor=models.max_tokens_floor.get(base, 0),
+        reasoning_effort=effort(models) if effort else None,
+        temperature=models.temperature.get(base),
+        temperature_supported=base in models.temperature)
 
 
 # --------------------------------------------------------------------------- stages
@@ -684,6 +778,21 @@ def _select(session: _Session, trends: list[TrendItem],
                               f"{config.run.max_trend_reuses_per_run} (FR-8)",
                               trend=decision.trend_key, use_index=decision.use_index,
                               max_reuses=config.run.max_trend_reuses_per_run)
+    # FR-307's supply arithmetic, printed the moment a carousel starves rather than only inside the
+    # abort path: the plan may still ship its other decks, and "3 carousels found no unused source
+    # slideshow" with no numbers beside it reads as a bug rather than as a cadence fact. `plan` owns
+    # the counts (including the per-platform floor they were screened at); this stage owns the
+    # wording and says which way the remedy points.
+    if assignment.no_fresh_post_skips:
+        supply = assignment.fresh_post_line
+        session.log.event("carousel_supply", supply,
+                          available=assignment.carousel_posts_available,
+                          bound=assignment.carousel_posts_bound,
+                          floor=assignment.carousel_floor,
+                          skipped=assignment.no_fresh_post_skips)
+        session.say("\n".join(part for _, part in wrapped(
+            supply + " — run less often or add monitors; widening --history-days makes this worse",
+            76)))
     if not any(entry.trend_key or entry.brief_influence == "override" for entry in entries):
         raise _Abort(EXIT_NOTHING_USABLE, _famine_message(selection, config))
     return assignment
@@ -805,6 +914,11 @@ async def _write(session: _Session, live: Sequence[PlanEntry], trends: dict[str,
                             if str(slide.chrome_text or "").strip()]
                       for pid, intel in session.slide_intel.items()} or None,
         burnt_post_ids=sorted(session.used_post_ids),
+        # D54/FR-331: the operator's copy contract for BOUND carousel decks. This is the single
+        # production call site, so it is also the only place the key is read for copy — previews
+        # reach the same function through this one (`--preview-analysis` included), which is what
+        # makes the preview an honest rehearsal of the paid run's words.
+        carousel_copy_mode=config.run.carousel_copy_mode,
         progress=progress,
         niche_descriptor=config.niche.as_text(), log=session.log), heartbeat, suppress_s=10.0)
     session.log.event("copy_complete", f"copy for {len(result.copy)} creative(s)",
@@ -812,8 +926,15 @@ async def _write(session: _Session, live: Sequence[PlanEntry], trends: dict[str,
                       trimmed=sorted(result.trimmed),
                       tags={asset_id: [tag.value for tag in tags]
                             for asset_id, tags in sorted(result.tags.items())})
+    # FR-296 + D54: the closing line names the contract the words actually shipped under, counted
+    # off the per-asset receipt rather than off `config.run.carousel_copy_mode`. The two differ
+    # exactly where it matters — a compress-mode run whose call failed shipped the verbatim mapped
+    # deck, and a line claiming "compressed" over it would hide the degradation.
+    compressed = sum(1 for prov in result.provenance.values()
+                     if prov.copy_mode == copywrite.MODE_COMPRESS)
     _stage(session, "COPY",
-           f"{groups} call(s) -> {len(result.copy)} creative(s) quoted verbatim",
+           f"{groups} call(s) -> {len(result.copy)} creative(s) quoted verbatim" if not compressed
+           else f"{groups} call(s) -> {len(result.copy)} creative(s), {compressed} compressed",
            elapsed_s=watch.elapsed_s)
     return result
 
@@ -929,9 +1050,9 @@ async def _create(session: _Session, entries: Sequence[PlanEntry], live: Sequenc
     """CREATE: images, carousels and reels in two waves. Terminal entries package as honest skips.
 
     Returns the report **and** the topics the render side saw, because FR-153 records the posts a
-    creative actually quoted. The vision check is wired in here and nowhere else: `llm_call` is
-    the same metered wrapper the filter and Write stages use, so every check call lands in the
-    FR-84 tally — `None` whenever the check is off (FR-27). `deadline` gives the modules FR-108's
+    creative actually quoted. The GAUNTLET is wired in here and nowhere else: `llm_call` is
+    the same metered wrapper the filter and Write stages use, so every critic call lands in the
+    FR-84 tally and in the per-role usage table — `None` whenever the gate is off (D49). `deadline` gives the modules FR-108's
     `env.halted` without a runner callback. RENDER narration (FR-296/299) rides the Env's `say`/
     `pulse` seams: the opening header here, per-job terminal lines and the silence-breaker
     heartbeat inside `generate`, the closing header back here with the real ok/failed split.
@@ -941,7 +1062,7 @@ async def _create(session: _Session, entries: Sequence[PlanEntry], live: Sequenc
             if entry.status is PlanEntryStatus.PENDING:
                 entry.status = PlanEntryStatus.ABANDONED
                 entry.skip_reason = "run deadline elapsed or interrupted before submission"
-    checking = bool(session.config.run.vision_check) and session.llm is not None
+    gated = bool(session.config.run.gauntlet.enabled) and session.llm is not None
     wave1, wave2 = _job_forecast(live)
     _stage(session, "RENDER",
            f"{wave1 + wave2} job(s) submitted ({wave1} wave-1, {wave2} wave-2)", opening=True)
@@ -959,7 +1080,7 @@ async def _create(session: _Session, entries: Sequence[PlanEntry], live: Sequenc
         styles=session.registry, branding=session.config.branding,  # FR-290/292
         strip_brands=dict(session.strip_brands),  # M6: LLM-discovered brands reach every prompt
         slide_intel=dict(session.slide_intel),  # FR-306/308: per-slide briefs for the deck
-        llm_call=_metered(session) if checking else None,
+        llm_call=_metered(session) if gated else None,
         stop=session.control.stop, deadline=session.deadline,
         say=session.say, pulse=session.pulse, heartbeat_s=session.pulse.interval_s,
         jobs_expected=wave1 + wave2)
@@ -969,42 +1090,144 @@ async def _create(session: _Session, entries: Sequence[PlanEntry], live: Sequenc
            f"{env.jobs_submitted} job(s) -> {env.jobs_ok} ok, "
            f"{env.jobs_submitted - env.jobs_ok} failed ({wave1} wave-1, {wave2} wave-2)",
            elapsed_s=watch.elapsed_s)
-    _check_rollup(session, report)
+    _gauntlet_rollup(session, report)
     session.log.event("generation_complete",
                       f"{len(report.packaged_trends)} topic(s) produced packaged creatives",
                       duration_ms=watch.elapsed_ms, disk_full=report.disk_full)
     return report, trends
 
 
-def _check_rollup(session: _Session, report: generate.Report) -> None:
-    """CHECK (FR-296): a rollup header — the vision check runs INSIDE each creative, so this
-    stage has no elapsed of its own (`-`) and details only failures/retries."""
-    if "CHECK" not in session.stages:
+def _gauntlet_rollup(session: _Session, report: generate.Report) -> None:
+    """GAUNTLET (FR-296/FR-328): a rollup header plus one line per round that found something.
+
+    The gate runs INSIDE each creative — one call per critic per round, concurrently with every
+    other creative — so this stage has no elapsed of its own (`-`) and narrates what the rounds
+    already recorded in each `meta.yaml.gauntlet`. Reading the records rather than a live callback
+    is deliberate: the records are what the operator can go back and check, and a console line that
+    could disagree with them would be the only unverifiable number on the page.
+
+    The per-round line is spec §6's format, verbatim:
+
+        GAUNTLET deck Li_car_03 round 2/3 — 2 frame(s) failed (brief: invented_text s4; craft:
+        contrast s2) — re-rendering 2
+
+    Defect CODES only, never a critic's `detail` string: D30 keeps full detail in events.jsonl, and
+    a `detail` is model-written free text that has no business on a console line or in run.log.
+    """
+    if "GAUNTLET" not in session.stages:
         return
-    outcomes = {record.asset_id: record.vision_check_result
-                for record in report.records.values()}
-    checked = [v for v in outcomes.values() if v is not VisionCheckResult.NOT_CHECKED]
-    # DISJOINT categories (v2.1.4). `retried` overlapped `passed` — a deck that was flagged,
-    # re-rendered and came back clean counted in both — so glz0 printed "6 checked -> 4 pass, 3
-    # retried" and the operator got to do arithmetic that does not add up. A creative is now in
-    # exactly one bucket: it passed, or it is still flagged. How many of the passes needed a
-    # re-render is a parenthetical on the pass count, which is what that number always meant.
-    passed = [v for v in checked if v in (VisionCheckResult.PASSED,
-                                          VisionCheckResult.RETRIED_PASSED)]
-    after_retry = sum(1 for v in checked if v is VisionCheckResult.RETRIED_PASSED)
-    # The unchecked ones are stated as the DENOMINATOR rather than as a third count: `6 of 7
-    # checked` is the same fact in fewer characters, and FR-286 leaves this line about 52 (§1.10's
-    # flexing body width). All-checked is the ordinary case and says so plainly.
-    head = (f"{len(checked)} checked" if len(checked) == len(outcomes)
-            else f"{len(checked)} of {len(outcomes)} checked")
-    _stage(session, "CHECK",
-           f"{head} -> {len(passed)} pass"
-           + (f" ({after_retry} retried)" if after_retry else "")
-           + f", {len(checked) - len(passed)} flagged", elapsed_s=None)
-    for asset_id, verdict in sorted(outcomes.items()):
-        if verdict is VisionCheckResult.RETRIED_FAILED:
-            session.say(f"          {asset_id.rsplit('_', 1)[-1]:>2} retried and still flagged "
-                        "— shipped as rendered (FR-105)")
+    gates = {asset_id: record.gauntlet for asset_id, record in sorted(report.records.items())
+             if isinstance(getattr(record, "gauntlet", None), dict)}
+    if not gates:
+        _stage(session, "GAUNTLET", "no creative reached the gate", elapsed_s=None)
+        return
+    tally = Counter(str(gate.get("result") or "skipped") for gate in gates.values())
+    rerenders = sum(int(gate.get("rerenders") or 0) for gate in gates.values())
+    spend = sum(float(gate.get("critic_cost_usd") or 0.0)
+                + float(gate.get("rerender_cost_usd") or 0.0) for gate in gates.values())
+    blocked = tally.get("blocked", 0)
+    # FR-286: this body has ~54 columns to live in, so it carries the three counts an operator
+    # acts on plus the money, and nothing else. Fix counts are per creative and are on the rows
+    # below; the whole gate's spend also appears in the LLM-usage table at DONE.
+    _stage(session, "GAUNTLET",
+           f"{len(gates)} judged -> {tally.get('pass', 0)} pass, {blocked} blocked, "
+           f"{len(gates) - tally.get('pass', 0) - blocked} stopped · {_money(spend)}",
+           elapsed_s=None)
+    session.log.event("gauntlet_rollup", f"{len(gates)} creative(s) judged",
+                      results=dict(tally), rerenders=rerenders, spend_usd=round(spend, 6))
+    for asset_id, gate in gates.items():
+        # The DEFECTS come from the asset's own `GAUNTLET_REPORT.yaml` rather than from memory, so
+        # the console line and the file an operator opens afterwards cannot disagree — and so a
+        # `meta.yaml.gauntlet` that only carries per-critic COUNTS (spec §6's shape) can still be
+        # narrated with the codes spec §6's console line names.
+        for line in _gauntlet_lines(asset_id, gate,
+                                    read_gauntlet_report(session.run_dir / asset_id)):
+            session.say(line)
+
+
+def _defect_codes(report: Mapping[str, Any] | None) -> dict[int, str]:
+    """`round -> "brief: invented_text s4; craft: contrast s2"` — spec §6's console clause.
+
+    Built from `GAUNTLET_REPORT.yaml`'s per-round defect rows. CODES and frame numbers only: a
+    critic's `detail` is model-written free text and belongs in events.jsonl and in that file,
+    never on a console line or in run.log (D30's split, applied to model output rather than to
+    secrets). Deduped, so three frames failing the same code read as one clause with three slides.
+    """
+    out: dict[int, str] = {}
+    for row in (report or {}).get("rounds") or ():
+        if not isinstance(row, Mapping):
+            continue
+        per_critic: dict[str, list[str]] = {}
+        for defect in row.get("defects") or ():
+            if isinstance(defect, Mapping) and defect.get("code"):
+                per_critic.setdefault(str(defect.get("critic") or "?"), []).append(
+                    f"{defect['code']} s{defect.get('frame')}")
+        if per_critic:
+            out[int(row.get("round") or 0)] = "; ".join(
+                f"{name}: {', '.join(sorted(set(found)))}"
+                for name, found in sorted(per_critic.items()))
+    return out
+
+
+def _gauntlet_lines(asset_id: str, gate: Mapping[str, Any],
+                    report: Mapping[str, Any] | None = None) -> list[str]:
+    """Spec §6's per-round console lines for ONE creative — only the rounds that found something.
+
+    A clean round is silence by design: the stage header already says how many creatives passed,
+    and a line per passing round would bury the two decks that did not. `degraded` and `blocked`
+    each add their own closing sentence, because both are decisions the operator has to act on.
+
+    `report` is that creative's `GAUNTLET_REPORT.yaml`, when it has one; it supplies the defect
+    CODES the line names. Without it the line degrades to per-critic counts, which is still true
+    and still useful — a rollup must never depend on a file that may not have been written.
+    """
+    rounds = [row for row in (gate.get("rounds") or ()) if isinstance(row, Mapping)]
+    codes = _defect_codes(report)
+    total = len(rounds)
+    result = str(gate.get("result") or "")
+    body: list[str] = []
+    for row in rounds:
+        failed = list(row.get("failed_frames") or ())
+        if not failed:
+            continue
+        detail = codes.get(int(row.get("round") or 0), "") or "; ".join(
+            f"{name}: {count} frame(s)"
+            for name, count in sorted((row.get("critics") or {}).items()) if count)
+        rerendered = list(row.get("rerendered") or ())
+        body.append(fit(
+            f"            round {row.get('round')}/{total} — {len(failed)} failed "
+            f"({detail or 'no critic named a defect'})"
+            + (f" — {len(rerendered)} fix" if rerendered else ""), 78))
+    if gate.get("degraded_gate"):
+        # Causes share the flag: critics dropped as unavailable (D3), a standing cosmetic defect
+        # (FR-325's cosmetic tier, Session 5.6/F7) and a standing low-confidence system verdict
+        # (Session 5.7/F8). The dropped set tells the D3 case from the other two, and the other
+        # two share a sentence because they share an ANSWER — the gate saw everything, judged the
+        # remaining defect too weak to bin a paid deck for, and shipped it tagged. Which of the
+        # two it was is in the round lines above (the codes) and in GAUNTLET_REPORT.yaml (their
+        # confidence); splitting the sentence would spend a scarce console line on a distinction
+        # the operator acts on identically.
+        dropped = sorted({name for row in rounds for name in (row.get("unavailable") or ())})
+        if dropped:
+            body.append(fit(f"            gate DEGRADED — {', '.join(dropped)} could "
+                            "not be read; judged by the survivors (D3)", 78))
+        else:
+            body.append(fit("            gate DEGRADED — cosmetic/low-confidence defect(s) "
+                            "stand and ship (FR-325)", 78))
+    if result == "blocked":
+        # TWO lines, deliberately: this is the one thing on the page that means "do not publish
+        # this", and the file names are what the operator does next. Fitting both into 78 columns
+        # would truncate exactly the half that says where to look.
+        body.append("            BLOCKED — not published; every paid slide is kept on disk")
+        body.append("            read BLOCKED.txt and GAUNTLET_REPORT.yaml in its folder")
+    elif result in ("budget_stop", "deadline_stop"):
+        body.append(fit(f"            {result.replace('_', ' ')} — the fix loop stopped early; "
+                        "the creative ships with its last verdict standing", 78))
+    # The asset id gets its OWN line rather than a prefix on every row: ids run to ~46 characters
+    # (FR-71's `<Pl>_<fmt>_<slug>_<NN>`), and repeating one on each round line left FR-286's 78
+    # columns with no room for the defect codes — which are the only part of the line worth
+    # reading. Silence when nothing happened: a clean creative is the stage header's business.
+    return [fit(f"          {asset_id}  {result}", 78), *body] if body else []
 
 
 def _posts_used(session: _Session, report: generate.Report, attached: Mapping[str, TrendItem],
@@ -1016,6 +1239,12 @@ def _posts_used(session: _Session, report: generate.Report, attached: Mapping[st
     delivered creative's meta record, never the whole topic's post list: a topic contributes only
     the posts that actually became pixels or captions. The URL rides along so a history entry is
     auditable without re-fetching (item 14; `state.record_use` consumes exactly this shape).
+
+    `SUCCESS` is the whole test, and v2.2.0's `BLOCKED` is deliberately not it: a deck the quality
+    gate refused was never published, so its source post's text never shipped and burning that post
+    for the next 30 days would cost the run its best material for a creative nobody will ever see.
+    Every non-SUCCESS status — skipped, failed, abandoned, blocked — is excluded by the same
+    identity check below; the status enum grew, the rule did not.
     """
     uses: dict[str, list[tuple[str, str]]] = {key: [] for key in report.packaged_trends}
     for entry in entries:
@@ -1051,8 +1280,12 @@ async def _package(session: _Session, entries: Sequence[PlanEntry], plan_estimat
     if report.packaged_trends:  # FR-82: only topics that actually produced a packaged creative
         await record_use(LOGS_DIR, _posts_used(session, report, attached, entries), session.run_id,
                          history_days=session.config.run.trend_history_days, log=session.log)
+    # FR-254: `latest` points at the newest run that actually DELIVERED something. SUCCESS is the
+    # only status that qualifies, and v2.2.0's BLOCKED explicitly does not (D49): a run whose every
+    # deck was refused by the quality gate must leave the previous run's pointer standing, or the
+    # operator's `output/latest/` shortcut opens onto a folder with nothing publishable in it.
     if any(entry.status is PlanEntryStatus.SUCCESS for entry in entries):
-        await set_latest(session.config.output.dir, session.run_id, log=session.log)  # FR-254
+        await set_latest(session.config.output.dir, session.run_id, log=session.log)
 
     # FR-202 reads the FR-73 tags, not the plan alone: a partial carousel ships SUCCESS with no
     # `skip_reason` (the deck DID ship — `carousel.package()` marks `incomplete` instead).
@@ -1071,7 +1304,8 @@ async def _package(session: _Session, entries: Sequence[PlanEntry], plan_estimat
     if provenance := _provenance_block(entries, report.records, attached, copy_result.copy):
         session.say(provenance)
     session.say(_funnel_block(session.counters))  # FR-155: ONCE, at DONE — nowhere else
-    session.say(_spend_table(summary))
+    session.say(_spend_table(summary, _gate_column(report)))
+    session.say(_llm_usage_table(session, summary))  # FR-84/FR-326: tokens and $ per LLM role
     if credits_line:
         session.say(credits_line)
     for note in plan_notes:  # FR-252: what was dropped is repeated in the end-of-run summary
@@ -1099,21 +1333,22 @@ async def _package(session: _Session, entries: Sequence[PlanEntry], plan_estimat
 #: FR-296's stage vocabulary, in pipeline order. The LIVE list is computed per run by
 #: `_live_stages()` — `[n/N]` is derived from it and is never hardcoded anywhere.
 _STAGE_ORDER = ("COLLECT", "TOPICS", "FILTER", "SELECT", "ASSIGN", "INTEL", "COPY", "RENDER",
-                "CHECK", "DONE")
+                "GAUNTLET", "DONE")
 
 
 def _live_stages(config: Config, *, brief_only: bool) -> list[str]:
     """The stages THIS run will actually pass — N is computed from the resolved plan (FR-296).
 
     A brief-only plan consumes no trend, so COLLECT/TOPICS/FILTER/SELECT do not exist for it
-    (10 §10's carve-out made visible); `vision_check: false` has no CHECK. DONE always exists —
+    (10 §10's carve-out made visible); `gauntlet.enabled: false` has no GAUNTLET. DONE always
+    exists —
     the closing header is the one line every run owes the operator.
     """
     stages = list(_STAGE_ORDER)
     if brief_only:
         stages = [s for s in stages if s not in ("COLLECT", "TOPICS", "FILTER", "SELECT")]
-    if not config.run.vision_check:
-        stages = [s for s in stages if s != "CHECK"]
+    if not config.run.gauntlet.enabled:
+        stages = [s for s in stages if s != "GAUNTLET"]
     # FR-306: INTEL exists only when a source deck could be read — a brief-only plan binds no
     # post, and a plan with no carousels has no deck. `vision_transcribe: false` KEEPS the
     # stage: the $0 path still downloads the source slides for the gallery (FR-309), and a
@@ -1150,7 +1385,7 @@ def _stage(session: _Session, stage: str, body: str, *,
     """One FR-296 header: `[n/N] STAGE  in -> out  elapsed`, computed off the live stage list.
 
     Stages with waits print twice — the opening `...` form on submit, the closing form with the
-    elapsed; CHECK is a rollup and closes with `-` (`elapsed_s=None`). A stage not in
+    elapsed; GAUNTLET is a rollup and closes with `-` (`elapsed_s=None`). A stage not in
     `session.stages` prints nothing — that is how previews (which set no stage list) reuse the
     stage helpers verbatim without narrating a pipeline they do not run (D19).
     """
@@ -1185,15 +1420,23 @@ def _mon_codes(topics: Sequence[TrendItem]) -> dict[str, str]:
 
 
 def _verdict_cell(verdict: topic_filter.Verdict | None) -> str:
-    """`keep` / `strip:N` / `skip:PROMO` — the table's verdict column (FR-297a). Every skip the
-    LLM can return IS a competitor promo by schema (§1.5), so the code is total."""
-    if verdict is None:
-        return "keep"
+    """`keep en/fit` / `strip:2 cs/fit` / `skip:LANG de/fit` — the verdict column (FR-297a).
+
+    Two facts in one cell since v2.2.0, because the screen now decides on three grounds and a bare
+    `skip:LANG` is unreadable without the language it objected to. The tail is always printed, on
+    keeps as much as on skips: seeing `en/fit` on eleven rows and `de/unfit` on the twelfth is what
+    makes the twelfth row's drop obvious. A screen that could not answer prints `?` rather than
+    guessing — an unknown language is a fail-open keep, not an English one.
+    """
+    if verdict is None:  # never screened (a $0 preview, an ordinal the model skipped): still a keep
+        verdict = topic_filter.Verdict(ordinal=0)
     if verdict.verdict == "strip":
-        return f"strip:{len(verdict.brands_to_strip)}"
-    if verdict.verdict == "skip":
-        return "skip:PROMO"
-    return "keep"
+        head = f"strip:{len(verdict.brands_to_strip)}"
+    elif verdict.verdict == "skip":
+        head = f"skip:{verdict.skip_code or topic_filter.SKIP_PROMO}"
+    else:
+        head = "keep"
+    return f"{head} {verdict.language or '?'}/{'fit' if verdict.audience_fit else 'unfit'}"
 
 
 def _topics_table(topics: Sequence[TrendItem],
@@ -1236,7 +1479,10 @@ def _topics_table(topics: Sequence[TrendItem],
     lines += [
         "  verdict  keep = usable as-is; strip:N = N competitor name(s) removed;",
         "           skip:CODE = dropped before any render spend, CODE says why",
-        "  codes    PROMO competitor promo (blocklist strips count as strip:N)",
+        "  codes    PROMO competitor promo; LANG source language we do not write;",
+        "           AUDIENCE not our audience (blocklist strips count as strip:N)",
+        "  tail     <lang>/fit|unfit = screened source language and audience fit;",
+        "           ? = the screen gave no usable answer, so the topic was kept",
     ]
     return "\n".join(lines)
 
@@ -1347,6 +1593,14 @@ def _provenance_block(entries: Sequence[PlanEntry], records: Mapping[str, AssetR
     verbatim receipt — WHICH post (author, views, id) and the first ~24 chars of the exact string
     quoted. Line 3 appears only on a loss and names the cause. `id` is the asset id's trailing
     ordinal; `sig` is per-creative (the brand itself is run-wide — launch block + DONE header).
+
+    **A COMPRESSED deck (D54/FR-331) gets a different line 2, because it quoted nothing.** Its
+    slides are the copy model's compressions of that post's panels, so there is no "exact string
+    quoted" to print and `copy_source_refs` is empty by contract (FR-302 as amended). Printing the
+    verbatim receipt with an empty quote would read as "this creative quoted nothing from a post it
+    names", which is the opposite of what happened. The compress line names the same post — the
+    provenance claim is unchanged, only the transform is — and points at `meta.yaml`'s `panel_map`,
+    where every row carries the source panel beside what shipped.
     """
     rows = [(entry, records[entry.asset_id]) for entry in entries
             if entry.asset_id in records]
@@ -1372,8 +1626,12 @@ def _provenance_block(entries: Sequence[PlanEntry], records: Mapping[str, AssetR
             ordinal = f"P{index + 1}" if index is not None else (label.split(".", 1)[0] or "P?")
             handle = f"@{post.author}" if post is not None and post.author else "-"
             views = _compact(post.views) if post is not None else "-"
-            lines.append(f'       quoted {ordinal} {fit(handle, 15)} {views} '
-                         f'{fit(record.copy_source_post_id, 16)} "{fit(text, 24)}"')
+            lines.append(
+                f'       compressed {ordinal} {fit(handle, 13)} {views} '
+                f'{fit(record.copy_source_post_id, 14)} -> panel_map'
+                if record.copy_mode == copywrite.MODE_COMPRESS else
+                f'       quoted {ordinal} {fit(handle, 15)} {views} '
+                f'{fit(record.copy_source_post_id, 16)} "{fit(text, 24)}"')
         if ok == "no":
             lines.append(f"       {fit(str(entry.skip_reason or 'no cause recorded'), 68)}")
     return "\n".join(lines)
@@ -1411,9 +1669,20 @@ async def _screen_topics(session: _Session, trends: Sequence[TrendItem]
             f"{topic.name if topic else ordinal}: {verdict.verdict}",
             ordinal=ordinal, topic_key=topic.topic_key if topic else "",
             verdict=verdict.verdict, brands_to_strip=list(verdict.brands_to_strip),
-            reason=verdict.reason)
+            reason=verdict.reason,
+            # v2.2.0: the two screened facts and the skip's code, so a run's drops are queryable
+            # in events.jsonl without re-reading the reason sentences (FR-298).
+            language=verdict.language, audience_fit=verdict.audience_fit,
+            skip_code=verdict.skip_code)
+    # The skip tally is broken down by cause on the stage line itself (v2.2.0): three causes now
+    # produce one word, and "2 skip" hides whether the screen removed two competitor promos or
+    # decided the whole monitor speaks the wrong language.
+    causes = Counter(v.skip_code or topic_filter.SKIP_PROMO
+                     for v in verdicts.values() if v.verdict == "skip")
     _stage(session, "FILTER",
-           f"{len(trends)} topic(s) -> {kept} keep, {stripped} strip, {skipped} skip",
+           f"{len(trends)} topic(s) -> {kept} keep, {stripped} strip, {skipped} skip"
+           + (" (" + ", ".join(f"{count} {code}" for code, count in sorted(causes.items())) + ")"
+              if causes else ""),
            elapsed_s=watch.elapsed_s)
     for ordinal, verdict in sorted(verdicts.items()):
         topic = trends[ordinal - 1] if 1 <= ordinal <= len(trends) else None
@@ -1422,9 +1691,14 @@ async def _screen_topics(session: _Session, trends: Sequence[TrendItem]
             removed = ", ".join(f'"{brand}"' for brand in verdict.brands_to_strip)
             session.say(f"          strip  {fit(f'{name} -- removed {removed}', 61)}")
         elif verdict.verdict == "skip":
-            session.say(f"          skip   {fit(f'{name} -- PROMO: {verdict.reason}', 61)}")
+            # The CODE leads, because the three causes have three different remedies: a promo skip
+            # is the blocklist working, a LANG skip means the monitor feeds a language this run
+            # does not write, and an AUDIENCE skip means the monitor and the niche disagree.
+            code = verdict.skip_code or topic_filter.SKIP_PROMO
+            session.say(f"          skip   {fit(f'{name} -- {code}: {verdict.reason}', 61)}")
         else:  # FR-299 verbose tier: keeps + their reasons move to the console only on demand
-            session.note(f"          keep   {name}"
+            session.note(f"          keep   {name} [{verdict.language or '?'}"
+                         f"/{'fit' if verdict.audience_fit else 'unfit'}]"
                          + (f" -- {fit(verdict.reason, 40)}" if verdict.reason else ""))
     if any(str(v.reason).startswith("filter_degraded") for v in verdicts.values()):
         cause = next(str(v.reason) for v in verdicts.values()
@@ -1524,6 +1798,9 @@ def _metered(session: _Session) -> Any:
                    images: list[bytes] | None = None) -> ParsedResult:
         watch = Stopwatch()
         result = await client.structured_call(role, messages, json_schema, images)
+        # The one seam every metered call passes through, so the per-role usage table below can
+        # never disagree with the spend table beside it (§1.10: one number, one source).
+        session.llm_usage.setdefault(role, _RoleUsage()).add(result)
         held = await session.budget.commit(result.cost_usd, label=f"llm {role}",
                                            category=SpendCategory.LLM, kind="projected")
         await session.budget.reconcile(held, result.cost_usd or None)
@@ -1610,8 +1887,10 @@ def _launch_summary(session: _Session, overrides: Sequence[str]) -> str:
          # 72 chars — FR-286's 78-column ceiling holds; the two facts that fit are the ones the
          # operator needs: the switch (with its key) and the carve-out that safety is still on.
          "  branding    off (branding.enabled: false) · competitor filter still on"),
-        f"  checks      notion {config.run.notion_influence} · "
-        f"vision_check {str(config.run.vision_check).lower()}",
+        f"  checks      notion {config.run.notion_influence} · gauntlet "
+        + (", ".join(name for name, critic in config.run.gauntlet.critics.items()
+                     if critic.enabled) + f" x{config.run.gauntlet.rounds_max}"
+           if config.run.gauntlet.enabled else "off"),
         f"  spend cap   {format_usd(config.run.spend_cap_usd)} · deadline "
         f"{config.run.run_deadline_min} min",
         f"  output      {fit(str(session.run_dir), 64)}",
@@ -1732,7 +2011,7 @@ def _money(amount: float) -> str:
     return f"${amount:.4f}" if 0 < amount < 0.01 else format_usd(amount)
 
 
-def _spend_table(summary: SpendSummary) -> str:
+def _spend_table(summary: SpendSummary, gates: Mapping[str, str] | None = None) -> str:
     """FR-84's ONE spend table: per creative, per format, then the grand total and cap status.
 
     The pre-pivot single-chain `virlo` row is gone (§1.10 rule: a number appears in exactly ONE
@@ -1743,17 +2022,25 @@ def _spend_table(summary: SpendSummary) -> str:
     was ordered to have prints `7/8` where a complete one prints `yes`: this table is where the
     operator first scans the result, and a missing slide that reads as an unqualified success is
     a loss they only find by opening the folder. `no` still means nothing shipped at all.
+
+    v2.2.0 adds the `gate` column (FR-328): what the post-render critic panel said about each
+    creative, read off `meta.yaml.gauntlet.result`. It belongs HERE rather than in a table of its
+    own because `blocked` is a spend outcome as much as a quality one — the money was spent, the
+    creative is not published, and those two facts have to be readable on one row. `-` means the
+    gate did not run for that creative (disabled, nothing delivered, an unsalvageable deck).
     """
+    gates = gates or {}
     # FR-286: asset ids run to ~46 chars, so a fixed 40-wide column both overflowed 78 AND ran
     # into the format column with no space (`..._04image`). Fit the one variable column instead.
     lines = [summary.headline]
-    lines.append(f"  {'asset':<38} {'format':<9}{'est':>9}{'billed':>10} ok")
+    lines.append(f"  {'asset':<30} {'format':<9}{'est':>9}{'billed':>10} {'ok':<4} gate")
     for row in summary.rows:
         mark = (f"{row.slides_delivered or 0}/{row.slides_ordered}" if row.partial
                 else "yes" if row.delivered else "no")
         billed = format_usd(row.billed_usd) + (" est" if row.estimated_only else "")
-        lines.append(f"  {fit(row.asset_id, 38):<38} {row.creative_format:<9}"
-                     f"{format_usd(row.estimated_usd):>9}{billed:>10} {mark}")
+        lines.append(f"  {fit(row.asset_id, 30):<30} {row.creative_format:<9}"
+                     f"{format_usd(row.estimated_usd):>9}{billed:>10} {mark:<4} "
+                     f"{gates.get(row.asset_id, '-')}")
     for name, amount in summary.by_format.items():
         lines.append(f"  subtotal {name:<47}{_money(amount):>10}")
     lines.append(f"  TOTAL  llm {_money(summary.llm_usd)} + render "
@@ -1764,6 +2051,68 @@ def _spend_table(summary: SpendSummary) -> str:
                      f"{summary.skipped_other} for other reasons")
     if summary.banner:
         lines.append(f"  {summary.banner}")
+    return "\n".join(lines)
+
+
+def _gate_column(report: generate.Report) -> dict[str, str]:
+    """`asset_id -> the gate's verdict`, for the spend table's `gate` column (FR-328).
+
+    Read off each record's `meta.yaml.gauntlet` dict rather than recomputed, so the console, the
+    meta document and `GAUNTLET_REPORT.yaml` can never say three different things. A creative the
+    gate never touched is absent from the mapping and prints as `-`.
+    """
+    column: dict[str, str] = {}
+    for asset_id, record in report.records.items():
+        gate = getattr(record, "gauntlet", None)
+        if isinstance(gate, dict) and gate.get("result"):
+            column[asset_id] = str(gate["result"]) + ("*" if gate.get("degraded_gate") else "")
+    return column
+
+
+#: FR-84/FR-326: which LLM roles a run can spend on, in pipeline order, so the usage table below
+#: reads top to bottom the way the run happened. `critic:<name>` overrides are folded into their
+#: base role — an operator reading a cost table wants "the critics cost $0.31", not three rows.
+_LLM_ROLE_ORDER = ("analysis", "copy", "critic")
+
+
+def _llm_usage_table(session: _Session, summary: SpendSummary) -> str:
+    """FR-84/FR-326's per-role LLM usage block: calls, tokens both ways, dollars — plus render.
+
+    New in v2.2.0 and new for a reason: the gauntlet made LLM spend the LARGER half of a run's bill
+    at worst case (spec §5 — three critics x three rounds is comparable to the whole re-render
+    budget), and until now the operator's only view of it was one `llm $0.42` figure inside the
+    spend total. Token counts are what actually move that number, so they are what this prints.
+
+    Every row is read off `session.llm_usage`, which is written at the single metered seam
+    (`_metered`), so this table and the spend table are two views of one accumulation rather than
+    two counts that can drift. The render row comes from the same `SpendSummary` the table above
+    printed, for the same reason.
+    """
+    rows: dict[str, _RoleUsage] = {}
+    for role, usage in session.llm_usage.items():
+        base = role.partition(":")[0]  # `critic:brief` folds into `critic`
+        into = rows.setdefault(base, _RoleUsage())
+        into.calls += usage.calls
+        into.prompt_tokens += usage.prompt_tokens
+        into.completion_tokens += usage.completion_tokens
+        into.cost_usd += usage.cost_usd
+    if not rows:
+        return "  LLM usage   no metered LLM call was made this run"
+    order = [name for name in _LLM_ROLE_ORDER if name in rows]
+    order += [name for name in sorted(rows) if name not in order]  # never silently drop a role
+    lines = ["  LLM usage",
+             f"  {'role':<12}{'calls':>7}{'in tok':>10}{'out tok':>10}{'usd':>10}"]
+    for name in order:
+        usage = rows[name]
+        lines.append(f"  {name:<12}{usage.calls:>7}{usage.prompt_tokens:>10}"
+                     f"{usage.completion_tokens:>10}{_money(usage.cost_usd):>10}")
+    total = sum(usage.cost_usd for usage in rows.values())
+    lines.append(f"  {'llm total':<12}{sum(u.calls for u in rows.values()):>7}"
+                 f"{sum(u.prompt_tokens for u in rows.values()):>10}"
+                 f"{sum(u.completion_tokens for u in rows.values()):>10}{_money(total):>10}")
+    # The render row carries no tokens by nature — it is priced per job, not per token — and it is
+    # here anyway, because "what did this run spend, and on what" is one question.
+    lines.append(f"  {'render':<12}{'':>7}{'':>10}{'':>10}{_money(summary.render_usd):>10}")
     return "\n".join(lines)
 
 

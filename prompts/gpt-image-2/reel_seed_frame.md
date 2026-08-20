@@ -23,7 +23,7 @@ TEXT (locked asset — the hook, burnt into the frame):
   never translated, re-worded or shortened. Add no words. Repeat no words.
   Render no other text anywhere in the frame — no subtitle, no caption bar, no
   watermark, no call to action, no sticker.
-  Where the string is echoed letter by letter (for example "T-o-t-o"), that
+  Where a word is echoed letter by letter (for example "V-ě-t-š-i-n-a"), that
   echo is a spelling aid for you alone: use it to get every accent right and
   never draw the hyphenated form onto the image.
   Set the hook as ONE static block in the upper third, on a clear background

@@ -31,7 +31,7 @@ from typing import Any
 
 import pytest
 
-from hypesocials import generate, render, styles
+from hypesocials import gauntlet, generate, render, styles
 from hypesocials.budget import Budget
 from hypesocials.config import BrandingConfig, Config
 from hypesocials.generate import refs as refs_module
@@ -115,16 +115,27 @@ def ok(url: str = RESULT_URL, *, task: str = "kie_ok", cost: float = 0.03) -> Re
                          completed_at="2026-08-09T10:01:00Z")
 
 
-def vision(*flags: bool) -> Any:
-    """A `models.StructuredCall` answering FR-105 — one queued verdict per check call."""
+def critics(*flags: bool, code: str = "garbled") -> Any:
+    """A `models.StructuredCall` answering the GAUNTLET's per-critic schema — one flag per ROUND.
+
+    Every enabled critic judges the frame each round, but only ONE of them can emit a given code
+    (the per-critic enums are a partition), so the flags are consumed by the critic that owns
+    `code` and every other critic always passes. "The second flag" is therefore "round 2" without
+    the fake modelling anything. The last flag repeats if more rounds arrive than were queued.
+    """
     queue = list(flags) or [False]
+    owner = next(name for name, codes in gauntlet.CRITIC_CODES.items() if code in codes)
 
     async def call(role: str, messages: list[dict[str, Any]], schema: dict[str, Any],
                    images: list[bytes] | None = None) -> ParsedResult:
-        flagged = queue.pop(0) if len(queue) > 1 else queue[0]
-        return ParsedResult(parsed={"verdicts": [{"image": 1, "text_broken": flagged,
-                                                  "fake_ui": False, "detail": "garbled headline"}]},
-                            raw_text="{}", cost_usd=0.01)
+        failing = False
+        if str(schema["name"]).removeprefix("gauntlet_") == owner:
+            failing = queue.pop(0) if len(queue) > 1 else queue[0]
+        return ParsedResult(parsed={"frames": [
+            {"frame": 1, "pass": not failing,
+             "defects": ([{"code": code, "zone": "middle", "confidence": "high",
+                           "detail": "garbled headline"}] if failing else [])}]},
+            raw_text="{}", cost_usd=0.01)
     return call
 
 
@@ -886,36 +897,41 @@ async def test_a_moderation_refusal_on_a_reference_free_job_is_a_straight_fail(
 # --------------------------------------------------------------------------- FR-27 / FR-105
 
 
-async def test_standalone_image_is_vision_checked_re_rendered_once_and_re_checked(
+async def test_a_standalone_image_goes_through_the_gauntlet_and_its_fix_replaces_the_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """FR-27/105: a standalone image gets the same treatment a slide and a seed frame get — one
-    check, ONE discretionary re-render of a flagged image, one re-check, then it ships. The
-    estimator bills `checked_images` for every image (budget.py), so skipping the check would be
-    charging for a pass that never ran."""
+    """D49: a standalone image gets the same gate a deck and a seed frame get — `run_single` over
+    the one frame that came back, a canned fix re-render for a failing round, then it ships.
+
+    `rounds_max_image` is raised to 2 because a lone frame is gated at ONE round by default (spec
+    §4: a frame that needs three rounds is a copy problem, not a render problem), and one round
+    judges without ever re-rendering.
+    """
     entry = make_entry()
     env = make_env(tmp_path, [entry])
-    env.config.run.vision_check = True
-    env.llm_call = vision(True, False)  # flagged, then clean after the shorter, larger re-render
+    env.config.run.gauntlet.rounds_max_image = 2
+    env.llm_call = critics(True, False)  # failed, then clean after the canned fix
     renders = Renders([ok(task="kie_first"), ok(task="kie_retry")])
     monkeypatch.setattr(render, "run", renders)
 
     report = await generate.create([entry], env)
 
     record = report.records[entry.asset_id]
-    assert len(renders.calls) == 2, "the flagged image earns exactly one re-render (NFR-4)"
+    assert len(renders.calls) == 2, "the failing frame earns exactly one fix this round"
+    assert record.gauntlet["result"] == "pass" and record.gauntlet["rerenders"] == 1
     assert record.vision_check_result is VisionCheckResult.RETRIED_PASSED
     assert record.kie_job_ids == ["kie_first", "kie_retry"]
     assert record.actual_cost_usd == pytest.approx(0.06)  # both renders billed at submission
-    assert (tmp_path / entry.asset_id / "image.jpg").is_file()  # the re-render REPLACED the file
+    assert (tmp_path / entry.asset_id / "image.jpg").is_file()  # the fix REPLACED the file
+    assert (tmp_path / entry.asset_id / "GAUNTLET_REPORT.yaml").is_file()
 
 
-async def test_vision_check_off_leaves_a_standalone_image_not_checked(
+async def test_the_gate_switched_off_leaves_a_standalone_image_unjudged(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`run.vision_check: false` — one render, one verdict of `not_checked`, no LLM call.
+    """`run.gauntlet.enabled: false` — one render, no LLM call, and no receipt claimed.
 
-    The default flipped to `true` (v2.1.1), so the flag is set DOWN here rather than assumed: run
+    The default is `true`, so the flag is set DOWN here rather than assumed: run
     `20260813_143420_oyo4` delivered eight creatives all reading `vision_check_result:
     not_checked` purely because the switch was off, which is a check the estimate priced and the
     run never took. What survives the flip is D3's half of the contract — a check the operator
@@ -923,15 +939,17 @@ async def test_vision_check_off_leaves_a_standalone_image_not_checked(
     """
     entry = make_entry()
     env = make_env(tmp_path, [entry])
-    env.config.run.vision_check = False
-    env.llm_call = vision(True)  # a call is available; the flag is what declines it
+    env.config.run.gauntlet.enabled = False
+    env.llm_call = critics(True)  # a call is available; the flag is what declines it
     renders = Renders(rule=lambda _self: ok())
     monkeypatch.setattr(render, "run", renders)
 
     report = await generate.create([entry], env)
 
     assert len(renders.calls) == 1
-    assert report.records[entry.asset_id].vision_check_result is VisionCheckResult.NOT_CHECKED
+    record = report.records[entry.asset_id]
+    assert record.gauntlet is None, "no gate ran, so meta claims no verdict"
+    assert record.vision_check_result is VisionCheckResult.NOT_CHECKED
 
 
 # --------------------------------------------------------------------------- 10 §10 disk_full
@@ -1035,6 +1053,68 @@ async def test_expired_deadline_halts_ordering_exactly_like_ctrl_c(
 
     assert env.halted and renders.calls == []
     assert entry.status is PlanEntryStatus.ABANDONED
+
+
+# --------------------------------------------------------------------------- D51: the runway gate
+
+
+async def test_d51_a_job_the_clock_cannot_pay_for_is_refused_unbilled_and_never_resubmitted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D51: a ten-minute job with one minute left is a purchased certainty of a timeout.
+
+    The deadline has not expired, so `env.halted` is False and the old code would have submitted:
+    the job would run past the ceiling, the grace poll would abandon it, and the money would be
+    spent on a taskId nobody claims. The gate refuses it BEFORE the reservation — nothing is
+    reserved, nothing reaches the provider, nothing is billed, and no ledger line is written.
+
+    And the refusal may never buy a second one: `NO_RUNWAY` is excluded from FR-317's resubmit
+    predicate by name, so the one attempt an image job is granted survives for a failure that
+    really happened.
+    """
+    from hypesocials.util import Deadline
+
+    entry = make_entry()
+    env = make_env(tmp_path, [entry], deadline=Deadline(seconds=60.0))
+    renders = Renders()
+    monkeypatch.setattr(render, "run", renders)
+
+    report = await generate.create([entry], env)
+
+    assert not env.halted, "the deadline has a minute left — this is the runway rule, not the halt"
+    assert renders.calls == [], "the image job needs 600s + grace and was never submitted"
+    assert env.budget.spent_usd == 0.0 and env.budget.remaining_usd == env.budget.cap_usd
+    assert "no_runway" in env.log.types()
+    assert not (tmp_path / "LEDGER.txt").exists() or ledger_lines(tmp_path) == []
+    record = report.records[entry.asset_id]
+    assert record.status is AssetStatus.FAILED and "no_runway" in record.skip_reason
+
+
+async def test_d51_precommitted_work_is_exempt_because_bookkeeping_may_never_split_a_deck(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FR-106b, on the clock as well as on the cap: the runway gate refuses `projected` and
+    `discretionary` work and never `precommitted` work.
+
+    The deck here loses its anchor to the runway — a `projected` submission — and every slide of
+    the fallback burst is pre-committed, so all of them are submitted anyway and the deck lands
+    whole. Refusing those would leave the operator with the worst possible artifact: a deck that
+    stops in the middle because of a clock, half-billed, with no cover.
+    """
+    from hypesocials.util import Deadline
+
+    entry = make_entry(0, "carousel", slide_count=3)
+    env = make_env(tmp_path, [entry], deadline=Deadline(seconds=60.0))
+    renders = Renders()
+    monkeypatch.setattr(render, "run", renders)
+
+    await generate.create([entry], env)
+
+    assert len(renders.calls) == 3, \
+        "the anchor was refused by the clock; all three pre-committed slides were not"
+    assert {call["priority"] for call in renders.calls} == {RenderPriority.WAVE2}
+    assert entry.status is PlanEntryStatus.SUCCESS
+    assert read_meta(tmp_path / entry.asset_id)["slide_count"] == 3
 
 
 def test_partial_deck_ships_but_the_run_exits_partial(tmp_path: Path) -> None:
@@ -1155,10 +1235,10 @@ async def test_an_image_records_the_pixel_size_it_really_got_and_warns_on_the_ra
     assert "aspect_mismatch" in env.log.types()
 
 
-async def test_a_vision_re_render_is_measured_on_the_file_that_actually_ships(
+async def test_a_gauntlet_fix_is_measured_on_the_file_that_actually_ships(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The re-render REPLACES the delivered file, so it is the second picture that gets measured.
+    """The fix REPLACES the delivered file, so it is the second picture that gets measured.
 
     The first download is square and the second is not; recording the first would describe a file
     that is no longer on disk, which is the same class of untruth as recording the requested ratio.
@@ -1173,8 +1253,8 @@ async def test_a_vision_re_render_is_measured_on_the_file_that_actually_ships(
     monkeypatch.setattr(packager, "_download", _two)
     entry = make_entry()
     env = make_env(tmp_path, [entry])
-    env.config.run.vision_check = True
-    env.llm_call = vision(True, False)  # flagged, then clean after the one re-render
+    env.config.run.gauntlet.rounds_max_image = 2
+    env.llm_call = critics(True, False)  # failed, then clean after the one fix
     monkeypatch.setattr(render, "run", Renders([ok(task="kie_first"), ok(task="kie_retry")]))
 
     report = await generate.create([entry], env)

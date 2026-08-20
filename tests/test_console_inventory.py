@@ -6,8 +6,9 @@ What replaced them is a larger, stricter surface, and every property below is on
 asked for in words:
 
 1. **Step by step** (FR-296) — numbered stage headers whose `[n/N]` is COMPUTED from the resolved
-   plan. A brief-only run has no COLLECT/TOPICS/FILTER/SELECT and `vision_check: false` has no
-   CHECK, so a hardcoded denominator is a lie in two ordinary shapes. Every header states counts
+   plan. A brief-only run has no COLLECT/TOPICS/FILTER/SELECT and `gauntlet.enabled: false` has
+   no GAUNTLET, so a hardcoded denominator is a lie in two ordinary shapes. Every header states
+   counts
    in -> counts out, so a drop is arithmetic rather than a mystery.
 2. **Proof they are sorted by views** (FR-297a) — the topics table prints ALL topics, strongest
    first, and the monotonically non-increasing `strn` column IS the proof. Its caption states the
@@ -23,6 +24,15 @@ asked for in words:
    is asserted as one.
 6. **A number appears in exactly ONE surface** (§1.10) — the FR-155 funnel prints once, at DONE,
    and the spend table no longer repeats the collect chain.
+7. **The console says which COPY CONTRACT the words shipped under** (v2.3.0, D54/FR-331) — four
+   surfaces gained a second arm: the COPY stage line, the FR-297c provenance receipt, the preview
+   copy header and its per-creative rows, and the pre-flight language hint. Compress is an
+   operator toggle, so without those arms the one difference between two runs of the same config
+   is invisible in `run.log`. Each is pinned BESIDE its verbatim twin, and the verbatim wordings
+   are asserted UNCHANGED: every one of them is a one-line ternary, and a rewrite of the wrong arm
+   is a two-character edit. The counts come off the per-asset receipt, never off
+   `config.run.carousel_copy_mode` — a compress-mode run whose call failed shipped the verbatim
+   mapped deck, and a line claiming "compressed" over it would hide the degradation.
 
 House rules asserted throughout: FR-286's 78 columns (URLs carved out onto their own line), no
 ANSI, no `→` glyph, only `util.fit`'s proven-safe set. Offline: every surface here is a pure
@@ -43,7 +53,8 @@ from typing import Any
 
 import pytest
 
-from hypesocials import cli, generate, previews, render, runner, topic_filter
+from hypesocials import (cli, copywrite, generate, preflight, previews, render, runner,
+                         topic_filter)
 from hypesocials.config import Config
 from hypesocials.models import (AssetRecord, CopySet, PlanEntry, PlanEntryStatus, RenderFailCause,
                                 RenderOutcome, RenderOutcomeKind, RenderPriority, SourcePost,
@@ -166,8 +177,10 @@ def entry(order: int, *, fmt: str = "image", trend: TrendItem | None = None, reu
 
 
 def record(item: PlanEntry, source: TrendItem | None = None, *, cost: float = 0.041,
-           quoted: SourcePost | None = None, refs: dict[str, str] | None = None) -> AssetRecord:
+           quoted: SourcePost | None = None, refs: dict[str, str] | None = None,
+           copy_mode: str = "verbatim") -> AssetRecord:
     return AssetRecord(
+        copy_mode=copy_mode,
         asset_id=item.asset_id, source=item.trend_key or "", platform="linkedin",
         source_name=source.name if source is not None else "", creative_format=item.creative_format,
         style_key=item.style_key, branded=item.branded, actual_cost_usd=cost,
@@ -180,15 +193,15 @@ def record(item: PlanEntry, source: TrendItem | None = None, *, cost: float = 0.
 
 
 def test_fr296_the_stage_list_is_computed_from_the_resolved_plan_never_hardcoded() -> None:
-    """A brief-only plan consumes no topic and `vision_check: false` runs no check, so the two
+    """A brief-only plan consumes no topic and `gauntlet.enabled: false` runs no gate, so the two
     ordinary shapes below have 4 and 9 stages (the v2.1.0 default plan is all-carousels, so
     INTEL is live — FR-306). A denominator typed at a call site is wrong in both.
     """
     config = Config()
-    config.run.vision_check = False
+    config.run.gauntlet.enabled = False
     full = runner._live_stages(config, brief_only=False)
     brief_only = runner._live_stages(config, brief_only=True)
-    config.run.vision_check = True
+    config.run.gauntlet.enabled = True
     checked = runner._live_stages(config, brief_only=False)
     config.run.formats = {"image": 2, "carousel": 0, "reel": 0}
     config.sources.include_videos = True  # §0.14e: images need the videos ask
@@ -196,7 +209,7 @@ def test_fr296_the_stage_list_is_computed_from_the_resolved_plan_never_hardcoded
 
     assert full == ["COLLECT", "TOPICS", "FILTER", "SELECT", "ASSIGN", "INTEL", "COPY",
                     "RENDER", "DONE"]
-    assert len(full) == 9 and len(checked) == 10 and "CHECK" in checked
+    assert len(full) == 9 and len(checked) == 10 and "GAUNTLET" in checked
     assert "INTEL" not in no_decks, "a plan with no carousels has no source deck to read"
     assert brief_only == ["ASSIGN", "COPY", "RENDER", "DONE"], \
         "a pure-override plan has no Collect, no Topics, no Filter and no Select (10 §10)"
@@ -220,12 +233,12 @@ def test_fr296_a_closing_header_reads_position_stage_body_and_elapsed(
 ) -> None:
     """`[n/N] STAGE  in -> out  elapsed` — the grammar of contracts item 16, measured.
 
-    `n/N` moves with the live stage list (the CHECK-on run has one more stage, so the denominator
+    `n/N` moves with the live stage list (the gated run has one more stage, so the denominator
     changes and FILTER's numerator does not), the body states counts in -> counts out, and the
     elapsed is right-aligned in the tail.
     """
     config = Config()
-    config.run.vision_check = vision
+    config.run.gauntlet.enabled = vision
     live = session(stages=runner._live_stages(config, brief_only=False))
 
     runner._stage(live, "FILTER", "14 topic(s) -> 11 keep, 2 strip, 1 skip", elapsed_s=5.24)
@@ -257,18 +270,18 @@ def test_fr296_a_stage_that_waits_opens_with_an_ellipsis_and_closes_with_the_ela
     assert closing.endswith("3m41s"), "over a minute the elapsed reads `<m>m<ss>s`"
 
 
-def test_fr296_the_check_rollup_prints_a_dash_where_an_elapsed_would_go(
+def test_fr296_the_gauntlet_rollup_prints_a_dash_where_an_elapsed_would_go(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """CHECK is a rollup: the vision check runs INSIDE each creative, so the stage has no elapsed
+    """GAUNTLET is a rollup: the gate runs INSIDE each creative, so the stage has no elapsed
     of its own and says so with `-` rather than inventing a duration (§1.10 house rule 3)."""
-    live = session(stages=["RENDER", "CHECK", "DONE"])
+    live = session(stages=["RENDER", "GAUNTLET", "DONE"])
 
-    runner._stage(live, "CHECK", "6 checked -> 6 pass, 0 retried, 1 not checked", elapsed_s=None)
+    runner._stage(live, "GAUNTLET", "6 judged -> 6 pass, 0 blocked, 0 stopped", elapsed_s=None)
 
     line = printed(capsys)[0]
     console_safe(line)
-    assert line.startswith("[2/3] CHECK") and line.endswith("-")
+    assert line.startswith("[2/3] GAUNTLET") and line.endswith("-")
     assert live.log.events[0][2]["elapsed_s"] is None
 
 
@@ -291,7 +304,7 @@ def test_fr296_every_header_of_every_stage_fits_the_console(
 ) -> None:
     """FR-286 holds for the widest body any stage can carry — the body is fitted, never the line."""
     config = Config()
-    config.run.vision_check = True
+    config.run.gauntlet.enabled = True
     live = session(stages=runner._live_stages(config, brief_only=False))
     body = "1234 monitor(s) asked -> 9876 post(s) split into 4321 topic(s), 0 failed, 0 synth"
 
@@ -405,11 +418,20 @@ def test_fr297a_verdict_cells_are_keyed_by_input_order_ordinal_not_by_display_ra
     rows = table_rows(runner._topics_table(topics, verdicts))
     by_name = {row["topic"].rstrip("…"): row["verdict"] for row in rows}
 
-    assert by_name["Vibe coding is over"] == "strip:2", "ordinal 2, displayed FIRST by strength"
-    assert by_name["AI agents do the work"] == "keep", "ordinal 1, displayed SECOND"
-    assert by_name["n8n vs Make showdown"] == "skip:PROMO"
-    assert by_name["Weekend build log"] == "keep"
-    assert runner._verdict_cell(None) == "keep", "an unscreened topic is not a dropped topic"
+    # v2.2.0: every cell carries the screened `<language>/fit|unfit` tail beside its verdict, and
+    # `?` is what a verdict with no usable language answer prints (fail-open, still a keep).
+    assert by_name["Vibe coding is over"] == "strip:2 ?/fit", "ordinal 2, displayed FIRST"
+    assert by_name["AI agents do the work"] == "keep ?/fit", "ordinal 1, displayed SECOND"
+    assert by_name["n8n vs Make showdown"] == "skip:PROMO ?/fit"
+    assert by_name["Weekend build log"] == "keep ?/fit"
+    assert runner._verdict_cell(None) == "keep ?/fit", \
+        "an unscreened topic is not a dropped topic"
+    assert runner._verdict_cell(topic_filter.Verdict(
+        5, "skip", [], "off-language", language="de", skip_code=topic_filter.SKIP_LANGUAGE)) \
+        == "skip:LANG de/fit", "the code and the language it objected to travel together"
+    assert runner._verdict_cell(topic_filter.Verdict(
+        6, "skip", [], "wrong audience", language="en", audience_fit=False,
+        skip_code=topic_filter.SKIP_AUDIENCE)) == "skip:AUDIENCE en/unfit"
 
 
 def test_fr297a_numbers_are_compact_never_thousands_separators() -> None:
@@ -455,7 +477,7 @@ def test_fr297b_the_P_ordinals_are_view_rank_and_the_arrow_names_the_creative() 
     console_safe(block)
     lines = [line.strip() for line in block.splitlines()]
     assert lines[0].startswith("Topic 1 -- AI agents do the work")
-    assert "strn 1.000" in lines[0] and lines[0].endswith("keep")
+    assert "strn 1.000" in lines[0] and lines[0].endswith("keep ?/fit")  # v2.2.0 verdict tail
     roster = [line for line in lines if re.match(r"^P\d", line)]
     assert [line.split()[0] for line in roster] == ["P1", "P2", "P3"], \
         "ranked by views, and the rank IS the label"
@@ -518,8 +540,8 @@ def test_fr297b_a_topic_after_a_skip_prints_its_OWN_verdict_not_its_predecessors
     console_safe(block)
     heads = [line for line in block.splitlines() if line.startswith("Topic ")]
     assert len(heads) == 2, "an unassigned (skipped) topic never makes the roster on a paid run"
-    assert heads[0].endswith("keep") and "Kept leader" in heads[0]
-    assert heads[1].endswith("keep") and "Kept follower" in heads[1], \
+    assert heads[0].endswith("keep ?/fit") and "Kept leader" in heads[0]
+    assert heads[1].endswith("keep ?/fit") and "Kept follower" in heads[1], \
         "the follower must not inherit the skipped topic's verdict"
     assert "skip:PROMO" not in block
 
@@ -746,11 +768,12 @@ def test_fr155_the_funnel_prints_exactly_once_and_only_at_DONE() -> None:
 
 
 def test_fr84_the_spend_table_no_longer_repeats_the_collect_chain() -> None:
-    """`_spend_table` takes the summary and nothing else: the funnel prints directly above it at
-    DONE, so a counters row here would print every collect number twice."""
+    """`_spend_table` takes the summary and the gate column: the funnel prints directly above it
+    at DONE, so a counters row here would print every collect number twice. `gates` (v2.2.0) is a
+    per-creative COLUMN read off `meta.yaml.gauntlet`, not a second copy of any counter."""
     parameters = list(inspect.signature(runner._spend_table).parameters)
 
-    assert parameters == ["summary"]
+    assert parameters == ["summary", "gates"]
     assert "counters" not in inspect.getsource(runner._spend_table)
 
 
@@ -829,7 +852,8 @@ def test_fr296_filter_prints_one_line_per_NON_keep_and_keeps_go_to_the_log(
     skips = [line for line in lines if line.strip().startswith("skip")]
     assert len(strips) == 1 and '"Cursor", "Lovable"' in strips[0]
     assert len(skips) == 1 and "PROMO: post sells n8n Cloud" in skips[0]
-    assert lines[0].startswith("[3/10] FILTER") and lines[0].endswith("...")  # CHECK joined the live stages (vision_check default on, v2.1.1)
+    # GAUNTLET joined the live stages (`run.gauntlet.enabled` defaults on, v2.2.0/D49).
+    assert lines[0].startswith("[3/10] FILTER") and lines[0].endswith("...")
     assert "4 topic(s) -> 2 keep, 1 strip, 1 skip" in lines[1]
     assert live.strip_brands == {topics[1].history_key: ("Cursor", "Lovable")}, \
         "M6: the LLM's strips ride to the copy AND render paths, keyed by trend_key"
@@ -1062,60 +1086,466 @@ def test_fr306_the_merged_panels_the_copy_stage_reads_come_from_this_stage_alone
     assert "slide_intel=dict(session.slide_intel)" in create_source
 
 
-# ------------------------------------- FR-296: the CHECK rollup's categories must not overlap
+# --------------------------------- FR-296/FR-328: the GAUNTLET rollup reads the records
 #
-# Run 20260814_010814_glz0 printed `6 checked -> 4 pass, 3 retried`, and 4 + 3 > 6. The cause was
-# `retried` counting BOTH retry outcomes while `passed` counted `retried_passed` as well, so a
-# creative that was flagged, re-rendered and came back clean was in two buckets at once. A rollup
-# whose numbers do not add up is a rollup the operator has to distrust in full.
+# Run 20260814_010814_glz0 printed `6 checked -> 4 pass, 3 retried`, and 4 + 3 > 6, because two
+# buckets counted the same creative. The lesson outlived the CHECK rollup it was learned on: this
+# stage's counts are read off each record's own `meta.yaml.gauntlet.result`, which is exactly one
+# value per creative, so a creative cannot be in two buckets and the console cannot disagree with
+# the document the operator opens afterwards.
 
 
-def _checked(**counts: int) -> generate.Report:
-    """A `Report` carrying `counts` creatives per `VisionCheckResult` value, ids in order."""
+def _gated(**counts: int) -> generate.Report:
+    """A `Report` carrying `counts` creatives per gauntlet result, ids in plan order."""
     records: dict[str, AssetRecord] = {}
-    for value, many in counts.items():
+    for result, many in counts.items():
         for _ in range(many):
             asset_id = f"{len(records) + 1:04d}_carousel_linkedin"
             records[asset_id] = AssetRecord(
                 asset_id=asset_id, source="t1", source_name="AI tool stacks",
                 platform="linkedin", creative_format="carousel",
-                vision_check_result=VisionCheckResult(value))
+                gauntlet={"result": result, "degraded_gate": False, "rounds": [],
+                          "rerenders": 0, "rerender_cost_usd": 0.0, "critic_cost_usd": 0.01})
     return generate.Report(records=records)
 
 
-def test_fr296_the_check_rollups_categories_are_disjoint_and_add_up(
+def test_fr328_the_gauntlet_rollups_categories_are_disjoint_and_add_up(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """The glz0 shape, counted honestly: six checked, four of them passing, two still flagged.
+    """Every judged creative lands in exactly one of pass / blocked / stopped."""
+    live = session(stages=["RENDER", "GAUNTLET", "DONE"])
 
-    `retried_passed` is a PASS — the defect was found and fixed, which is the whole point of
-    paying for a retry — so it is counted once, in the pass bucket, and how many passes needed a
-    re-render is stated as a parenthetical. `retried_failed` is what is left: flagged, re-rendered,
-    still wrong, shipped as rendered (FR-105).
-    """
-    live = session(stages=["RENDER", "CHECK", "DONE"])
-    report = _checked(passed=3, retried_passed=1, retried_failed=2, not_checked=1)
-
-    runner._check_rollup(live, report)
+    runner._gauntlet_rollup(live, _gated(**{"pass": 3, "blocked": 2, "budget_stop": 1}))
 
     line = printed(capsys)[0]
     console_safe(line)
-    assert "6 of 7 checked -> 4 pass (1 retried), 2 flagged" in line
-    numbers = [int(n) for n in re.findall(r"(\d+) (?:pass|flagged)", line)]
-    assert sum(numbers) == 6, "pass + flagged accounts for every CHECKED creative"
+    assert "6 judged -> 3 pass, 2 blocked, 1 stopped" in line
+    numbers = [int(n) for n in re.findall(r"(\d+) (?:pass|blocked|stopped)", line)]
+    assert sum(numbers) == 6, "pass + blocked + stopped accounts for every judged creative"
 
 
-def test_fr296_a_clean_run_states_no_retry_parenthetical_at_all(
+def test_fr328_a_blocked_creative_gets_its_own_do_not_publish_line(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """The common case stays short: nothing was re-rendered, so nothing is said about retries.
+    """The one console line that means "do not publish this" names the two files that explain it."""
+    live = session(stages=["RENDER", "GAUNTLET", "DONE"])
 
-    `(0 retried)` on every clean run would be noise on the one line that is supposed to be
-    scannable — §1.10's rule that a surface states what happened, not what could have. The
-    denominator disappears too: with nothing unchecked, "6 of 6 checked" says it twice.
+    runner._gauntlet_rollup(live, _gated(blocked=1))
+
+    lines = printed(capsys)
+    for line in lines:
+        console_safe(line)
+    assert any("BLOCKED" in line and "BLOCKED.txt" in line for line in lines)
+
+
+def _degraded_gate(unavailable: tuple[str, ...]) -> generate.Report:
+    """One creative whose gate DEGRADED, with `unavailable` critics recorded on its round.
+
+    The two causes of `degraded_gate` are told apart by exactly this field (Session 5.6/F7), so the
+    fixture varies it and nothing else.
     """
-    live = session(stages=["RENDER", "CHECK", "DONE"])
+    asset_id = "0001_carousel_linkedin"
+    return generate.Report(records={asset_id: AssetRecord(
+        asset_id=asset_id, source="t1", source_name="AI tool stacks", platform="linkedin",
+        creative_format="carousel",
+        gauntlet={"result": "degraded", "degraded_gate": True, "rerenders": 1,
+                  "rerender_cost_usd": 0.04, "critic_cost_usd": 0.03,
+                  "rounds": [{"round": 1, "failed_frames": [3], "rerendered": [3],
+                              "critics": {"system": 1}, "unavailable": list(unavailable)}]})})
 
-    runner._check_rollup(live, _checked(passed=6))
 
-    assert "6 checked -> 6 pass, 0 flagged" in printed(capsys)[0]
+def test_fr325_the_degraded_gate_line_names_which_of_its_two_causes_it_had(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`degraded_gate` is one flag with two meanings, and the operator acts differently on each.
+
+    A critic that could not be READ (D3) means the gate was thinner than configured — the deck may
+    carry a defect nobody looked for, and the answer is to re-run. A standing DEMOTED defect means
+    the gate saw everything and decided the deck ships anyway — the answer is to look at the frame
+    and move on. One sentence for both would have been the cheapest line on the page and the least
+    useful, so `_gauntlet_lines` forks on the dropped set.
+
+    Session 5.7/F8 gave the flag a THIRD cause — a standing low-confidence system verdict — and
+    deliberately no third console line: it shares the demotion sentence with FR-325's cosmetic
+    tier because it shares the operator's answer, and which of the two it was is read off the
+    round lines' codes and GAUNTLET_REPORT.yaml's confidences. So the fork stays two-way and the
+    sentence names both demotion causes.
+    """
+    live = session(stages=["RENDER", "GAUNTLET", "DONE"])
+
+    runner._gauntlet_rollup(live, _degraded_gate(()))
+    cosmetic = printed(capsys)
+    runner._gauntlet_rollup(live, _degraded_gate(("brief",)))
+    dropped = printed(capsys)
+
+    for line in (*cosmetic, *dropped):
+        console_safe(line)
+    assert any("cosmetic/low-confidence defect(s) stand and ship" in line
+               for line in cosmetic), cosmetic
+    assert not any("could not be read" in line for line in cosmetic)
+    assert any("brief could not be read" in line and "(D3)" in line for line in dropped), dropped
+    assert not any("cosmetic" in line for line in dropped)
+    # Both forks still say DEGRADED and neither says BLOCKED: a degraded deck IS published.
+    for lines in (cosmetic, dropped):
+        assert any("gate DEGRADED" in line for line in lines)
+        assert not any("BLOCKED" in line for line in lines)
+
+
+def test_fr296_a_clean_gate_prints_its_header_and_nothing_else(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A round that found nothing is silence by design: the header already says how many passed,
+    and a line per passing round would bury the one deck that did not."""
+    live = session(stages=["RENDER", "GAUNTLET", "DONE"])
+
+    runner._gauntlet_rollup(live, _gated(**{"pass": 6}))
+
+    lines = printed(capsys)
+    assert len(lines) == 1, "a clean gate owes the operator exactly one line"
+    assert "6 judged -> 6 pass, 0 blocked, 0 stopped" in lines[0]
+
+
+# ------------------------ FR-84/FR-326: the per-role LLM usage table (v2.2.0, D49)
+#
+# The gauntlet made LLM spend the LARGER half of a run's bill at worst case (spec §5: three critics
+# x three rounds is comparable to the whole re-render budget), and until this table existed the
+# operator's only view of it was one `llm $0.42` figure inside the spend total. Token counts are
+# what actually move that number, so token counts are what it prints.
+
+
+def test_fr326_the_llm_usage_table_folds_per_critic_roles_into_their_base_role(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`critic:brief` is a MODEL override, not a second budget: an operator reading a cost table
+    wants "the critics cost $0.34", not three rows that have to be added up by hand.
+
+    Row order is pipeline order (screen, copy, gate), the totals row adds up, and the render row
+    carries no tokens by nature — it is priced per job, not per token.
+    """
+    live = session()
+    live.llm_usage = {
+        "analysis": runner._RoleUsage(2, 8_000, 4_400, 0.031),
+        "copy": runner._RoleUsage(3, 12_000, 900, 0.021),
+        "critic": runner._RoleUsage(9, 94_000, 6_300, 0.252),
+        "critic:brief": runner._RoleUsage(3, 31_000, 2_100, 0.084),
+    }
+
+    table = runner._llm_usage_table(live, SimpleNamespace(render_usd=0.96))
+
+    rows = [line.split() for line in table.splitlines()[2:]]
+    assert [row[0] for row in rows] == ["analysis", "copy", "critic", "llm", "render"]
+    critic = next(row for row in rows if row[0] == "critic")
+    assert critic[1:4] == ["12", "125000", "8400"], "the override folds into its base role"
+    total = next(row for row in rows if row[0] == "llm")  # "llm total" splits into two tokens
+    assert total[2:5] == ["17", "145000", "13700"]
+    assert rows[-1][-1] == "$0.96", "render spend rides the same block, without tokens"
+    for line in table.splitlines():
+        console_safe(line)
+        assert len(line) <= 78, f"FR-286 allows 78: {line!r}"
+
+
+def test_fr326_a_run_that_made_no_metered_call_says_so_rather_than_printing_an_empty_table(
+) -> None:
+    """A preview, a declined gate and an aborted run all land here; a header with no rows under
+    it reads as a rendering bug, and one sentence is the honest answer."""
+    assert "no metered LLM call" in runner._llm_usage_table(session(),
+                                                            SimpleNamespace(render_usd=0.0))
+
+
+# ------------------------------------- D54/FR-331: the four console surfaces the mode changes
+#
+# Compress mode is an operator TOGGLE, so the console has to say which contract the words on the
+# frames actually shipped under — otherwise the one difference between two runs of the same config
+# is invisible in `run.log` and the operator is comparing galleries from memory.
+#
+# The verbatim wordings are UNCHANGED, byte for byte, and are re-asserted here beside their
+# compress twins rather than merely left alone: "the other branch still says what it said" is the
+# regression these four surfaces most need, because each is a one-line ternary and a rewrite of
+# either arm is a two-character edit.
+#
+# House rules apply to the new strings exactly as to the old ones: 78 columns, no ANSI, no `→`,
+# `->` only (`console_safe`).
+
+
+class CompressedCopy:
+    """A stand-in for `copywrite.write_copy` returning a canned `CopyResult`.
+
+    The COPY stage line counts off the per-asset PROVENANCE rather than off
+    `config.run.carousel_copy_mode`, and this is why the double is shaped around provenance: the
+    two disagree exactly where it matters — a compress-mode run whose call failed shipped the
+    verbatim mapped deck, and a line claiming "compressed" over it would hide the degradation.
+    """
+
+    def __init__(self, modes: Sequence[str]) -> None:
+        self.modes = list(modes)
+
+    async def __call__(self, entries: Sequence[PlanEntry], **kwargs: Any) -> copywrite.CopyResult:
+        result = copywrite.CopyResult()
+        for index, item in enumerate(entries):
+            mode = self.modes[index] if index < len(self.modes) else "verbatim"
+            result.copy[item.asset_id] = CopySet(asset_id=item.asset_id, language="en")
+            result.provenance[item.asset_id] = copywrite.CopyProvenance(post_id="p1",
+                                                                        copy_mode=mode)
+        return result
+
+
+async def copy_stage(modes: Sequence[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run the real COPY stage over a canned result, so the printed line is the production one."""
+    live = session(stages=["COPY"])
+    live.llm = object()  # `_metered` needs a client; the wrapped call is never invoked here
+    item = topic("AI agents do the work")
+    entries = [entry(index, fmt="carousel", trend=item) for index in range(len(modes))]
+    monkeypatch.setattr(copywrite, "write_copy", CompressedCopy(modes))
+    await runner._write(live, entries, {item.history_key: item}, {})
+
+
+async def test_fr296_the_copy_stage_line_names_the_contract_the_words_shipped_under(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The COPY closing line, both arms (FR-296 + D54).
+
+    A run in which nothing compressed keeps the pre-D54 sentence byte for byte — that is the whole
+    of the regression half. A run in which anything did says HOW MANY did, because a mixed run is
+    the normal shape the day an image or a reel joins an all-carousel config, and "2 creative(s)
+    compressed" over a batch that also quoted two would be false.
+    """
+    await copy_stage(["verbatim", "verbatim"], monkeypatch)
+    verbatim = printed(capsys)
+
+    await copy_stage(["compress", "compress"], monkeypatch)
+    compressed = printed(capsys)
+
+    await copy_stage(["compress", "verbatim"], monkeypatch)
+    mixed = printed(capsys)
+
+    for lines in (verbatim, compressed, mixed):
+        console_safe("\n".join(lines))
+        assert lines[0].startswith("[1/1] COPY"), "the opening line is untouched by the mode"
+    assert "1 call(s) -> 2 creative(s) quoted verbatim" in verbatim[1], \
+        "the pre-D54 sentence, unchanged, on a run where nothing compressed"
+    assert "1 call(s) -> 2 creative(s), 2 compressed" in compressed[1]
+    assert "1 call(s) -> 2 creative(s), 1 compressed" in mixed[1], "counted, never assumed"
+    assert "quoted verbatim" not in compressed[1] and "quoted verbatim" not in mixed[1]
+
+
+def test_fr297c_a_compressed_creative_gets_a_receipt_that_does_not_claim_a_quote() -> None:
+    """FR-297c's second line has to change shape, not just wording, for a compressed deck.
+
+    Its slides are the copy model's compressions of that post's panels, so there is no "exact
+    string quoted" to print and `copy_source_refs` is empty by contract (FR-302 as amended).
+    Printing the verbatim receipt with an empty quote would read as "this creative quoted nothing
+    from a post it names", which is the opposite of what happened. The post is still named — the
+    provenance CLAIM is unchanged, only the transform is — and the line points at `meta.yaml`'s
+    `panel_map`, where every row carries the source panel beside what shipped.
+    """
+    item = topic("AI agents do the work", strength=1.0)
+    deck = entry(0, fmt="carousel", trend=item, style="anime-noir-statement")
+    deck.status = PlanEntryStatus.SUCCESS
+    records = {deck.asset_id: record(deck, item, cost=0.180, quoted=item.posts[0], refs={},
+                                     copy_mode="compress")}
+    copy = {deck.asset_id: CopySet(asset_id=deck.asset_id, language="en",
+                                   slide_texts=["Ship it, then measure."])}
+
+    block = runner._provenance_block([deck], records, {item.history_key: item}, copy)
+
+    console_safe(block)
+    receipt = block.splitlines()[3].strip()
+    assert receipt.startswith("compressed P1 @creator0 ")
+    assert item.posts[0].post_id in receipt, "the post is still named — the claim is unchanged"
+    assert receipt.endswith("-> panel_map"), "where the operator reads both sides of each row"
+    assert '"' not in receipt, "there is no quoted string to show, so none is invented"
+    assert "quoted" not in receipt
+
+
+def test_fr297c_the_verbatim_receipt_is_untouched_beside_its_compress_twin() -> None:
+    """The regression half of the line above: a `verbatim` record on the same code path still
+    prints the pre-D54 receipt, first ~24 characters and all. Both arms in one test, because the
+    two are one ternary and an edit to either is a two-character change."""
+    item = topic("AI agents do the work", strength=1.0)
+    image = entry(0, trend=item)
+    image.status = PlanEntryStatus.SUCCESS
+    records = {image.asset_id: record(image, item, cost=0.041, quoted=item.posts[0])}
+    copy = {image.asset_id: CopySet(asset_id=image.asset_id, language="en",
+                                    headline="AI agents do the work for you while you sleep")}
+
+    block = runner._provenance_block([image], records, {item.history_key: item}, copy)
+
+    console_safe(block)
+    receipt = block.splitlines()[3].strip()
+    assert receipt.startswith("quoted P1 @creator0 ")
+    assert '"AI agents do the work' in receipt, "the first ~24 characters, quoted verbatim"
+    assert "panel_map" not in receipt and "compressed" not in receipt
+
+
+def test_fr140_the_preview_copy_header_says_which_contract_wrote_the_words() -> None:
+    """`--preview-analysis` is compress mode's CHEAPEST review: it costs the copy call and nothing
+    else, and reading the compressed slides there is what tells the operator whether a paid run is
+    worth submitting. So the header has to say which contract produced them — and, on a mixed
+    batch, how many decks each one covered."""
+    item = topic("AI agents do the work")
+    deck = entry(0, fmt="carousel", trend=item)
+    image = entry(1, trend=item)
+    result = copywrite.CopyResult()
+    for plan_entry, mode in ((deck, "compress"), (image, "verbatim")):
+        result.copy[plan_entry.asset_id] = CopySet(
+            asset_id=plan_entry.asset_id, language="en", caption="A caption.",
+            slide_texts=["Ship it, then measure."] if mode == "compress" else [])
+        result.provenance[plan_entry.asset_id] = copywrite.CopyProvenance(post_id="p1",
+                                                                          copy_mode=mode)
+
+    mixed = previews._copy_block(result, [deck, image])
+    for plan_entry in (deck, image):
+        result.provenance[plan_entry.asset_id] = copywrite.CopyProvenance(post_id="p1")
+    verbatim = previews._copy_block(result, [deck, image])
+
+    console_safe(mixed)
+    console_safe(verbatim)
+    assert mixed.splitlines()[0] == "Copy — 2 creative(s), 1 deck(s) compressed"
+    assert "from the source post's panels to the style's budget, in the post's own" in mixed
+    assert "the rest quoted verbatim, nothing rendered (FR-140/FR-331)" in mixed
+    # …and with nothing compressed the pre-D54 header returns, byte for byte.
+    assert verbatim.splitlines()[0] == "Copy — 2 creative(s), quoted verbatim in the language"
+    assert verbatim.splitlines()[1] == \
+        "  of the post each string came from; nothing was rendered (FR-140)"
+    assert "compressed" not in verbatim
+
+
+def test_fr140_a_compressed_creatives_preview_row_says_compressed_and_prints_no_refs() -> None:
+    """The per-creative rows under that header, on the same terms: `compressed` where a quoting
+    creative says `quoted`, and no `refs` row at all — it resolved no labels, so there are none to
+    print, and an empty `refs` line reads as a lost receipt rather than an absent one."""
+    item = topic("AI agents do the work")
+    deck = entry(0, fmt="carousel", trend=item)
+    result = copywrite.CopyResult()
+    result.copy[deck.asset_id] = CopySet(asset_id=deck.asset_id, language="en",
+                                         caption="A caption.",
+                                         slide_texts=["Ship it, then measure."])
+    result.provenance[deck.asset_id] = copywrite.CopyProvenance(post_id="p1",
+                                                                copy_mode="compress")
+
+    block = previews._copy_block(result, [deck])
+
+    console_safe(block)
+    row = next(line for line in block.splitlines() if "compressed" in line and "deck(s)" not in line)
+    assert row.strip().startswith("compressed"), "the transform, where a quote would say `quoted`"
+    assert "p1" in row, "the post is still named — the provenance claim is unchanged"
+    assert "refs" not in block, "FR-302: a compressed slide resolved no label to print"
+    assert "Ship it, then measure." in block, "the compressed slide is READ here — that is the job"
+
+
+def test_fr333_the_preflight_language_hint_states_the_compress_contract_when_it_applies() -> None:
+    """FR-333's pre-flight display rule rides the hint an operator is already reading.
+
+    Compress makes the language question SHARPER, not softer: a compressed line is written by a
+    model rather than copied byte for byte, so drifting out of the source's language is a failure
+    mode verbatim mode simply does not have — and the `translated` defect blocks a whole deck.
+    Three shapes, one hint each, and the verbatim wording is unchanged where it still applies.
+    """
+    deck = entry(0, fmt="carousel")
+    config = Config()
+    config.run.gauntlet.enabled = False
+
+    config.run.carousel_copy_mode = "compress"
+    compressed: list[str] = []
+    preflight._check_language_hint(config, [deck], compressed)
+
+    config.run.carousel_copy_mode = "verbatim"
+    verbatim: list[str] = []
+    preflight._check_language_hint(config, [deck], verbatim)
+
+    # A hint is DATA, not a console line: `Preflight.report` is the one place every grade passes
+    # through and it wraps at 76, because layout belongs at the printer and never in a string that
+    # also lands in events.jsonl. So the width rule is measured on what actually PRINTS, and not
+    # through `console_safe` — the shipped hints have always carried `§` (a PRD section reference
+    # is what makes a hint actionable), which is outside `util.fit`'s console-safe set by design.
+    for line in preflight.Preflight(hints=tuple(compressed + verbatim)).report.splitlines():
+        assert len(line) <= WIDTH, f"{len(line)} chars (FR-286 allows {WIDTH}): {line!r}"
+        assert "→" not in line and "\x1b" not in line, line
+    assert len(compressed) == 1 and len(verbatim) == 1
+    assert "carousel on-image text is compressed from the source post's panels to the" in \
+        compressed[0]
+    assert "carousel_copy_mode: compress" in compressed[0] and "FR-331" in compressed[0]
+    assert "consider --gauntlet" in compressed[0], "the hint's whole point survives the branch"
+    # The pre-D54 sentence, unchanged, on a run that did not opt in.
+    assert verbatim[0].startswith("on-image text is quoted verbatim from the source post, in "
+                                  "that post's own language (FR-294)")
+    assert "compressed" not in verbatim[0]
+
+
+def test_fr333_the_preflight_hint_ignores_the_mode_on_a_run_with_no_carousels() -> None:
+    """`carousel_copy_mode` governs bound carousel decks and nothing else, so an images-only run
+    in compress mode says exactly what it said before D54 — claiming a compress contract over a
+    batch of single images would be a false statement at the screen before the money moves."""
+    config = Config()
+    config.run.gauntlet.enabled = False
+    config.run.carousel_copy_mode = "compress"
+    hints: list[str] = []
+
+    preflight._check_language_hint(config, [entry(0)], hints)
+
+    assert len(hints) == 1 and "quoted verbatim from the source post" in hints[0]
+    assert "compress" not in hints[0]
+
+
+def test_fr286_a_label_that_fills_the_row_column_still_gets_its_separating_space() -> None:
+    """The D54 collision, closed at `previews._rows` and pinned here as bytes.
+
+    `:<{_ROW_LABEL}}` pads a SHORT label out to the column and supplies the gap as a side effect of
+    the padding. It does nothing at all for a label that already fills the column — and
+    `compressed` is ten characters against a nine-column label, so the preview's provenance row
+    printed `compressedp1`: the transform welded onto the post id, in the one surface whose entire
+    job is to be read.
+
+    Both arms are asserted as exact bytes. The fix is a branch on label LENGTH, so the only way to
+    be sure it did not re-pad every other row in every preview this tool prints is to pin one row
+    that takes it and one that does not — every label this module ships (`quoted`, `on-image`,
+    `caption`, `slide 12`, `overlay`, `motion`, `refs`, `tags`) is eight characters or fewer and
+    must come out exactly as it always has.
+    """
+    item = topic("AI agents do the work")
+    deck = entry(0, fmt="carousel", trend=item)
+    result = copywrite.CopyResult()
+    result.copy[deck.asset_id] = CopySet(asset_id=deck.asset_id, language="en",
+                                         caption="A caption.",
+                                         slide_texts=["Ship it, then measure."])
+
+    result.provenance[deck.asset_id] = copywrite.CopyProvenance(post_id="p1",
+                                                                copy_mode="compress")
+    compressed = previews._copy_block(result, [deck])
+    result.provenance[deck.asset_id] = copywrite.CopyProvenance(
+        post_id="p1", refs={"slide_1": "P1.panel.1"})
+    verbatim = previews._copy_block(result, [deck])
+
+    console_safe(compressed)
+    console_safe(verbatim)
+    assert "      compressed p1" in compressed.splitlines(), \
+        "label, ONE space, content — never the `compressedp1` weld"
+    assert "compressedp1" not in compressed
+    # The unchanged arm, byte for byte: a short label is still padded to the nine-column grid, so
+    # `quoted`/`refs`/`slide 1`/`caption` all start their content in the same column they always
+    # did — which is what makes a preview readable as a table rather than as a list.
+    rows = verbatim.splitlines()
+    assert "      quoted   p1" in rows
+    assert "      refs     slide_1=P1.panel.1" in rows
+    assert "      slide 1  Ship it, then measure." in rows
+    assert "      caption  A caption." in rows
+    assert len({len(row) - len(row.lstrip()) for row in rows if row.startswith("      ")}) == 1, \
+        "every field row keeps the same six-space indent"
+
+
+def test_fr286_the_widest_row_this_module_can_print_still_fits_the_console() -> None:
+    """The arithmetic behind the fix, asserted rather than trusted: 6 indent + a 10-character
+    label + 1 separating space + `_ROW_WIDTH` of text is 78, which is exactly FR-286's ceiling and
+    not one column over it. `_rows` is measured directly, on the longest label the module ships and
+    a value long enough to fill the wrap width — the assembled preview above cannot reach this
+    worst case because its own values are short."""
+    # Real prose, because `wrapped` breaks on word boundaries and never mid-word (FR-101's rule,
+    # applied to layout): a 400-character single token is not a shape this module can print.
+    lines = previews._rows("compressed", " ".join(["compressed"] * 60))
+
+    assert len(lines) > 1, "a value that long must WRAP rather than overflow or vanish"
+    for line in lines:
+        assert len(line) <= WIDTH, f"{len(line)} chars (FR-286 allows {WIDTH}): {line!r}"
+    assert lines[0].startswith("      compressed compressed"), "label, one space, then content"
+    assert lines[1].startswith(" " * (6 + previews._ROW_LABEL)), \
+        "continuation lines align under the content, not under the label"

@@ -9,7 +9,9 @@ render prompt can describe the same content (chart, grid, checklist) in our own 
 Public API:
     await enrich(posts, run_dir=..., call=..., engine=..., cfg=..., log=...) -> {post_id: SlideIntel}
     SlideIntel · SourceSlide · MarkBox · SLIDE_INTEL_ROLE · QUESTION_TEMPLATE
+    MARK_KINDS · MARK_KIND_TOOL
     detect_counter(chrome_lines, panel_texts, panel_count) -> CounterSpec | None  ·  CounterSpec
+    counter_line(text) -> bool — is that line ONLY a page counter (chrome, not copy)?
     STATUS_OK / STATUS_UNAVAILABLE / STATUS_DISABLED
     TEXT_SOURCE_VIRLO / TEXT_SOURCE_VISION / TEXT_SOURCE_NONE
 
@@ -44,6 +46,18 @@ Invariants enforced here, once, for every caller:
   text and is provenance `virlo`; vision transcription fills only the empty slots and is
   provenance `vision_transcribed`. Vision never overwrites, corrects or re-punctuates a panel
   Virlo already gave us — that string is what the verbatim contract quotes.
+- **The transcription — and ONLY the transcription — is OCR-repaired at admission (v2.2.0).**
+  `ocr_repair.repair_confusables` runs once, here, on `vision_text`, because this is the sanctioned
+  admission boundary for a string the vision pass invented the bytes of; the unrepaired reading is
+  kept as `vision_text_original` and every correction is logged (`ocr_repaired`). A Virlo panel
+  never goes through it. Truncation is FLAGGED (`SourceSlide.truncation_suspect`) and never acted
+  on: a panel that looks cut keeps its bytes and its position, because dropping it would re-map the
+  whole deck (FR-304).
+- **Only TOOL marks get boxes (v2.2.0, FR-306 amendment).** `mark_boxes` rows carry a `kind`, and
+  `_mark_boxes` keeps `tool` alone — apparel, platform chrome, the creator's own identity and
+  anything the model could not place are dropped at the parse boundary, before a rectangle exists
+  for FR-315 to crop. Run `…_m39f` cropped and uploaded a patch of a creator's Nike hoodie; the
+  narrowest place to end that is here, where the box is born.
 - **Creator chrome is transcribed apart from the words (`chrome_text`).** @handles, URLs,
   watermarks, account names, page counters ("3/6"), swipe/follow CTAs and platform UI are the
   creator's signature, not the slide's content, so the question puts them in their own field and
@@ -82,6 +96,8 @@ from typing import Any
 
 from hypesocials.config import Config
 from hypesocials.models import SourcePost, StructuredCall
+from hypesocials.ocr_repair import repair_confusables, truncation_suspect
+from hypesocials.sources.mark_names import collapse, mark_name
 # Imported as a MODULE, not through `hypesocials.outputs`, because the store seam
 # (`store_source` / `write_source_yaml`) is new in this wave and the domain facade is not in this
 # task's file set. W2 re-exports both names from `hypesocials.outputs.__init__` and this import
@@ -119,6 +135,9 @@ _MAX_ANALYSED_SLIDES = 20
 _DETAIL_MAX = 200  # operator-facing reason strings; never a payload dump
 _MAX_BRAND_MARKS = 10
 _MARK_MAX = 120
+#: How many individual OCR repairs a single `ocr_repaired` line spells out. The full list still
+#: rides in the event's structured `corrections` field; the prose is for a human reading `run.log`.
+_MAX_LOGGED_REPAIRS = 5
 #: Bounding boxes kept per DECK, not per slide (FR-306 amendment, v2.1.3/D48). Each one becomes a
 #: cropped patch and a Kie upload downstream (FR-315), so the cap is a cost fence — but it is a
 #: fence on UPLOADS, not on a deck's ambition, and at 10 it was cutting real marks off real decks.
@@ -134,6 +153,37 @@ _MAX_MARK_BOXES = 24
 #: whole panel, a screenshot, or the background. Cropping it would upload the source slide itself,
 #: which is exactly what FR-244's narrow carve-out does NOT sanction.
 _MARK_BOX_MAX_SPAN = 0.9
+
+#: What a boxed mark IS (v2.2.0, FR-306 amendment). The vocabulary is the model's, the consequence
+#: is ours: only `tool` is croppable (FR-315), because only a tool logo is a thing one of our
+#: slides might legitimately draw.
+#:
+#: - `tool` — a software/product logo the slide is TALKING ABOUT (Notion, Claude, Figma, Murf).
+#: - `apparel` — a brand on clothing, a bottle, a wall, a car. The 08-14 audit's own case: a
+#:   creator's Nike hoodie became a cropped, uploaded "logo patch" on run `…_m39f`.
+#: - `chrome` — platform UI and the creator's own signature: a TikTok watermark, an Instagram
+#:   glyph, an @handle lockup, a follow button. §0.11 already splits chrome OUT of the words; this
+#:   splits it out of the pixels.
+#: - `other` — anything the model cannot place. Not croppable, because "I am not sure what this is"
+#:   is not a reason to spend an upload on it.
+MARK_KINDS = ("tool", "apparel", "chrome", "other")
+#: The parser's default when a row names no `kind` — an older cached answer, a truncated row, or
+#: (until the wave-1d prompt update lands) every answer the current question produces. `tool`
+#: preserves exactly today's behaviour for those payloads, so the schema and the prompt can move in
+#: different waves without a deck silently losing every patch in between (§0.14c).
+_DEFAULT_MARK_KIND = "tool"
+MARK_KIND_TOOL = "tool"
+
+#: Collapsed names that are PLATFORM CHROME whatever the model called them. A box on one of these
+#: is a watermark or a UI affordance — the creator's signature or the app's, never the slide's
+#: subject — and FR-310 would refuse to let our deck draw it anyway. Matched on
+#: `mark_names.collapse(mark_name(...))`, so "TikTok logo", "tiktok" and "TikTok watermark" are one
+#: entry. Deliberately platforms only: Canva, CapCut and Figma are tools a round-up really does
+#: name, and they are not in here.
+_CHROME_MARKS = frozenset({
+    "tiktok", "instagram", "ig", "reels", "facebook", "meta", "youtube", "youtubeshorts",
+    "shorts", "threads", "twitter", "x", "snapchat", "pinterest", "linkedin", "whatsapp",
+    "telegram", "douyin", "xiaohongshu", "rednote"})
 
 #: Strict-mode schema (RESULTS.md §E: every property required, `additionalProperties: false`). The
 #: CALLER owns the schema — `llm.py` is schema-agnostic by contract. `slide` is the 1-based
@@ -166,8 +216,16 @@ _SLIDE: dict[str, Any] = {
                     "name": {"type": "string"},
                     "slide": {"type": "integer"},
                     "box": {"type": "array", "items": {"type": "number"}},
+                    # v2.2.0: WHAT the mark is, which decides whether its pixels may be cropped at
+                    # all. A vision pass asked only to box "brand marks" boxes everything branded
+                    # it can see — the creator's Nike hoodie (run `…_m39f`, cropped and uploaded),
+                    # the TikTok watermark, the @handle lockup — and each of those is an upload
+                    # bought for a mark no slide of ours will ever draw. Only `tool` survives
+                    # `_mark_boxes`; the other three are kept in the vocabulary so the model has
+                    # somewhere honest to put them instead of calling a hoodie a logo.
+                    "kind": {"type": "string", "enum": list(MARK_KINDS)},
                 },
-                "required": ["name", "slide", "box"],
+                "required": ["name", "slide", "box", "kind"],
                 "additionalProperties": False,
             },
         },
@@ -202,11 +260,18 @@ class MarkBox:
 
     `slide` is the SOURCE deck's 1-based panel position — the same numbering `SourceSlide.position`
     uses, so `source_dir / slide_NN.<ext>` is the file this box cuts from.
+
+    `kind` is one of `MARK_KINDS`, and only `tool` boxes are ever built: `_mark_boxes()` drops the
+    rest at the parse boundary, so a `MarkBox` in hand is already a croppable one. It is kept on
+    the record (and in `source.yaml`) rather than discarded because the whole point of the field is
+    to be auditable — "why did this deck upload three patches and not eleven" is a question the
+    provenance file should answer without re-running the vision pass.
     """
 
     name: str
     slide: int
     box: tuple[float, float, float, float]
+    kind: str = MARK_KIND_TOOL
 
 
 @dataclass(slots=True)
@@ -220,7 +285,15 @@ class SourceSlide:
 
     position: int
     virlo_text: str = ""  # `panel_texts[position - 1]`, exactly as Virlo returned it
-    vision_text: str = ""  # the transcription; used only where `virlo_text` is empty
+    #: The transcription; used only where `virlo_text` is empty. OCR-REPAIRED at admission
+    #: (`ocr_repair.repair_confusables`, v2.2.0): "Al agents" transcribed off a slide reading "AI
+    #: agents" was reaching paid pixels verbatim, because verbatim is exactly what this pipeline
+    #: promises. The repair happens HERE, once, at the sanctioned admission boundary, so the same
+    #: bytes feed the panel map, the prompt and FR-100's verifier pool.
+    vision_text: str = ""
+    #: What the model actually wrote, kept whenever the repair changed anything (else `""`). A
+    #: repair that cannot be pointed at afterwards is indistinguishable from drift.
+    vision_text_original: str = ""
     #: The creator's chrome, transcribed separately and never merged into `text`: @handles, URLs,
     #: watermarks, page counters, swipe/follow CTAs, platform UI. Provenance and gallery material
     #: only — it is deliberately NOT part of the words our deck quotes, because it is their
@@ -234,6 +307,18 @@ class SourceSlide:
     def text(self) -> str:
         """The slide's on-image words: Virlo's panel if it has one, else the transcription."""
         return self.virlo_text or self.vision_text
+
+    @property
+    def truncation_suspect(self) -> bool:
+        """Does this slot's merged text look CUT rather than finished (`ocr_repair`, FR-304c)?
+
+        A FLAG and nothing more. The panel keeps its bytes and its position whatever this says —
+        blanking a suspect panel would silently re-map the whole deck (FR-304), which is worse than
+        any transcription defect. The consumer is contract data for the gauntlet's `brief` critic,
+        which is looking at the rendered frame and can tell an authored cliff-hanger from a
+        clipped container.
+        """
+        return truncation_suspect(self.text)
 
     @property
     def text_source(self) -> str:
@@ -319,6 +404,47 @@ _PREFIX_TOKEN = re.compile(r"^\s*(//+\s*)(\d{1,3})(?!\d)")
 #: Sanity fence on both numbers. A counter counts a deck, and a deck is not 400 panels long; a
 #: bigger number in a chrome line is a price, a year, a view count or a statistic.
 _MAX_COUNT = 99
+
+
+def counter_line(text: str) -> bool:
+    """Is this line NOTHING BUT a page counter — the source deck's chrome rather than its words?
+
+    The admission-time half of the counter story (F2, Session 5.5). `detect_counter` below reads
+    the same two shapes to LEARN the source's convention so we can re-base it onto our own deck;
+    this helper answers the narrower question `copywrite._offer_for` asks of every panel line
+    before it may become pixels: are these bytes furniture? They arrive as copy because Virlo's
+    adapter has no `chrome_text` field — the vision pass is the only producer of one — so a badge
+    that the creator typeset as chrome rides into `panel_texts` with the slide's real words, and
+    from there into the panel map, the render prompt and the gauntlet's expected-line contract,
+    where a render that correctly left the badge out is BLOCKED for `missing_text`.
+
+    **Full-line only, and that is the whole safety argument.** The line is judged after `strip()`
+    and has to be counter-shaped edge to edge, so `3/4 of teams fail at this` is content and ships
+    byte-verbatim, and so does `// 01 THE HOOK` — a prefix counter typeset as part of the panel's
+    own copy is the source's typography, not a separate badge. Both conventions this module
+    already models are accepted on their own line: the paired form (`01 / 06`, `1/6`, `2 of 7`,
+    `4 · 9`) and the total-less prefix (`// 01`), each under the same `_MAX_COUNT` fence and the
+    same `number <= total` rule the candidate scanners use — which is why `24/7` on a slide of its
+    own is a slogan and survives.
+
+    Args:
+        text: one line of a source panel. Position in the strip chain does not matter: no strip
+            layer edits digits, so the verdict is the same before and after.
+
+    Returns:
+        True when the entire line is a counter and may be dropped at admission; False for
+        everything else, blank lines included (a blank line is not chrome, and it is not this
+        helper's to remove).
+    """
+    line = str(text or "").strip()
+    if not line:
+        return False
+    paired = _COUNTER_TOKEN.fullmatch(line)
+    if paired is not None:
+        return 1 <= int(paired.group(1)) <= int(paired.group(3)) <= _MAX_COUNT
+    prefix = _PREFIX_TOKEN.match(line)
+    return (prefix is not None and prefix.end() == len(line)
+            and 1 <= int(prefix.group(2)) <= _MAX_COUNT)
 
 
 @dataclass(frozen=True, slots=True)
@@ -570,7 +696,8 @@ async def _one_post(
         return intel
     await _store_slides(intel, _image_urls(post), run_dir=run_dir, log=log)
     if enabled and call is not None:
-        await _read_slides(intel, call=call, engine=engine, run_dir=run_dir, log=log)
+        await _read_slides(intel, call=call, engine=engine, run_dir=run_dir,
+                           identity=_identity(post), log=log)
     else:
         intel.status = STATUS_DISABLED
         intel.reason = ("no model call available" if call is None
@@ -627,7 +754,8 @@ async def _store_one(
 
 
 async def _read_slides(
-    intel: SlideIntel, *, call: StructuredCall, engine: PromptEngine, run_dir: Path, log: Any
+    intel: SlideIntel, *, call: StructuredCall, engine: PromptEngine, run_dir: Path,
+    identity: frozenset[str], log: Any,
 ) -> None:
     """The one paid call: every stored slide of this post, one question, per-slide answers."""
     blobs, positions = await _load(intel, run_dir=run_dir, log=log)
@@ -664,7 +792,7 @@ async def _read_slides(
         _unavailable(intel, result.reason or result.raw_text or "the analysis returned nothing "
                      "usable", log)
         return
-    _apply(intel, result.parsed, positions, log)
+    _apply(intel, result.parsed, positions, identity, log)
 
 
 async def _load(intel: SlideIntel, *, run_dir: Path, log: Any) -> tuple[list[bytes], list[int]]:
@@ -696,7 +824,8 @@ async def _load_one(path: Path, post_id: str, position: int, log: Any) -> bytes:
         return b""
 
 
-def _apply(intel: SlideIntel, parsed: Mapping[str, Any], positions: Sequence[int], log: Any) -> None:
+def _apply(intel: SlideIntel, parsed: Mapping[str, Any], positions: Sequence[int],
+           identity: frozenset[str], log: Any) -> None:
     """Merge the model's answers onto the slides, by POSITION, and count what never came back."""
     answered: set[int] = set()
     boxes: list[MarkBox] = []
@@ -707,7 +836,11 @@ def _apply(intel: SlideIntel, parsed: Mapping[str, Any], positions: Sequence[int
         answered.add(slot)
         # Virlo's panel is the verbatim source of record; the transcription is kept beside it as
         # provenance either way, so `source.yaml` can show both and the merge stays inspectable.
-        slide.vision_text = str(row.get("onimage_text") or "")
+        # The transcription is OCR-repaired on the way in (the sanctioned admission boundary — see
+        # `ocr_repair`), and only where Virlo left the slot empty does it become anything's text;
+        # a populated Virlo panel is never touched by any of this (§0.11).
+        slide.vision_text = _transcribed(str(row.get("onimage_text") or ""), intel.post_id, slot,
+                                         slide, log)
         # Fail-open on the field too: an older model, a cached answer or a truncated row that
         # names no `chrome_text` is a slide with no chrome, not a failed read (§0.14c).
         slide.chrome_text = str(row.get("chrome_text") or "")
@@ -716,13 +849,44 @@ def _apply(intel: SlideIntel, parsed: Mapping[str, Any], positions: Sequence[int
         # Deck-level, and capped as a deck (FR-306 amendment): the boxes name their own slide, so
         # an answer that mislabels one is caught by the range test rather than trusted because of
         # where it arrived. `slot` is the fallback for a row that names no slide at all.
-        boxes.extend(_mark_boxes(row.get("mark_boxes"), len(intel.slides), slot))
+        boxes.extend(_mark_boxes(row.get("mark_boxes"), len(intel.slides), slot, identity))
     intel.mark_boxes = boxes[:_MAX_MARK_BOXES]
     if missing := [position for position in positions if position not in answered]:
         _warn(log, "slide_intel_brief_missing",
               f"the analysis returned no answer for slide(s) {missing} of post {intel.post_id} — "
               "they keep their panel text and render without a visual brief",
               post_id=intel.post_id, slides=missing)
+
+
+def _transcribed(text: str, post_id: str, position: int, slide: SourceSlide, log: Any) -> str:
+    """One slide's transcription, OCR-repaired at admission — with the raw bytes kept beside it.
+
+    The defect this exists for is small and expensive: a vision pass reads "AI agents" off a slide
+    and writes "Al agents", the panel is empty on Virlo's side so the transcription IS the slide's
+    text, and the pipeline then renders it verbatim onto a paid frame — correctly, by its own
+    rules, which is what makes it hard to see. `ocr_repair` fixes exactly that class (uppercase-
+    scoped confusables) and nothing else.
+
+    Applied HERE, once, at the boundary where the string is admitted into the run, so every
+    downstream reader — the panel map, the prompt, FR-100's verbatim verifier pool — sees the same
+    bytes. `vision_text_original` keeps what the model actually wrote whenever anything changed,
+    and every correction is logged under `ocr_repaired`. A Virlo panel is not touched by any of
+    this: it is the source of record, and repairing it would move the bytes the verifier compares
+    against (§0.11).
+    """
+    repaired, corrections = repair_confusables(text)
+    if not corrections:
+        return text
+    slide.vision_text_original = text
+    _event(log, "ocr_repaired",
+           f"slide {position} of post {post_id}: {len(corrections)} OCR confusable(s) repaired in "
+           f"the transcription (" + ", ".join(f"{item.before!r}->{item.after!r}"
+                                              for item in corrections[:_MAX_LOGGED_REPAIRS])
+           + ") — the raw reading is kept in source.yaml as vision_text_original",
+           post_id=post_id, position=position,
+           corrections=[{"before": item.before, "after": item.after, "index": item.index}
+                        for item in corrections])
+    return repaired
 
 
 def _answers(
@@ -779,6 +943,12 @@ def _payload(intel: SlideIntel, post: SourcePost, cfg: Config | None) -> dict[st
             "position": slide.position,
             "virlo_text": slide.virlo_text,
             "vision_text": slide.vision_text,
+            # The unrepaired reading, present only when the OCR repair actually changed something
+            # (`""` otherwise). Doctrine, not decoration: a repair that cannot be pointed at
+            # afterwards is indistinguishable from the drift the verbatim contract exists to stop.
+            "vision_text_original": slide.vision_text_original,
+            # A FLAG on the merged text, never a licence to blank it (`ocr_repair`, FR-304c).
+            "truncation_suspect": slide.truncation_suspect,
             # Recorded beside the words, never inside them: the archive documents that the source
             # slide was signed "@creator | site.com | 3/6" without that signature ever becoming
             # text our deck could quote (FR-71 is provenance, not pixels).
@@ -792,7 +962,8 @@ def _payload(intel: SlideIntel, post: SourcePost, cfg: Config | None) -> dict[st
         # mark recurs across panels (FR-306 amendment). Provenance, like everything else in this
         # file: it records WHERE the pixels FR-315 cropped came from, so a patch that renders wrong
         # can be traced back to the rectangle that produced it without re-running the vision pass.
-        "mark_boxes": [{"name": box.name, "slide": box.slide, "box": list(box.box)}
+        "mark_boxes": [{"name": box.name, "slide": box.slide, "box": list(box.box),
+                        "kind": box.kind}
                        for box in intel.mark_boxes],
         "vision": {
             "model_role": SLIDE_INTEL_ROLE,
@@ -852,13 +1023,28 @@ def _marks(value: Any) -> list[str]:
             for mark in _sequence(value) if str(mark or "").strip()][:_MAX_BRAND_MARKS]
 
 
-def _mark_boxes(value: Any, slide_count: int, default_slide: int) -> list[MarkBox]:
-    """The usable mark boxes in one answer row — sanitised hard, per entry, never raising.
+def _mark_boxes(value: Any, slide_count: int, default_slide: int,
+                identity: frozenset[str]) -> list[MarkBox]:
+    """The CROPPABLE mark boxes in one answer row — sanitised hard, per entry, never raising.
 
     Every rejection here is silent and local, which is the whole posture of this module (§0.14c):
     a box FR-315 cannot crop from costs its mark a pixel reference and nothing else — the mark
     still renders from its name and its written description. So a malformed entry is dropped where
     it is found rather than degrading the deck or, worse, reaching Pillow as a bad rectangle.
+
+    Three filters, in order of how much they cost to get wrong:
+
+    1. **Shape** — a name, a rectangle `_box()` trusts, a slide inside the deck.
+    2. **Kind** (v2.2.0) — only `tool`. The 08-14 audit measured what "every branded thing the
+       model can see" actually costs: run `…_m39f` cropped and uploaded a patch of the creator's
+       Nike hoodie. Apparel, platform chrome and "not sure" are marks no slide of ours will draw,
+       so their pixels are never bought. `kind` is REQUIRED of the model and optional of the
+       parser, defaulting to `tool` — until the wave-1d prompt teaches the classification, every
+       answer parses exactly as it does today.
+    3. **Identity** — a box on the CREATOR's own mark (their @handle, their account name, their
+       page's wordmark) or on platform chrome, matched by collapsed name. FR-312 strips the
+       creator's identity out of the words; a deck that then uploads their logo as a reference and
+       renders it onto slide 1 has published their signature anyway, by a different door.
 
     Args:
         value: the model's `mark_boxes` array, or anything at all — `None`, a string and a dict all
@@ -866,6 +1052,7 @@ def _mark_boxes(value: Any, slide_count: int, default_slide: int) -> list[MarkBo
         slide_count: the SOURCE deck's length; a box naming a slide outside it named nothing.
         default_slide: the position of the answer row these boxes arrived on, used when an entry
             names no slide of its own.
+        identity: this post's own collapsed identity keys (`_identity`) — never croppable.
     """
     out: list[MarkBox] = []
     for raw in _sequence(value):
@@ -874,10 +1061,35 @@ def _mark_boxes(value: Any, slide_count: int, default_slide: int) -> list[MarkBo
         name = " ".join(str(raw.get("name") or "").split())[:_MARK_MAX]
         slide = _int(raw.get("slide")) or default_slide
         box = _box(raw.get("box"))
+        kind = str(raw.get("kind") or _DEFAULT_MARK_KIND).strip().casefold()
         if not name or box is None or not 1 <= slide <= slide_count:
             continue
-        out.append(MarkBox(name=name, slide=slide, box=box))
+        if kind not in MARK_KINDS:
+            kind = _DEFAULT_MARK_KIND  # an unknown label is an unclassified TOOL, not a new class
+        if kind != MARK_KIND_TOOL:
+            logger.debug("mark_box_dropped: %r is %s, not a tool logo — never cropped", name, kind)
+            continue
+        key = collapse(mark_name(name))
+        if not key or key in identity or key in _CHROME_MARKS:
+            logger.debug("mark_box_dropped: %r is the creator's own identity or platform chrome",
+                         name)
+            continue
+        out.append(MarkBox(name=name, slide=slide, box=box, kind=kind))
     return out
+
+
+def _identity(post: SourcePost) -> frozenset[str]:
+    """This post's own collapsed identity keys — the creator's handle and their display name.
+
+    Both forms, because the two are transcribed interchangeably: one slide's watermark is
+    "@theromanknox" and the next slide's footer is "The Roman Knox", and `collapse` is what makes
+    them the same key. `author_name` is empty on today's Virlo payloads (the API exposes no display
+    name — see `virlo._author_name`), so the set is usually the handle alone; the display-name
+    entry costs nothing and starts working the day the field is populated.
+    """
+    return frozenset(key for value in (getattr(post, "author", ""),
+                                       getattr(post, "author_name", ""))
+                     if (key := collapse(mark_name(value))))
 
 
 def _box(value: Any) -> tuple[float, float, float, float] | None:
@@ -917,8 +1129,23 @@ def _warn(log: Any, event_type: str, message: str, **data: Any) -> None:
         log.warn(event_type, message, **data)
 
 
+def _event(log: Any, event_type: str, message: str, **data: Any) -> None:
+    """An INFO-level run event, for the things that are worth seeing but are not degradations.
+
+    Read through `getattr` because this module's `log` is duck-typed on `.warn` alone (its tests
+    pass a two-method stub, and a $0 path passes `None`). An OCR repair is not a degrade — nothing
+    was lost and nothing fell back — so it may not land in the warning ledger the operator reads as
+    "what went wrong on this run".
+    """
+    logger.info("%s: %s", event_type, message)
+    emit = getattr(log, "event", None) if log is not None else None
+    if callable(emit):
+        emit(event_type, message, **data)
+
+
 __all__ = [
-    "QUESTION_TEMPLATE", "SLIDE_INTEL_ROLE", "STATUS_DISABLED", "STATUS_OK", "STATUS_UNAVAILABLE",
-    "TEXT_SOURCE_NONE", "TEXT_SOURCE_VIRLO", "TEXT_SOURCE_VISION", "CounterSpec", "MarkBox",
-    "SlideIntel", "SourceSlide", "detect_counter", "enrich",
+    "MARK_KINDS", "MARK_KIND_TOOL", "QUESTION_TEMPLATE", "SLIDE_INTEL_ROLE", "STATUS_DISABLED",
+    "STATUS_OK", "STATUS_UNAVAILABLE", "TEXT_SOURCE_NONE", "TEXT_SOURCE_VIRLO",
+    "TEXT_SOURCE_VISION", "CounterSpec", "MarkBox", "SlideIntel", "SourceSlide", "counter_line",
+    "detect_counter", "enrich",
 ]

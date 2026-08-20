@@ -6,7 +6,8 @@ Purpose: turn *config + requested briefs* into an ordered plan of creatives, and
 topics + history* into a ranked shortlist with a verdict per topic, then bind the two together.
 Public API: `select()` · `build_plan()` · `assign()` and their result objects
 (`Selection`/`TrendVerdict`, `Plan`/`BriefRequest`, `Assignment`/`AssignmentDecision`), plus the
-two source-deck rules a carousel is bound by — `fresh_source_post()` and `deck_length()`.
+source-deck rules a carousel is bound by — `fresh_source_post()`, `deck_length()` and the
+per-platform ASSIGN floor those two share, `min_panels()`.
 
 Invariants:
 - **Pure and instant** (NFR-2): no file, network or clock I/O and no logging — every decision
@@ -56,6 +57,11 @@ PENDING_TREND_SLUG = "unassigned"
 #: The clamp's lower bound and the deck-eligibility bar in ONE number (FR-257/FR-304, §0.4′/§0.14a):
 #: two panels is the shortest thing that still reads as a deck, so a source post with fewer usable
 #: panel slots than this is not a carousel source at all, and a bound deck is never shorter.
+#:
+#: Since v2.2.0 this is the GLOBAL minimum rather than the whole rule: the ASSIGN floor is
+#: per-platform (`platforms.<name>.min_carousel_panels`), and `min_panels()` below is where the two
+#: are reconciled. Nothing in this module compares a panel count against this constant directly any
+#: more except `deck_length`, whose clamp is about the deck we render and not about bindability.
 MIN_DECK_SLIDES = 2
 #: What a carousel with NO bound source post is worth in slides (`_emit`, §0.14d). Since
 #: 2026-08-13 `platforms.<name>.carousel_slides` is a platform HARD MAX (20/10/20), not a target,
@@ -436,6 +442,11 @@ class Assignment:
     carousel_posts_available: int = 0
     carousel_posts_bound: int = 0  # how many of them this plan actually took
     no_fresh_post_skips: int = 0  # creative groups skipped with `no_fresh_post_available`
+    #: v2.2.0: the ASSIGN floor the supply count above was screened at — the LOWEST
+    #: `platforms.<name>.min_carousel_panels` among the plan's own carousels. It travels with the
+    #: counts because a supply figure without its floor is not checkable: "4 fresh post(s) were
+    #: bindable" means something different at 2 panels than at 3, and this run may hold both.
+    carousel_floor: int = MIN_DECK_SLIDES
 
     @property
     def summary_line(self) -> str:
@@ -456,7 +467,8 @@ class Assignment:
             return ""
         return (f"{self.no_fresh_post_skips} carousel(s) found no unused source slideshow: "
                 f"{self.carousel_posts_available} fresh post(s) were bindable across the eligible "
-                f"topics and {self.carousel_posts_bound} of them were bound")
+                f"topics and {self.carousel_posts_bound} of them were bound "
+                f"(at the {self.carousel_floor}+ usable-panel floor)")
 
 
 def assign(entries: Sequence[PlanEntry], selection: Selection, config: Config) -> Assignment:
@@ -470,8 +482,9 @@ def assign(entries: Sequence[PlanEntry], selection: Selection, config: Config) -
 
     **A carousel is bound to a POST, not merely to a topic** (FR-304/FR-307, v2.1.0). For every
     non-override carousel group this call picks one specific slideshow post — fresh (its id is in
-    neither the history window nor this run's own bindings), at least `MIN_DECK_SLIDES` panels
-    long, and carrying usable text prospects (§0.14a) — preferring the topic's view rank, which is
+    neither the history window nor this run's own bindings), at least `min_panels(config, <the
+    group's platform>)` panels long (v2.2.0: the floor is per-platform, LinkedIn 3, feed platforms
+    2), and carrying usable text prospects (§0.14a) — preferring the topic's view rank, which is
     the order `TrendItem.posts` already arrives in. Format affinity is a HARD constraint there:
     only a slideshow-majority topic can source a panel-mapped deck, so a carousel with no such
     topic left skips with `no_fresh_post_available` instead of rank-falling back onto video
@@ -517,8 +530,10 @@ def assign(entries: Sequence[PlanEntry], selection: Selection, config: Config) -
     # resource inside a run exactly as it is across runs (§0.10), so two carousels on one topic
     # take its first and second unused post rather than quoting the same slides twice.
     burnt: set[str] = set(selection.burnt_posts)
-    result = Assignment(usable_trends=len(pool), batch_ceiling=len(pool) * max_reuses,
-                        carousel_posts_available=_carousel_supply(pool, config, burnt))
+    floor = _supply_floor(entries, config)
+    result = Assignment(
+        usable_trends=len(pool), batch_ceiling=len(pool) * max_reuses, carousel_floor=floor,
+        carousel_posts_available=_carousel_supply(pool, config, burnt, floor))
 
     for group, members in _groups(entries).items():
         ids = [entry.asset_id for entry in members]
@@ -530,14 +545,18 @@ def assign(entries: Sequence[PlanEntry], selection: Selection, config: Config) -
             continue
         result.trends_needed += 1
         # A carousel binds a post, so its picker is post-aware (and affinity-constrained); every
-        # other format still picks a topic alone and quotes it through `trend_reuse_index`.
-        binder = ((lambda trend: fresh_source_post(trend, config, burnt))
+        # other format still picks a topic alone and quotes it through `trend_reuse_index`. The
+        # floor the binder screens against is the GROUP's platform (v2.2.0): every member of an
+        # atomic group shares one destination, so one platform decides the whole deck's floor.
+        platform = members[0].platform
+        binder = ((lambda trend: fresh_source_post(trend, config, burnt, platform=platform))
                   if fmt == "carousel" else None)
         trend, post, reason = _pick(pool, rank, uses, fmt, max_reuses, binder=binder)
         if trend is None:
             for entry in members:
                 entry.status = PlanEntryStatus.SKIPPED
-                entry.skip_reason = _skip_reason(reason, len(pool), max_reuses, config)
+                entry.skip_reason = _skip_reason(reason, len(pool), max_reuses, config,
+                                                 platform=entry.platform)
             result.dropped.extend(members)
             if reason == NO_FRESH_POST_AVAILABLE:
                 result.no_fresh_post_skips += 1
@@ -570,7 +589,8 @@ def assign(entries: Sequence[PlanEntry], selection: Selection, config: Config) -
     return result
 
 
-def _skip_reason(reason: str, pool_size: int, max_reuses: int, config: Config) -> str:
+def _skip_reason(reason: str, pool_size: int, max_reuses: int, config: Config,
+                 *, platform: str = "") -> str:
     """The one-line, machine-readable cause a skipped group carries (FR-4/FR-8/FR-307).
 
     Two distinct famines, and the operator needs the difference in words because the remedies point
@@ -579,9 +599,14 @@ def _skip_reason(reason: str, pool_size: int, max_reuses: int, config: Config) -
     fixes it and widening the history window makes it strictly worse.
     """
     if reason == NO_FRESH_POST_AVAILABLE:
+        # The floor is named WITH its platform since v2.2.0: "3+ usable panel(s)" on a run whose
+        # other decks bound two-panel posts is otherwise unreadable as a per-platform rule.
+        floor = min_panels(config, platform)
         return (f"{NO_FRESH_POST_AVAILABLE}: no eligible slideshow topic still offers an unused "
-                f"source post with {MIN_DECK_SLIDES}+ usable panel(s) inside the "
-                f"{config.run.trend_history_days}-day no-repeat window (FR-304/FR-307)")
+                f"source post with {floor}+ usable panel(s)"
+                + (f" ({platform} floor)" if platform else "")
+                + f" inside the {config.run.trend_history_days}-day no-repeat window "
+                  "(FR-304/FR-307)")
     return (f"no_trend_available: {pool_size} usable topic(s) x {max_reuses} reuse(s) "
             "exhausted (FR-8)")
 
@@ -644,27 +669,54 @@ def usable_panel_slots(post: SourcePost, config: Config) -> int:
                or (vision and index < len(images) and str(images[index]).strip()))
 
 
+def min_panels(config: Config, platform: str = "") -> int:
+    """The ASSIGN floor in force for `platform` — how many usable source panels a post must carry
+    before a carousel for that platform may be bound to it (v2.2.0).
+
+    `platforms.<name>.min_carousel_panels` is the per-platform number (LinkedIn ships 3: a
+    two-slide LinkedIn document reads as a truncated post rather than as a carousel), and
+    `MIN_DECK_SLIDES` is the global minimum underneath it — a configured value below two is
+    meaningless, because two panels is the shortest thing that reads as a deck at all. `config`
+    refuses a floor above that platform's own `carousel_slides` at load time, so the two ends of
+    the clamp can never cross here.
+
+    An empty `platform` means "no platform in particular" and yields the global minimum: it is what
+    a supply count spanning several platforms and a caller that has no entry in hand both want.
+    """
+    if not platform:
+        return MIN_DECK_SLIDES
+    return max(MIN_DECK_SLIDES, int(config.platform(platform).min_carousel_panels or 0))
+
+
 def fresh_source_post(trend: TrendItem, config: Config,
-                      burnt: Collection[str] = frozenset()) -> SourcePost | None:
+                      burnt: Collection[str] = frozenset(), *,
+                      platform: str = "") -> SourcePost | None:
     """This topic's best unused slideshow post for a panel-mapped deck, or None (FR-304/FR-307).
 
     "Best" is simply the first one in `trend.posts`, because that list arrives view-ranked and the
     view rank is the whole reason to quote a post at all (§1.6). Eligibility is D46's own predicate:
     an id that is not burnt (neither in the history window nor already bound in this run), at least
-    `MIN_DECK_SLIDES` source panels, and at least that many usable panel slots (§0.14a).
+    `min_panels(config, platform)` source panels, and at least that many usable panel slots
+    (§0.14a).
+
+    `platform` is the DESTINATION of the creative being bound (v2.2.0): the floor is per-platform
+    now, so the same post can be bindable for Instagram and not for LinkedIn. Omitting it screens
+    against the global minimum, which is the pre-v2.2.0 behaviour and what a caller with no entry
+    in hand (a preview, a supply count) gets.
 
     Returns the `SourcePost` itself rather than its id: the caller needs the panel count to fix the
     deck length in the same step, and re-finding the post by id afterwards is how those two numbers
     drift apart.
     """
     used = set(burnt)
+    floor = min_panels(config, platform)
     for post in trend.posts:
         post_id = str(post.post_id or "").strip()
         if not post_id or post_id in used:
             continue
-        if source_panel_count(post) < MIN_DECK_SLIDES:
+        if source_panel_count(post) < floor:
             continue
-        if usable_panel_slots(post, config) < MIN_DECK_SLIDES:
+        if usable_panel_slots(post, config) < floor:
             continue
         return post
     return None
@@ -694,12 +746,19 @@ def deck_length(post: SourcePost, config: Config, platform: str) -> int:
     return max(MIN_DECK_SLIDES, min(source_panel_count(post), ceiling))
 
 
-def _carousel_supply(pool: Sequence[TrendItem], config: Config, burnt: Collection[str]) -> int:
+def _carousel_supply(pool: Sequence[TrendItem], config: Config, burnt: Collection[str],
+                     floor: int = MIN_DECK_SLIDES) -> int:
     """Distinct unused source posts the run's carousels could reach — FR-307's supply numerator.
 
     Counted over the SLIDESHOW half of the pool only, because affinity is a hard constraint for
     carousels: a bindable post sitting inside a video-majority topic is supply no deck can spend,
     and reporting it would make a famine message argue against the skip that produced it.
+
+    `floor` is the LOWEST ASSIGN floor across the carousels this plan actually holds (v2.2.0). A
+    plan can mix platforms with different floors, and the honest numerator for "how many decks
+    could this run have made" is the count some carousel in it could still bind: counting against
+    the strictest floor would understate the supply a TikTok deck can reach, and counting against
+    no floor at all would report posts nothing in the plan may bind.
     """
     used = set(burnt)
     available: set[str] = set()
@@ -709,10 +768,22 @@ def _carousel_supply(pool: Sequence[TrendItem], config: Config, burnt: Collectio
         for post in trend.posts:
             post_id = str(post.post_id or "").strip()
             if (post_id and post_id not in used and post_id not in available
-                    and source_panel_count(post) >= MIN_DECK_SLIDES
-                    and usable_panel_slots(post, config) >= MIN_DECK_SLIDES):
+                    and source_panel_count(post) >= floor
+                    and usable_panel_slots(post, config) >= floor):
                 available.add(post_id)
     return len(available)
+
+
+def _supply_floor(entries: Sequence[PlanEntry], config: Config) -> int:
+    """The lowest ASSIGN floor among the plan's pending carousels — `_carousel_supply`'s screen.
+
+    No carousel in the plan means no supply question to answer, and the global minimum is then the
+    neutral answer (the count is only ever printed by a famine message a carousel raised).
+    """
+    floors = [min_panels(config, entry.platform) for entry in entries
+              if entry.creative_format == "carousel" and entry.status is PlanEntryStatus.PENDING
+              and entry.brief_influence != "override"]
+    return min(floors) if floors else MIN_DECK_SLIDES
 
 
 def _pick(pool: Sequence[TrendItem], rank: Mapping[str, int], uses: Mapping[str, int],
@@ -757,6 +828,6 @@ def _pick(pool: Sequence[TrendItem], rank: Mapping[str, int], uses: Mapping[str,
 __all__ = [
     "Assignment", "AssignmentDecision", "BriefRequest", "FORMAT_ORDER", "MIN_DECK_SLIDES",
     "NO_FRESH_POST_AVAILABLE", "PENDING_TREND_SLUG", "Plan", "Selection", "TrendVerdict", "assign",
-    "build_plan", "deck_length", "fresh_source_post", "select", "source_panel_count",
+    "build_plan", "deck_length", "fresh_source_post", "min_panels", "select", "source_panel_count",
     "usable_panel_slots",
 ]

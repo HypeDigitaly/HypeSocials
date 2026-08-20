@@ -59,20 +59,45 @@ order. Report exactly five things about every slide. Report nothing else.
    Name what you can see; never describe how to reproduce it. A slide with
    none of these gets an empty list.
 
-5. MARK BOXES — for every visible third-party tool, app or product logo ON THIS
-   SLIDE (the marks from item 4 that belong to a real tool or company — never
-   platform chrome, never a watermark, never the creator's own signature), give
-   its name, this slide's number, and where the mark sits. The position is a
-   bounding box in FRACTIONS of the image, never pixels: [x, y, w, h], each
+5. MARK BOXES — for every visible logo, wordmark or brand badge ON THIS SLIDE
+   (the marks from item 4 that are a drawn mark rather than plain typed words),
+   give its name, this slide's number, what KIND of mark it is, and where the
+   mark sits.
+
+   `kind` is exactly one of these four words:
+   - `tool` — the logo of a piece of software, an app, a website, a model or a
+     digital product: Notion, Figma, Canva, ChatGPT, CapCut, Slack, Photoshop.
+     This is the kind that matters, so classify honestly: a tool logo called
+     anything else is lost, and a non-tool called `tool` is drawn onto our own
+     slide by mistake.
+   - `apparel` — a fashion, clothing, footwear, food, drink, car or other
+     physical-goods brand, wherever it appears: a swoosh on a hoodie, GAP or
+     Nike across a T-shirt, a logo on a mug, a bottle, a laptop lid, a wall or
+     a car. A brand worn or printed on an object is `apparel` even when the
+     object is a computer.
+   - `chrome` — the host platform's own interface and the creator's own
+     identity: a TikTok or Instagram or YouTube watermark, a share, like,
+     comment or follow glyph, an app badge, a profile picture, an @handle
+     lockup, the creator's personal logo or signature mark.
+   - `other` — a real mark you cannot place in the three above, or one you
+     cannot identify at all. Use it freely; a guess is worse than `other`.
+
+   One kind per mark, always filled in. If a mark could be read two ways, pick
+   the one describing WHERE it is: a software logo printed on a T-shirt is
+   `apparel`, a software logo shown as an app icon in a list of tools is
+   `tool`.
+
+   The position is a bounding box in FRACTIONS of the image, never pixels:
+   [x, y, w, h], each
    number between 0 and 1, measured from the TOP-LEFT corner — x and w along the
    width, y and h down the height (so [0.12, 0.04, 0.09, 0.06] is a small mark
    near the top-left corner). Draw the box TIGHT around the mark itself: the
    logo only, with no surrounding label, card, button or padding. The box is the
    logo and never the panel — a rectangle covering most of the slide, a whole
    screenshot or the background is a misdetection and is thrown away. A slide
-   with no third-party tool logo on it gets an empty list, and no more than
-   twenty-four marks are wanted across the whole deck — give the most prominent
-   ones.
+   with no logo on it at all gets an empty list, and no more than twenty-four
+   marks are wanted across the whole deck — give the most prominent ones, and
+   prefer a `tool` mark over any other kind when you have to choose.
 
 Answer for every attached slide, one entry each, in the order the slides were
 attached, numbered from 1. Return valid JSON and nothing else (the four numbers
@@ -88,8 +113,9 @@ below are only an example of the shape a box takes):
       "brand_marks": ["<a logo, wordmark or watermark you can see>"],
       "mark_boxes": [
         {
-          "name": "<the tool, app or company this mark belongs to>",
+          "name": "<the tool, app, brand or company this mark belongs to>",
           "slide": 1,
+          "kind": "tool",
           "box": [0.12, 0.04, 0.09, 0.06]
         }
       ]

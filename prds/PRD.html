@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>HypeSocials PRD — Lean Viral Content Engine (v2.1.1)</title>
+<title>HypeSocials PRD — Lean Viral Content Engine (v2.2.0)</title>
 <style>
   :root{
     --paper:#FBFAF7; --surface:#FFFFFF; --ink:#1D1F26; --muted:#6B6E78;
@@ -146,13 +146,13 @@
   <div class="shell">
     <p class="kicker">Product Requirements · HypeDigitaly</p>
     <h1>HypeSocials — Lean Viral Content Engine</h1>
-    <p class="sub">One command in, a folder of trend-derived social creatives out. Topic-first architecture with local style registry and verbatim copy selection. No vision analysis, no A/B mode, no motion references.</p>
+    <p class="sub">One command in, a folder of trend-derived social creatives out. Topic-first architecture with local style registry and verbatim copy selection. Every finished frame now passes a three-critic quality gate before it can ship.</p>
     <div class="metaline">
-      <span class="chip">PRD <b>v2.1.1</b></span>
-      <span class="chip">2026-08-13</span>
-      <span class="chip">Slideshow fidelity (<b>30-day window</b>, <b>panel-mapped carousels</b>, <b>slide intelligence</b>)</span>
-      <span class="chip"><b>16,356 lines</b> Python (pre-pivot baseline, measured)</span>
-      <span class="chip">Batch <b>~3 min</b> (images/carousels) · <b>~8–10 min</b> (with reels)</span>
+      <span class="chip">PRD <b>v2.2.0</b></span>
+      <span class="chip">2026-08-14</span>
+      <span class="chip">Gauntlet gate (<b>3 critics</b>, <b>≤3 rounds</b>, <b>BLOCKED</b> never publishes)</span>
+      <span class="chip"><b>25,899 lines</b> Python (measured, 41 files)</span>
+      <span class="chip">Batch <b>~3 min</b> expected · <b>60 min</b> deadline (worst case)</span>
     </div>
   </div>
 </header>
@@ -162,7 +162,8 @@
     <a href="#tldr">TL;DR</a>
     <a href="#diagram">Flow Diagram</a>
     <a href="#why">Why</a>
-    <a href="#decisions">Decisions (D41–D46)</a>
+    <a href="#gauntlet">Gauntlet (FR-322–330)</a>
+    <a href="#decisions">Decisions (D41–D53)</a>
     <a href="#pipeline">Pipeline</a>
     <a href="#metrics">Metrics</a>
     <a href="#open">Open Qs</a>
@@ -176,7 +177,8 @@
       <h2>TL;DR — Plain English</h2>
       <p><strong>HypeSocials creates viral social media posts directly from trending topics.</strong> You pick how many images, slide-decks and short videos you want, set your budget, and press Enter. About three minutes later — eight to ten if you asked for videos — you have a folder of finished posts ready to publish.</p>
       <p><strong>What happens in between:</strong> Virlo provides trending topics as text (captions, hooks, panel texts, metadata). The engine screens for brand safety, picks the strongest topics, quotes exact words from the trending posts' on-image text and captions, applies one of eight defined visual styles (you control these via a YAML registry — colors, typography, layout), optionally adds your wordmark, and generates images, slide-decks or videos. For slideshows, each source slide's text and visuals are analyzed and mapped to the output slides. Style choices and which posts were quoted are all visible in the gallery so nothing is hidden.</p>
-      <p><strong>Key facts:</strong> Cost is estimated and confirmed before anything is billed. If the estimate is over budget and you're sitting there, it refuses and offers smaller numbers; if run unattended, it drops posts from the end until it fits. Every step is logged — if one post fails, the rest ship. You can stop at any time (Ctrl+C). You can preview trends and their verdicts for free. No quality gates — the engine makes it once and you decide what ships.</p>
+      <p><strong>Every finished picture is now checked before it ships.</strong> Three separate AI critics look at each rendered frame — one checks the words are the right words and nobody else's name or logo sneaked in, one checks it looks like the style it was supposed to be, one checks it is simply well made. Anything they fail gets re-made with a targeted fix, up to three tries. A creative that still cannot pass is <strong>blocked</strong>: you keep the files and a plain-English report of what was wrong, but it is never treated as ready to publish. The critics only ever see the finished picture — never the instructions used to make it — so they cannot be talked into approving something.</p>
+      <p><strong>Key facts:</strong> Cost is estimated and confirmed before anything is billed. If the estimate is over budget and you're sitting there, it refuses and offers smaller numbers; if run unattended, it drops posts from the end until it fits. Every step is logged — if one post fails, the rest ship. You can stop at any time (Ctrl+C). You can preview trends and their verdicts for free. The quality gate never spends money you did not approve: its re-render budget is shown up front and it stops rather than overspending.</p>
     </div>
   </section>
 
@@ -184,7 +186,7 @@
     <h2>Pipeline Flow</h2>
     <p class="lede">The complete run from Virlo topics to finished outputs, showing the two-wave render dependency and the key decision points.</p>
     <div class="panel" style="overflow-x:auto">
-      <svg viewBox="0 0 920 900" xmlns="http://www.w3.org/2000/svg" style="min-width:600px">
+      <svg viewBox="0 0 920 1120" xmlns="http://www.w3.org/2000/svg" style="min-width:600px" role="img" aria-label="HypeSocials pipeline flow: inputs and confirm gate, no-repeat gate, split-filter-select, assign, slide intelligence, copy, store, two render waves, then the three-critic Gauntlet gate branching to gallery on pass or BLOCKED after three failed rounds">
         <defs>
           <marker id="arrowhead" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
             <polygon points="0 0, 10 3, 0 6" fill="#D93A4E"/>
@@ -270,25 +272,41 @@
         <text class="label" x="460" y="775">CAROUSEL Slides 2–N</text>
         <text class="label-small" x="460" y="795">(mapped to source, verbatim)</text>
 
-        <!-- Vision Check + Outputs -->
-        <rect class="subgraph" x="700" y="630" width="220" height="200"/>
-        <text class="label-small" x="720" y="650">CHECK &amp; OUTPUTS</text>
+        <!-- Gauntlet gate + terminal branches -->
+        <rect class="subgraph" x="20" y="860" width="880" height="245"/>
+        <text class="label-small" x="40" y="880">GAUNTLET — POST-RENDER GATE (FR-322–330)</text>
 
-        <line class="edge" x1="240" y1="695" x2="700" y2="695"/>
-        <line class="edge" x1="240" y1="775" x2="700" y2="775"/>
-        <line class="edge" x1="460" y1="775" x2="700" y2="790"/>
+        <line class="edge" x1="140" y1="720" x2="152" y2="898"/>
+        <line class="edge" x1="140" y1="800" x2="152" y2="898"/>
+        <line class="edge" x1="460" y1="800" x2="268" y2="898"/>
 
-        <rect class="node" x="720" y="680" width="180" height="50" rx="4"/>
-        <text class="label" x="810" y="710">Vision Check</text>
+        <rect class="node" x="40" y="900" width="230" height="70" rx="4"/>
+        <text class="label" x="155" y="928">GAUNTLET</text>
+        <text class="label-small" x="155" y="948" text-anchor="middle">brief · system · craft</text>
+        <text class="label-small" x="155" y="962" text-anchor="middle">fresh context, frames only</text>
 
-        <line class="edge" x1="810" y1="730" x2="810" y2="780"/>
-        <rect class="node" x="720" y="780" width="180" height="80" rx="4"/>
-        <text class="label" x="810" y="800">Gallery + Logs</text>
-        <text class="label" x="810" y="820">Source + Our Renders</text>
-        <text class="label" x="810" y="840">(Provenance Card)</text>
+        <line class="edge" x1="270" y1="935" x2="336" y2="935"/>
+        <rect class="node" x="340" y="900" width="180" height="70" rx="4"/>
+        <text class="label" x="430" y="930">All critics pass?</text>
+        <text class="label-small" x="430" y="950" text-anchor="middle">every frame, same round</text>
+
+        <line class="edge" x1="520" y1="918" x2="596" y2="898"/>
+        <text class="label-small" x="556" y="900" text-anchor="middle">pass</text>
+        <rect class="node" x="600" y="862" width="290" height="70" rx="4"/>
+        <text class="label" x="745" y="888">Gallery + Logs</text>
+        <text class="label-small" x="745" y="908" text-anchor="middle">source + our renders, provenance card</text>
+
+        <line class="edge" x1="520" y1="952" x2="596" y2="1030"/>
+        <text class="label-small" x="576" y="1000" text-anchor="middle">still failing</text>
+        <rect class="node" x="600" y="1000" width="290" height="70" rx="4"/>
+        <text class="label" x="745" y="1026">BLOCKED</text>
+        <text class="label-small" x="745" y="1046" text-anchor="middle">artifacts kept, never published, exit 1</text>
+
+        <path class="edge" d="M 430 970 L 430 1088 L 155 1088 L 155 972"/>
+        <text class="label-small" x="292" y="1082" text-anchor="middle">re-render failing frames · up to 3 rounds</text>
       </svg>
     </div>
-    <p class="lede" style="margin-top:20px"><strong>Caveats:</strong> "Slide Intelligence" runs after the Confirm gate (paid LLM) but before render submission; costs ~$0.01–0.03 per post if sourced from slideshows (charged to budget). The diagram shows two logical waves; all jobs submit concurrently to Kie.ai via asynchronous polling. Vision checks run inside Create (carousel's anchor checked before slides 2–N; reel seed frames checked before animation). Finished video clips are never vision-checked. The gallery includes source slides with extracted text/visuals aligned to our output slides for full provenance.</p>
+    <p class="lede" style="margin-top:20px"><strong>Caveats:</strong> "Slide Intelligence" runs after the Confirm gate (paid LLM) but before render submission; costs ~$0.01–0.03 per post if sourced from slideshows (charged to budget). The diagram shows two logical waves; all jobs submit concurrently to Kie.ai via asynchronous polling. The Gauntlet also runs <em>inside</em> Create as a round-0 pre-gate on the carousel anchor, so slides 2–N chain off a frame that already passed. A reel enters the gate at its <strong>seed frame only</strong> — the finished clip is never judged, because frame extraction would mean ffmpeg (NFR-25). Re-renders are targeted: only failing frames are re-made, and only with canned remedy sentences — a critic's own prose never reaches a render payload. The gallery includes source slides with extracted text/visuals aligned to our output slides for full provenance.</p>
   </section>
 
   <section id="why">
@@ -301,9 +319,57 @@
     </ul>
   </section>
 
+  <section id="gauntlet">
+    <h2>The Gauntlet Gate — FR-322–330 (v2.2.0)</h2>
+    <p class="lede">Two of twelve decks in the 2026-08-14 carousel audit were publishable. The Gauntlet is the answer: the engine stops being a one-shot renderer and starts reviewing its own output before the operator ever sees it. It replaces the old one-shot vision check (FR-105) outright.</p>
+
+    <h3>Three critics, one job each</h3>
+    <div class="tablewrap">
+      <table>
+        <tr><th>Critic</th><th>Judges</th><th>Defect codes</th></tr>
+        <tr>
+          <td>brief</td>
+          <td>Contract fidelity and leakage — <em>presence</em>, never quality</td>
+          <td><code>missing_text</code>, <code>invented_text</code>, <code>translated</code>, <code>pair_break</code>, <code>missing_mark</code>, <code>forbidden_mark</code>, <code>platform_chrome</code>, <code>identity_leak</code>, <code>counter_value</code>, <code>signature</code></td>
+        </tr>
+        <tr>
+          <td>system</td>
+          <td>Style contract and cross-frame consistency</td>
+          <td><code>style_palette</code>, <code>style_layout</code>, <code>style_consistency</code>, <code>counter_placement</code></td>
+        </tr>
+        <tr>
+          <td>craft</td>
+          <td>Execution quality — <em>execution</em>, never content</td>
+          <td><code>garbled</code>, <code>truncated</code>, <code>contrast</code>, <code>logo_fidelity</code>, <code>composition</code>, <code>frame_integrity</code></td>
+        </tr>
+      </table>
+    </div>
+    <p>The enums are enforced in-schema, which is what mechanically stops <code>craft</code> from ruling on words and <code>brief</code> from ruling on beauty. Each critic sees the rendered frames and the contract data — never the assembled render prompt, never the reference set, never another critic's verdict.</p>
+
+    <h3>Three tiers of failure</h3>
+    <div class="tablewrap">
+      <table>
+        <tr><th>Tier</th><th>Standing after the final round</th><th>Outcome</th></tr>
+        <tr><td>leakage</td><td><code>identity_leak</code>, <code>forbidden_mark</code>, <code>platform_chrome</code>, <code>invented_text</code>, <code>translated</code></td><td><strong>Always BLOCKED</strong>, regardless of config — someone else's name or mark on a published frame is the most expensive error this pipeline can make</td></tr>
+        <tr><td>contract</td><td>Other <code>brief</code> codes and all <code>system</code> codes</td><td>Per <code>fail_action</code> — <code>block</code> (default) or <code>degrade</code> (ships with a tag)</td></tr>
+        <tr><td>craft</td><td>All <code>craft</code> codes</td><td>Never blocks — ships with a <code>GAUNTLET_CRAFT</code> tag (knob: <code>craft_blocks</code>)</td></tr>
+      </table>
+    </div>
+
+    <h3>What keeps it honest</h3>
+    <ul>
+      <li><strong>Verbatim always wins.</strong> The loop may never shorten, re-word, translate or drop a quoted string. A style's <code>list_mode</code> is a <em>reflow trigger</em>, never a ceiling — a long panel gets set differently, not cut (D50).</li>
+      <li><strong>The fix channel is sealed.</strong> Re-render instructions are assembled from canned remedy sentences keyed by (defect code, zone), capped at 600 characters, stripped of competitor and creator terms, and closed with a fence line stating the fix section contains no words to render. A critic's free text goes to the report and the console — never into a render payload.</li>
+      <li><strong>A broken gate never costs a deck.</strong> An unparseable critic is retried once, then dropped for the deck with a <code>degraded_gate</code> tag. If every critic is unavailable the result is <code>skipped</code> — the creative ships as-is, tagged, and is never BLOCKED.</li>
+      <li><strong>Spend is bounded and never gating.</strong> Re-renders are discretionary against a per-deck budget (default $0.30). The pre-Confirm estimate <em>displays</em> the worst-case gauntlet allowance but never adds it to the expected cost and never trims a creative to make room (FR-106a).</li>
+      <li><strong>Money and time are the caller's business.</strong> The gauntlet module neither prices nor spends: budget, runway and reference assembly live in the re-render closure that owns them.</li>
+    </ul>
+    <p class="lede"><strong>Honest caveat, stated in FR-322:</strong> the critics do receive the style DNA and layout zones — the same words the render prompt uses. That is the only possible referent for judging style adherence, so it is disclosed rather than hidden.</p>
+  </section>
+
   <section id="decisions">
-    <h2>Design Decisions — The Pivot (D41–D46)</h2>
-    <p class="lede"><strong>D1–D22, D25–D30</strong> are in the detailed PRD files. These six decisions define the post-pivot architecture and its slideshow-fidelity amendment:</p>
+    <h2>Design Decisions — The Pivot and the Gate (D41–D53)</h2>
+    <p class="lede"><strong>D1–D22, D25–D30</strong> are in the detailed PRD files. These decisions define the post-pivot architecture, its slideshow-fidelity amendment, and the v2.2.0 quality gate:</p>
 
     <div class="decisions">
       <div class="dcard">
@@ -341,14 +407,44 @@
         <h4>Slideshow Fidelity (v2.1.0)</h4>
         <p>Fixes from paid-run recon: fetch 30-day recent window ranked by views within pool (not all-time); quote on-image panel texts and hooks first, captions for captions, never descriptions; panel-mapped carousels (source slide N → output slide N verbatim); post-level never-repeat protection; slide intelligence analysis post-Confirm to extract text and visuals; provenance gallery showing source slides with extracted data aligned to our renders.</p>
       </div>
+
+      <div class="dcard">
+        <div class="id">D49</div>
+        <h4>Gauntlet Gate Supersedes the No-Loop Doctrine</h4>
+        <p>D3's "zero gates, renders once and ships" and NFR-4's blanket one-attempt rule are withdrawn for this one sanctioned case. Blind retries stay capped at one; the Gauntlet's bounded, critic-directed rounds (≤ <code>rounds_max</code>, budget- and runway-gated) are the exception. FR-105's machinery and <code>vision_check_question.md</code> are retired, not kept as a fallback lane — <code>gauntlet.enabled: false</code> means <em>no post-render gate at all</em>.</p>
+      </div>
+
+      <div class="dcard">
+        <div class="id">D50</div>
+        <h4>Verbatim-Wins List Mode</h4>
+        <p>A style may declare <code>list_mode</code> — a reflow trigger with <code>reflow_over_chars</code>, <code>max_rows</code>, layout prose and an overflow strategy. It is consumed only as layout guidance in the render prompt. It is never a character ceiling, never enters the budget line, and is never consulted by the panel-drop verdict. No text is ever dropped for a style reason.</p>
+      </div>
+
+      <div class="dcard">
+        <div class="id">D51</div>
+        <h4>Spend Runway + Deck Viability</h4>
+        <p>No discretionary or projected render submits when the remaining run time is under the job's timeout plus grace — an unbilled refusal with cause <code>NO_RUNWAY</code> that never consumes FR-317's one resubmit. Pre-committed work is exempt, so bookkeeping can never split a deck. A slide permanently lost to a render defect makes its deck unsalvageable: no further work is submitted for it, though already-paid jobs are never cancelled.</p>
+      </div>
+
+      <div class="dcard">
+        <div class="id">D52</div>
+        <h4>Seeded Style Rotation</h4>
+        <p>Rotation was a pure function of <code>entry.order</code>, so every run opened with the same style in the same slot. The pick becomes <code>pool[(order + step + run_seed) % n]</code> with <code>run_seed</code> a stable hash of the run id — still deterministic within a run and reproducible from its id, but no longer identical across runs. Knob: <code>styles.rotation: seeded | fixed</code>.</p>
+      </div>
+
+      <div class="dcard">
+        <div class="id">D53</div>
+        <h4>Pillow Scope Extended to Crop Validation</h4>
+        <p>D48 admitted Pillow for one job: cropping sanctioned tool-logo patches. D53 extends it to <em>validating</em> those crops — a pixel-variance floor that refuses near-uniform patches, and content-rect detection used only as a fallback when the first crop fails validation. Still no compositing, no resizing pipelines, no thumbnails.</p>
+      </div>
     </div>
   </section>
 
   <section id="pipeline">
-    <h2>Pipeline & Walkthrough</h2>
+    <h2>Pipeline &amp; Walkthrough</h2>
     <p class="lede">A step-by-step journey through a run:</p>
     <ol class="steps">
-      <li><b>Launch:</b> Menu/CLI, pick config, format mix, budget, vision checking.</li>
+      <li><b>Launch:</b> Menu/CLI, pick config, format mix, budget, quality gate (<code>--gauntlet</code> / <code>--no-gauntlet</code>).</li>
       <li><b>Collect:</b> Virlo MCP fetches trending topics (text, captions, metadata only; no image downloads).</li>
       <li><b>Split, Filter, Select:</b> Topics extracted from monitors; competitor filter screens for brand safety; strongest topics ranked and selected for requested creatives.</li>
       <li><b>Assign:</b> Deterministic style rotation assigns affine styles (format + brand compatible) per creative. Deterministic brand rotation applies wordmark to <code>brand_ratio</code> fraction.</li>
@@ -356,7 +452,8 @@
       <li><b>Analyze (if slideshows):</b> Claude Sonnet 5 reads each source slideshow, extracting on-image text verbatim and visual descriptions (charts, icons, composition) for each slide. Slides stored to gallery folder for provenance.</li>
       <li><b>Generate (Wave 1):</b> Images, carousel slide 1 (anchor), reel seed frames submitted concurrently. Text-only style definitions drive rendering (no style reference images).</li>
       <li><b>Generate (Wave 2):</b> Carousel slides 2–N mapped to source panels verbatim, reel animation (seed frame only, no motion reference) submitted after Wave 1 completes or pre-committed.</li>
-      <li><b>Vision Check (optional):</b> Sonnet 5 checks images, carousel anchor, reel seed frame for broken text or fake UI. ≤1 retry with shorter text, then ships.</li>
+      <li><b>Gauntlet (post-render gate):</b> Three fresh-context Sonnet 5 critics judge the rendered frames against contract data. Failing frames re-render with canned targeted fixes, up to 3 rounds per deck (1 for standalone images and reel seed frames). The carousel anchor is gated first, before slides 2–N are submitted.</li>
+      <li><b>Terminal verdict:</b> All critics pass ⇒ ship. Leakage standing ⇒ <strong>BLOCKED</strong> always. Other contract defects ⇒ per <code>fail_action</code>. Craft-only ⇒ ships tagged. A BLOCKED creative keeps its artifacts, writes <code>GAUNTLET_REPORT.yaml</code> and <code>BLOCKED.txt</code>, records no trend-history use, and forces exit 1.</li>
       <li><b>Package:</b> Per-asset folders, gallery.html with source slides and extracted data, run log, trend history updated (post-level never-repeat).</li>
     </ol>
 
@@ -379,12 +476,27 @@
         <tr>
           <td>Speed (images/carousels)</td>
           <td>~3 minutes</td>
-          <td>Gallery written incrementally; images reviewable while processing</td>
+          <td>Expected case: decks that pass the gate on round 1. Gallery written incrementally</td>
         </tr>
         <tr>
           <td>Speed (with reels)</td>
           <td>~8–10 minutes</td>
           <td>Reel seed frame generated first; animation follows</td>
+        </tr>
+        <tr>
+          <td>Speed (worst case)</td>
+          <td>60-minute deadline</td>
+          <td>Sized so the 600 s image timeout, FR-317's single resubmit and 3 gauntlet rounds all fit; soft ceiling on a monotonic clock</td>
+        </tr>
+        <tr>
+          <td>Gauntlet cost per deck</td>
+          <td>~$0.085/round · ≤$0.25 critics</td>
+          <td>3-critic round on an 8-frame deck; plus a $0.30 default re-render budget. Shown pre-Confirm as an allowance — never in expected cost, never trims creatives</td>
+        </tr>
+        <tr>
+          <td>Round-1 pass rate</td>
+          <td>Measured at Wave 2c</td>
+          <td>False positives compound: at 2% per critic per frame an 8-slide deck passes round 1 only ~62% of the time. Mitigated by per-critic enums, non-failing low-confidence craft defects, and round-2 scoping</td>
         </tr>
         <tr>
           <td>Completion rate</td>
@@ -436,8 +548,8 @@
         </tr>
         <tr>
           <td>10-pipeline.md</td>
-          <td>1–29, 90–109, 141–149, 200–209, 290–291, 293, 302–304</td>
-          <td>Detailed run flow, topic extraction, filtering, copying, rendering, budget, panel mapping</td>
+          <td>1–29, 90–109, 141–149, 200–209, 290–291, 293, 302–304, <b>322–330</b></td>
+          <td>Detailed run flow, topic extraction, filtering, copying, rendering, budget, panel mapping, <b>the Gauntlet gate</b></td>
         </tr>
         <tr>
           <td>20-integrations.md</td>
@@ -466,12 +578,12 @@
         </tr>
       </table>
     </div>
-    <p style="margin-top:20px"><strong>Next block: FR-310+</strong> for future amendments.</p>
+    <p style="margin-top:20px"><strong>Next block: FR-331+</strong> for future amendments. FR-27 and FR-105 are <strong>superseded</strong> by FR-322–330 (D49) and their numbers are not reused.</p>
   </section>
 
   <div class="foot">
-    <p><strong>Source of truth:</strong> <code>prds/*.md</code> files. This HTML is a current snapshot as of 2026-08-13 (v2.1.1, slideshow fidelity + SESSION G docs batch: FR-99 bound-deck fallback ruling, FR-13 caption substance, FR-73 vocabulary decisions, FR-295 reference-image clause tombstoned). For the latest changes, see the amendment log in 00-overview.md or the individual PRD files.</p>
-    <p><strong>Built by:</strong> Technical Writer (T0.4), Slideshow Fidelity amendment cycle (D46).</p>
+    <p><strong>Source of truth:</strong> <code>prds/*.md</code> files. This HTML is a current snapshot as of 2026-08-14 (v2.2.0, the Gauntlet amendment cycle: FR-322–330 three-critic post-render gate, D49–D53, run deadline 60 min, FR-27/FR-105 superseded). For the latest changes, see the amendment log in 00-overview.md or the individual PRD files.</p>
+    <p><strong>Built by:</strong> Technical Writer (T0.1), Carousel Fidelity + Gauntlet Loop amendment cycle (D49–D53), plan folder <code>plans/carousel-gauntlet/</code>.</p>
   </div>
 
 </main>

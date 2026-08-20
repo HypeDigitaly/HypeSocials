@@ -367,8 +367,10 @@ def test_the_spend_table_no_longer_restates_the_funnel_chain() -> None:
     The funnel prints directly above this table at DONE, so the single-line `virlo` chain row the
     table used to carry would double every count the block already states — and `_spend_table`
     consequently takes the summary alone, with no `Counters` parameter left to disagree with.
+    `gates` (v2.2.0) is not a counter: it is `asset_id -> the post-render gate's verdict`, read
+    off each record's own `meta.yaml.gauntlet`, and it adds a COLUMN rather than a row.
     """
-    assert list(inspect.signature(runner._spend_table).parameters) == ["summary"]
+    assert list(inspect.signature(runner._spend_table).parameters) == ["summary", "gates"]
 
     table = runner._spend_table(_summary())
 
@@ -400,7 +402,9 @@ def test_fr321_a_deck_that_shipped_short_prints_its_two_counts_in_the_ok_column(
     table = runner._spend_table(summary)
 
     console_safe(table)
-    cells = [line.rsplit(" ", 1)[-1] for line in table.splitlines()[2:5]]
+    # The last column is now `gate` (v2.2.0/FR-328) and prints `-` for a creative the gate never
+    # touched, so the `ok` cell is the second from the right.
+    cells = [line.split()[-2] for line in table.splitlines()[2:5]]
     assert cells == ["7/8", "yes", "no"]
     assert table.splitlines()[0].endswith("(1 partial)"), "the headline names it too"
 

@@ -53,11 +53,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from hypesocials import briefs, styles
-from hypesocials.util import wrapped
+from hypesocials.budget import critic_price_gap
+from hypesocials.gauntlet import CRITIC_TEMPLATES as _CRITIC_TEMPLATES
+from hypesocials.util import read_text, wrapped
 from hypesocials.config import Config, formats_sourcing_violation, windows_violation
 from hypesocials.models import PlanEntry
 from hypesocials.plan import BriefRequest
-from hypesocials.prompts_engine import PROMPTS_DIR, validate_template_set
+from hypesocials.prompts_engine import PROMPTS_DIR, PromptEngine, validate_template_set
 from hypesocials.render import UnknownProfileError, get_profile
 from hypesocials.sources import SOURCE_STATUS
 
@@ -104,6 +106,12 @@ _HEX = re.compile(r"^#[0-9A-Fa-f]{6}$")
 #: FR-292: `#F97316` is the WEB palette's orange and ships in neither brand profile. It is a
 #: warning rather than a refusal — a wrong-but-renderable colour, not a broken run.
 _WEB_ONLY_ORANGE = "#F97316"
+#: The one template whose `prompts_dir` override can degrade a run in silence, and the slot that
+#: says whether the copy is current (v2.2.0). Named here rather than imported: `topic_filter` owns
+#: the role name for its own call and `prompts_engine` owns the vocabulary, but neither exports a
+#: "which override is stale" list, and inventing one for a single row would be a registry.
+_SCREEN_TEMPLATE = "topic_filter_system.md"
+_AUDIENCE_SLOT = "audience_profile"
 
 
 @dataclass(slots=True)
@@ -205,6 +213,8 @@ def check(
     _check_config_pairs(config, action, entries, errors)
     _check_supply(config, action, entries, errors, warnings)
     _check_profiles(config, action, errors)
+    _check_prompt_overrides(config, action, warnings)
+    _check_gauntlet(config, action, errors, warnings)
     _check_styles(config, action, errors, warnings)
     _check_branding(config, action, errors, warnings)
     _check_node(config, errors)
@@ -352,6 +362,93 @@ def _check_profiles(config: Config, action: str, errors: list[str]) -> None:
                           f"{', '.join(missing)} (FR-263); add them under prompts/")
 
 
+def _check_prompt_overrides(config: Config, action: str, warnings: list[str]) -> None:
+    """FR-174 seam hygiene: a `prompts_dir` override that predates a slot the engine now fills.
+
+    One warning, and deliberately only one, because only one override can degrade a run SILENTLY.
+    The screen's system prompt (`topic_filter_system.md`) gained `{{audience_profile}}` in v2.2.0 —
+    the run's own audience, which is what lets the model report a topic's `language` and its
+    `audience_fit`. An override copied before that slot existed still renders, still screens, and
+    still answers: it simply answers those two fields from nothing, so `_apply` degrades exactly as
+    it does for an unavailable model (`filter_degraded`, fail-open per §1.5) and off-language,
+    off-audience topics start passing the screen again. Nothing errors, nothing is logged as
+    broken, and the operator's own file is the cause — which is precisely the shape a pre-flight
+    warning exists for.
+
+    A WARNING, never a refusal: the screen is fail-open by contract, the run still ships, and
+    refusing here would let a stale prompt file cost a scheduled batch (FR-252's posture).
+
+    Only `config.prompts_dir` is inspected. The shipped `prompts/` tree is this repo's own artifact
+    and is versioned with the code that reads it; if IT lacked the slot, the cure is a commit, not
+    an operator warning. Unreadable is silence too — `PromptEngine` already warns about that on the
+    FR-183 fallback path, and a second line about the same file helps nobody.
+    """
+    if action in ("list-monitors", "preview-sources") or not config.prompts_dir:
+        return
+    path = Path(config.prompts_dir) / _SCREEN_TEMPLATE
+    if not path.is_file():
+        return  # no override for this role: the shipped template is in force, and it is current
+    try:
+        text = read_text(path)
+    except OSError:
+        return
+    if f"{{{{{_AUDIENCE_SLOT}}}}}" in text:
+        return
+    warnings.append(
+        f"{path} is a prompts_dir override that never names {{{{{_AUDIENCE_SLOT}}}}} — it predates "
+        "the v2.2.0 topic screen, so the model is not shown who this run writes for and its "
+        "language / audience_fit answers degrade to permissive defaults (off-language and "
+        "off-audience topics can pass). The run still screens and still ships; to restore the "
+        f"full screen, copy the current prompts/{_SCREEN_TEMPLATE} and re-apply your edits")
+
+
+def _check_gauntlet(config: Config, action: str, errors: list[str],
+                    warnings: list[str]) -> None:
+    """D49/FR-322–330: can the post-render gate actually RUN, and can its spend be quoted?
+
+    Three findings, graded the way the rest of this module grades: a gate that cannot render its
+    own prompt is a REFUSAL (the run would pay for renders and then drop every critic as
+    unavailable, shipping unjudged work while the estimate promised a gate); a gate with every
+    critic switched off is a refusal for the same reason stated more plainly — `enabled: true` with
+    nothing enabled describes a run that will spend nothing on the thing it says it does, and the
+    honest spelling of that is `enabled: false`; an unpriced `models.critic` is a WARNING and never
+    a refusal (FR-282), because the run can still deliver — it just cannot quote its critic spend,
+    and `budget.critic_price_gap` writes that whole sentence itself.
+
+    Numeric bounds are `config._BOUNDS`' job and are already a load-time `ConfigError`, so nothing
+    is re-checked here. Prompt files are resolved through the ENGINE, which means a `prompts_dir`
+    override is honoured and an FR-183 built-in counts as present — a missing FILE is not a finding
+    when the shipped fallback is byte-identical to it.
+
+    Skipped where no render ever happens: `--list-monitors` (FR-251's cure for a broken config)
+    and `--preview-sources` (FR-139's $0 blocklist preview) judge nothing and pay for nothing.
+    """
+    if action in ("list-monitors", "preview-sources"):
+        return
+    gate = config.run.gauntlet
+    if not gate.enabled:
+        return
+    if not [name for name, critic in gate.critics.items() if critic.enabled]:
+        errors.append("run.gauntlet.enabled is true but every critic under run.gauntlet.critics "
+                      "is disabled — the gate would judge nothing while the estimate quotes it. "
+                      "Enable at least one of brief/system/craft, or set gauntlet.enabled: false "
+                      "(D49/FR-322)")
+        return
+    engine = PromptEngine(prompts_dir=config.prompts_dir)
+    for name, critic in sorted(gate.critics.items()):
+        if not critic.enabled:
+            continue
+        role = _CRITIC_TEMPLATES.get(name, "")
+        try:
+            engine.template(role)
+        except (LookupError, OSError, ValueError) as exc:
+            errors.append(f"run.gauntlet.critics.{name} is enabled but its prompt {role} cannot be "
+                          f"resolved ({exc}) — the critic would be dropped on every deck and the "
+                          "gate would ship unjudged work it was priced for (FR-183/FR-322)")
+    if gap := critic_price_gap(config):
+        warnings.append(gap)
+
+
 def _check_styles(config: Config, action: str, errors: list[str], warnings: list[str]) -> None:
     """FR-295: the meta-style registry must load and must be able to dress this run, or exit 2.
 
@@ -363,8 +460,11 @@ def _check_styles(config: Config, action: str, errors: list[str], warnings: list
 
     Grading is `styles.validate()`'s, not this module's (10 §FR-290's validation table): zero
     usable styles under the active brand or a requested format with no affine style are errors;
-    fewer than three usable styles, an over-long `render_prompt` and an unresolved "either/or"
-    choice are warnings. Post-D46 there is no reference-image finding at all — a meta-style is
+    fewer than three usable styles, an over-long `render_prompt`, a `list_mode` whose triggers are
+    both off and an unresolved "either/or" choice are warnings. A MALFORMED `list_mode` (FR-304b,
+    v2.2.0) arrives through the `StyleRegistryError` branch above rather than the findings list —
+    it is a shape the loader cannot turn into an object at all — and lands at the same exit 2 with
+    $0 spent, which is the whole point of both routes. Post-D46 there is no reference-image finding at all — a meta-style is
     text-only DNA (FR-17/18), declares no pictures, and therefore has none that can be missing.
 
     The `config` handed over is the one CLI overrides already mutated (`cli.apply_overrides` runs
@@ -508,21 +608,37 @@ def _check_language_hint(config: Config, entries: Sequence[PlanEntry], hints: li
     one. `config.languages` still decides brief-override creatives and the degrade paths, so a
     configured `cs` is a certainty where a verbatim creative is only a possibility: both earn the
     same hint, worded for which one fired.
+
+    D54/FR-333: when `run.carousel_copy_mode` is `compress` and this plan has carousels, the hint
+    states the compress contract instead — the same warning about unread accented glyphs, and the
+    mode named where the operator is already reading about what this run will put on a frame.
+    Compress makes the language question SHARPER, not softer: a compressed line is written by a
+    model rather than copied byte for byte, so drifting out of the source's language is a failure
+    mode verbatim mode simply does not have.
     """
-    if config.run.vision_check:
+    if config.run.gauntlet.enabled:
         return
     czech = sorted({p for p in config.run.platforms
                     if "cs" in (config.language_for(p), config.onimage_language_for(p))})
     verbatim = any(entry.brief_influence != "override" for entry in entries)
+    compressing = (config.run.carousel_copy_mode == "compress"
+                   and any(str(entry.creative_format) == "carousel"
+                           and entry.brief_influence != "override" for entry in entries))
     if czech:
-        hints.append(f"{', '.join(czech)} render Czech text and vision_check is off — Czech "
-                     "diacritics are where GPT Image 2 struggles most; consider --vision-check "
+        hints.append(f"{', '.join(czech)} render Czech text and the gauntlet is off — Czech "
+                     "diacritics are where GPT Image 2 struggles most; consider --gauntlet "
+                     "(30 §2; a hint, never a gate)")
+    elif compressing:
+        hints.append("carousel on-image text is compressed from the source post's panels to the "
+                     "style's budget, in the post's own language (carousel_copy_mode: compress, "
+                     "FR-331), so this run may render accented glyphs whatever run.languages says "
+                     "— with the gauntlet off nothing will read them back; consider --gauntlet "
                      "(30 §2; a hint, never a gate)")
     elif verbatim:
         hints.append("on-image text is quoted verbatim from the source post, in that post's own "
                      "language (FR-294), so this run may render accented glyphs whatever "
-                     "run.languages says — with vision_check off nothing will read them back; "
-                     "consider --vision-check (30 §2; a hint, never a gate)")
+                     "run.languages says — with the gauntlet off nothing will read them back; "
+                     "consider --gauntlet (30 §2; a hint, never a gate)")
 
 
 def _check_disk(config: Config, entries: Sequence[object], errors: list[str]) -> int:

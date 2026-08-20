@@ -198,6 +198,9 @@ async def test_each_slide_downloads_once_one_call_reads_them_all_and_source_yaml
                                 "status": slide_intel.STATUS_OK, "reason": ""}
     assert stored["slides"][0] == {
         "position": 1, "virlo_text": "Panel one", "vision_text": "Panel one as seen",
+        # v2.2.0 provenance: the unrepaired reading (empty — nothing was repaired here) and the
+        # truncation FLAG, which is contract data for the brief critic and never a blanking licence.
+        "vision_text_original": "", "truncation_suspect": False,
         "chrome_text": "", "visual_brief": "hero image, heading centred", "brand_marks": [],
         "vision_transcribed": False, "image_file": "slide_01.jpg"}
     # the transcription keeps the line break it was given — verbatim means the shape too
@@ -511,6 +514,13 @@ def test_the_question_template_is_a_real_file_that_renders_with_no_placeholders(
     assert set(slide_intel._SLIDE["required"]) == {
         "slide", "onimage_text", "chrome_text", "visual_brief", "brand_marks",
         "mark_boxes"}
+    # v2.2.0: every mark row must say WHAT it is, and only `tool` is ever croppable. Required of
+    # the model (strict mode requires every declared property) and optional of the parser, so the
+    # schema could land a wave before the question learns to fill it.
+    marks = slide_intel._SLIDE["properties"]["mark_boxes"]["items"]
+    assert set(marks["required"]) == {"name", "slide", "box", "kind"}
+    assert marks["properties"]["kind"]["enum"] == list(slide_intel.MARK_KINDS) == [
+        "tool", "apparel", "chrome", "other"]
 
 
 def test_a_source_controlled_post_id_cannot_escape_the_run_folder() -> None:
@@ -658,6 +668,48 @@ def test_the_offset_rules_never_resurrect_a_lookalike_the_earlier_rules_refused(
     assert slide_intel.detect_counter(
         ([], ["posted 12/08/2026"], ["12/08/2026"]), ("a",) * 3, 3) is None
     assert slide_intel.detect_counter(([], ["1/2 cup of oats"], []), ("a",) * 3, 3) is None
+
+
+@pytest.mark.parametrize(
+    ("line", "is_chrome"),
+    [
+        # ACCEPTED — the whole line is a badge, in each convention this module already models.
+        ("01 / 06", True),          # padded, spaced: the commonest slideshow hand
+        ("1/6", True),              # bare
+        ("2 of 7", True),           # worded separator
+        ("// 01", True),            # the total-less prefix form
+        ("  3 · 9  ", True),        # a middle dot separator; surrounding space is not content
+        # REFUSED — every one of these is the source's own COPY, and copy ships byte-verbatim.
+        ("3/4 of teams fail at this", False),   # a fraction inside a sentence
+        ("24/7", False),                        # a claim about opening hours: 24 > 7
+        ("16:9", False),                        # an aspect ratio, not a position
+        ("12/08/2026", False),                  # a date is a run of digits, not a pair
+        ("Slide 1/6", False),                   # a badge with a word on it is a typeset line
+        ("// 01 THE HOOK", False),              # a prefix counter set INTO the panel's own words
+        ("", False),                            # a blank line is not chrome and is not ours to drop
+        ("0/6", False),                         # there is no page zero
+        ("7/6", False),                         # a position past the total is not a position
+    ])
+def test_counter_line_is_full_line_only_so_a_fraction_inside_a_sentence_still_ships(
+    line: str, is_chrome: bool,
+) -> None:
+    """F2 (Session 5.5): the admission-time half of the counter story, and its safety argument.
+
+    `detect_counter` above LEARNS the source's convention so we can re-base it onto our own deck.
+    This predicate answers the narrower question `copywrite._offer_for` asks of every panel line
+    before it may become pixels: are these bytes furniture? They arrive as copy because Virlo's
+    adapter has no `chrome_text` field, and left in they become our slide's words, then
+    `panel_map.source_text`, then an expected L-line of the gauntlet's frame contract — where a
+    render that correctly left the badge out is BLOCKED for `missing_text`. That is exactly what
+    happened to the Ig deck on 2026-08-14.
+
+    **Full-line only is the whole safety argument.** The line is judged after `strip()` and has to
+    be counter-shaped edge to edge, so anything with a word on it is the creator's typography and
+    ships untouched. The two halves of the table are the same fence from both sides: the four
+    accepted shapes are the ones `detect_counter` already treats as a convention, and the refused
+    ones are the strings a looser rule would silently delete from a paid creative.
+    """
+    assert slide_intel.counter_line(line) is is_chrome
 
 
 # ------------------------------------ FR-306 amendment (v2.1.3/D48): mark boxes, sanitised hard
@@ -832,6 +884,114 @@ async def test_a_payload_with_no_mark_boxes_key_parses_as_a_deck_with_no_boxes(
     assert _read_yaml(tmp_path)["mark_boxes"] == []
 
 
+@pytest.mark.parametrize(("kind", "kept"), [("tool", True), ("apparel", False),
+                                            ("chrome", False), ("other", False),
+                                            ("TOOL", True), ("nonsense", True), (None, True)])
+async def test_only_a_tool_logo_keeps_its_box(
+    tmp_path: Path, downloads: list[str], kind: str | None, kept: bool,
+) -> None:
+    """v2.2.0: the box only exists so FR-315 can crop it, so a mark nothing may draw gets none.
+
+    Run `…_m39f` is the measured case: the vision pass boxed "Nike" on a creator's hoodie, the crop
+    step cut it out of the source slide, and the patch was uploaded to Kie — bought pixels for a
+    mark no slide of that deck could ever name. Apparel, platform chrome and "I could not place it"
+    are all the same answer here.
+
+    `kind` is REQUIRED of the model and OPTIONAL of the parser, defaulting to `tool`: an absent key
+    (an older cached answer, a truncated row, every answer the current question produces until the
+    wave-1d prompt lands) parses exactly as today, and an unrecognised label is an unclassified
+    tool rather than a silent new class. Case is not significant.
+    """
+    post = _post(slides=2, panels=("Panel one", "Panel two"))
+    box = _box("Notion") | ({} if kind is None else {"kind": kind})
+    vision = Vision(_row(1, box), _answer(2))
+    log = Log()
+
+    report = (await slide_intel.enrich([post], run_dir=tmp_path, call=vision, engine=_engine(),
+                                       cfg=Config(), log=log))["p1"]
+
+    assert [item.name for item in report.mark_boxes] == (["Notion"] if kept else [])
+    assert report.status == slide_intel.STATUS_OK, "a dropped box is not a failed read (§0.14c)"
+    assert not log.warnings, f"a mark we may not draw is ordinary, not a degrade: {log.keys()}"
+    if kept:
+        assert report.mark_boxes[0].kind == slide_intel.MARK_KIND_TOOL
+
+
+async def test_the_creators_own_mark_and_platform_chrome_never_get_a_box(
+    tmp_path: Path, downloads: list[str]
+) -> None:
+    """FR-312's identity strip, applied to the pixels as well as to the words.
+
+    A deck that strips "@theromanknox" out of its caption and then uploads that creator's wordmark
+    as a render reference has published their signature anyway, through a different door. The
+    handle and the display name are matched in their collapsed forms, because one slide's watermark
+    is "@theromanknox" and the next slide's footer is "The Roman Knox". Platform chrome goes the
+    same way for the same reason: a TikTok watermark is the app's signature, not the slide's
+    subject, and FR-310 would refuse to let our deck draw it in any case.
+    """
+    post = _post(slides=2, panels=("Panel one", "Panel two"))
+    post.author, post.author_name = "@theromanknox", "The Roman Knox"
+    vision = Vision(_row(1, _box("@theromanknox logo"), _box("The Roman Knox wordmark"),
+                         _box("TikTok"), _box("Instagram logo"), _box("Notion")),
+                    _answer(2))
+
+    report = (await slide_intel.enrich([post], run_dir=tmp_path, call=vision, engine=_engine(),
+                                       cfg=Config(), log=Log()))["p1"]
+
+    assert [item.name for item in report.mark_boxes] == ["Notion"]
+
+
+async def test_the_transcription_is_ocr_repaired_once_with_the_raw_reading_kept(
+    tmp_path: Path, downloads: list[str]
+) -> None:
+    """The sanctioned admission boundary (`ocr_repair`), and the two rules that come with it.
+
+    "Al agents" transcribed off a slide that reads "AI agents" is a defect the pipeline used to
+    render faithfully onto a paid frame — verbatim is exactly what it promises, and the bytes it
+    was handed were wrong. The repair happens HERE, once, so the panel map, the prompt and FR-100's
+    verifier pool all see the same bytes; the raw reading is kept as `vision_text_original`; and a
+    Virlo panel — the actual source of record — is never touched by any of it (§0.11).
+    """
+    post = _post(slides=2, panels=("Al tools that Virlo really sent", ""))
+    vision = Vision(_answer(1, "a different reading"), _answer(2, "5 Al agents that ship"))
+    log = Log()
+
+    report = (await slide_intel.enrich([post], run_dir=tmp_path, call=vision, engine=_engine(),
+                                       cfg=Config(), log=log))["p1"]
+
+    assert report.slides[1].vision_text == "5 AI agents that ship"
+    assert report.slides[1].vision_text_original == "5 Al agents that ship"
+    assert report.panel_texts[0] == "Al tools that Virlo really sent", \
+        "a Virlo panel is the source of record and is never repaired"
+    assert not log.warnings, f"a repair is not a degrade: {log.keys()}"
+    stored = _read_yaml(tmp_path)["slides"]
+    assert stored[1]["vision_text"] == "5 AI agents that ship"
+    assert stored[1]["vision_text_original"] == "5 Al agents that ship"
+    assert stored[0]["vision_text_original"] == "", "nothing was repaired on slide one"
+
+
+async def test_a_panel_that_looks_cut_is_flagged_and_keeps_every_byte(
+    tmp_path: Path, downloads: list[str]
+) -> None:
+    """`truncation_suspect` is contract data for the brief critic, never a licence to blank a slide.
+
+    Dropping a suspect panel would silently re-map the whole deck (FR-304 renders our slide *i*
+    from source panel *i*), which is a worse failure than any transcription defect — and an
+    authored cliff-hanger looks identical to a clipped container from here. The critic is the one
+    looking at the rendered frame, so it gets the flag and the bytes, and this stage keeps both.
+    """
+    cut = "The three habits that separate people who ship from people who keep planning and…"
+    post = _post(slides=2, panels=(cut, "A finished line."))
+    vision = Vision(_answer(1), _answer(2))
+
+    report = (await slide_intel.enrich([post], run_dir=tmp_path, call=vision, engine=_engine(),
+                                       cfg=Config(), log=Log()))["p1"]
+
+    assert [slide.truncation_suspect for slide in report.slides] == [True, False]
+    assert report.panel_texts == [cut, "A finished line."], "flagged, not shortened"
+    assert [row["truncation_suspect"] for row in _read_yaml(tmp_path)["slides"]] == [True, False]
+
+
 async def test_the_mark_boxes_recorded_in_source_yaml_are_the_ones_the_crop_step_will_read(
     tmp_path: Path, downloads: list[str]
 ) -> None:
@@ -848,4 +1008,4 @@ async def test_the_mark_boxes_recorded_in_source_yaml_are_the_ones_the_crop_step
     assert report.mark_boxes == [slide_intel.MarkBox(
         name="Notion logo", slide=1, box=(0.05, 0.05, 0.18, 0.09))], "whitespace collapsed"
     assert _read_yaml(tmp_path)["mark_boxes"] == [
-        {"name": "Notion logo", "slide": 1, "box": [0.05, 0.05, 0.18, 0.09]}]
+        {"name": "Notion logo", "slide": 1, "box": [0.05, 0.05, 0.18, 0.09], "kind": "tool"}]

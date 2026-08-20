@@ -14,7 +14,14 @@ Invariants:
   goes through the single `submit` callable built here, which owns FR-106 a/b/c (`projected` and
   `precommitted` `commit()`, `discretionary` `reserve()`), the profile lookup, the per-job
   projection (`budget.job_projection`) and exactly one `ledger.terminal()` line per submission.
-  `carousel.py` and `reel.py` price nothing and write no ledger line.
+  `carousel.py` and `reel.py` price nothing and write no ledger line — D49's per-deck gauntlet
+  budget and runway check ask this module through `Env.price_job` / `Env.runway_ok` rather than
+  deriving either themselves.
+- **The post-render GATE is the gauntlet** (D49, FR-322–330, v2.2.0). Every format runs it:
+  `gauntlet.run_deck` for a carousel, `gauntlet.run_single` for a standalone image and for a reel's
+  seed frame. Each call site owns a `RerenderFn` closure — the money seam — and the gauntlet owns
+  the loop, the critics and the three-tier terminal. A BLOCKED creative keeps every paid artifact
+  (`packager.block()`, FR-74), is never published, and makes the run exit 1.
 - **Spend tallies on submission, failures included** — a reservation that reached the provider is
   reconciled, never released; only a submission that never happened is released (20 §8).
 - **One automatic resubmit per IMAGE job** (FR-317, v2.1.3/D48). A standalone image, a carousel
@@ -28,6 +35,13 @@ Invariants:
   one whole state (NFR-21). A failed creative keeps its paid caption (FR-74).
 - **Nothing new is ordered once `env.halted` is true**, and what is already in flight gets ONE
   ~30 s grace window before it is abandoned honestly, with its taskId in the ledger (FR-108/201).
+- **Nothing is ordered that the deadline cannot pay for in TIME** (D51, v2.2.0). Beside the halt
+  check, the same door refuses `discretionary` and `projected` work whose own job timeout plus the
+  grace window no longer fits inside `deadline.remaining_s`: a job submitted with four minutes left
+  and a ten-minute timeout is a purchased certainty of a timeout. The refusal is UNBILLED — nothing
+  is reserved, nothing reaches the provider — and it carries `RenderFailCause.NO_RUNWAY`, which
+  both FR-317 resubmit predicates exclude by name so a refusal can never burn a slide's one-shot.
+  `precommitted` work is exempt (FR-106b): cap AND clock bookkeeping may never split a deck.
 - **Text-to-image is the default route; a house style ships no pixels (D46/F3, v2.1.0)** — the
   style reference channel is excised, so `refs.attach()` uploads only a brief's OWN photos (D26)
   through the run-scoped memo (one upload per file per run, FR-200/244). The only other image a
@@ -62,7 +76,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
-from hypesocials import render, vision_check
+from hypesocials import gauntlet, render
 from hypesocials.budget import Budget, SpendCategory, job_projection
 from hypesocials.config import BrandingConfig, Config
 from hypesocials.models import (
@@ -98,7 +112,9 @@ from hypesocials.generate.refs import wordmark as wordmark_of
 # FR-98 (v2.1.4): what the provider actually returned, read off the delivered file's own header.
 # No decoder and no Pillow — four integers out of the first bytes of a PNG/JPEG/WebP.
 from hypesocials.generate.pixels import native_size
-from hypesocials.generate.carousel import render_carousel
+# D49: "what was this frame ORDERED to be" — one contract builder for all three formats.
+from hypesocials.generate import contracts
+from hypesocials.generate.carousel import GAUNTLET_CRAFT, GAUNTLET_DEGRADED, render_carousel
 from hypesocials.generate.reel import render_reel
 
 #: The one image role post-pivot (F16's merged template).
@@ -122,9 +138,50 @@ _CURRENT_ASSET: ContextVar[str] = ContextVar("_hypesocials_current_asset", defau
 #: exists for one reason: an abandoned creative's ledger line can name the job that is still
 #: running at Kie (FR-108/203). Cleared per run by `ledger_hooks()`.
 _OPEN_TASKS: dict[str, str] = {}
+#: asset_id -> `_Tally`: what this creative has already SPENT and SUBMITTED, accumulated at the
+#: money door. It exists for the one path that cannot reconstruct it — `_abandon`, which runs
+#: inside a `CancelledError` and holds no outcome at all — so an interrupted creative's meta.yaml
+#: still names its jobs, its timestamps and its money instead of filing $0 and no ids against work
+#: the operator was really billed for (FR-73/FR-108). Cleared per run by `ledger_hooks()`.
+_TALLIES: dict[str, _Tally] = {}
 
 _HALTED = "halted — the run stopped ordering new work (FR-108/201)"
 _CREDITS = "kie_credits_exhausted — top up your Kie.ai credits (FR-167)"
+#: D51's refusal, spelled once: what was refused, how much clock it needed and how much was left.
+#: Read by an operator in run.log and by `carousel._submit`, which turns it into the deck's own
+#: "nothing was ordered" note — so it must state the arithmetic rather than merely assert it.
+_NO_RUNWAY = ("no_runway — this {job} job needs {need:.0f}s (its own timeout plus the {grace:.0f}s "
+              "grace window) and the run deadline has {left:.0f}s left, so it was never submitted "
+              "and nothing was billed (D51/FR-108)")
+
+
+@dataclass(slots=True)
+class _Tally:
+    """One creative's running submission receipt — money, jobs and timestamps, as they happen.
+
+    Every other terminal path holds the outcomes it needs and builds this block itself. The
+    ABANDONED path cannot: it runs inside a `CancelledError` raised while a job is still in flight,
+    so the only truthful account of what that creative already bought lives here, written as each
+    submission passed through the money door.
+
+    `cost_usd` mirrors `budget.reconcile` exactly — the provider's own figure when it reported one,
+    the reservation's estimate when it did not (FR-85) — plus `open_usd`, the estimate still held
+    against the job that never came back. A run summary counts that held reservation too, so meta
+    and the summary agree rather than differing by one render.
+    """
+
+    cost_usd: float = 0.0
+    open_usd: float = 0.0  # reserved for a submission with no terminal line yet
+    job_ids: list[str] = field(default_factory=list)
+    submitted_at: str | None = None
+    completed_at: str | None = None
+
+    def meta(self) -> dict[str, Any]:
+        """The FR-73 cost/timing block, named exactly as `AssetRecord` spells it."""
+        return {"actual_cost_usd": round(self.cost_usd + self.open_usd, 6),
+                "kie_job_ids": list(self.job_ids),
+                "job_submission_timestamp": self.submitted_at,
+                "job_completion_timestamp": self.completed_at}
 
 
 @dataclass(slots=True)
@@ -156,7 +213,15 @@ class Env:
     campaign_briefs: Mapping[str, Brief] = field(default_factory=dict)  # FR-144/145, by name
     niche_descriptor: str = ""  # copy-side (audience included): the analyst and copywriter only
     niche_visual_world: str = ""  # A15: `niche.visual_world` alone — the render roles
-    llm_call: Any = None  # metered `StructuredCall` for the FR-27 vision check; None = off
+    llm_call: Any = None  # metered `StructuredCall` for the D49 gauntlet critics; None = off
+    #: D49's two money-door SEAMS, wired by `create()` and read by the format modules' `RerenderFn`
+    #: closures. They exist so `carousel.py` and `reel.py` can measure a per-deck gauntlet budget
+    #: and D51's runway WITHOUT importing `budget` or touching `env.budget` — their module contracts
+    #: ("never price a job") stand exactly as written, because the price and the clock are ASKED of
+    #: the module that owns them rather than re-derived. `None` on both (a preview, a unit test)
+    #: makes the per-deck cap a no-op and the runway infinite, which is what those callers mean.
+    price_job: Any = None  # `(entry, job) -> float` — `budget.job_projection`, bound to this config
+    runway_ok: Any = None  # `(job) -> bool` — D51's gate, asked BEFORE a discretionary submission
     styles: Any = None  # `styles.StyleRegistry` — Any keeps generate free of a styles import;
     #   `refs.style_of` is the one resolver (the lazy-import precedent, contracts item 11)
     branding: BrandingConfig = field(default_factory=BrandingConfig)  # FR-292 brand selector +
@@ -219,6 +284,7 @@ def ledger_hooks(ledger: Ledger) -> tuple[Any, Any]:
     `submit_unknown` line, which is the exact case the ledger exists for.
     """
     _OPEN_TASKS.clear()
+    _TALLIES.clear()
 
     def on_intent(request_token: str) -> None:
         ledger.intent(_CURRENT_ASSET.get() or "unknown", request_token)
@@ -240,6 +306,12 @@ async def create(entries: Sequence[PlanEntry], env: Env) -> Report:
     raised — or cancelled — inside one creative can reach another: each returns a terminal record.
     """
     report = Report()
+    # D49: bind the two money-door seams to THIS run before any format module can ask them. Done
+    # here rather than at `Env` construction so every caller — the runner, a preview, a test that
+    # builds an `Env` by hand — gets them without having to know they exist.
+    env.price_job = env.price_job or partial(job_projection, env.config)
+    env.runway_ok = env.runway_ok or (
+        lambda job: _runway_refusal(env, job, "discretionary") is None)
     if not entries:
         return report
     tasks = [asyncio.create_task(_one(entry, env, report), name=f"create:{entry.asset_id}")
@@ -334,23 +406,38 @@ async def _one(entry: PlanEntry, env: Env, report: Report) -> AssetRecord:
         # The grace window closed on an in-flight job. Every write in `_abandon` is synchronous,
         # so this folder still lands terminal while the task unwinds (NFR-21, FR-108).
         return _abandon(entry, env, folder)
+    finally:
+        # The running receipt exists for the abandon path and dies with the creative: a stale
+        # tally would attribute this run's money to the next run's asset of the same id.
+        _TALLIES.pop(entry.asset_id, None)
 
 
 async def _dispatch(entry: PlanEntry, env: Env, folder: AssetFolder,
                     report: Report) -> AssetRecord:
-    """Pre-checks, then the one branch by format. Each module owns its own chain from there."""
+    """Pre-checks, then the one branch by format. Each module owns its own chain from there.
+
+    Each early exit records what EXISTS at that point and not one field more: no job ran, so there
+    are no job ids, no timestamps, no model ids and no measured size — but there is a $0 spend, the
+    requested ratio, and above all an `event_id`. FR-73 says a terminal meta.yaml points at the
+    run-log line that explains it, and these three skips were the only terminals in the module that
+    pointed at nothing, which made a folder full of `pending`-shaped nulls the operator's only
+    account of why a planned creative never happened.
+    """
     if entry.status is PlanEntryStatus.SKIPPED_BUDGET:
-        return folder.skip(entry.skip_reason or "trimmed to fit the spend cap (FR-28/FR-106)",
-                           DegradationTag.SKIPPED_BUDGET)
+        reason = entry.skip_reason or "trimmed to fit the spend cap (FR-28/FR-106)"
+        return folder.skip(reason, DegradationTag.SKIPPED_BUDGET,
+                           **_unspent(entry, env, "creative_skipped", reason))
     if entry.status is not PlanEntryStatus.PENDING:
-        return folder.skip(entry.skip_reason or f"not generated ({entry.status.value})")
+        reason = entry.skip_reason or f"not generated ({entry.status.value})"
+        return folder.skip(reason, **_unspent(entry, env, "creative_skipped", reason))
     if env.credits_exhausted:
         return _fail(entry, env, folder, _CREDITS)
     if env.halted:
         entry.status = PlanEntryStatus.ABANDONED
         entry.skip_reason = "interrupted_before_submission"
-        return folder.skip("interrupted before submission — nothing was ordered for this creative",
-                           DegradationTag.ABANDONED)
+        reason = "interrupted before submission — nothing was ordered for this creative"
+        return folder.skip(reason, DegradationTag.ABANDONED,
+                           **_unspent(entry, env, "abandoned", reason))
 
     submit = _submitter(env)
     if entry.creative_format == "carousel":
@@ -372,15 +459,22 @@ def _resubmittable(outcome: RenderOutcome | None) -> bool:
     Everything else terminal (a timeout, a provider error, an empty or unreachable result) is the
     same request that simply did not come back, so it is worth sending once more.
 
+    A runway refusal (`NO_RUNWAY`, D51) is excluded by name for a different reason again: it is the
+    one terminal cause in the enum that describes a job which never existed. Nothing was ordered,
+    nothing was billed, and the clock that refused it will only be shorter on a second ask — so
+    resubmitting would buy the identical refusal while burning the single attempt FR-317 grants a
+    job that really did fail.
+
     Video jobs never reach this predicate: `_submit_clip` is Seedance's only door and FR-44 keeps
     "a timed-out video job is never resubmitted" exactly as it was.
     """
     return (outcome is not None and outcome.kind is not RenderOutcomeKind.SUCCESS
-            and outcome.fail_cause is not RenderFailCause.MODERATION)
+            and outcome.fail_cause is not RenderFailCause.MODERATION
+            and outcome.fail_cause is not RenderFailCause.NO_RUNWAY)
 
 
 async def _image(entry: PlanEntry, env: Env, folder: AssetFolder, submit: Any) -> AssetRecord:
-    """One standalone image: assemble, submit, FR-97's retry, FR-317's resubmit, FR-27's check."""
+    """One image: assemble, submit, FR-97's retry, FR-317's resubmit, D49's gauntlet."""
     attached = await attach(entry, env, folder)
     urls = [ref.url for ref in attached]
     prompt = _assemble(entry, env, attached)
@@ -436,21 +530,52 @@ async def _image(entry: PlanEntry, env: Env, folder: AssetFolder, submit: Any) -
                       task_id=outcome.task_id, cost_usd=round(outcome.cost_usd, 6))
         return _fail(entry, env, folder, f"{cause}: {outcome.fail_message or 'no usable result'}"
                      f" (job {outcome.task_id or 'unknown'})", cost=outcome.cost_usd,
-                     outcome=outcome)
+                     outcome=outcome, referenced=bool(urls))
     if env.disk_full:  # 10 §10: downloads stopped run-wide rather than thrash a full disk
         return _fail(entry, env, folder, "disk_full: downloads stopped for this run",
-                     cost=outcome.cost_usd, outcome=outcome)
+                     cost=outcome.cost_usd, outcome=outcome, referenced=bool(urls))
     try:  # the bytes stop being a borrowed 24 h URL and become the operator's file
         stored = await folder.store_render(outcome.result_urls[0])
     except PackagingError as exc:
         if exc.reason == "disk_full":  # the one failure that outlives this creative
             env.disk_full = True
         return _fail(entry, env, folder, f"{exc.reason}: {exc}", cost=outcome.cost_usd,
-                     outcome=outcome)
-    verdict, retry, delivered = await _vision(entry, env, folder, submit, attached, stored)
-
+                     outcome=outcome, referenced=bool(urls))
+    report, extra, delivered = await _gauntlet_image(entry, env, folder, submit, attached, stored)
+    if report is not None:  # the operator-readable critic record, beside the artifacts
+        folder.write_gauntlet_report(contracts.report_rows(report, asset_id=entry.asset_id))
+    verdict = contracts.verdict_result(report, rerendered=bool(report and report.rerenders))
+    cost = outcome.cost_usd + sum(job.cost_usd for job in extra)
+    if report is not None and report.result == "blocked":
+        # FR-325: the image rendered and is being WITHHELD, not lost. Every paid artifact stays on
+        # disk (FR-74) and `PlanEntryStatus.BLOCKED` keeps it out of the history window, out of the
+        # `latest` pointer's satisfaction test and inside the run's exit-1 answer.
+        reason = ("gauntlet_blocked: the post-render critic panel found standing defect(s) after "
+                  f"{len(report.rounds)} round(s); the image is kept and not published (FR-325). "
+                  "See BLOCKED.txt and GAUNTLET_REPORT.yaml")
+        entry.status = PlanEntryStatus.BLOCKED
+        entry.skip_reason = entry.skip_reason or reason
+        return folder.block(
+            reason, contracts.blocked_text(report),
+            actual_cost_usd=round(cost, 6),
+            model_ids=[env.config.models.image_edit if attached else env.config.models.image,
+                       env.config.models.image_profile],
+            kie_job_ids=[job.task_id for job in (outcome, *extra) if job.task_id],
+            job_submission_timestamp=outcome.submitted_at,
+            job_completion_timestamp=(extra[-1].completed_at if extra else "")
+            or outcome.completed_at,
+            native_size_rendered=native_size(delivered, entry.aspect_ratio, log=env.log,
+                                             asset_id=entry.asset_id),
+            gauntlet=contracts.report_meta(report), vision_check_result=verdict,
+            event_id=env.log.error("gauntlet_blocked", f"{entry.asset_id}: {reason}",
+                                   asset_id=entry.asset_id, rounds=len(report.rounds),
+                                   rerenders=report.rerenders, cost_usd=round(cost, 6)))
+    if report is not None and report.craft_only:
+        folder.mark(GAUNTLET_CRAFT)  # FR-325 tier 3: craft-only failures ship, tagged
+    if report is not None and (report.degraded_gate or report.result == "degraded"):
+        folder.mark(GAUNTLET_DEGRADED)  # any degraded ship is tagged: D3, an FR-325 demotion,
+        #   or a contract-tier `fail_action: degrade` outcome (2026-08-20 gap fix)
     entry.status = PlanEntryStatus.SUCCESS
-    cost = outcome.cost_usd + (retry.cost_usd if retry is not None else 0.0)
     return folder.finish(
         actual_cost_usd=round(cost, 6),
         # FR-270, honestly (v2.1.4): this creative's route was decided by whether it carried
@@ -460,99 +585,113 @@ async def _image(entry: PlanEntry, env: Env, folder: AssetFolder, submit: Any) -
         # renders all claim a text-to-image id they never touched.
         model_ids=[env.config.models.image_edit if attached else env.config.models.image,
                    env.config.models.image_profile],
-        kie_job_ids=[job.task_id for job in (outcome, retry) if job is not None and job.task_id],
+        kie_job_ids=[job.task_id for job in (outcome, *extra) if job.task_id],
         job_submission_timestamp=outcome.submitted_at,
-        job_completion_timestamp=(retry.completed_at if retry else "") or outcome.completed_at,
+        job_completion_timestamp=(extra[-1].completed_at if extra else "") or outcome.completed_at,
         # FR-98: shipped exactly as it came back — and now RECORDED as it came back. `native_size`
         # reads the delivered file's own header, so a 1536x1024 answer to a 1:1 request is stated
         # rather than restated as "1:1" (audit R4), and warns once.
         native_size_rendered=native_size(delivered, entry.aspect_ratio, log=env.log,
                                          asset_id=entry.asset_id),
+        # FR-328 (spec §6): the gate's own receipt, on every terminal path it touched.
+        gauntlet=contracts.report_meta(report),
         vision_check_result=verdict,
         event_id=env.log.event("creative_delivered", f"{entry.asset_id} rendered",
                                asset_id=entry.asset_id, task_id=outcome.task_id,
                                cost_usd=round(cost, 6), vision_check=verdict.value,
+                               gauntlet=(report.result if report is not None else "not_run"),
                                duration_ms=int(outcome.elapsed_s * 1000)))
 
 
-async def _vision(
+async def _gauntlet_image(
     entry: PlanEntry, env: Env, folder: AssetFolder, submit: Any,
     attached: Sequence[Reference], stored: Path,
-) -> tuple[VisionCheckResult, RenderOutcome | None, Path]:
-    """FR-27/105 for a standalone image: one check, ONE re-render, one re-check, then it ships.
+) -> tuple[Any, list[RenderOutcome], Path]:
+    """D49 for a standalone image: `gauntlet.run_single` over the one frame that came back.
 
-    The estimator prices exactly this pair per image (`budget.py`'s `checked_images` plus the
-    `vision_retry_allowance`), so an image the operator was billed a check for gets one. The
-    re-render is discretionary (FR-106c) — a declined or failed one is `retried_failed`, never
-    laundered into `passed`.
+    Same loop, same critics, same three-tier terminal as a deck — the only differences are that
+    there is no cross-frame consistency to judge and that the round ceiling is
+    `run.gauntlet.rounds_max_image` (spec §4: a lone frame that needs three rounds is a copy
+    problem, not a render problem). `gauntlet.run_single` takes that minimum itself.
 
-    Returns the verdict, the retry's outcome (for cost and job ids) and the path of the file that
-    is actually SHIPPING — `stored`, or the re-render that replaced it. The third value exists
-    because meta records the delivered picture's real pixel size (FR-98/v2.1.4), and after a
-    successful retry the delivered picture is the second one.
+    Returns the report, every extra `RenderOutcome` the fix loop bought (for cost and job ids) and
+    the path of the file that is actually SHIPPING — `stored`, or the fix re-render that replaced
+    it, because meta records the delivered picture's real pixel size (FR-98).
     """
-    if not env.config.run.vision_check or env.llm_call is None:
-        return VisionCheckResult.NOT_CHECKED, None, stored
+    if not contracts.gate_on(env):
+        return None, [], stored
     copyset = env.copy.get(entry.asset_id) or CopySet(asset_id=entry.asset_id,
                                                       language=entry.language)
-    # FR-105 v2.1.1: the check carries the image's LOCKED words — headline, subline and, on a
-    # branded entry, the wordmark that renders through the same TEXT block (B1). Without them the
-    # third question has no referent and a clean render of the wrong copy passes.
+    style = style_of(entry, env)
     signature = wordmark_of(entry, env)
-    first = (await vision_check.check(
-        [stored], expected=[vision_check.expected_text(copyset, "image", wordmark=signature)],
-        call=env.llm_call, engine=env.engine, log=env.log)).verdict_for(1)
-    if first is None or not first.flagged or env.halted:
-        return vision_check.verdict_result(first), None, stored
-    env.log.warn("vision_check_flagged",
-                 f"{entry.asset_id} flagged ({first.detail}); one re-render with shorter, larger "
-                 "text (FR-105)", asset_id=entry.asset_id, text_broken=first.text_broken,
-                 fake_ui=first.fake_ui, text_mismatch=first.text_mismatch)
-    # D-F (v2.1.2): the verdict rides into the plan, so a render that invented words is told so and
-    # forbidden by name — the −40%/larger-type lever alone does nothing about invented copy.
-    plan = vision_check.retry_plan(copyset, "image", env.config.run.text_budgets, verdict=first)
-    prompt = _assemble(entry, env, attached, copyset=plan.copy, budget_scale=plan.budget_scale,
-                       extra=plan.instruction)
-    if prompt is None:
-        return VisionCheckResult.RETRIED_FAILED, None, stored
-    try:
-        retry = await submit(entry, RenderParams(prompt=prompt, aspect_ratio=entry.aspect_ratio),
-                             RenderRefs(image_urls=[ref.url for ref in attached]), job="image",
-                             priority=RenderPriority.WAVE1, kind="discretionary",
-                             label=f"vision re-render · {entry.asset_id}")
-    except render.KieOutOfCredits:
-        env.credits_exhausted = True  # FR-167: the flagged image ships exactly as rendered
-        return VisionCheckResult.RETRIED_FAILED, None, stored
-    if retry is None or retry.kind is not RenderOutcomeKind.SUCCESS or not retry.result_urls:
-        env.log.warn("vision_retry_unavailable",
-                     f"{entry.asset_id}: the flagged image ships as rendered "
-                     f"({'declined by the cap' if retry is None else 'the re-render failed'})",
-                     asset_id=entry.asset_id)
-        return VisionCheckResult.RETRIED_FAILED, retry, stored
-    try:  # the re-render REPLACES the delivered file, then earns its one second verdict
-        replaced = await folder.store_render(retry.result_urls[0])
-    except PackagingError as exc:
-        if exc.reason == "disk_full":
-            env.disk_full = True
-        return VisionCheckResult.RETRIED_FAILED, retry, stored
-    # The re-check compares against what the RETRY was ordered to carry — a shortened headline and
-    # no subline — not against the original copy the first render was flagged on.
-    after = (await vision_check.check(
-        [replaced], expected=[vision_check.expected_text(plan.copy, "image", wordmark=signature)],
-        call=env.llm_call, engine=env.engine, log=env.log)).verdict_for(1)
-    # FR-321d: the SECOND verdict on the record. `retried_passed` is the one state that asserts a
-    # defect was fixed, and until this line the assertion rested on a verdict nothing logged.
-    env.log.event("vision_recheck",
-                  f"{entry.asset_id} re-checked after its one re-render: "
-                  + ("clean" if after is not None and not after.flagged else
-                     "still flagged" if after is not None else "no verdict returned"),
-                  asset_id=entry.asset_id, attempt=2, checked=after is not None,
-                  flagged=bool(after is not None and after.flagged),
-                  text_broken=bool(after is not None and after.text_broken),
-                  fake_ui=bool(after is not None and after.fake_ui),
-                  text_mismatch=bool(after is not None and after.text_mismatch),
-                  detail=(after.detail if after is not None else ""))
-    return vision_check.verdict_result(first, after, retried=True), retry, replaced
+    # FR-322: the frame is judged against the words it was LOCKED to carry — headline, subline and,
+    # on a branded entry, the wordmark that renders through the same TEXT block (B1). An unlisted
+    # wordmark reads to a critic as an invented word; a listed one nobody ordered reads as missing.
+    frame = contracts.frame_contract(
+        1, "\n".join(part for part in (copyset.headline, copyset.subline) if part.strip()),
+        style=style, signature=signature)
+    contract = contracts.deck_contract(
+        [frame], entry=entry, style=style, wordmark=signature,
+        forbidden=contracts.forbidden_terms(competitors=env.competitor_strings_for(entry)))
+    spent: list[float] = [0.0]
+    bought: list[RenderOutcome] = []
+    shipping = [stored]
+
+    async def rerender(number: int, fix: str) -> gauntlet.RerenderResult:
+        """The money seam (spec §1) for one image — every dollar decision in the fix loop.
+
+        FR-317 exclusivity holds by construction: this is a FRESH submission with its own ledger
+        rows, it is not routed through `_resubmittable`, and it is never itself resubmitted.
+        """
+        if env.halted:
+            return gauntlet.RerenderResult(status="halted")
+        if env.credits_exhausted:
+            return gauntlet.RerenderResult(status="failed")
+        projected = float(env.price_job(entry, "image")) if callable(env.price_job) else 0.0
+        cap = float(env.config.run.gauntlet.deck_budget_usd or 0.0)
+        if cap > 0 and spent[0] + projected > cap:
+            env.log.warn("gauntlet_budget_stop",
+                         f"{entry.asset_id}: the per-creative gauntlet budget ({cap:.2f}) is spent "
+                         f"({spent[0]:.2f} used) — no further fix re-render is ordered",
+                         asset_id=entry.asset_id, spent_usd=spent[0], cap_usd=cap)
+            return gauntlet.RerenderResult(status="declined_deck_budget")
+        if callable(env.runway_ok) and not env.runway_ok("image"):
+            return gauntlet.RerenderResult(status="declined_runway")
+        prompt = _assemble(entry, env, attached, copyset=copyset, extra=fix)
+        if prompt is None:
+            return gauntlet.RerenderResult(status="failed")
+        try:
+            again = await submit(
+                entry, RenderParams(prompt=prompt, aspect_ratio=entry.aspect_ratio),
+                RenderRefs(image_urls=[ref.url for ref in attached]), job="image",
+                priority=RenderPriority.WAVE1, kind="discretionary",
+                label=f"gauntlet re-render · {entry.asset_id}")
+        except render.KieOutOfCredits:
+            env.credits_exhausted = True  # FR-167: the flagged image ships exactly as rendered
+            return gauntlet.RerenderResult(status="failed")
+        if again is None:
+            return gauntlet.RerenderResult(status="declined_budget")
+        if again.fail_cause is RenderFailCause.NO_RUNWAY:  # D51: unbilled, nothing was ordered
+            return gauntlet.RerenderResult(status="declined_runway")
+        bought.append(again)
+        cost = float(again.cost_usd or 0.0) or projected
+        spent[0] += cost
+        if again.kind is not RenderOutcomeKind.SUCCESS or not again.result_urls:
+            return gauntlet.RerenderResult(status="failed", cost_usd=cost)
+        try:  # the fix re-render REPLACES the delivered file
+            shipping[0] = await folder.store_render(again.result_urls[0])
+        except PackagingError as exc:
+            if exc.reason == "disk_full":
+                env.disk_full = True
+            return gauntlet.RerenderResult(status="failed", cost_usd=cost)
+        return gauntlet.RerenderResult(
+            status="delivered", cost_usd=cost,
+            frame=gauntlet.FrameUnderTest(number=number, source=shipping[0]))
+
+    report = await gauntlet.run_single(
+        gauntlet.FrameUnderTest(number=1, source=stored), contract, rerender,
+        cfg=env.config.run.gauntlet, call=env.llm_call, log=env.log, engine=env.engine)
+    return report, bought, shipping[0]
 
 
 # --------------------------------------------------------------------------- the money door
@@ -591,9 +730,14 @@ async def _submit(
         raise render.KieOutOfCredits(_CREDITS)
     if env.halted:
         return RenderOutcome(kind=RenderOutcomeKind.FAIL, fail_message=_HALTED)
+    if (refusal := _runway_refusal(env, job, kind)) is not None:
+        env.log.warn("no_runway", f"{entry.asset_id}: {label} — {refusal.fail_message}",
+                     asset_id=entry.asset_id, job=job, kind=kind)
+        return refusal
     profile = (env.config.models.video_profile if job == "clip"
                else env.config.models.image_profile)
     projected = job_projection(env.config, entry, job)
+    tally = _TALLIES.setdefault(entry.asset_id, _Tally())
     if kind == "discretionary":  # FR-106c — the only spend the cap can still decline
         held = await env.budget.reserve(projected, label=label, category=SpendCategory.RENDER,
                                         asset_id=entry.asset_id)
@@ -606,20 +750,30 @@ async def _submit(
                                        asset_id=entry.asset_id, kind=kind)
     token = _CURRENT_ASSET.set(entry.asset_id)
     env.jobs_submitted += 1
+    tally.open_usd += projected  # held against a job with no terminal line yet (see `_Tally`)
     try:
         outcome = await render.run(profile, params, refs, priority)
     except render.KieOutOfCredits:
         await env.budget.release(held)  # nothing was submitted, so nothing was billed
         env.jobs_submitted -= 1
+        tally.open_usd -= projected
         raise
     except render.RenderError as exc:  # seam misuse or an unknown profile: no job ever left
         await env.budget.release(held)
         env.jobs_submitted -= 1
+        tally.open_usd -= projected
         env.log.error("render_seam_error", f"{entry.asset_id}: {exc}", asset_id=entry.asset_id)
         return RenderOutcome(kind=RenderOutcomeKind.FAIL, fail_message=str(exc))
     finally:
         _CURRENT_ASSET.reset(token)
-    await env.budget.reconcile(held, _billed_usd(outcome))
+    billed = _billed_usd(outcome)
+    await env.budget.reconcile(held, billed)
+    tally.open_usd -= projected  # settled: the same figure the budget just counted, never both
+    tally.cost_usd += projected if billed is None else billed
+    if outcome.task_id:
+        tally.job_ids.append(outcome.task_id)
+    tally.submitted_at = tally.submitted_at or outcome.submitted_at
+    tally.completed_at = outcome.completed_at or tally.completed_at
     env.jobs_done += 1
     if outcome.kind is RenderOutcomeKind.SUCCESS and outcome.result_urls:
         env.jobs_ok += 1
@@ -629,6 +783,39 @@ async def _submit(
     if env.say is not None:  # FR-299: one event-driven terminal line per submission
         env.say(_job_line(entry, label, priority, outcome))
     return outcome
+
+
+def _runway_refusal(env: Env, job: str, kind: str) -> RenderOutcome | None:
+    """D51's runway gate: the unbilled `NO_RUNWAY` refusal, or `None` when the clock still fits.
+
+    A render job has a timeout of its own — 600 s for an image, 1800 s for a Seedance clip — and
+    the run has a soft deadline (FR-108). Submitting a ten-minute job with four minutes left buys
+    a certainty: the job cannot land inside the window, the grace poll abandons it, and the money
+    is spent on a taskId nobody will ever claim. So the door refuses it BEFORE the reservation,
+    which is what makes the refusal free: no `commit`, no `reserve`, no provider call, no ledger
+    line, `$0`.
+
+    Two exemptions, both deliberate:
+
+    * `precommitted` work is never refused (FR-106b). Slides 2–N and the Seedance clip a chain
+      already anchored are the deck the operator paid for; stopping half of it on a clock would
+      split a deck, which is the exact failure the pre-committed class exists to prevent. Those
+      submissions keep their own `env.halted` check and the grace window as their protection.
+    * A run with no deadline at all (`env.deadline is None` — previews, unit tests, an unbounded
+      operator run) has infinite runway by definition and this gate never fires.
+    """
+    deadline = env.deadline
+    if kind == "precommitted" or deadline is None:
+        return None
+    models = env.config.models
+    need = float(models.video_job_timeout_s if job == "clip"
+                 else models.image_job_timeout_s) + GRACE_S
+    left = deadline.remaining_s
+    if left >= need:
+        return None
+    return RenderOutcome(
+        kind=RenderOutcomeKind.FAIL, fail_cause=RenderFailCause.NO_RUNWAY,
+        fail_message=_NO_RUNWAY.format(job=job, need=need, grace=GRACE_S, left=left))
 
 
 def _billed_usd(outcome: RenderOutcome) -> float | None:
@@ -756,6 +943,7 @@ def _record(entry: PlanEntry, env: Env) -> AssetRecord:
     # provenance fallback is belt-and-braces for a panel map that arrived without the entry field.
     post_id = str(entry.source_post_id or "").strip() or (
         str(prov.post_id) if prov and prov.panel_map else "")
+    bound = _bound_post(post_id, trend)
     intel = env.slide_intel.get(post_id) if post_id else None
     degradations: list[DegradationTag] = list(env.copy_tags.get(entry.asset_id, ()))
     for tag in _intel_tags(intel):  # FR-306: `vision_transcribed` / `vision_unavailable`
@@ -767,7 +955,7 @@ def _record(entry: PlanEntry, env: Env) -> AssetRecord:
         source_name=trend.name if trend else (entry.brief_name or ""),
         platform=entry.platform,
         creative_format=entry.creative_format,
-        source_hook=next((hook for hook in (trend.hook_texts if trend else ()) if hook), ""),
+        source_hook=_source_hook(bound, trend, entry, env),
         # FR-73 (v2.0.0) identity quartet + the FR-298 verbatim receipt:
         style_key=entry.style_key or ("brief_override" if entry.brief_influence == "override"
                                       else ""),
@@ -776,8 +964,14 @@ def _record(entry: PlanEntry, env: Env) -> AssetRecord:
         topic_key=entry.topic_key or (trend.topic_key if trend else ""),
         copy_source_post_id=prov.post_id if prov else "",
         copy_source_refs=dict(prov.refs) if prov else {},
+        # FR-73 (v2.3.0, D54): which copy contract this asset shipped under. Carried straight off
+        # the copy stage's own provenance rather than re-derived from `config.run` — the run-level
+        # key says what the operator ASKED for, and this record has to say what this creative
+        # actually got: a bound deck whose compress call failed fell back to the verbatim mapped
+        # deck and is `verbatim`, and so is every image and reel in the same compress-mode run.
+        copy_mode=prov.copy_mode if prov else "verbatim",
         # FR-73 (v2.1.0) — the slideshow receipt FR-309's three-part card is drawn from.
-        source_post=_source_post(post_id, trend),
+        source_post=_source_post(post_id, bound),
         source_panel_count=prov.source_panel_count if prov else 0,
         panel_map=_panel_map(prov, intel),
         ref_source=_ref_source(entry, env),
@@ -787,8 +981,66 @@ def _record(entry: PlanEntry, env: Env) -> AssetRecord:
         aspect_ratio_requested=entry.aspect_ratio,
         estimated_cost_usd=round(entry.estimated_cost_usd, 6),
         slide_count=entry.slide_count,
-        virlo_url=trend.virlo_url if trend else None,
+        # FR-298/D51 (v2.2.0): the BOUND post's own permalink, because that is the thing this
+        # creative is a rendering of. The topic's `virlo_url` points at the trend page — a page
+        # that lists every post in the topic — so a deck built from post 4 filed a link the
+        # operator opened to find the top post's video, and the audit's "provenance points at the
+        # wrong post" line is exactly that. The topic link survives only as the fallback below.
+        virlo_url=_virlo_url(bound, trend, entry, env),
     )
+
+
+def _bound_post(post_id: str, trend: TrendItem | None) -> Any:
+    """The `SourcePost` this creative was bound to at ASSIGN (FR-304), or `None`.
+
+    `None` on three legitimate paths and they mean the same thing to every caller: nothing was
+    bound (an image, a reel, an override brief), or a topic that is no longer in `env.trends`
+    cannot resolve the id (a plan resurrected from an older run). Duck-typed off the trend for the
+    same reason `_source_post` is: this module reads roster objects, it does not own their type.
+    """
+    if not post_id:
+        return None
+    return next((item for item in (getattr(trend, "posts", ()) or ())
+                 if str(item.post_id) == post_id), None)
+
+
+def _source_hook(bound: Any, trend: TrendItem | None, entry: PlanEntry, env: Env) -> str:
+    """FR-73's `source_hook` — the BOUND post's own hook, with the topic's as a labelled fallback.
+
+    Provenance is per POST, not per topic (FR-298/§0.13): the gallery card prints this line under
+    "what we were looking at", and a deck cut from post 4 that printed post 1's hook was telling
+    the operator to compare our slides against a post we never touched.
+
+    The fallback is the topic's first hook — genuinely the best available answer for an unbound
+    creative, and a *different* claim from the bound one, so it is logged as such rather than
+    silently substituted. `topic_p1` is the label: the topic roster's first post, which is what
+    `TrendItem.hook_texts` is assembled from.
+    """
+    for hook in (getattr(bound, "hooks", ()) or ()):
+        if str(hook).strip():
+            return str(hook)
+    fallback = next((hook for hook in (trend.hook_texts if trend else ()) if hook), "")
+    if fallback and bound is not None:
+        env.log.event("provenance_topic_fallback",
+                      f"{entry.asset_id}: the bound source post carries no hook line, so meta.yaml "
+                      "records the topic's first-post hook instead (labelled topic_p1)",
+                      verbose_only=True, asset_id=entry.asset_id, field="source_hook",
+                      source="topic_p1")
+    return fallback
+
+
+def _virlo_url(bound: Any, trend: TrendItem | None, entry: PlanEntry, env: Env) -> str | None:
+    """FR-73's `virlo_url` — the bound post's permalink, else the topic page (labelled fallback)."""
+    url = str(getattr(bound, "url", "") or "").strip()
+    if url:
+        return url
+    fallback = trend.virlo_url if trend else None
+    if fallback and bound is not None:
+        env.log.event("provenance_topic_fallback",
+                      f"{entry.asset_id}: the bound source post carries no permalink, so meta.yaml "
+                      "records the topic page instead (labelled topic_p1)", verbose_only=True,
+                      asset_id=entry.asset_id, field="virlo_url", source="topic_p1")
+    return fallback
 
 
 # --------------------------------------------------------------------------- the FR-73 join
@@ -797,8 +1049,10 @@ def _record(entry: PlanEntry, env: Env) -> AssetRecord:
 def _panel_map(prov: CopyProvenance | None, intel: Any) -> list[dict[str, Any]]:
     """FR-73/FR-304/FR-306: the copy stage's rows, each joined with what that source panel SHOWED.
 
-    The copy stage owns `{slide, source_position, source_text, ref_label}` — our slide's index,
-    the source panel it renders, the words it quotes and the label they were quoted under. This
+    The copy stage owns `{slide, source_position, source_text, ref_label, compressed}` — our
+    slide's index, the source panel it renders, the words it ships, the label they were quoted
+    under (empty when nothing was, including on every D54-compressed row) and whether those words
+    are a compression of the source panel rather than a quote of it. This
     adds the two the slide-intelligence pass owns: `visual_brief` (the English content directive
     the slide prompt carried, FR-308) and `source_image` (the run-relative path of the downloaded
     source panel, FR-309's strip; forward-slashed and already relative to the run folder, since
@@ -827,7 +1081,7 @@ def _panel_map(prov: CopyProvenance | None, intel: Any) -> list[dict[str, Any]]:
     return rows
 
 
-def _source_post(post_id: str, trend: TrendItem | None) -> dict[str, Any] | None:
+def _source_post(post_id: str, post: Any) -> dict[str, Any] | None:
     """FR-73's nested `source_post`: whose deck this creative is a rendering OF, or `None`.
 
     `None` is the honest answer wherever nothing was bound — an image, a reel, an override-brief
@@ -840,11 +1094,13 @@ def _source_post(post_id: str, trend: TrendItem | None) -> dict[str, Any] | None
     inventing provenance rather than admitting a gap. Every value that is written is a STRING or
     an int — never a `datetime` — because meta.yaml is a plain document a human reads and a
     Phase-2 publisher parses.
+
+    `post` is `_bound_post`'s answer for this id — resolved ONCE per record, because three fields
+    (`source_post`, `source_hook`, `virlo_url`) now read the same object and three independent
+    lookups could disagree about which post this creative is a rendering of.
     """
     if not post_id:
         return None
-    post = next((item for item in (getattr(trend, "posts", ()) or ())
-                 if str(item.post_id) == post_id), None)
     if post is None:
         return {"post_id": post_id}
     return {"post_id": post_id, "url": str(post.url or ""), "author": str(post.author or ""),
@@ -916,8 +1172,18 @@ def _abandon(entry: PlanEntry, env: Env, folder: AssetFolder) -> AssetRecord:
 
     The job itself is neither cancelled at Kie nor resubmitted — it was billed at submission and
     may still complete unclaimed. Saying so, with the id, is the whole point of the ledger.
+
+    It is also the whole point of `_Tally`: this path holds no outcome (it runs inside the
+    `CancelledError` the grace window raises), so without the running receipt an abandoned creative
+    filed `$0`, no job ids and no timestamps against work that was really submitted and really
+    billed. The tally supplies all four — every terminal job plus the estimate still held against
+    the one that never came back — and the open job's id is appended here, since it has no terminal
+    line to have added itself with.
     """
     task_id = _OPEN_TASKS.pop(entry.asset_id, None)
+    tally = _TALLIES.pop(entry.asset_id, None) or _Tally()
+    if task_id and task_id not in tally.job_ids:
+        tally.job_ids.append(task_id)  # the job still running: billed, unclaimed, named (FR-203)
     reason = (f"abandoned after the {GRACE_S:.0f}s grace window (job {task_id or 'unknown'}) — "
               "it was billed at submission and may still complete unclaimed at Kie (FR-108/203)")
     entry.status = PlanEntryStatus.ABANDONED
@@ -930,22 +1196,65 @@ def _abandon(entry: PlanEntry, env: Env, folder: AssetFolder) -> AssetRecord:
         ordinal = entry.asset_id.rsplit("_", 1)[-1]
         env.say(f"          abandoned {ordinal:>2} {entry.creative_format:<8} "
                 f"job {task_id or 'unknown'} — billed at submission, may still complete unclaimed")
-    return folder.skip(reason, DegradationTag.ABANDONED, event_id=event_id)
+    return folder.skip(reason, DegradationTag.ABANDONED, event_id=event_id,
+                       native_size_rendered=entry.aspect_ratio, **tally.meta())
+
+
+def _unspent(entry: PlanEntry, env: Env, event: str, reason: str) -> dict[str, Any]:
+    """The terminal block for a creative that never reached the money door — $0, and an event id.
+
+    Deliberately small: the honest answer for a creative nothing was ordered for is that it cost
+    nothing, came back at no size (so the REQUESTED ratio stands, never an empty string the gallery
+    would print as `ratio 1:1 → `), and is explained by exactly one log line.
+    """
+    return {"actual_cost_usd": 0.0,
+            "native_size_rendered": entry.aspect_ratio,
+            "event_id": env.log.warn(event, f"{entry.asset_id}: {reason}",
+                                     asset_id=entry.asset_id,
+                                     creative_format=entry.creative_format)}
 
 
 def _fail(entry: PlanEntry, env: Env, folder: AssetFolder, reason: str,
           tag: DegradationTag | None = None, *, cost: float = 0.0,
-          outcome: RenderOutcome | None = None) -> AssetRecord:
-    """Terminal failure that keeps its paid artifacts (FR-74) and stays in the plan (FR-4)."""
+          outcome: RenderOutcome | None = None, referenced: bool = False,
+          delivered: Path | None = None,
+          vision: VisionCheckResult = VisionCheckResult.NOT_CHECKED) -> AssetRecord:
+    """Terminal failure that keeps its paid artifacts (FR-74) and stays in the plan (FR-4).
+
+    Records the SAME block a delivered creative records, minus what genuinely does not exist yet —
+    the audit's finding was that a failed image filed a cost and a job id and nothing else, so two
+    creatives with identical folders on disk answered "which model made this" and "what size did it
+    come back at" differently purely because one of them failed (`carousel.package()` has written
+    the full block since v2.1.4; this is the standalone image path catching up):
+
+    * `model_ids` name the route this job ACTUALLY took (FR-241/FR-270) — `image_edit` when it
+      carried references, `image` when it did not — and are written only when a job was really
+      submitted, because a creative that died at prompt assembly used no model at all.
+    * `native_size_rendered` is measured off the delivered file when there IS one (a store failure,
+      a full disk, a failed check all happen with real bytes on disk) and otherwise falls back to
+      the requested ratio, which is `carousel._native_size`'s rule: the field is never empty,
+      because the gallery prints it as the right-hand side of `ratio 1:1 → …`.
+    * `vision_check_result` is passed through rather than defaulted, so a creative that failed
+      AFTER its check still says what the check said.
+    """
     if entry.status is PlanEntryStatus.PENDING:
         entry.status = PlanEntryStatus.FAILED
     entry.skip_reason = entry.skip_reason or reason
     extra: dict[str, Any] = {  # FR-73: the run-log line this meta.yaml points back at
         "actual_cost_usd": round(cost, 6),
+        "native_size_rendered": (
+            native_size(delivered, entry.aspect_ratio, log=env.log, asset_id=entry.asset_id)
+            if delivered is not None else entry.aspect_ratio),
+        "vision_check_result": vision,
         "event_id": env.log.error("creative_failed", f"{entry.asset_id}: {reason}",
                                   asset_id=entry.asset_id, cost_usd=round(cost, 6)),
     }
-    if outcome is not None:
+    # A runway refusal (D51) is the one "outcome" that describes a job which never existed: it has
+    # no taskId, no timestamps and no model, so it writes none of them rather than claiming a route
+    # nothing took.
+    if outcome is not None and outcome.fail_cause is not RenderFailCause.NO_RUNWAY:
+        extra["model_ids"] = [env.config.models.image_edit if referenced
+                              else env.config.models.image, env.config.models.image_profile]
         extra["kie_job_ids"] = [outcome.task_id] if outcome.task_id else []
         extra["job_submission_timestamp"] = outcome.submitted_at
         extra["job_completion_timestamp"] = outcome.completed_at

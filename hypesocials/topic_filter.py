@@ -27,6 +27,15 @@ The strongest verdict wins where the layers disagree (`skip` > `strip` > `keep`)
 whose brand list empties after the M15 guards degrades to `keep`: a strip with nothing to strip is
 a keep, not a silent no-op verdict.
 
+Since v2.2.0 the screen also answers two questions the pixels depend on and the model alone cannot
+decide: what language the topic's own posts are in, and whether the topic is for the audience this
+run writes for (`{{audience_profile}}`). The model REPORTS both; `_apply` decides, against
+`run.languages` and the configured niche, and turns "not a language we write" or "not our audience"
+into a `skip` with its own code (`LANG` / `AUDIENCE`, beside the pre-existing `PROMO`). Verbatim
+copy is why the language half exists at all: there is no translation step anywhere in this pipeline,
+so an off-language topic ships off-language pixels or nothing. Both checks fail OPEN — an absent or
+unreadable field keeps the topic.
+
 Do not: call this before Confirm (it costs money — previews print the layer-1 verdicts only, $0,
 labelled as such, FR-139); key verdicts on anything the source controls; import this module from
 `copywrite` in a way that closes a cycle — the edge is one-way, `copywrite` imports
@@ -72,6 +81,9 @@ _CARRIER_TURN = "Return the verdict JSON for the numbered topics above now."
 _KEEP, _STRIP, _SKIP = "keep", "strip", "skip"
 #: Strength order — where the two layers disagree, the stronger verdict stands.
 _RANK = {_KEEP: 0, _STRIP: 1, _SKIP: 2}
+#: v2.2.0 — the machine-readable causes a `skip` carries, and the only three there are. The console
+#: prints them as `skip:<CODE>` (FR-297a), so they are short, upper-case and never free text.
+SKIP_PROMO, SKIP_LANGUAGE, SKIP_AUDIENCE = "PROMO", "LANG", "AUDIENCE"
 #: M15 strip guards. A two-character "brand" is punctuation; a candidate string gutted to under
 #: 15 characters was one whose subject WAS the brand, and stripping it ships a sentence fragment.
 _MIN_BRAND_CHARS = 3
@@ -101,6 +113,30 @@ _STOPWORDS = frozenset({
 _FUZZY_THRESHOLD = 0.85
 _FUZZY_MIN_CHARS = 5
 
+#: v2.2.0 — how a model's language answer becomes one of `config._LANGUAGES`' two codes. The screen
+#: asks for a code, but a model asked for "the language of this topic's posts" writes "English",
+#: "en-US" and "cs" on three consecutive rows of the same answer, and a screen that only understood
+#: one of those spellings would skip perfectly good English topics.
+#:
+#: Unrecognized entries are NOT rescued into a keep: everything the run can write is `en` or `cs`
+#: (D6), so a value that resolves to neither is off-language whatever it spells — a German topic
+#: whose panels we would have to render verbatim in German is exactly what this check exists to
+#: drop before any spend. Only the sentinels below (an honest "I could not tell") fail open.
+_LANGUAGE_ALIASES: dict[str, str] = {
+    "en": "en", "eng": "en", "english": "en", "enus": "en", "engb": "en", "american": "en",
+    "cs": "cs", "cz": "cs", "cze": "cs", "ces": "cs", "czech": "cs", "cestina": "cs",
+    "čeština": "cs", "česky": "cs", "cesky": "cs",
+}
+#: Answers that mean "I could not tell" — treated as no answer at all, which keeps the topic
+#: (fail-open, §1.5): an unreadable language is a reason to look again, never a reason to spend
+#: nothing on a topic that may well be in ours.
+_LANGUAGE_UNKNOWN = frozenset({"", "unknown", "unclear", "undetermined", "none", "na", "n/a",
+                               "mixed", "multiple", "various", "other"})
+#: Truthy/falsey spellings a model uses for `audience_fit` when it declines to send a real JSON
+#: boolean. Anything outside both sets is unparseable and fails OPEN (the topic keeps its fit).
+_TRUE_WORDS = frozenset({"true", "yes", "y", "1", "fit", "good"})
+_FALSE_WORDS = frozenset({"false", "no", "n", "0", "unfit", "off", "bad"})
+
 
 @dataclass(slots=True)
 class Verdict:
@@ -112,6 +148,19 @@ class Verdict:
     verdict: str = _KEEP  # "keep" | "strip" | "skip"
     brands_to_strip: list[str] = field(default_factory=list)  # post-guard survivors only
     reason: str = ""
+    #: v2.2.0 — the two SCREENED facts behind a language/audience skip, kept on the verdict rather
+    #: than folded into `reason` alone so the console can print them for every row (a keep's
+    #: language is what makes the skips beside it readable) and events.jsonl can be queried on them.
+    #:
+    #: `language` is the normalized code of the SOURCE material (`en`/`cs`/whatever the model saw),
+    #: empty when the model gave no usable answer. `audience_fit` is the model's judgement of the
+    #: topic against `{{audience_profile}}`, and it defaults to True: an absent or unparseable
+    #: answer must never be the thing that drops a topic (§1.5's fail-open direction).
+    language: str = ""
+    audience_fit: bool = True
+    #: `PROMO` | `LANG` | `AUDIENCE` on a skip, `""` on anything else — what the console's
+    #: `skip:<CODE>` cell prints. Never free text: the operator-facing sentence is `reason`.
+    skip_code: str = ""
 
 
 class _FilterUnavailable(RuntimeError):
@@ -374,6 +423,16 @@ def _system_prompt(topics: Sequence[TrendItem], cfg: Config) -> str:
         engine = PromptEngine(override_dirs=[cfg.prompts_dir] if cfg.prompts_dir else [])
         context = build_context(topic_items=topics,
                                 competitor_strings=tuple(cfg.branding.competitors))
+        # v2.2.0 — `{{audience_profile}}`, the screen's third slot, and the ONE place `niche:` is
+        # read outside the copy path. It is added to the built context rather than passed through
+        # `build_context`'s signature for the same reason `copywrite` overwrites `{{source_hooks}}`
+        # after that call returns: the value belongs to one role, and `build_context` is the
+        # cross-role door. The `niche_descriptor` slot cannot carry it — that name is copy-side and
+        # the screen's role does not allowlist it (FR-261/109) — and the screen has to know who we
+        # write for before it can say whether a topic is for them. The engine only substitutes the
+        # names its template actually contains, so this is inert until the shipped
+        # `topic_filter_system.md` names the slot; a stale override never sees it either way.
+        context["audience_profile"] = cfg.niche.as_text()
         return engine.render(_TEMPLATE, context)
     except Exception as exc:  # noqa: BLE001 — assembly is fail-open by contract (§1.5)
         # The message is carried through, unlike the provider-side catch in `screen()`: prompt
@@ -394,8 +453,17 @@ def _answer_schema() -> dict[str, Any]:
             "verdict": {"type": "string", "enum": [_KEEP, _STRIP, _SKIP]},
             "brands_to_strip": {"type": "array", "items": {"type": "string"}},
             "reason": {"type": "string"},
+            # v2.2.0 — both REQUIRED, and the object stays `additionalProperties: false`. A
+            # `prompts_dir` override still carrying the pre-v2.2.0 instructions will answer without
+            # them, the provider will refuse the answer against this schema, and the whole LLM
+            # layer degrades fail-open to `filter_degraded` with the blocklist still standing
+            # (accepted, and warned about at pre-flight). That is the deliberate trade: a schema
+            # loose enough to accept the old answer is a schema that silently stops screening.
+            "language": {"type": "string"},
+            "audience_fit": {"type": "boolean"},
         },
-        "required": ["ordinal", "verdict", "brands_to_strip", "reason"],
+        "required": ["ordinal", "verdict", "brands_to_strip", "reason", "language",
+                     "audience_fit"],
         "additionalProperties": False,
     }
     return {
@@ -435,7 +503,22 @@ def _merge(verdicts: dict[int, Verdict], answers: Sequence[Mapping[str, Any]],
 
 def _apply(current: Verdict, row: Mapping[str, Any], topic: TrendItem,
            candidates: Sequence[str], cfg: Config) -> None:
-    """One model row onto one Verdict: guards first, then the stronger verdict wins."""
+    """One model row onto one Verdict: guards first, then the stronger verdict wins.
+
+    Two ENGINE-side skips ride on top of the model's own verdict since v2.2.0 (FR-294 amended).
+    The model reports what it saw — the source language and whether the topic is for our audience —
+    and this function decides what that means, because the decision is config-shaped (`run.languages`,
+    `niche.audience`) and a model must never be the thing that knows the policy:
+
+    - **off-language** — the topic's own strings are in a language this run does not write. The
+      copy is verbatim (§1.7), so a German topic's panels would ship as German pixels under an
+      English caption; there is no translation path and there must not be one.
+    - **audience mismatch** — the topic is a fit for nobody we write for. Cheaper to drop here than
+      to render six slides of it.
+
+    Both are `skip`, which is already the strongest verdict, so they simply win. Both fail OPEN on
+    a missing or unparseable field: the screen's job is to remove what it can prove is wrong.
+    """
     answer = str(row.get("verdict") or _KEEP).strip().lower()
     if answer not in _RANK:
         logger.warning("topic_filter: ordinal %d returned verdict %r — defaulting to keep",
@@ -449,10 +532,81 @@ def _apply(current: Verdict, row: Mapping[str, Any], topic: TrendItem,
         final = _KEEP
     current.verdict = final
     current.brands_to_strip = merged if final != _KEEP else []
+    current.skip_code = SKIP_PROMO if final == _SKIP else ""
     # The blocklist's own reason is preserved when the model's verdict did NOT stand: "strip"
     # explained by a keep's reasoning would tell the operator the opposite of what happened.
-    if (reason := str(row.get("reason") or "").strip()) and (stands or not current.reason):
-        current.reason = reason
+    said = str(row.get("reason") or "").strip()
+    if said and (stands or not current.reason):
+        current.reason = said
+    current.language = _language_code(row.get("language"))
+    current.audience_fit = _flag(row.get("audience_fit"), default=True)
+    targets = _target_languages(cfg)
+    if current.language and targets and current.language not in targets:
+        _force_skip(current, SKIP_LANGUAGE, topic,
+                    f"off-language: the source posts are {current.language} and this run writes "
+                    f"{'/'.join(sorted(targets))} verbatim (FR-294)")
+    elif not current.audience_fit:
+        _force_skip(current, SKIP_AUDIENCE, topic,
+                    "audience mismatch: the screen judged this topic to be for a different"
+                    " audience than the configured one" + (f" — {said}" if said else ""))
+
+
+def _force_skip(current: Verdict, code: str, topic: TrendItem, reason: str) -> None:
+    """Turn one verdict into an ENGINE-caused skip, logged with the topic it dropped.
+
+    The brand list goes with it: a skipped topic reaches no prompt, so a strip list on it is a
+    contract nobody will honour and a number the console would print beside a dropped row.
+    """
+    logger.info("topic_filter: skipping topic %r — %s", topic.name, reason)
+    current.verdict = _SKIP
+    current.skip_code = code
+    current.brands_to_strip = []
+    current.reason = reason
+
+
+def _target_languages(cfg: Config) -> set[str]:
+    """Every language this run may put on a creative — captions and on-image text alike.
+
+    Both `run.languages` and `run.onimage_text_language` count: a topic is usable when SOMETHING
+    the run writes is in its language, and the two maps are per platform, so the union is the honest
+    target set for a screen that runs once, before any topic is bound to a platform.
+    """
+    codes = {str(value).strip().lower() for value in cfg.run.languages.values()}
+    codes |= {str(value).strip().lower() for value in cfg.run.onimage_text_language.values()}
+    return {code for code in codes if code}
+
+
+def _language_code(value: Any) -> str:
+    """A model's language answer as a two-letter code, or `""` when it did not really answer.
+
+    `"English"`, `"en-US"` and `"EN"` are one code; `"unknown"` and `""` are no answer at all
+    (fail-open). Anything else falls back to its first two letters, which is enough to make it
+    differ from every target code — an unrecognized language IS off-language, and naming it
+    approximately in the operator's reason line beats dropping the distinction.
+    """
+    text = str(value or "").strip().lower()
+    if text in _LANGUAGE_UNKNOWN:
+        return ""
+    key = "".join(char for char in text if char.isalnum())
+    if code := _LANGUAGE_ALIASES.get(key):
+        return code
+    if key in _LANGUAGE_UNKNOWN:  # "n/a" survives the punctuation strip as "na"
+        return ""
+    return key[:2]
+
+
+def _flag(value: Any, *, default: bool) -> bool:
+    """A model's boolean, however it spelled it; `default` for anything unparseable (fail-open)."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return bool(value)
+    text = str(value or "").strip().lower()
+    if text in _TRUE_WORDS:
+        return True
+    if text in _FALSE_WORDS:
+        return False
+    return default
 
 
 def _guarded(brands: Sequence[str], topic: TrendItem, candidates: Sequence[str],
@@ -533,4 +687,5 @@ def _dedup(values: Sequence[str]) -> list[str]:
     return out
 
 
-__all__ = ["Verdict", "apply_blocklist", "collapse", "fuzzy_strip", "screen"]
+__all__ = ["SKIP_AUDIENCE", "SKIP_LANGUAGE", "SKIP_PROMO", "Verdict", "apply_blocklist", "collapse",
+           "fuzzy_strip", "screen"]

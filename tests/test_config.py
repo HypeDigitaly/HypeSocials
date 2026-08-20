@@ -69,13 +69,15 @@ def test_fr50_a_valid_file_loads_and_absent_keys_take_their_documented_defaults(
     tmp_path: Path,
 ) -> None:
     """FR-50: "applying documented defaults for any key absent from that file"."""
-    cfg = load(tmp_path, "run:\n  spend_cap_usd: 3.5\n  vision_check: true\n")
+    cfg = load(tmp_path, "run:\n  spend_cap_usd: 3.5\n  carousel_anchor: true\n")
 
     assert cfg.run.spend_cap_usd == 3.5
-    assert cfg.run.vision_check is True
+    assert cfg.run.carousel_anchor is True
     # untouched keys — the defaults 30 §2 documents
     assert cfg.run.trend_history_days == 30  # v2.1.0 (FR-307): was 7, now covers the fetch window
-    assert cfg.run.run_deadline_min == 45  # v2.1.3 (D48): was 25; must fit 600 s jobs + FR-317 resubmit
+    # v2.2.0 (D49): 25 -> 45 (D48: 600 s jobs + the FR-317 resubmit) -> 60, which additionally has
+    # to hold up to `run.gauntlet.rounds_max` re-render rounds after that worst case.
+    assert cfg.run.run_deadline_min == 60
     assert cfg.sources.active == ["virlo"]
     assert cfg.models.analysis == "anthropic/claude-sonnet-5"
     assert cfg.output.dir == "output/"
@@ -86,7 +88,7 @@ def test_fr50_defaults_applied_names_every_key_that_fell_back(tmp_path: Path) ->
     """"`defaults_applied` naming the keys that fell back" — the run log's honesty line."""
     cfg = load(tmp_path, "run:\n  spend_cap_usd: 3.5\n")
 
-    assert "run.vision_check" in cfg.defaults_applied
+    assert "run.gauntlet" in cfg.defaults_applied
     assert "sources" in cfg.defaults_applied  # the whole block was absent
     assert "run.spend_cap_usd" not in cfg.defaults_applied
     assert cfg.warnings == ()
@@ -206,8 +208,8 @@ def test_fr69_a_wrong_typed_scalar_names_the_key_the_value_and_the_expected_shap
 
 
 def test_fr69_a_wrong_typed_boolean_names_true_or_false(tmp_path: Path) -> None:
-    line = refusal(tmp_path, "run:\n  vision_check: maybe\n")
-    assert "run.vision_check" in line and "expected true or false" in line
+    line = refusal(tmp_path, "run:\n  carousel_anchor: maybe\n")
+    assert "run.carousel_anchor" in line and "expected true or false" in line
 
 
 def test_fr69_a_value_outside_a_closed_vocabulary_lists_the_options(tmp_path: Path) -> None:
@@ -290,11 +292,11 @@ def test_d30_a_dollar_brace_placeholder_is_a_hard_error_at_any_depth(tmp_path: P
 
 def test_fr51_an_unknown_key_warns_and_is_ignored_rather_than_refusing(tmp_path: Path) -> None:
     """A typo must not cost the whole run: unknown keys are warnings, malformed values are not."""
-    cfg = load(tmp_path, "run:\n  spend_cap_usd: 2\n  vision_chek: true\nnonsense: 1\n")
+    cfg = load(tmp_path, "run:\n  spend_cap_usd: 2\n  carousel_anchr: true\nnonsense: 1\n")
 
-    assert any("run.vision_chek" in w for w in cfg.warnings)
+    assert any("run.carousel_anchr" in w for w in cfg.warnings)
     assert any("nonsense" in w for w in cfg.warnings)
-    assert cfg.run.vision_check is True  # the real key kept its default (True since 2026-08-13)
+    assert cfg.run.carousel_anchor is True  # the real key kept its default
 
 
 def test_nfr111_a_token_cap_under_its_floor_is_clamped_up_with_a_warning(tmp_path: Path) -> None:
@@ -308,6 +310,27 @@ def test_nfr111_a_token_cap_under_its_floor_is_clamped_up_with_a_warning(tmp_pat
         tmp_path,
         "models:\n  max_tokens: { analysis: 0 }\n  max_tokens_floor: { analysis: 0 }\n")
     assert "max_tokens_floor.analysis" in line
+
+
+def test_f5_the_critic_role_bounds_its_reasoning_at_low_by_default(tmp_path: Path) -> None:
+    """Session 5.5/F5: an absent key means the critic thinks at `low`, not unbidden at full effort.
+
+    Sending no `reasoning` field is not a saving — Sonnet-5 then thinks at its own default and
+    bills every token inside `completion_tokens`, which is what cost the Session 5 acceptance run
+    $1.30 of critic spend the pre-flight never quoted. So the bound lives in code and applies to
+    configs written before the key existed (NFR-19); the file may still raise it, and a value the
+    provider would reject is refused at load rather than at spend time (FR-69).
+    """
+    assert Config().models.critic_reasoning_effort == "low"
+    assert load(tmp_path, "run: {}\n").models.critic_reasoning_effort == "low"
+    assert load(tmp_path,
+                "models:\n  critic_reasoning_effort: medium\n"
+                ).models.critic_reasoning_effort == "medium"
+    # ... and the COPY role's own knob is untouched by it (30 §2: two roles, two rows).
+    assert Config().models.reasoning_effort == "low"
+
+    line = refusal(tmp_path, "models:\n  critic_reasoning_effort: maximum\n")
+    assert "models.critic_reasoning_effort" in line and "low | medium | high" in line
 
 
 def test_fr131_reels_requested_without_a_price_warn_rather_than_fail_the_load(
@@ -343,13 +366,16 @@ def test_a_run_deadline_under_the_video_job_timeout_warns_on_a_reel_capable_conf
     assert Config().models.video_job_timeout_s == 1800
 
     priced = "models:\n  price_per_unit:\n    reel_second: { '720p': 0.95 }\n"
-    # v2.1.3 (D48) raised the deadline default to 45 min (2700 s > 1800 s), so the tight
-    # pairing must now be written explicitly to reproduce the warned shape.
+    # v2.1.3 (D48) raised the deadline default to 45 min (2700 s > 1800 s) and v2.2.0/D49 to 60,
+    # so the tight pairing must now be written explicitly to reproduce the warned shape.
     warned = load(tmp_path, "run:\n  run_deadline_min: 25\n" + priced)  # 1500 s < 1800 s
     assert any("run_deadline_min" in w and "video_job_timeout_s" in w for w in warned.warnings)
 
-    quiet = load(tmp_path, "run:\n  run_deadline_min: 45\n" + priced)
-    assert not any("run_deadline_min" in w for w in quiet.warnings)
+    # The quiet case is the SHIPPED deadline: at 45 the video pairing is already quiet, but the
+    # carousel-throughput advisory (which names `run_deadline_min` too) fires, so the assertion
+    # below is scoped to the pairing this test is about rather than to the key's name alone.
+    quiet = load(tmp_path, "run:\n  run_deadline_min: 60\n" + priced)
+    assert not any("video_job_timeout_s" in w for w in quiet.warnings)
     # Reels unreachable (default.yaml's shape): the VIDEO pairing stays silent. (A 25-min
     # deadline under 600 s image jobs now earns the separate carousel-throughput advisory,
     # which is that function's own concern — asserted in its own tests.)
@@ -543,10 +569,11 @@ def test_yaml11_giveback_applies_to_notion_influence_too(tmp_path: Path) -> None
 
 def test_yaml11_giveback_leaves_a_genuine_boolean_key_alone(tmp_path: Path) -> None:
     """"Applied only when the enum offers the matching word, so a genuine boolean key is
-    untouched" — `vision_check: off` must stay the boolean False, not become the string "off"."""
-    cfg = load(tmp_path, "run:\n  vision_check: off\n  carousel_anchor: no\n  reel_audio: on\n")
+    untouched" — `craft_blocks: off` must stay the boolean False, not become the string "off"."""
+    cfg = load(tmp_path, "run:\n  gauntlet:\n    craft_blocks: off\n"
+                         "  carousel_anchor: no\n  reel_audio: on\n")
 
-    assert cfg.run.vision_check is False
+    assert cfg.run.gauntlet.craft_blocks is False
     assert cfg.run.carousel_anchor is False
     assert cfg.run.reel_audio is True
 
@@ -766,3 +793,127 @@ def _timed(call) -> float:
     started = time.perf_counter()
     call()
     return time.perf_counter() - started
+
+
+# ---------------------------------------- v2.2.0/D49: the `run.vision_check` migration
+
+
+def test_d49_a_config_still_naming_vision_check_is_migrated_onto_the_gauntlet(
+    tmp_path: Path,
+) -> None:
+    """The key is REMOVED, not deprecated — the FR-105 single-shot check it switched no longer
+    exists in any form. Dropping it silently would do two wrong things at once: warn "unknown
+    config key", and quietly turn a `vision_check: false` run into a GAUNTLETED one, which spends
+    money the file explicitly said not to spend. So the boolean is carried across, once, with a
+    sentence that says where it went.
+    """
+    cfg = load(tmp_path, "run:\n  vision_check: false\n")
+
+    assert cfg.run.gauntlet.enabled is False, "the boolean means the same thing it meant"
+    assert not hasattr(cfg.run, "vision_check"), "and the key itself is gone from the schema"
+    assert any("run.vision_check is gone" in w and "run.gauntlet.enabled" in w
+               for w in cfg.warnings)
+    assert not any("unknown config key" in w for w in cfg.warnings), \
+        "a migrated key is not a typo, and must not be reported as one"
+
+
+def test_d49_an_explicit_gauntlet_block_wins_over_the_legacy_key(tmp_path: Path) -> None:
+    """A file naming BOTH has already been migrated and the old key is a leftover, so the new key
+    is authoritative — and the warning says so rather than silently preferring either one."""
+    cfg = load(tmp_path, "run:\n  vision_check: false\n  gauntlet:\n    enabled: true\n")
+
+    assert cfg.run.gauntlet.enabled is True
+    assert any("delete the old key" in w for w in cfg.warnings)
+
+
+# ------------------------------------------------ FR-333 / D54: the carousel copy-mode key + flag
+
+
+def test_fr333_carousel_copy_mode_defaults_to_verbatim_and_parses_from_the_file(
+    tmp_path: Path,
+) -> None:
+    """The engine-wide default is `verbatim` and it is a DEFAULT, not a fallback: a file that
+    never mentions the key gets the pre-D54 behaviour byte for byte, because D50 ("reflow, never
+    shorten") still governs verbatim mode and compress is an operator opt-in.
+
+    Both spellings are real values of a text enum — there is no truthy/falsy word among them, so
+    the YAML 1.1 trap that catches `notion_influence: off` cannot reach this key at all.
+    """
+    assert Config().run.carousel_copy_mode == "verbatim", "the dataclass default"
+    assert load(tmp_path, "run: {}\n").run.carousel_copy_mode == "verbatim", "an absent key"
+
+    for word in ("verbatim", "compress"):
+        cfg = load(tmp_path, f"run:\n  carousel_copy_mode: {word}\n")
+        assert cfg.run.carousel_copy_mode == word
+        assert isinstance(cfg.run.carousel_copy_mode, str)
+
+
+def test_fr333_a_bad_copy_mode_refuses_the_load_in_one_line_naming_both_words(
+    tmp_path: Path,
+) -> None:
+    """A `Literal` enum validated at LOAD, exactly like `notion_influence` (FR-51/69): one
+    operator-facing line, the key named, both accepted words printed, and the run never starts —
+    so a typo costs exit 2 and $0 instead of a plan built on a mode nobody meant.
+
+    `compressed` and `short` are the two typos this key invites; `true` is the third, because an
+    operator reading "toggle" in the release note will try to switch it on like a boolean.
+    """
+    for spelling in ("compressed", "short", "true"):
+        line = refusal(tmp_path, f"run:\n  carousel_copy_mode: {spelling}\n")
+        assert "run.carousel_copy_mode" in line
+        assert "verbatim | compress" in line, "the refusal has to name what IS accepted"
+
+
+def test_fr333_the_copy_mode_flag_overrides_the_file_for_one_run_and_says_so(
+    tmp_path: Path,
+) -> None:
+    """`--copy-mode` is the per-run twin of the key (FR-61: the flag wins, the file is never
+    rewritten), and the applied-note matters — the run header prints that list, and switching a
+    deck's whole copy contract from the command line is exactly the kind of change an operator
+    has to be able to find in `run.log` afterwards.
+    """
+    cfg = load(tmp_path, "run:\n  carousel_copy_mode: verbatim\n")
+
+    applied = cli.apply_overrides(cfg, cli.parse_args(["--copy-mode", "compress"]))
+
+    assert cfg.run.carousel_copy_mode == "compress", "flag over file (FR-61)"
+    assert "run.carousel_copy_mode=compress" in applied
+
+    # It overrides in BOTH directions: a config that pinned compress can be walked back for one
+    # run without editing the file, which is the shape of the W5 verification ladder.
+    pinned = load(tmp_path, "run:\n  carousel_copy_mode: compress\n")
+    assert "run.carousel_copy_mode=verbatim" in cli.apply_overrides(
+        pinned, cli.parse_args(["--copy-mode", "verbatim"]))
+    assert pinned.run.carousel_copy_mode == "verbatim"
+
+    # And without the flag the file's value stands, claimed as no override at all.
+    untouched = load(tmp_path, "run:\n  carousel_copy_mode: compress\n")
+    assert cli.apply_overrides(untouched, cli.parse_args([])) == []
+    assert untouched.run.carousel_copy_mode == "compress"
+    assert cli.parse_args([]).copy_mode is None, "not passed is not the same as `verbatim`"
+
+
+def test_fr333_the_copy_mode_flag_refuses_a_typo_at_the_flag_boundary(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The same vocabulary enforced at the flag as in the file, and enforced BEFORE any config is
+    loaded — argparse exits 2 with one line (FR-63/69), which is what makes a mistyped mode cost
+    $0 rather than a whole plan."""
+    with pytest.raises(SystemExit) as caught:
+        cli.parse_args(["--copy-mode", "compressed"])
+
+    assert caught.value.code == 2
+    assert "--copy-mode" in capsys.readouterr().err
+
+
+def test_fr333_the_three_shipped_brand_configs_pin_compress_and_default_yaml_does_not() -> None:
+    """D54's shipped posture, read off the files that actually ship.
+
+    The three brand configs are the operator's own runs and they opt IN; `default.yaml` is the
+    template a new config is copied from and stays on the engine-wide default, because a template
+    that silently compressed would make the opt-in invisible to whoever copies it next.
+    """
+    for name in ("hypedigitaly", "hypedigitaly-cs", "hypedigitaly-fresh"):
+        cfg = load_config(name, configs_dir=CONFIGS_DIR)
+        assert cfg.run.carousel_copy_mode == "compress", f"{name} should pin D54's compress mode"
+    assert load_config("default", configs_dir=CONFIGS_DIR).run.carousel_copy_mode == "verbatim"

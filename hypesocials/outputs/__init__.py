@@ -16,7 +16,10 @@ Callers import from `hypesocials.outputs` only, never from its modules (guidelin
 Append-only list: T2.5 adds the packager and gallery exports here; existing names do not move.
 
     AssetFolder     one asset folder + its meta.yaml lifecycle, pending -> terminal (FR-72–74,
-                    NFR-21); `finish()` / `skip()` / `update()` / `mark()` / `store_render()`
+                    NFR-21); `finish()` / `skip()` / `block()` / `update()` / `mark()` /
+                    `store_render()` / `write_gauntlet_report()`
+    BLOCKED_FILE / GAUNTLET_REPORT_FILE
+                    the two files a gate-refused creative leaves beside its artifacts (FR-325/328)
     create_run_folder   output/<run_id>/ (+ its shared refs/), made at launch (FR-70)
     save_reference  a brief's attached reference stored at refs/<brief_name>/image_1.png (FR-71
                     as amended by D46 — the style picture channel is excised, briefs only)
@@ -43,6 +46,8 @@ from hypesocials.outputs.state import (
 )
 from hypesocials.outputs.gallery import write_gallery
 from hypesocials.outputs.packager import (
+    BLOCKED_FILE,
+    GAUNTLET_REPORT_FILE,
     PUBLISH_ATTEMPTED_MARKER,
     PUBLISH_LIST,
     PUBLISHED_MARKER,
@@ -54,6 +59,7 @@ from hypesocials.outputs.packager import (
     close_downloads,
     create_run_folder,
     has_marker,
+    read_gauntlet_report,
     read_meta,
     save_reference,
     set_marker,
@@ -72,6 +78,8 @@ __all__ = [
     "set_latest",
     "used_posts",
     "AssetFolder",
+    "BLOCKED_FILE",
+    "GAUNTLET_REPORT_FILE",
     "PackagingError",
     "PUBLISHED_MARKER",
     "PUBLISH_ATTEMPTED_MARKER",
@@ -84,6 +92,7 @@ __all__ = [
     "close_downloads",
     "create_run_folder",
     "has_marker",
+    "read_gauntlet_report",
     "read_meta",
     "save_reference",
     "set_marker",

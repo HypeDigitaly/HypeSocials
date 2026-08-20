@@ -7,7 +7,9 @@ each creative wears, written down in words:
     errors, warnings = validate(registry, config)                 # pre-flight; any error = exit 2
     assign_styles(live, registry, config.branding.brand,          # after plan.assign()
                   enabled=config.styles.enabled,
-                  branding_enabled=config.branding.enabled)
+                  branding_enabled=config.branding.enabled,
+                  run_id=session.run_id,                          # v2.2.0 rotation seed
+                  rotation=config.styles.rotation)
     assign_branding(live, config.branding.brand_ratio,
                     enabled=config.branding.enabled)
     style = style_for(registry, entry.style_key)                  # at assembly
@@ -28,9 +30,19 @@ Invariants: the registry is resolved override-first through the FR-174 `prompts_
 **no built-in third tier** — a missing, unreadable or invalid registry is a `StyleRegistryError`
 and an FR-295 pre-flight exit 2, never a silent default (a built-in copy would be eight styles of
 invisible drift against the file the operator is editing). Registry order is FILE order and the
-rotation depends on it. Every assignment is a pure function of `entry.order` over the filtered
-pool — no cursor, no shared state — so a trimmed or dropped entry never reshuffles another entry's
-style, and a re-run of the same plan picks the same styles.
+rotation depends on it. Every assignment is a pure function of `entry.order` and the run's own
+rotation offset over the filtered pool — no cursor, no shared state — so a trimmed or dropped
+entry never reshuffles another entry's style, and re-assigning the same plan inside one run picks
+the same styles every time.
+
+**The rotation is SEEDED per run (v2.2.0).** `rotation_seed()` turns the run id into one offset
+that shifts where every scan STARTS, so two runs of the same config do not open with the same style
+and a daily batch stops publishing the registry in the same marching order. Within a run nothing
+about the old guarantees changes — same pool, same FILE order, same gap-proof pure function of
+`entry.order` — and `styles.rotation: fixed` (or any caller that passes no run id) pins the offset
+at 0, which is exactly the pre-v2.2.0 behaviour. The corollary an operator should know: a $0
+preview seeds off the PREVIEW's own id, so under `seeded` it forecasts the rotation's shape, not
+the paid run's key-by-key assignment; `fixed` restores that exact agreement.
 
 **The pool is filtered twice, never edited (FR-314/D-E, FR-318).** `brand_ok` drops what the active
 brand cannot wear (B3) plus — while `branding.enabled` is false — every `brand_slot` house-card
@@ -56,6 +68,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import math
+import zlib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -64,7 +77,7 @@ from typing import Any
 import yaml
 
 from .config import Config
-from .models import LayoutZone, MetaStyle, PlanEntry
+from .models import LayoutZone, ListMode, MetaStyle, PlanEntry
 from .util import read_text
 
 logger = logging.getLogger(__name__)
@@ -83,6 +96,14 @@ _MIN_USABLE_STYLES = 3
 # literal — §1.3's leak heuristic must match the word itself in an author's render_prompt, so the
 # excision grep records this one line and ignores it rather than obfuscating the string.
 _VARIANT_MARKERS = (" or ", "variant ", "either ")
+#: FR-304b (v2.2.0) — the frozen `list_mode:` shape (plan spec §4b). The first three are REQUIRED
+#: once the key is present at all: a list treatment with no `layout` prose has nothing to set the
+#: rows into, and a trigger pair that is not stated is a trigger pair that cannot be reviewed.
+_LIST_MODE_REQUIRED = ("reflow_over_chars", "max_rows", "layout")
+#: The two ways more rows may be LAID OUT. Neither loses a row, and no third value is accepted —
+#: this enum is the structural guarantee behind "a reflow trigger, never a ceiling" (D50): there is
+#: no spelling of `overflow` that drops, shortens or refuses text.
+_LIST_MODE_OVERFLOWS = ("reflow", "two_column")
 
 
 class StyleRegistryError(Exception):
@@ -193,6 +214,9 @@ def _style(item: Any, path: Path, index: int) -> MetaStyle:
         visual_pacing=str(item.get("visual_pacing") or "").strip(),
         per_format_guidance=_str_map(item.get("per_format_guidance")),
         exclusions=_strings(item.get("exclusions")),
+        # FR-304b: absent is legal and means "no list treatment"; present-but-malformed raises,
+        # because a half-parsed layout rule silently changes what a paid deck looks like.
+        list_mode=_list_mode(item.get("list_mode"), path, key),
         # No `reference_images`: the picture channel is withdrawn (D46/FR-18/FR-290). A stale
         # registry that still lists the key loads clean and the key is simply ignored — an
         # operator editing an old file gets a run, not a shape error over a dead field.
@@ -206,6 +230,83 @@ def _zones(value: Any) -> list[LayoutZone]:
                        text_treatment=str(item.get("text_treatment") or "").strip(),
                        role=str(item.get("role") or "").strip())
             for item in (value if isinstance(value, list) else []) if isinstance(item, Mapping)]
+
+
+def _list_mode(value: Any, path: Path, key: str) -> ListMode | None:
+    """`list_mode:` as a `ListMode` — the style's list treatment, or `None` when it declares none.
+
+    This is a SHAPE check and therefore raises rather than reporting through `validate()`, exactly
+    like a style block that is not a mapping: the value either becomes a `ListMode` or it cannot
+    become one at all, and both routes end at the same FR-295 pre-flight exit 2 with $0 spent
+    (`preflight._check_styles` catches `StyleRegistryError` and grades it as a refusal).
+
+    Refusing is the conservative answer here, not the strict one. `list_mode` is the only registry
+    field that changes how a MAPPED PANEL is set, and every failure mode of a half-read one is
+    silent: a typo'd `max_rows` would leave the trigger permanently off, an unknown `overflow` word
+    would leave the model to invent what "does not fit" means, and either way the operator finds
+    out from a paid deck rather than from a refusal. So the four keys are read strictly:
+
+    - `reflow_over_chars`, `max_rows`: required, whole numbers, `>= 0`. **`0` disables that
+      trigger** — the INVERTED sense of `max_onimage_chars`' "0 = no ceiling", because this is a
+      trigger and that is a ceiling (spec §4b says so out loud, and the `styles.yaml` authoring
+      block repeats it). `max_rows: 0` disabling the row trigger is the same reading: a threshold
+      that fires on "more than zero rows" would make every panel a list, which is not a trigger.
+    - `layout`: required, non-empty — the prose the render prompt executes. A list treatment with
+      nothing to set the rows INTO is a declaration with no effect.
+    - `overflow`: optional, defaulting to `ListMode`'s own `reflow`; one of `_LIST_MODE_OVERFLOWS`
+      when present. Both values lay MORE ROWS OUT; neither drops one (D50).
+
+    Unknown keys are ignored with a debug line rather than refused — the same tolerance the
+    withdrawn `reference_images` key gets in `_style` above, so a registry carrying a field a later
+    version adds still runs today.
+    """
+    if value is None:
+        return None
+    where = f"{path}: style {key!r} `list_mode`"
+    if not isinstance(value, Mapping):
+        raise StyleRegistryError(
+            f"{where} is not a mapping — it is a block of "
+            f"{', '.join(_LIST_MODE_REQUIRED)} (+ optional overflow) key/value pairs, or it is "
+            "absent entirely, which is legal and means this style has no list treatment "
+            "(FR-304b/295)")
+    for name in _LIST_MODE_REQUIRED:
+        if value.get(name) is None:
+            raise StyleRegistryError(
+                f"{where} has no `{name}` — a list treatment states both triggers and the layout "
+                f"it sets rows into; required keys are {', '.join(_LIST_MODE_REQUIRED)} "
+                "(FR-304b/295)")
+    layout = str(value.get("layout") or "").strip()
+    if not layout:
+        raise StyleRegistryError(
+            f"{where}.layout is empty — it is the prose the render prompt executes when a panel "
+            "trips a trigger, so an empty one is a list treatment that treats nothing (FR-304b)")
+    overflow = str(value.get("overflow") or "reflow").strip().lower()
+    if overflow not in _LIST_MODE_OVERFLOWS:
+        raise StyleRegistryError(
+            f"{where}.overflow is {overflow!r} — allowed: "
+            f"{', '.join(_LIST_MODE_OVERFLOWS)}. Both lay more rows out; there is deliberately no "
+            "value that drops, shortens or refuses a row (FR-304b/D50)")
+    for name in value:
+        if str(name) not in (*_LIST_MODE_REQUIRED, "overflow"):
+            logger.debug("styles: %s.%s is not a list_mode key, ignored", where, name)
+    return ListMode(reflow_over_chars=_list_int(value, "reflow_over_chars", where),
+                    max_rows=_list_int(value, "max_rows", where),
+                    layout=layout, overflow=overflow)
+
+
+def _list_int(value: Mapping[Any, Any], name: str, where: str) -> int:
+    """One `list_mode` threshold: a whole number `>= 0`, or an FR-295 refusal naming the key.
+
+    `bool` is rejected before `int` because `True` is an `int` in Python and `max_rows: yes` is a
+    YAML shape an author can genuinely write — it would arrive as the threshold `1`.
+    """
+    raw = value.get(name)
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
+        raise StyleRegistryError(
+            f"{where}.{name} is {raw!r} — it must be a whole number of "
+            f"{'characters' if name == 'reflow_over_chars' else 'rows'}, 0 or more, where 0 turns "
+            "this trigger off (FR-304b)")
+    return raw
 
 
 def _strings(value: Any) -> list[str]:
@@ -305,6 +406,30 @@ def usable_styles(registry: StyleRegistry, brand: str, enabled: Sequence[str] = 
     return [style for style in registry.styles
             if brand_ok(style, brand, branding_enabled=branding_enabled)
             and selected(style, enabled)]
+
+
+def is_list_panel(style: MetaStyle | None, panel_text: str) -> bool:
+    """Does THIS panel's text trip THIS style's list trigger (FR-304b)?
+
+    The registry's vocabulary, beside `brand_ok` and `fmt_affine`, for the same reason: the reading
+    of a `list_mode` threshold belongs to the module that parses it, so `prompts_engine` — the one
+    caller — asks a question instead of re-deriving an answer.
+
+    True means "this panel is a LIST and must be SET as one". It never means "this panel is too
+    long": nothing downstream of this predicate may drop, shorten or refuse a word, and the only
+    thing a True answer changes is the layout prose the slide template receives in its own
+    `{{list_treatment}}` slot (Session 5.5/F1-A; formerly a gated append to `{{layout_zones}}`). That is also
+    why `copywrite._panel_verdict` never calls it (D50) — no drop path gains a style input.
+
+    Either threshold fires independently, and `0` turns its own trigger off (`_list_mode`). A style
+    with no `list_mode`, or an empty panel, is never a list.
+    """
+    mode = style.list_mode if style is not None else None
+    if mode is None or not (body := panel_text.strip()):
+        return False
+    if 0 < mode.reflow_over_chars < len(body):
+        return True
+    return 0 < mode.max_rows < len(body.splitlines())
 
 
 def fmt_affine(style: MetaStyle, creative_format: str) -> bool:
@@ -466,6 +591,12 @@ def _style_warnings(style: MetaStyle, where: str) -> list[str]:
     if (words := len(style.render_prompt.split())) > _MAX_RENDER_WORDS:
         out.append(f"{where}: `render_prompt` is {words} words — over the {_MAX_RENDER_WORDS}-word "
                    "ceiling the tail competes with the TEXT block for the model's attention")
+    mode = style.list_mode
+    if mode is not None and not mode.reflow_over_chars and not mode.max_rows:
+        out.append(f"{where}: `list_mode` sets both triggers to 0, so no panel can ever be a list "
+                   "for this style and its `layout` prose will never reach a render prompt — set "
+                   "`reflow_over_chars` or `max_rows` to a real threshold, or drop the block "
+                   "(FR-304b)")
     lowered = style.render_prompt.lower()
     if leaks := [marker.strip() for marker in _VARIANT_MARKERS if marker in lowered]:
         out.append(f"{where}: `render_prompt` still offers a choice ({', '.join(leaks)}) — the "
@@ -480,7 +611,8 @@ def _style_warnings(style: MetaStyle, where: str) -> list[str]:
 
 
 def assign_styles(entries: Sequence[PlanEntry], registry: StyleRegistry, brand: str,
-                  enabled: Sequence[str] = (), *, branding_enabled: bool = True) -> None:
+                  enabled: Sequence[str] = (), *, branding_enabled: bool = True,
+                  run_id: str = "", rotation: str = "seeded") -> None:
     """Set `entry.style_key` on every entry, by stateless order-indexed scan over the pool.
 
     There is deliberately NO shared cursor: each entry's pick is a pure function of its own
@@ -501,6 +633,11 @@ def assign_styles(entries: Sequence[PlanEntry], registry: StyleRegistry, brand: 
         branding_enabled: `config.branding.enabled`, FR-318's master switch. False drops the
             `brand_slot` house cards from the pool, for the same reason and with the same
             determinism as the two filters above it.
+        run_id: this run's id (`session.run_id`), the seed material for the v2.2.0 rotation OFFSET.
+            Empty — the default every caller that has no run keeps — is offset 0, i.e. exactly the
+            pre-v2.2.0 rotation.
+        rotation: `config.styles.rotation`. `"seeded"` (the default) offsets the whole rotation by
+            a stable hash of `run_id`; `"fixed"` pins the offset at 0.
 
     Raises:
         StyleRegistryError: the filters left an empty pool. Unreachable in a live run —
@@ -516,19 +653,54 @@ def assign_styles(entries: Sequence[PlanEntry], registry: StyleRegistry, brand: 
             f"{'' if branding_enabled else ' with branding.enabled false (FR-318)'}"
             " — assignment has nothing to draw on (FR-291/FR-314; "
             "pre-flight should have refused this run, FR-295)")
+    seed = rotation_seed(run_id, rotation)
     for entry in sorted(entries, key=lambda item: item.order):
-        entry.style_key = _scan(pool, entry.order, entry.creative_format, entry.asset_id).key
+        entry.style_key = _scan(pool, entry.order, entry.creative_format, entry.asset_id,
+                                seed=seed).key
 
 
-def _scan(pool: Sequence[MetaStyle], order: int, creative_format: str, asset_id: str) -> MetaStyle:
-    """The order-indexed scan itself: start at `order`, walk the pool once, take the first style
-    affine to this format. An exhausted scan keeps the LAST candidate rather than leaving the entry
-    style-less — defensive only, since `validate()` refuses a run whose requested format has no
-    affine style at all.
+def rotation_seed(run_id: str, rotation: str = "seeded") -> int:
+    """The rotation's per-run OFFSET into the pool — a pure function of the run id (v2.2.0).
+
+    The pre-v2.2.0 pick was a pure function of `entry.order` alone, which made it a pure function
+    of NOTHING ELSE: every run of the same config opened with the same style, the second creative
+    always wore the second style, and a daily batch published the registry in the same marching
+    order forever. The audit read that as the registry being too small; it was the rotation being
+    too fixed. Offsetting the whole rotation by the run id keeps every determinism property that
+    matters — one run's assignment is still reproducible, still gap-proof, still a pure function of
+    `entry.order` WITHIN the run — while moving where the run starts.
+
+    `zlib.crc32` over the id's UTF-8 bytes, deliberately, and never the builtin `hash()`: that one
+    is salted per process for `str`, so the same run id would seed differently in the run that
+    assigned the styles and in anything that later re-derived them (a replay, a test, a second
+    process reading `meta.yaml`). A checksum is not a good hash and does not need to be — the id
+    already varies per second (`util.new_run_id`), and all this has to do is scatter.
+
+    `rotation="fixed"` and an empty `run_id` both return 0, which IS the pre-v2.2.0 rotation: the
+    escape hatch for an operator who wants the registry walked in file order, and the reason every
+    caller with no run of its own needs no branch.
     """
-    cand = pool[order % len(pool)]
+    if rotation != "seeded" or not (seed_text := run_id.strip()):
+        return 0
+    return zlib.crc32(seed_text.encode("utf-8"))
+
+
+def _scan(pool: Sequence[MetaStyle], order: int, creative_format: str, asset_id: str, *,
+          seed: int = 0) -> MetaStyle:
+    """The order-indexed scan itself: start at `order + seed`, walk the pool once, take the first
+    style affine to this format. An exhausted scan keeps the LAST candidate rather than leaving the
+    entry style-less — defensive only, since `validate()` refuses a run whose requested format has
+    no affine style at all.
+
+    `seed` shifts the START of every scan by the same amount (`rotation_seed`), so it rotates the
+    whole assignment rather than shuffling it: the pool keeps FILE order, consecutive orders still
+    land on consecutive styles, and a gapped order still picks what that order would have picked in
+    a dense plan.
+    """
+    start = order + seed
+    cand = pool[start % len(pool)]
     for step in range(len(pool)):
-        cand = pool[(order + step) % len(pool)]
+        cand = pool[(start + step) % len(pool)]
         if fmt_affine(cand, creative_format):
             return cand
     logger.debug("styles: no %s-affine style for %s, falling back to %r",
@@ -581,5 +753,5 @@ def style_for(reg: StyleRegistry, key: str) -> MetaStyle:
 
 
 __all__ = ["StyleRegistry", "StyleRegistryError", "assign_branding", "assign_styles",
-           "brand_ok", "fmt_affine", "load_registry", "selected", "style_for", "usable_styles",
-           "validate"]
+           "brand_ok", "fmt_affine", "is_list_panel", "load_registry", "rotation_seed", "selected",
+           "style_for", "usable_styles", "validate"]

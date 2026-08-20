@@ -58,6 +58,7 @@ from urllib.parse import quote
 
 from hypesocials.models import DegradationTag
 from hypesocials.outputs.packager import (
+    BLOCKED_FILE,
     PUBLISH_LIST,
     REFS_DIR,
     SELECTED_MARKER,
@@ -87,6 +88,13 @@ _TRUNCATED = DegradationTag.PANELS_TRUNCATED.value
 #: headline receipt quotes; the rest are listed after it. Slot names are `CopySet` field names,
 #: set by `copywrite` when it resolves a ref to bytes.
 _RECEIPT_SLOTS = ("headline", "overlay_text", "slide_1", "subline", "caption")
+
+#: FR-73's `copy_mode` value that means "these slides were COMPRESSED, not quoted" (D54/FR-331).
+#: Read as a string because that is what `meta.yaml` carries, and compared rather than imported
+#: from `copywrite` for the same reason every other value here is: this module reads a document
+#: off disk — including documents written by older versions of this engine — and must never gain
+#: an import edge to the module that produced it.
+_COMPRESS_MODE = "compress"
 
 
 class _Log(Protocol):
@@ -182,9 +190,16 @@ def _card_html(folder: Path, meta: _Meta) -> str:
     root and derivable from the asset folder's own name, because the last thing that needed the
     run itself — the run-level style-reference store — died with the style channel (D46/F3).
     """
-    failed = meta.get("status") != "success"
+    # FR-325 (v2.2.0, D49): BLOCKED is its own card, not a failed one. A failed creative has
+    # nothing to show; a blocked one is COMPLETE — every slide rendered, every dollar spent — and is
+    # being withheld because the critic panel found a standing defect. Drawing it dashed-and-faded
+    # like a failure would tell the operator the render did not happen, which is the one thing that
+    # is not true about it, and it is precisely the card they most need to look at.
+    blocked = meta.get("status") == "blocked"
+    failed = not blocked and meta.get("status") != "success"
     rows = _panel_rows(meta)  # FR-309's routing signal: non-empty ⇒ this deck came from a deck
-    parts = [f'<article class="card{" failed" if failed else ""}">',
+    parts = [f'<article class="card{" failed" if failed else ""}'
+             f'{" blocked" if blocked else ""}">',
              f'<h2>{html.escape(folder.name)}</h2>',
              f'<div class="badges">{_badges(folder, meta)}</div>']
     parts.extend(_deck_html(folder, meta, rows) if rows else _single_html(folder, meta))
@@ -194,8 +209,12 @@ def _card_html(folder: Path, meta: _Meta) -> str:
     source_hook = str(meta.get("source_hook") or "").strip()
     if source_hook:
         parts.append(f'<p class="hook">Source hook: “{html.escape(source_hook)}”</p>')
+    if blocked_text := _text(folder / BLOCKED_FILE):
+        # The whole plain-language paragraph, not a one-liner: it is the only place that says the
+        # artifacts were kept, that the source post was not burnt, and where to read the defects.
+        parts.append(f'<pre class="blocked">{html.escape(blocked_text)}</pre>')
     skip = _text(folder / SKIP_REASON_FILE)
-    if skip:
+    if skip and not blocked:  # a blocked card already carries the fuller explanation above
         parts.append(f'<p class="skip">Skipped: {html.escape(skip)}</p>')
     caption = _text(folder / "caption.txt")
     if caption:
@@ -266,6 +285,13 @@ def _provenance_html(meta: _Meta) -> str:
     optional: a post the run bound but could no longer resolve carries its id alone, and printing
     the id alone is the honest rendering of that. The permalink is a LINK, never an embed — FR-75
     bans loading a remote byte, not naming where the deck lives.
+
+    On a COMPRESSED deck (FR-309 as amended v2.3.0, D54) the header gains one more line, and it is
+    the first thing an operator needs to know about this card: the words on our slides are not this
+    post's words. The measure is the LONGEST `source_text_original` on the map — the biggest panel
+    the copy model had to write down — because that is the number that says how far the compression
+    had to travel, and an average would hide the 1,048-character panel that is the reason the mode
+    exists.
     """
     post = meta.get("source_post")
     if not isinstance(post, dict) or not post:
@@ -283,11 +309,43 @@ def _provenance_html(meta: _Meta) -> str:
     if url := str(post.get("url") or "").strip():
         parts.append(f'<p class="src"><a href="{html.escape(url, quote=True)}">'
                      "the original post</a></p>")
+    if longest := _compressed_from(meta):
+        parts.append(f'<p class="prov">Copy: compressed from {longest} chars — our slides are '
+                     "this deck's panels compressed to the style's budget, never quoted (D54)</p>")
     if caption := " ".join(str(post.get("caption") or "").split()):
         # The creator's OWN caption, in its own language. Long by nature, so it is clamped by CSS
         # (scrollable, not cut): a truncated caption would look like a quote we shortened.
         parts.append(f'<p class="ocaption">Original caption: “{html.escape(caption)}”</p>')
     return f'<div class="head">{"".join(parts)}</div>' if parts else ""
+
+
+def _compressed_from(meta: _Meta) -> int:
+    """The LONGEST `source_text_original` on a compressed deck's map, else 0 (FR-309, v2.3.0).
+
+    Zero on every verbatim deck, on every pre-D54 `meta.yaml` (no `copy_mode` key at all), and on a
+    compressed deck whose rows somehow carry no original text — three different documents that all
+    mean "there is no compression to label here", and all three must render exactly as they did
+    before this function existed. `_row_original` does the per-row reading, so the header measure
+    and the per-tile measure can never disagree about what counts as an original.
+    """
+    if str(meta.get("copy_mode") or "").strip() != _COMPRESS_MODE:
+        return 0
+    return max((_row_original(row) for row in _panel_rows(meta)), default=0)
+
+
+def _row_original(row: dict[str, Any]) -> int:
+    """How many characters of source panel THIS row's shipped text was compressed from, else 0.
+
+    Both conditions are required and neither is redundant. `compressed` is the row's own claim (a
+    verbatim row on a compressed deck's map is not a shape this engine writes, but a reader that
+    trusted the deck-level mode would mislabel one if it ever appeared), and a non-empty original
+    is what makes the number meaningful — a dropped panel has an empty `source_text_original` on
+    some paths, and "compressed from 0 chars" is a sentence nobody should ever read. Tolerant by
+    contract (NFR-22): a row with no `compressed` key is a pre-D54 row and answers 0.
+    """
+    if not row.get("compressed"):
+        return 0
+    return len(str(row.get("source_text_original") or ""))
 
 
 def _panels_html(folder: Path, meta: _Meta, rows: list[dict[str, Any]]) -> str:
@@ -314,9 +372,23 @@ def _panels_html(folder: Path, meta: _Meta, rows: list[dict[str, Any]]) -> str:
 
 
 def _source_side(row: dict[str, Any]) -> str:
-    """One SOURCE panel: its picture (local copy), its extracted words, its visual brief."""
+    """One SOURCE panel: its picture (local copy), its extracted words, its visual brief.
+
+    The chip above the picture carries whichever provenance this row HAS. On a verbatim row that is
+    the ref label the words were quoted under (`source · P1.panel.3`); on a D54-compressed row
+    there is no label to name — FR-302 as amended gives compressed slides none — so it carries the
+    compression instead (`source · compressed from 1048 chars`, FR-309 as amended v2.3.0). One
+    chip, one slot, no new CSS: the label was always "how did this row's text come to be", and
+    compression is a second answer to that question rather than a second question.
+
+    `source_text` stays what it has always been — the string that SHIPPED — so the tile still shows
+    the words that are burned into our slide beside the picture they came from. Under compression
+    those are the compressed words, which is exactly what the chip has just said.
+    """
     src = _relative(row.get("source_image"))
     label = str(row.get("ref_label") or "").strip()
+    if compressed_from := _row_original(row):
+        label = f"compressed from {compressed_from} chars"
     text = " ".join(str(row.get("source_text") or "").split())
     brief = " ".join(str(row.get("visual_brief") or "").split())
     parts = [f'<span class="tag">source{f" · {html.escape(label)}" if label else ""}</span>']
@@ -405,11 +477,22 @@ def _receipt_html(meta: _Meta) -> list[str]:
     card can be traced straight to the post roster in run.log. Silent when nothing was quoted
     (an override brief, or a copy degrade that shipped our own words): an empty receipt is the
     honest answer, and the `copy_degraded` badge is already saying why.
+
+    **A COMPRESSED deck is answered first and separately (D54/FR-302 as amended).** It reaches here
+    with a bound post id and an EMPTY `copy_source_refs`, which is precisely the shape the "nothing
+    was quoted" branch below was built for — and that branch would print "Quoted post: <id>" over a
+    deck that quoted nothing from it. The claim on this card is the post the words were compressed
+    FROM, and the receipt for which words is the panel map, one row per slide, further down the
+    card. Checked before the refs branch rather than inside it so the mode can never fall through
+    to a "Quotes … verbatim" line either.
     """
     refs = meta.get("copy_source_refs")
     refs = {str(slot): str(label) for slot, label in refs.items()
             if str(label).strip()} if isinstance(refs, dict) else {}
     post_id = str(meta.get("copy_source_post_id") or "").strip()
+    if str(meta.get("copy_mode") or "").strip() == _COMPRESS_MODE:
+        return [f'<p class="prov">Compressed from post: {html.escape(post_id)} — see the panel '
+                "map below for what each slide was compressed from</p>"] if post_id else []
     if not refs:
         return [f'<p class="prov">Quoted post: {html.escape(post_id)}</p>'] if post_id else []
     order = [slot for slot in _RECEIPT_SLOTS if slot in refs]
@@ -452,8 +535,16 @@ def _badges(folder: Path, meta: _Meta) -> str:
     if meta.get("brief_name"):
         labels.append(f"brief: {meta['brief_name']}")
     labels.append(f"status: {meta.get('status', 'pending')}")
+    # FR-328: the gate's own verdict, from `meta.yaml.gauntlet` — the receipt, not the enum. It is
+    # a WARN badge when it blocked, because that is the one badge on this page that means "do not
+    # publish this", and an ordinary badge otherwise ("pass in 2 rounds" is information, not alarm).
+    gate = meta.get("gauntlet") if isinstance(meta.get("gauntlet"), dict) else {}
+    if result := str(gate.get("result") or ""):
+        rounds = len(gate.get("rounds") or ())
+        labels.append(f"gauntlet: {result}" + (f" ({rounds} round(s))" if rounds > 1 else "")
+                      + (" · degraded" if gate.get("degraded_gate") else ""))
     vision = str(meta.get("vision_check_result") or "")
-    if vision and vision != "not_checked":
+    if vision and vision != "not_checked" and not result:
         labels.append(f"vision: {vision}")
     if has_marker(folder, SELECTED_MARKER):
         labels.append("SELECTED")
@@ -578,6 +669,10 @@ code {{ background:var(--card); border:1px solid var(--line); border-radius:4px;
 .card {{ flex:1 1 380px; max-width:640px; background:var(--card); border:1px solid var(--line);
   border-radius:10px; padding:14px; }}
 .card.failed {{ border-style:dashed; opacity:.85; }}
+.card.blocked {{ border:2px solid #b3261e; }}
+.card.blocked h2::after {{ content:" — BLOCKED, not published"; color:#b3261e; font-size:.7em; }}
+.blocked {{ white-space:pre-wrap; background:#fff4f3; border-left:3px solid #b3261e;
+  padding:.6rem .8rem; font-size:.85em; }}
 .badges {{ display:flex; flex-wrap:wrap; gap:6px; margin-bottom:10px; }}
 .badge {{ font-size:11px; border:1px solid var(--line); border-radius:999px; padding:2px 8px;
   color:var(--mut); }}

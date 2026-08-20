@@ -23,12 +23,13 @@ Invariants enforced here, once:
   failed is **not re-bought** (operator decision 2026-08-10): a heuristic message match may not
   order a second ~$4.75 render, so that reel ends as an honest render failure keeping every paid
   artifact. This is the one place the code is deliberately stricter than 10 §10's ":422" row.
-- **The seed frame is checked BEFORE the clip is submitted (FR-105).** A re-render has to replace
-  the frame the video is built from, not arrive after the clip is paid for. A successful re-render
-  is checked once more — the estimator's `vision_retry_allowance` prices that pair, "render +
-  re-check" — so FR-27's `retried_passed` is genuinely reachable; a declined or failed re-render
-  is `retried_failed` and is never re-checked. The finished CLIP is never checked at all: frame
-  extraction would mean ffmpeg, which this project does not carry (D10).
+- **The seed frame faces the GAUNTLET before the clip is submitted (D49, FR-322–330).** A fix
+  re-render has to replace the frame the video is built from, not arrive after the clip is paid
+  for, so the gate runs here — `gauntlet.run_single` on the Kie URL, `run.gauntlet.rounds_max_image`
+  rounds, the caller's `RerenderFn` closure owning every dollar. A BLOCKED seed frame stops the
+  chain: the clip is never ordered, because animating a frame carrying a competitor's mark or a
+  creator's handle would spend ~$1.60 multiplying the defect. The finished CLIP is never judged at
+  all: frame extraction would mean ffmpeg, which this project does not carry (D10, spec §7).
 - **A content-security audit failure is not a moderation refusal (FR-141, v1.6.6).** Its remedy is
   silencing the clip, never stripping references — one retry with `generate_audio: false` plus the
   explicit silent-clip clause, same references, the failed attempt billed $0 (RESULTS.md §C).
@@ -40,9 +41,10 @@ Invariants enforced here, once:
 - **9:16 always.** A reel's seed frame inherits the reel's ratio, never the platform's image ratio
   (FR-21), and the clip passes 9:16 explicitly — the provider's `adaptive` is never used.
 
-Do not: call `render.run`, price anything, touch `env.budget` / `env.ledger`, vision-check the
-finished clip, attach a video reference, or re-upload the Kie-hosted seed frame (D18: it is a URL
-already, so the chain has no upload step and no local file handling).
+Do not: call `render.run`, price anything, touch `env.budget` / `env.ledger`, judge the finished
+clip, attach a video reference, put a critic's own words in a render prompt, or re-upload the
+Kie-hosted seed frame (D18: it is a URL already, so the chain has no upload step and no local file
+handling).
 """
 
 from __future__ import annotations
@@ -51,7 +53,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from hypesocials import render, vision_check
+from hypesocials import gauntlet, render
 from hypesocials.models import (
     AssetRecord, CopySet, DegradationTag, PlanEntry, PlanEntryStatus, RenderFailCause,
     RenderOutcome, RenderOutcomeKind, RenderParams, RenderPriority, RenderRefs, VisionCheckResult,
@@ -61,6 +63,9 @@ from hypesocials.outputs import AssetFolder, PackagingError
 from hypesocials.generate.refs import (
     Reference, attach, branding_block, role_lines, style_of, wordmark,
 )
+# D49: "what was this frame ORDERED to be" — one contract builder for all three formats.
+from hypesocials.generate import contracts
+from hypesocials.generate.carousel import GAUNTLET_CRAFT, GAUNTLET_DEGRADED
 from hypesocials.prompts_engine import (
     MissingTemplateError, UnresolvedPlaceholderError, build_context,
 )
@@ -152,9 +157,36 @@ async def _chain(
     copyset = env.copy.get(entry.asset_id)
     seed_url: str | None = None
     verdict = VisionCheckResult.NOT_CHECKED
+    report: Any = None  # the seed frame's gauntlet, when the gate ran (spec §7: the CLIP is not
+    #                     judged — frame extraction would mean ffmpeg, D10)
     mode = run.reel_overlay_text
     if mode == "seed_frame":  # `in_model` / `none` skip the chain entirely (FR-24)
-        seed_url, verdict = await _seed_frame(entry, env, folder, submit, spend, copyset)
+        seed_url, verdict, report = await _seed_frame(entry, env, folder, submit, spend, copyset)
+    if report is not None:  # the operator-readable critic record, beside the artifacts
+        folder.write_gauntlet_report(contracts.report_rows(report, asset_id=entry.asset_id))
+        if report.craft_only:
+            folder.mark(GAUNTLET_CRAFT)  # FR-325 tier 3: craft-only failures ship, tagged
+        if report.degraded_gate or report.result == "degraded":
+            folder.mark(GAUNTLET_DEGRADED)  # any degraded ship is tagged: D3, an FR-325
+            #   demotion, or `fail_action: degrade` (2026-08-20 gap fix)
+    if report is not None and report.result == "blocked":
+        # FR-325: the seed frame carries a standing leakage or contract defect, and the clip is
+        # built FROM it — animating a frame with a competitor's mark on it would spend ~$1.60
+        # multiplying the defect. So the chain stops here, BEFORE the video job, and everything
+        # already paid for is kept (FR-74). This is the one place a blocked frame also prevents
+        # spend, and it is the cheapest possible moment to notice.
+        reason = ("gauntlet_blocked: the post-render critic panel found standing defect(s) on the "
+                  f"seed frame after {len(report.rounds)} round(s); the clip was not ordered and "
+                  "every paid artifact is kept (FR-325). See BLOCKED.txt and GAUNTLET_REPORT.yaml")
+        entry.status = PlanEntryStatus.BLOCKED
+        entry.skip_reason = entry.skip_reason or reason
+        env.log.error("gauntlet_blocked", f"{entry.asset_id}: {reason}", asset_id=entry.asset_id,
+                      rounds=len(report.rounds), rerenders=report.rerenders,
+                      cost_usd=round(spend.cost, 6))
+        return folder.block(reason, contracts.blocked_text(report),
+                            native_size_rendered=ASPECT_9_16, reel_audio=bool(run.reel_audio),
+                            gauntlet=contracts.report_meta(report),
+                            vision_check_result=verdict, **spend.meta())
         mode = "seed_frame" if seed_url else "in_model"  # FR-24's degrade, either failure shape
     seed_rendered = seed_url is not None  # paid for, so it stays in `model_ids` even if dropped
 
@@ -191,7 +223,8 @@ async def _chain(
         entry.status = PlanEntryStatus.ABANDONED
         return _skip(entry, folder, spend, "interrupted before the video job was ordered — "
                      "everything already paid for is packaged (FR-201/108)",
-                     DegradationTag.ABANDONED, reel_audio=audio_on, vision_check_result=verdict)
+                     DegradationTag.ABANDONED, reel_audio=audio_on, vision_check_result=verdict,
+                     gauntlet=contracts.report_meta(report))
     if outcome.kind is not RenderOutcomeKind.SUCCESS or not outcome.result_urls:
         cause = outcome.fail_cause.value if outcome.fail_cause else outcome.kind.value
         env.log.error("render_failed",
@@ -200,13 +233,13 @@ async def _chain(
         return _skip(entry, folder, spend,
                      f"{cause}: {outcome.fail_message or 'no usable result'} "
                      f"(job {outcome.task_id or 'unknown'})", reel_audio=audio_on,
-                     vision_check_result=verdict)
+                     vision_check_result=verdict, gauntlet=contracts.report_meta(report))
     try:
         await folder.store_render(outcome.result_urls[0])  # -> reel.mp4 (FR-72)
     except PackagingError as exc:
         _latch_disk_full(env, exc)
         return _skip(entry, folder, spend, f"{exc.reason}: {exc}", reel_audio=audio_on,
-                     vision_check_result=verdict)
+                     vision_check_result=verdict, gauntlet=contracts.report_meta(report))
 
     entry.status = PlanEntryStatus.SUCCESS
     models = env.config.models
@@ -214,6 +247,7 @@ async def _chain(
         model_ids=([models.image, models.image_profile] if seed_rendered else [])
         + [models.video, models.video_profile],
         native_size_rendered=ASPECT_9_16,  # FR-98: shipped exactly as it came back
+        gauntlet=contracts.report_meta(report),  # FR-328: the gate's receipt on every terminal
         vision_check_result=verdict,
         reel_audio=audio_on,  # the FINAL truth, after any content-audit degrade
         event_id=env.log.event("creative_delivered", f"{entry.asset_id} reel rendered",
@@ -229,10 +263,11 @@ async def _chain(
 async def _seed_frame(
     entry: PlanEntry, env: Env, folder: AssetFolder, submit: Any, spend: _Spend,
     copyset: CopySet | None,
-) -> tuple[str | None, VisionCheckResult]:
-    """Render the hook frame, keep its bytes, and check it before anything references it (FR-24)."""
+) -> tuple[str | None, VisionCheckResult, Any]:
+    """Render the hook frame, keep its bytes, and gate it before anything references it (FR-24)."""
     if env.halted:
-        return None, VisionCheckResult.NOT_CHECKED  # the clip step packages the honest abandon
+        # The clip step packages the honest abandon; no frame, no verdict, no gauntlet report.
+        return None, VisionCheckResult.NOT_CHECKED, None
     # FR-200/FR-244: a brief's own product photos are uploaded here, once per run (D46/F3 —
     # the style picture channel is excised; the look rides the textual DNA). The seed frame is
     # where a reel's look is decided, so it is the one job in this chain that carries pictures
@@ -280,106 +315,126 @@ async def _seed_frame(
         cause = (outcome.fail_message or outcome.kind.value) if outcome else "declined by the cap"
         return _seed_failed(entry, env, folder, cause)
     seed = await _store_seed(entry, env, folder, outcome.result_urls[0])
-    return await _check_seed(entry, env, folder, submit, spend, copyset, refs, seed,
-                             outcome.result_urls[0])
+    return await _gate_seed(entry, env, folder, submit, spend, copyset, refs, seed,
+                            outcome.result_urls[0])
 
 
-async def _check_seed(
+async def _gate_seed(
     entry: PlanEntry, env: Env, folder: AssetFolder, submit: Any, spend: _Spend,
     copyset: CopySet | None, refs: list[Reference], seed: Path | None, url: str,
-) -> tuple[str, VisionCheckResult]:
-    """FR-105: check the frame, and re-render it ONCE if flagged — before Seedance sees it.
+) -> tuple[str, VisionCheckResult, Any]:
+    """D49: put the seed frame through the gauntlet BEFORE Seedance is paid to animate it.
 
-    The check reads the local `seed_frame.jpg` when the download succeeded (native resolution, no
-    second fetch) and falls back to the hosted URL; what comes BACK is always the public URL,
-    because a local path is not something a renderer can reference (20 §8a).
+    `gauntlet.run_single` over one frame, with `run.gauntlet.rounds_max_image` as the ceiling (spec
+    §4/§7 — the finished CLIP is out of scope entirely: frame extraction would mean ffmpeg, D10).
+    The frame under test is the KIE URL, not the local file: `FrameUnderTest.source` is a
+    `Path | str` union for exactly this case, and the download is best-effort (D18) while the URL
+    is the thing Seedance will reference.
 
-    A successful re-render is checked once more, so `retried_passed` is genuinely reachable
-    (FR-27's four states) — the estimator's `vision_retry_allowance` prices exactly this pair,
-    "render + re-check", per flagged asset (budget.py, FR-107). Caps are unchanged: one re-render,
-    one re-check, then the frame ships whatever the second answer is.
+    What comes BACK is always a public URL, because a local path is not something a renderer can
+    reference (20 §8a). A BLOCKED seed frame does NOT stop the clip: the reel's terminal decision
+    belongs to `_chain`, which has the clip's own outcome in hand — this returns the verdict and
+    lets that one decide.
     """
-    if not env.config.run.vision_check or env.llm_call is None:
-        return url, VisionCheckResult.NOT_CHECKED
-    first = await _verdict(entry, env, seed or url, _expected(entry, env, copyset))
-    if first is None or not first.flagged:
-        return url, vision_check.verdict_result(first)
-    env.log.warn("vision_check_flagged",
-                 f"{entry.asset_id}: seed frame flagged ({first.detail}); one re-render with "
-                 "shorter, larger text before the clip is submitted (FR-105)",
-                 asset_id=entry.asset_id, text_broken=first.text_broken, fake_ui=first.fake_ui,
-                 text_mismatch=first.text_mismatch)
-    # D-F (v2.1.2): the first verdict travels into the plan, so the re-render is told which defect
-    # was seen — invented words and fake platform chrome are each forbidden by name, and "shorter
-    # and larger" stays the remedy for the broken glyphs it actually fixes.
-    plan = vision_check.retry_plan(copyset or CopySet(asset_id=entry.asset_id,
-                                                      language=entry.language),
-                                   "reel", env.config.run.text_budgets, verdict=first)
-    prompt = _seed_prompt(entry, env, plan.copy, refs, budget_scale=plan.budget_scale,
-                          extra=plan.instruction)
-    if prompt is None or env.halted:
-        return url, VisionCheckResult.RETRIED_FAILED
-    retry = spend.add(await submit(entry, RenderParams(prompt=prompt, aspect_ratio=ASPECT_9_16),
-                                   RenderRefs(image_urls=_urls(refs)), job="seed_frame",
-                                   priority=RenderPriority.WAVE1, kind="discretionary",
-                                   label=f"seed-frame vision re-render · {entry.asset_id}"))
-    if retry is None or retry.kind is not RenderOutcomeKind.SUCCESS or not retry.result_urls:
-        env.log.warn("vision_retry_unavailable",
-                     f"{entry.asset_id}: the flagged seed frame ships as rendered "
-                     f"({'declined by the cap' if retry is None else 'the re-render failed'})",
-                     asset_id=entry.asset_id)
-        return url, VisionCheckResult.RETRIED_FAILED
-    replaced = await _store_seed(entry, env, folder, retry.result_urls[0])  # new poster on disk
-    # The second verdict is asked about the words the RETRY carried — the −40% hook — not the
-    # longer one the first frame was flagged on.
-    after = await _verdict(entry, env, replaced or retry.result_urls[0],
-                           _expected(entry, env, plan.copy))
-    # FR-321d: the second verdict on the record, so `retried_passed` is evidence rather than a
-    # claim. The clip that references this frame is submitted next whatever it says — one
-    # re-render, one re-check, then the frame ships (FR-105/NFR-4).
-    env.log.event("vision_recheck",
-                  f"{entry.asset_id} seed frame re-checked after its one re-render: "
-                  + ("clean" if after is not None and not after.flagged else
-                     "still flagged" if after is not None else "no verdict returned"),
-                  asset_id=entry.asset_id, attempt=2, checked=after is not None,
-                  flagged=bool(after is not None and after.flagged),
-                  text_broken=bool(after is not None and after.text_broken),
-                  fake_ui=bool(after is not None and after.fake_ui),
-                  text_mismatch=bool(after is not None and after.text_mismatch),
-                  detail=(after.detail if after is not None else ""))
-    return retry.result_urls[0], vision_check.verdict_result(first, after, retried=True)
+    if not contracts.gate_on(env):
+        return url, VisionCheckResult.NOT_CHECKED, None
+    style = style_of(entry, env)
+    signature = wordmark(entry, env)
+    # FR-322: legible burnt-in text is the entire reason the seed frame exists (FR-24/D18), so the
+    # words it was LOCKED to carry are the whole referent. The wordmark is listed on a branded reel
+    # because it renders through the same TEXT block the hook does (B1) — unlisted, a critic reads
+    # it as an invented word.
+    frame = contracts.frame_contract(
+        1, (copyset.overlay_text or copyset.headline) if copyset else "",
+        style=style, signature=signature)
+    contract = contracts.deck_contract(
+        [frame], entry=entry, style=style, wordmark=signature,
+        forbidden=contracts.forbidden_terms(competitors=_competitors(entry, env)))
+    spent = [0.0]
+    current = [url]
+
+    async def rerender(number: int, fix: str) -> gauntlet.RerenderResult:
+        """The money seam (spec §1) for one seed frame — every dollar decision in the fix loop.
+
+        A fix re-render here is worth a great deal and is also the last cheap thing in the chain:
+        the whole reel is built on this frame, and the ~$1.60 Seedance clip that references it is
+        submitted immediately afterwards. FR-317 exclusivity holds by construction — a fresh
+        submission with its own ledger rows, never routed through `_resubmittable`.
+        """
+        if env.halted:
+            return gauntlet.RerenderResult(status="halted")
+        if env.credits_exhausted:
+            return gauntlet.RerenderResult(status="failed")
+        projected = float(env.price_job(entry, "seed_frame")) if callable(
+            getattr(env, "price_job", None)) else 0.0
+        cap = float(env.config.run.gauntlet.deck_budget_usd or 0.0)
+        if cap > 0 and spent[0] + projected > cap:
+            env.log.warn("gauntlet_budget_stop",
+                         f"{entry.asset_id}: the per-creative gauntlet budget ({cap:.2f}) is spent "
+                         f"({spent[0]:.2f} used) — the seed frame ships as rendered",
+                         asset_id=entry.asset_id, spent_usd=spent[0], cap_usd=cap)
+            return gauntlet.RerenderResult(status="declined_deck_budget")
+        runway = getattr(env, "runway_ok", None)
+        if callable(runway) and not runway("seed_frame"):
+            return gauntlet.RerenderResult(status="declined_runway")
+        prompt = _seed_prompt(entry, env, copyset, refs, extra=fix)
+        if prompt is None:
+            return gauntlet.RerenderResult(status="failed")
+        again = spend.add(await submit(
+            entry, RenderParams(prompt=prompt, aspect_ratio=ASPECT_9_16),
+            RenderRefs(image_urls=_urls(refs)), job="seed_frame",
+            priority=RenderPriority.WAVE1, kind="discretionary",
+            label=f"seed-frame gauntlet re-render · {entry.asset_id}"))
+        if again is None:
+            return gauntlet.RerenderResult(status="declined_budget")
+        if again.fail_cause is RenderFailCause.NO_RUNWAY:  # D51: unbilled, nothing was ordered
+            return gauntlet.RerenderResult(status="declined_runway")
+        cost = float(again.cost_usd or 0.0) or projected
+        spent[0] += cost
+        if again.kind is not RenderOutcomeKind.SUCCESS or not again.result_urls:
+            return gauntlet.RerenderResult(status="failed", cost_usd=cost)
+        current[0] = again.result_urls[0]
+        # The new poster on disk (best effort, D18) — and, when it lands, the bytes the next round
+        # reads. The local file is preferred over the URL for the same reason round 1 prefers it:
+        # it is already downloaded, it cannot expire mid-loop, and it costs no second fetch. What
+        # comes BACK is always the URL, because a local path is not something Seedance can
+        # reference (20 §8a).
+        stored = await _store_seed(entry, env, folder, current[0])
+        return gauntlet.RerenderResult(
+            status="delivered", cost_usd=cost,
+            frame=gauntlet.FrameUnderTest(number=number, source=stored or current[0]))
+
+    report = await gauntlet.run_single(
+        gauntlet.FrameUnderTest(number=1, source=seed or url), contract, rerender,
+        cfg=env.config.run.gauntlet, call=env.llm_call, log=env.log, engine=env.engine)
+    env.log.event("gauntlet_seed_frame",
+                  f"{entry.asset_id}: seed frame {report.result} after {len(report.rounds)} "
+                  f"round(s), {report.rerenders} re-render(s); the clip is submitted next",
+                  asset_id=entry.asset_id, result=report.result, rerenders=report.rerenders)
+    return current[0], contracts.verdict_result(report, rerendered=bool(report.rerenders)), report
 
 
-async def _verdict(entry: PlanEntry, env: Env, image: Path | str,
-                   expected: str = "") -> vision_check.ImageVerdict | None:
-    """One FR-105 pass over one seed frame; `None` when the check could not run (ships anyway)."""
-    report = await vision_check.check([image], expected=[expected], call=env.llm_call,
-                                      engine=env.engine, log=env.log)
-    return report.verdict_for(1)
+def _competitors(entry: PlanEntry, env: Env) -> tuple[str, ...]:
+    """M6's strip list for this reel: the config blocklist plus this topic's guarded LLM strips.
 
-
-def _expected(entry: PlanEntry, env: Env, copyset: CopySet | None) -> str:
-    """The seed frame's LOCKED words — the check's referent (FR-105 v2.1.1).
-
-    Legible burnt-in text is the entire reason the seed frame exists (FR-24/D18), so "is it the
-    RIGHT text" is not a bonus question here: a frame that renders clean invented copy is chained
-    straight into a paid Seedance clip. The wordmark is included on a branded reel because it
-    renders through the same TEXT block the hook does (B1) — unlisted, it would read as an
-    invented word.
+    Read through `getattr` like every other `Env` read in this module (it targets the duck-typed
+    surface), and the SAME list `_context` already passes as `competitor_strings` — one list, so a
+    brand cannot be forbidden in the prompt and unremarked in the verdict.
     """
-    return vision_check.expected_text(copyset, "reel", wordmark=wordmark(entry, env))
+    return (*map(str, getattr(getattr(env, "branding", None), "competitors", ())),
+            *map(str, getattr(env, "strip_brands", {}).get(entry.trend_key or "", ())))
 
 
 def _seed_failed(
     entry: PlanEntry, env: Env, folder: AssetFolder, reason: str
-) -> tuple[None, VisionCheckResult]:
+) -> tuple[None, VisionCheckResult, Any]:
     """FR-24: the reel keeps going, with the hook rendered by the video model instead."""
     folder.mark(DegradationTag.SEED_FRAME_RENDER_FAILED)
     env.log.warn("seed_frame_render_failed",
                  f"{entry.asset_id}: seed frame not produced ({reason}); the reel is generated "
                  "with in-model overlay text and still ships (FR-24)",
                  asset_id=entry.asset_id, reason=reason)
-    return None, VisionCheckResult.NOT_CHECKED
+    return None, VisionCheckResult.NOT_CHECKED, None
 
 
 async def _store_seed(
@@ -438,12 +493,17 @@ def _resubmittable(outcome: RenderOutcome | None) -> bool:
     Re-derived here rather than imported from `generate/__init__.py`, which imports this module at
     runtime — the same reason every other shared shape in this package is duplicated at the seam.
     A moderation refusal is excluded by name (FR-97 owns it and would get the identical refusal
-    back) and so is a declined submission (nothing was ordered). The CLIP never asks this question:
-    a timed-out Seedance job is never resubmitted (FR-44), and at ~$1.60 a render that is a
-    deliberate asymmetry, not an oversight.
+    back) and so is a declined submission (nothing was ordered). A RUNWAY refusal (`NO_RUNWAY`,
+    D51) is excluded for the same reason as both other copies of this predicate: the seed frame is
+    `projected` work, so the runway gate really can refuse it, and that refusal cost nothing —
+    burning FR-317's single attempt on a clock that will only be shorter next time would trade a
+    free "not now" for the resubmit the frame is owed if it ever genuinely fails. The CLIP never
+    asks this question at all: a timed-out Seedance job is never resubmitted (FR-44), and at ~$1.60
+    a render that is a deliberate asymmetry, not an oversight.
     """
     return (outcome is not None and outcome.kind is not RenderOutcomeKind.SUCCESS
-            and outcome.fail_cause is not RenderFailCause.MODERATION)
+            and outcome.fail_cause is not RenderFailCause.MODERATION
+            and outcome.fail_cause is not RenderFailCause.NO_RUNWAY)
 
 
 def _seed_url_rejected(outcome: RenderOutcome) -> bool:

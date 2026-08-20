@@ -18,9 +18,12 @@ spaces of indent. Keep a `purpose.*` first line at or under 72 characters,
 because five go to the counter.
 
 One section pair per live step, and the keys ARE the step names in
-`menu._WIZARD_STEPS`: config, counts, cap, briefs, confirm — NFR-16's five
-operator inputs. A step deleted from that list takes its two sections with it
-(v2.0.0 deleted the source picker and the mode picker this way).
+`menu._WIZARD_STEPS`: config, counts, copy_mode, cap, briefs, confirm — FR-56's
+six operator inputs. A step deleted from that list takes its two sections with
+it (v2.0.0 deleted the source picker and the mode picker this way). A step that
+is only *sometimes* live keeps both sections regardless: copy_mode is skipped on
+a run that plans no carousels (v2.3.0/D54/FR-333), which is a question the wizard
+does not ask, not prose it stopped owning.
 
 Prose lives here rather than in `menu.py` for one reason: a hundred-odd lines
 of help text would push that module past the 500-line split threshold in
@@ -42,6 +45,11 @@ Config — the niche, caption language, monitor set, brand and counts this
 Formats & counts — how many finished creatives to build, as one line.
      A key you leave out of that line keeps its current value.
 
+## purpose.copy_mode
+
+Carousel copy mode — the source panel's own words on our slides, or the
+     same panel compressed to the style's budget. Bound decks only.
+
 ## purpose.cap
 
 Spend cap — the ceiling for this run, checked before anything is
@@ -62,8 +70,10 @@ Confirm — the cost estimate and the final yes/no come next. Nothing has
 
   Four ways in, and none of them spends money yet.
 
-  [1] guided run  asks all five questions. Pick this the first time,
-                  and whenever counts, cap or briefs should change.
+  [1] guided run  asks all six questions — five when the run plans no
+                  carousels, since the copy-mode question is theirs
+                  alone. Pick this the first time, and whenever
+                  counts, copy mode, cap or briefs should change.
   [2] quick run   asks nothing before the price. It uses the first
                   config that is actually ready — Virlo monitor ids
                   AND at least one usable style — prints which one it
@@ -140,6 +150,38 @@ Confirm — the cost estimate and the final yes/no come next. Nothing has
 
   If you get it wrong: the confirm step shows the cost before anything
   is billed, and declining there costs nothing.
+
+## copy_mode
+
+  What a carousel slide says when the deck is BOUND to a source
+  slideshow — one of that post's panels per slide, in the post's own
+  order.
+
+    [1] verbatim  the panel's own words, exactly as the post wrote
+                  them. Nothing is shortened, so a 1,000-character
+                  panel arrives as 1,000 characters on one frame
+    [2] compress  the same panel, sent back to the model to come out
+                  shorter: facts, numbers and tool names kept, padding
+                  cut, still in the post's own language, and never
+                  longer than the assigned style allows
+
+  Compress is what the shipped configs pin, because the house styles are
+  built for one bold statement per slide and a full panel buries it.
+  Verbatim is the engine default and the stricter answer: it quotes and
+  does nothing else.
+
+  Either way the deck keeps its shape — same number of slides, same
+  panel in the same position, and a panel that could not be used still
+  leaves its slide wordless rather than moving the others up.
+
+  Nothing else is affected: images, reels, briefs of your own, and decks
+  with no source post behind them ignore this answer entirely.
+
+  A good value: the pre-filled one — it is this config's own setting.
+
+  If you get it wrong: the gallery puts every slide beside the source
+  panel it came from, so a deck that reads badly is visible before
+  anything is published, and the next run can answer differently.
 
 ## cap
 

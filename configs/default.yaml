@@ -28,12 +28,53 @@ run:
                                    # (override briefs, post-less topics), which are the only copy
                                    # the model still writes.
   notion_influence: off            # off | copy | full (needs NOTION_TOKEN + pages shared once)
-  vision_check: true               # ON since 2026-08-13 (was false): post-render verification of
-                                   # what Kie actually returned. Run 20260813_143420_oyo4 ran with
-                                   # no verification at all, so truncated decks and lost slides
-                                   # reached the gallery unremarked. Paid LLM spend - it is priced
-                                   # before the Confirm gate. `false` turns it off and buys back
-                                   # that cost; cs platforms then get a startup hint to re-enable.
+  gauntlet:                        # v2.2.0/D49: the three-critic post-render gate (FR-322-330).
+                                   # OFF since the SESSION 5 live acceptance (2026-08-14): 3/3 decks
+                                   # blocked, 2 on defect classes Phase 1 owed (source-chrome counter
+                                   # polluting the contract; list-treatment guidance hard-trimmed out
+                                   # of over-budget prompts). Re-enable only after those fixes; see
+                                   # plans/carousel-gauntlet/SESSION-5-LIVE-ACCEPTANCE.md.
+                                   # Three fresh-context critics look at the frames Kie actually
+                                   # returned and judge them against contract data - the words the
+                                   # frame was ORDERED to carry, the logos it must and must not
+                                   # show, the style it was rendered in. Failing frames re-render
+                                   # with a canned fix instruction and are judged again. A deck
+                                   # still leaking a creator identity or a competitor mark at the
+                                   # end is BLOCKED: kept on disk, never published.
+    enabled: true                  # Re-enabled 2026-08-20 after Sessions 5.5-5.8 fixed findings
+                                   # F1-F9 (four canaries; see plans/SESSION-5.8-CLOSEOUT.md).
+                                   # false = NO post-render gate at all (renders ship unread);
+                                   # it does not fall back to the old vision check - that is gone.
+    rounds_max: 3                  # rounds per DECK, bounds 1-6. Round 1 finds the defect, round 2
+                                   # fixes it, round 3 catches what the fix broke. The single
+                                   # biggest cost dial here - each round is re-renders plus a full
+                                   # critic pass - and it is also what run_deadline_min is sized
+                                   # against (see that key below).
+    rounds_max_image: 1            # rounds for standalone images and reel seed frames, bounds 0-3.
+                                   # Lower because there is no deck to hold together. `0` judges
+                                   # and reports without ever paying for a second render.
+    deck_budget_usd: 0.30          # per-deck re-render cap, bounds 0.00-2.00. A REAL gate: the
+                                   # deck stops re-rendering when it is reached. (The Confirm
+                                   # gate's gauntlet lines are an allowance - shown and provisioned
+                                   # for, never trimming a creative, FR-106a.)
+    fail_action: degrade           # block | degrade - what a standing CONTRACT-tier defect does.
+                                   # Operator decision 2026-08-20 (canary #4, F10): contract defects
+                                   # ship TAGGED for gallery review; only leakage still hard-blocks
+                                   # after the last round. The LEAKAGE tier (identity, forbidden
+                                   # marks, platform chrome, invented or translated text) ignores
+                                   # this and always blocks; no setting may sanction a person's
+                                   # name or a competitor's logo on a published frame.
+    craft_blocks: false            # craft-only standings (contrast, composition) ship with a
+                                   # GAUNTLET_CRAFT tag by default - they are opinions about
+                                   # quality. `true` makes them terminal too.
+    critics:                       # model: null = use models.critic below; set one to override
+      brief:  { enabled: true,  model: null }   # contract fidelity + leakage - PRESENCE, never
+                                                # quality: are the ordered words there, and is
+                                                # anything there that must not be
+      system: { enabled: true,  model: null }   # style contract + cross-frame consistency: does
+                                                # this read as ONE deck while you swipe it
+      craft:  { enabled: true,  model: null }   # execution quality - EXECUTION, never content:
+                                                # garbled lettering, contrast, composition
   spend_cap_usd: 10.00             # pre-flight control; --yes trims to fit, interactive refuses
   trend_history_days: 30           # post-ID no-repeat window in days (v2.1.0/FR-307, was 7). It
                                    # must be >= sources.max_post_age_days below, or a post drops
@@ -50,6 +91,30 @@ run:
                                    # source post of that topic (FR-99/FR-291), so six siblings
                                    # are six different-looking posts, not six near-duplicates.
   carousel_anchor: true            # slide 1 renders first and references slides 2-N
+  carousel_copy_mode: verbatim     # verbatim | compress (v2.3.0/D54/FR-333) - how a BOUND
+                                   # carousel deck's source panels reach its slides. `verbatim`
+                                   # renders each mapped panel exactly as FR-304 admitted it,
+                                   # and D50's "reflow, never shorten" governs that mode.
+                                   # `compress` sends the SAME admitted panels back to the copy
+                                   # model to come out inside min(text_budgets.slide, the
+                                   # assigned style's own max_onimage_chars.slide), humanised,
+                                   # still in the source post's own language: one grouped copy
+                                   # call per (topic x language) pair of panel-mapped decks, on
+                                   # the standard `copy` role and inside the pre-flight
+                                   # estimate. What does NOT change with the mode: the 1:1
+                                   # panel-to-slide mapping, the deck's length, and the three
+                                   # reasons a panel drops to a wordless slide that KEEPS its
+                                   # position (FR-304). A failed compress call falls back to
+                                   # the verbatim mapped deck, tagged `copy_degraded`.
+                                   # CAROUSELS ONLY - images, reels, override briefs and decks
+                                   # with no source post behind them never read this key.
+                                   # `verbatim` is the ENGINE default and the stricter
+                                   # contract; the three shipped brand configs pin `compress`,
+                                   # because their minimal-density styles declare 160-300
+                                   # character slide budgets and a real source panel runs
+                                   # several times that (measured: 1,018-1,048 chars on a
+                                   # 180-char budget).
+                                   # Per-run override: `run.bat --copy-mode compress`.
   reel_overlay_text: seed_frame    # seed_frame | in_model | none
   reel_audio: true                 # Seedance generate_audio; false ships a silent clip
   reel_duration_s: 5               # 4-30 (Seedance verified range); out-of-range is CLAMPED at pre-flight
@@ -69,11 +134,14 @@ run:
     slide: 300                     # NEW: per-slide deck text on panel-mapped carousels (FR-304)
     reel_seed_headline: 60         # was 32
     retry_reduction_pct: 40        # cut budgets by this % on a vision-check retry
-  run_deadline_min: 45             # soft elapsed ceiling, monotonic clock (FR-108). Raised
-                                   # 25 -> 45 in v2.1.3/D48: image_job_timeout_s is 600 s and
-                                   # FR-317 grants each image job one resubmit - a 25-min
-                                   # ceiling would truncate the delivery guarantee it exists to
-                                   # protect. DEPENDS ON models.video_job_timeout_s below: turn
+  run_deadline_min: 60             # soft elapsed ceiling, monotonic clock (FR-108). Raised
+                                   # 25 -> 45 in v2.1.3/D48 (image_job_timeout_s is 600 s and
+                                   # FR-317 grants each image job one resubmit), then 45 -> 60 in
+                                   # v2.2.0/D49: the gauntlet above adds up to rounds_max-1 further
+                                   # render waves AFTER that worst case. At the shipped numbers a
+                                   # full 20-slide deck is 4 waves + 2 gauntlet rounds x 600 s =
+                                   # exactly 60 min, which is why this is the number.
+                                   # DEPENDS ON models.video_job_timeout_s below: turn
                                    # reels on and it must exceed that timeout plus the
                                    # filter/copy/image stages, or the deadline abandons the run
                                    # before a slow reel can ever finish.
@@ -351,9 +419,9 @@ models:
                                    # never resubmitted (20 §8), so a tight ceiling buys nothing.
                                    # Live renders measured 302 s and 378 s (spikes/RESULTS.md §C);
                                    # 1800 s is headroom for a slow one, not an expected wait.
-                                   # PAIR WITH run_deadline_min above - at 45 min the deadline
-                                   # still outlives this 30-min ceiling only barely once the
-                                   # earlier stages are counted (the engine warns when reels on).
+                                   # PAIR WITH run_deadline_min above - at 60 min the deadline
+                                   # outlives this 30-min ceiling with the earlier stages and the
+                                   # gauntlet rounds counted (the engine warns when reels are on).
   poll_interval_s: 3               # gap between Kie recordInfo polls
   http_max_attempts: 3             # EVERY bounded-retry path: OpenRouter, Kie, Virlo, Postiz
   max_inflight_llm_calls: 8        # keep at or under your provider account's concurrency limit

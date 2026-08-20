@@ -30,20 +30,66 @@ from __future__ import annotations
 from pathlib import Path
 
 from hypesocials import prompts_engine as pe
-from hypesocials.models import GLOBAL_TEMPLATES, PLACEHOLDERS, PROFILE_TEMPLATES
+from hypesocials.models import (
+    CRITIC_PLACEHOLDERS,
+    GLOBAL_TEMPLATES,
+    PENDING_TEMPLATES,
+    PLACEHOLDERS,
+    PROFILE_TEMPLATES,
+)
 
 #: Every global role plus every role each render profile ships — DERIVED from the two registries
 #: rather than retyped, and the same enumeration
 #: `test_prompts_engine.test_every_shipped_template_stays_inside_its_role_allowlist` uses, so the
 #: two files cannot disagree about what "shipped" means.
+#:
+#: `PENDING_TEMPLATES` is subtracted (v2.2.0): the gauntlet's four prompt names are declared in
+#: `GLOBAL_TEMPLATES` two waves before their files and their built-in twins are authored, so a
+#: parity check that read them now would be reading a file that does not exist yet. Emptying that
+#: set — which the wave authoring the four prompts does, in the same commit — is what puts them
+#: under every check in this module, with no edit here.
 SHIPPED: list[tuple[str, str]] = (
-    [("", role) for role in GLOBAL_TEMPLATES]
+    [("", role) for role in GLOBAL_TEMPLATES if role not in PENDING_TEMPLATES]
     + [(profile, role) for profile, names in PROFILE_TEMPLATES.items() for role in names])
 
-#: The FINAL count (contracts item 4, set by the W3.5 excision): 3 global —
-#: `copywriter_system.md`, `vision_check_question.md`, `topic_filter_system.md` — plus 4
-#: gpt-image-2 (the merged `image_post.md` and its three siblings) plus 1 seedance.
-SHIPPED_COUNT = 9
+#: The count of roles that ship BYTES today: 8 global — `copywriter_system.md`,
+#: `copy_compress_system.md` (v2.3.0/D54), `topic_filter_system.md`, `slide_intel_question.md` and
+#: the gauntlet's four (`critic_brief.md`, `critic_system.md`, `critic_craft.md`,
+#: `gauntlet_fix.md`) — plus 4 gpt-image-2 (the merged `image_post.md` and its three siblings) plus
+#: 1 seedance. `vision_check_question.md` is gone with the FR-105 machinery it asked for
+#: (v2.2.0/D49), and `PENDING_TEMPLATES` is now empty, so this number is every shipped role there
+#: is.
+SHIPPED_COUNT = 13
+
+#: `prompts/humanizer_skill.md` ships in the same folder and is NOT a role: it is the vendored MIT
+#: `SKILL.md` from github.com/blader/humanizer, kept as the reference the compress template's ~14
+#: distilled on-image patterns are derived FROM. The engine never loads it, it has no
+#: `GLOBAL_TEMPLATES` entry, no `_ALLOWLIST` row and no built-in twin — an allowlist row for a
+#: non-template is exactly the dead-vocabulary drift `prompts_engine` warns about. Named here so
+#: that anything in this module which ever enumerates `prompts/*.md` has one place to exempt it
+#: from, with the reason attached rather than as a bare literal in a filter.
+NOT_A_TEMPLATE = frozenset({"humanizer_skill.md"})
+
+
+def _no_pending_role_has_already_landed() -> None:
+    """The trip-wire that stops `PENDING_TEMPLATES` from outliving its own reason to exist.
+
+    The set is a sequencing carve-out: it disarms every parity check in this module for the roles
+    it names, which is correct only while their bytes genuinely do not exist. The failure mode it
+    creates is silent — author the four prompts, forget to empty the set, and the suite stays green
+    while four templates ship with no byte-parity and no placeholder checking at all. Nothing in a
+    green suite would say so.
+
+    So: the moment a pending role has BOTH a file and a built-in twin, it is no longer pending, and
+    leaving it listed is the bug. This cannot fire before those bytes are authored, and it fires the
+    first time they are.
+    """
+    landed = sorted(role for role in PENDING_TEMPLATES
+                    if _on_disk("", role).is_file() and _built_in_key("", role) in pe._BUILT_INS)
+    assert not landed, (
+        f"{', '.join(landed)}: authored (file + built-in) but still in PENDING_TEMPLATES. "
+        "Remove them from that frozenset and raise SHIPPED_COUNT — until you do, these templates "
+        "ship with no parity or placeholder coverage.")
 
 
 def _built_in_key(profile: str, role: str) -> str:
@@ -62,9 +108,14 @@ def test_every_shipped_role_ships_both_a_file_and_a_built_in_default() -> None:
     """
     assert len(SHIPPED) == SHIPPED_COUNT, \
         "the shipped role set changed — the parity checks below need it"
-    assert set(GLOBAL_TEMPLATES) == {"copywriter_system.md", "vision_check_question.md",
-                                     "topic_filter_system.md", "slide_intel_question.md"}
+    assert set(GLOBAL_TEMPLATES) == {"copywriter_system.md", "copy_compress_system.md",
+                                     "topic_filter_system.md",
+                                     "slide_intel_question.md", "critic_brief.md",
+                                     "critic_system.md", "critic_craft.md", "gauntlet_fix.md"}
+    assert PENDING_TEMPLATES <= set(GLOBAL_TEMPLATES), \
+        "a pending name that is not even declared is a typo, not a sequencing carve-out"
     assert "image_post.md" in PROFILE_TEMPLATES["gpt-image-2"]
+    _no_pending_role_has_already_landed()
     for profile, role in SHIPPED:
         assert _on_disk(profile, role).is_file(), f"{_built_in_key(profile, role)}: no file"
         assert _built_in_key(profile, role) in pe._BUILT_INS, \
@@ -72,6 +123,27 @@ def test_every_shipped_role_ships_both_a_file_and_a_built_in_default() -> None:
     # And nothing extra hides in the table: a built-in for a role that no longer ships is a
     # fallback nobody can reach and a second copy nobody maintains.
     assert set(pe._BUILT_INS) == {_built_in_key(profile, role) for profile, role in SHIPPED}
+
+
+def test_the_vendored_humanizer_reference_is_not_a_role_on_any_surface() -> None:
+    """v2.3.0/D54: `prompts/humanizer_skill.md` is a FILE in `prompts/`, and nothing else.
+
+    It is the MIT `SKILL.md` from github.com/blader/humanizer, vendored so the ~14 on-image
+    patterns distilled into `copy_compress_system.md` have a checkable source. The engine never
+    loads it. That makes it the one `.md` in this tree that must fail every test in this module —
+    it has no role name, no allowlist row, no built-in twin and no parity obligation, and giving it
+    any of those would create a fallback nobody can reach and a second copy nobody maintains.
+
+    Asserted rather than assumed, because the natural reflex on seeing a lone unregistered prompt
+    file is to "fix" it by adding a row. The file's own header and `prompts/README.md` say why it
+    is there; this is where the suite agrees.
+    """
+    for name in NOT_A_TEMPLATE:
+        assert (pe.PROMPTS_DIR / name).is_file(), f"{name}: vendored reference is missing"
+        assert name not in GLOBAL_TEMPLATES, f"{name} is not a role — it is a reference document"
+        assert name not in pe._ALLOWLIST, f"{name}: an allowlist row for a non-template is drift"
+        assert name not in pe._BUILT_INS, f"{name}: a built-in twin for a file nothing renders"
+        assert name not in {role for _, role in SHIPPED}
 
 
 def test_a_built_in_names_exactly_the_placeholders_its_on_disk_template_names() -> None:
@@ -107,22 +179,68 @@ def test_the_slide_intel_built_in_is_byte_identical_to_its_file() -> None:
     assert "chrome_text" in on_disk, "the strict schema requires it; the prompt must ask for it"
 
 
-def test_the_vision_check_built_in_is_byte_identical_to_its_file() -> None:
-    """The second placeholder-free role, held to the same full parity (FR-105, v2.1.1).
+def test_the_four_gauntlet_built_ins_are_byte_identical_to_their_files() -> None:
+    """The gauntlet's prompts, held to FULL parity (v2.2.0, D49) — the successors of the retired
+    `vision_check_question.md` check, which drifted for three waves under exactly this cover.
 
-    `vision_check_question.md` names ZERO placeholders — the images and the carrier turn are the
-    whole variable input — so the placeholder-set check above passes vacuously for it, and the two
-    copies drifted for three waves under that cover (SESSION C and SESSION G both noted it, and
-    nothing failed). It stopped being cosmetic when the question grew its third defect: the
-    built-in went on asking two questions while `vision_check._SCHEMA` began REQUIRING
-    `text_mismatch` on every verdict, so the fallback would lose the whole check at the one moment
-    its file is already broken.
+    Three of the four name placeholders and are therefore already covered by the set check above;
+    `gauntlet_fix.md` names NONE, because its canned remedies are selected in code by
+    `(code, zone)`, so the set check passes vacuously for it and byte parity is the only guarantee
+    it can have. All four get it, and each is spot-checked on the ONE structural contract its
+    parser or its schema depends on: the per-critic enums (`gauntlet._schema` is strict, so a
+    fallback offering the wrong codes loses that critic for the whole deck), and the four `##`
+    section headers `gauntlet._sheet()` splits the remedy file on.
     """
-    on_disk = _on_disk("", "vision_check_question.md").read_text(encoding="utf-8")
+    for role in ("critic_brief.md", "critic_system.md", "critic_craft.md", "gauntlet_fix.md"):
+        on_disk = _on_disk("", role).read_text(encoding="utf-8")
+        assert pe._BUILT_INS[role] == on_disk, f"{role}: the built-in drifted from its file"
+    brief = _on_disk("", "critic_brief.md").read_text(encoding="utf-8")
+    assert "invented_text" in brief and "identity_leak" in brief, \
+        "the brief critic's strict enum is not in its own prompt"
+    craft = _on_disk("", "critic_craft.md").read_text(encoding="utf-8")
+    assert "missing_text" not in craft, \
+        "craft never reports a word missing — the enum partition is the whole discipline"
+    sheet = _on_disk("", "gauntlet_fix.md").read_text(encoding="utf-8")
+    for section in ("## PRECEDENCE", "## ORDER", "## REMEDIES", "## CLOSING"):
+        assert section in sheet, f"gauntlet_fix.md: {section} is what the sheet parser splits on"
 
-    assert pe._BUILT_INS["vision_check_question.md"] == on_disk
-    assert "TEXT MISMATCH" in on_disk, "the strict schema requires it; the prompt must ask for it"
-    assert "(none)" in on_disk, "the carrier sends that token for a wordless-by-design image"
+
+def _critic_system_copies() -> tuple[tuple[str, str], ...]:
+    """The on-disk style critic and its built-in twin, as (origin, text) pairs."""
+    path = _on_disk("", "critic_system.md")
+    return ((str(path), path.read_text(encoding="utf-8")),
+            ("built-in critic_system.md", pe._BUILT_INS["critic_system.md"]))
+
+
+def test_both_critic_system_copies_judge_consistency_against_the_frame_1_baseline() -> None:
+    """Session 5.8/F9-B at the parity level: WHO the style critic compares a frame to.
+
+    Canary #3 (`output/20260819_191734_0jc2`) was blocked by a frame that had passed two rounds
+    cleanly and was named for the first time in the third — because the template defined
+    `style_consistency` as sibling-relative, so re-rendering frames 2 and 3 toward each other MOVED
+    the baseline the untouched frame 4 was then judged against. A moving reference makes the whole
+    fix loop chase itself: every round produces a new majority and a new deviant. F9-B pins the
+    reference down — frame 1 is the anchor this deck was built from, every consistency verdict is
+    measured against IT, and frame 1 answers to the style contract alone.
+
+    Prose is not diffed here (see the module docstring); these four stems are the load-bearing
+    sentences of that framing, matched against the FLATTENED text so a re-wrap of hand-wrapped
+    prose cannot break a pin on a sentence that did not change. The `sibling` assertion is the
+    regression that actually matters: the old wording is the natural way to write this rule, and
+    it will creep back the first time somebody edits the section without knowing why it is worded
+    the way it is. Both copies, because a fallback that judges by a different rule than its file
+    fires at the one moment nobody is reading the prompt (FR-183).
+    """
+    for origin, text in _critic_system_copies():
+        flat = " ".join(text.split())
+        for phrase in ("FRAME 1 IS THE BASELINE",     # the rule, stated once and in full
+                       "never from each other",       # the reference is fixed, not relative
+                       "a majority never makes",      # …and a crowd cannot outvote the anchor
+                       "departs from FRAME 1"):       # the `style_consistency` definition itself
+            assert phrase in flat, f"{origin}: the anchor-baseline framing is missing ({phrase!r})"
+        assert "sibling" not in flat.lower(), \
+            f"{origin}: sibling-relative wording is back — F9-B's whole point is that a frame " \
+            "is judged against frame 1, never against the other frames"
 
 
 def test_the_carousel_copies_both_teach_the_panel_text_label() -> None:
@@ -203,6 +321,13 @@ def test_the_anchor_instruction_locks_the_scene_not_only_the_layout() -> None:
     palette but moved to another room read as a different deck. The visual brief describes the
     SOURCE deck's slide, so it may name a scene this deck never had — hence the explicit
     precedence rather than a general "Image 1 wins".
+
+    The last two phrases are Session 5.6/F7-B's badge lock, and they are pinned HERE because this
+    block is under a standing byte budget (`tests/test_prompt_fit.py`) and re-compression is the
+    normal way it changes. Without the first, gpt-image-2 re-invents where the FR-313 position
+    badge sits on every slide and the system critic reports `counter_placement` on a deck nobody
+    mis-ordered; without the second, "copy the badge" reads as "copy the badge's DIGITS" and every
+    slide claims to be slide 1.
     """
     for origin, text in ((str(_on_disk("gpt-image-2", "carousel_anchor_instruction.md")),
                           _on_disk("gpt-image-2", "carousel_anchor_instruction.md")
@@ -213,7 +338,9 @@ def test_the_anchor_instruction_locks_the_scene_not_only_the_layout() -> None:
         for phrase in ("the same room", "the same camera position", "the same background",
                        "this slide's text block sits exactly where Image 1's text block sits",
                        "THE SCENE IS IMAGE 1'S", "CONTENT ELEMENTS only",
-                       "Image 1 wins; where they disagree about which content elements"):
+                       "Image 1 wins; where they disagree about which content elements",
+                       "A QUOTED POSITION BADGE KEEPS IMAGE 1'S CORNER",
+                       "its digits alone are this slide's own"):
             assert phrase in flat, f"{origin}: the scene lock is missing ({phrase!r})"
 
 
@@ -259,6 +386,13 @@ def test_no_placeholder_in_the_vocabulary_is_unreachable() -> None:
     W2 transitional orphans from the vocabulary itself.
     """
     reachable = set().union(*pe._ALLOWLIST.values())
-    unreachable = PLACEHOLDERS - reachable
+    # The critic vocabulary is exempt only while its roles are still `PENDING_TEMPLATES`: the names
+    # are frozen in `models` one wave before the `_ALLOWLIST` rows that make them reachable exist.
+    # The moment those four prompts ship, the exemption evaporates on its own and this test starts
+    # demanding a row for every critic name — which is the point.
+    pending = CRITIC_PLACEHOLDERS if PENDING_TEMPLATES else frozenset()
+    unreachable = PLACEHOLDERS - reachable - pending
 
     assert not unreachable, f"placeholder(s) no role can resolve: {sorted(unreachable)}"
+    assert CRITIC_PLACEHOLDERS <= PLACEHOLDERS, \
+        "the frozen critic vocabulary names something outside models.PLACEHOLDERS"

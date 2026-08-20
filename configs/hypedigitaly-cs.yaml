@@ -50,12 +50,34 @@ run:
   # topic-driven creatives, point sources.virlo_monitor_ids at a monitor that collects Czech posts
   # (the old "CZ coverage probe" was the only one, and it is frozen - see the note there).
   languages: { linkedin: cs, instagram: cs, tiktok: cs }
+  # D54 (operator decision 2026-08-20): the decks this config ships COMPRESS their source panels
+  # instead of quoting them whole. The ENGINE default is `verbatim` and stays that way (see
+  # prds/30-configuration-and-run.md, run keys) - this is an opt-in, pinned here because the styles
+  # below are minimal-density: they declare 160-300 character slide budgets, while the measured
+  # panels of run 20260820_001158_2ard ran 1,018-1,048 characters onto `anime-noir-statement`'s
+  # 180 (5.8x over). Quoting those whole is what put walls of text on frames built for one bold
+  # statement. `compress` sends the SAME admitted panels back to the copy model to come out inside
+  # min(run.text_budgets.slide, the assigned style's own max_onimage_chars.slide), humanised, still
+  # in the source post's own language - the 1:1 panel-to-slide mapping, the deck length and the
+  # three drop reasons of FR-304 are untouched, and a failed compress call falls back to today's
+  # verbatim mapped deck tagged `copy_degraded`. Carousels only. `--copy-mode verbatim` reverts it
+  # for one run when a deck should quote and nothing else.
+  carousel_copy_mode: compress
   # 45 min (operator decision 2026-08-10, default is 25). This is a REEL-CAPABLE config, so the
   # deadline MUST exceed models.video_job_timeout_s (1800 s = 30 min) plus the topic-filter, copy
   # and image stages that run ahead of it - otherwise the run is abandoned before a slow reel can
   # reach its own timeout and the 30 min ceiling is decorative. Still a soft ceiling on the
   # monotonic clock (FR-108).
-  run_deadline_min: 45
+  # v2.2.0/D49: 45 -> 60. The gauntlet adds up to rounds_max-1 further render waves after
+  # the FR-317 worst case, and 60 min is what holds all of it (see configs/default.yaml).
+  run_deadline_min: 60
+  # Re-enabled 2026-08-20: Sessions 5.5-5.8 fixed the SESSION 5 findings F1-F9 (four live
+  # canaries; record in plans/carousel-gauntlet/SESSION-5-LIVE-ACCEPTANCE.md and the four
+  # SESSION-5.x closeouts). Operator decision on the residual F10 (render-model reliability):
+  # fail_action degrade - contract defects ship TAGGED for gallery review, leakage still blocks.
+  gauntlet:
+    enabled: true
+    fail_action: degrade
 
 sources:
   # ONE monitor by operator decision (2026-08-11) - see the same note in hypedigitaly.yaml. Read the
@@ -97,16 +119,20 @@ sources:
 
 # Style selection (v2.1.2/FR-314/D-E): which of the authored meta-styles this config's runs may
 # rotate over. A SELECTOR only - prompts/styles.yaml (FR-290) still owns every render prompt,
-# palette and layout zone, and nothing written here carries style content. UNSET on purpose, like
-# every other inherited key in this overrides-only file: an empty selection means all eight styles
-# the active brand can wear, which is the shipped behaviour. Uncomment to curate this niche's look
-# permanently, or pass `run.bat --styles key1,key2` for one run. A key the registry does not
-# define, or a selection that leaves a requested format with no affine style under the brand,
-# refuses at pre-flight: exit 2, $0 spent, and the message names what the registry really offers.
+# palette and layout zone, and nothing written here carries style content. SET since 2026-08-20
+# (v2.3.0/D55, operator decision): these four keys are the look this niche doubles down on, and
+# every other style the registry offers is out of the rotation until this list changes. A key the
+# registry does not define, or a selection that leaves a requested format with no affine style
+# under the brand, refuses at pre-flight: exit 2, $0 spent, and the message names what the
+# registry really offers. Pass `run.bat --styles key1,key2` to narrow it further for one run.
 # (The old `styles.refs_per_job` window is still gone - D46/F3, a text-only style ships no
 # reference images - and this key is not its return.)
-# styles:
-#   enabled: [editorial-voxel-carousel, letterpress-print-carousel, platform-showcase-card]
+styles:
+  enabled: [anime-noir-statement, letterpress-print-carousel, meme-caricature-panels, quiet-luxury-night-photoreal]
+  # meme-caricature-panels is carousel_role: slides_only - inert while this config runs
+  # carousels only (operator: keep for now; activates if image posts return).
+  # hypelead-brand-card deliberately absent: branding.enabled is false here (brand_ok drops
+  # it anyway); branded entries sign through the TEXT block on any style (FR-318/FR-292).
 
 # Brand identity for this config (FR-292/D43) - which brand the run signs with, how often, and in
 # what shape. Only the branded fraction below carries the wordmark. The wordmark itself is NOT
@@ -197,7 +223,7 @@ models:
   # 30 min (operator decision 2026-08-10, was 600). The W6 acceptance run declared a Seedance reel
   # failed at the 600 s ceiling and wasted ~$4.78 - a timed-out job is paid and never resubmitted
   # (20 §8), so the ceiling only ever discards work already bought. Measured renders took 302 s
-  # and 378 s; 1800 is headroom for the slow tail. Needs run_deadline_min: 45 above to be reachable.
+  # and 378 s; 1800 is headroom for the slow tail. Needs run_deadline_min: 60 above to be reachable.
   video_job_timeout_s: 1800
 
   price_per_unit:

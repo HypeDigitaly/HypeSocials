@@ -25,7 +25,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping, MutableMapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import UnionType
@@ -64,6 +64,16 @@ _PLATFORM_SLIDE_MAX: dict[str, int] = {"linkedin": 20, "instagram": 10, "tiktok"
 #: The max for a platform nobody has published a number for. Instagram's ceiling, because it is
 #: the tightest of the three and therefore the one that fits anywhere.
 _DEFAULT_SLIDE_MAX = 10
+#: v2.2.0: the per-platform ASSIGN FLOOR — how many usable source panels a post must carry before
+#: it may be bound to a deck for this platform. It was a single global `plan.MIN_DECK_SLIDES = 2`,
+#: which is right for a swipeable feed and wrong for LinkedIn, where a two-slide document post
+#: reads as a mistake rather than a carousel. Only the floor is per-platform; `MIN_DECK_SLIDES`
+#: remains the GLOBAL minimum underneath it, and a configured value below it is meaningless.
+_PLATFORM_MIN_PANELS: dict[str, int] = {"linkedin": 3, "instagram": 2, "tiktok": 2}
+#: The floor for a platform the table above has never heard of — the global minimum, which is what
+#: `plan.MIN_DECK_SLIDES` has always been. Kept as a literal rather than imported: `plan` imports
+#: `config`, so reading it here would be a cycle. `plan` reconciles the two at the binder.
+_DEFAULT_MIN_PANELS = 2
 #: `Config` fields that come from the filesystem, not from YAML — writing them in a file is as
 #: meaningless as any other unknown key.
 _META = frozenset({"name", "path", "description", "defaults_applied", "warnings"})
@@ -102,6 +112,61 @@ class TextBudgets:
 
 
 @dataclass(slots=True)
+class CriticConfig:
+    """One `run.gauntlet.critics.<name>` entry — is this critic on, and what does it think with."""
+
+    enabled: bool = True
+    # `null` (absent) means "use `models.critic`", which is the whole point of the key: a per-critic
+    # override exists so the cheap critic can be a cheap model without splitting the role, and an
+    # empty value here must never be read as "no model". The gauntlet resolves
+    # `critic.model or models.critic or models.analysis`, in that order.
+    model: str | None = None
+
+
+@dataclass(slots=True)
+class GauntletConfig:
+    """`run.gauntlet:` — the post-render quality gate (D49, FR-322–330).
+
+    Three independent critics look at the frames that actually came back and judge them against
+    contract data — the words the frame was ORDERED to carry, the marks it must and must not show,
+    the style it was rendered in. Frames that fail re-render with a canned fix suffix, up to
+    `rounds_max` rounds, bounded by `deck_budget_usd` and by the run's remaining runway. A deck
+    that still carries a leakage defect at the end is BLOCKED and never published.
+    """
+
+    # `false` means NO POST-RENDER GATE AT ALL. It is not a fallback to the v2.1 vision check —
+    # that path is deleted (FR-105 is the gauntlet's work now) — which is why the rollback knob is
+    # honest about what it buys: renders ship exactly as Kie returned them, unread.
+    enabled: bool = True
+    # Rounds per DECK. Three is the operator decision (2026-08-14): round 1 finds the defect,
+    # round 2 fixes it, round 3 is the one the fix itself broke something in. Each round costs
+    # re-renders plus a full critic pass, so this is the single biggest cost dial in the block.
+    rounds_max: int = 3
+    # Standalone images and reel seed frames get their own, lower ceiling: there is no deck to hold
+    # together, the frame is one job, and a seed frame that needs three rounds is a copy problem
+    # rather than a render problem. `0` gates them without ever re-rendering — judge and report.
+    rounds_max_image: int = 1
+    # The per-deck re-render cap, in dollars. It is a REAL gate (the `RerenderFn` closure declines
+    # against it and the gauntlet maps that to `budget_stop`), unlike the estimator's gauntlet
+    # lines, which are `allowance=True` and never trim a creative (FR-106a).
+    deck_budget_usd: float = 0.30
+    # What a standing CONTRACT-tier defect does at the end of the last round. The LEAKAGE tier —
+    # identity, forbidden marks, platform chrome, invented or translated text — ignores this and
+    # always blocks: a person's name or a competitor's logo on a published frame is the most
+    # expensive error the pipeline can make, and no config key may sanction it.
+    fail_action: Literal["block", "degrade"] = "block"
+    # Craft-only standing failures (contrast, composition, a soft logo) ship by default with a
+    # `GAUNTLET_CRAFT` tag: they are opinions about quality, and blocking a deck on one costs more
+    # than the defect. `true` makes them terminal for an operator who would rather ship nothing.
+    craft_blocks: bool = False
+    critics: dict[str, CriticConfig] = field(default_factory=lambda: {
+        "brief": CriticConfig(),    # contract fidelity + leakage — presence, never quality
+        "system": CriticConfig(),   # style contract + cross-frame consistency
+        "craft": CriticConfig(),    # execution quality — never content
+    })
+
+
+@dataclass(slots=True)
 class RunConfig:
     """`run:` — scope, spend and per-format behaviour."""
 
@@ -116,12 +181,13 @@ class RunConfig:
     languages: dict[str, str] = field(
         default_factory=lambda: {"linkedin": "en", "instagram": "en", "tiktok": "en"})
     notion_influence: Literal["off", "copy", "full"] = "off"
-    # `true` since 2026-08-13 (operator decision, was `false`): run 20260813_143420_oyo4 shipped
-    # with NO post-render verification at all, so nothing noticed the truncated decks or the lost
-    # slides until the audit. The check is the only thing between a paid render and the gallery
-    # that reads what actually came back; it is paid LLM spend, so it is estimated before the
-    # Confirm gate (`budget._entry_lines`) and never runs ahead of it.
-    vision_check: bool = True
+    #: v2.2.0 (D49): the three-critic post-render gate. It REPLACES `run.vision_check`, which is
+    #: gone with the FR-105 machinery it switched — a file still naming that key is migrated by
+    #: `_migrate_run_keys()` onto `gauntlet.enabled` with one warning, so a config written before
+    #: this wave keeps loading and keeps meaning what it meant. The gate is the only thing between a
+    #: paid render and the gallery that reads what actually came back; it is paid LLM spend, so it
+    #: is estimated before the Confirm gate (`budget._gauntlet_lines`) and never runs ahead of it.
+    gauntlet: GauntletConfig = field(default_factory=GauntletConfig)
     spend_cap_usd: float = 10.00
     # 30 since 2026-08-13 (D46/FR-307, was 7). The window is the no-repeat memory, and post-pivot
     # the fetch reaches back `sources.max_post_age_days` (30) — a 7-day memory over a 30-day fetch
@@ -136,6 +202,19 @@ class RunConfig:
     # configs actually run at — `configs/default.yaml` alone would not have changed them.
     max_trend_reuses_per_run: int = 6
     carousel_anchor: bool = True
+    # v2.3.0 (D54/FR-333): how a BOUND carousel deck's panel text reaches its slides. `verbatim`
+    # renders each mapped source panel exactly as FR-304 admitted it; `compress` sends the same
+    # admitted panels back to the copy model to come out shortened to min(text_budgets.slide, the
+    # assigned style's own max_onimage_chars.slide) and humanised, still in the source post's
+    # language. The ENGINE default stays verbatim — D50's "reflow, never shorten" continues to
+    # govern that mode, and compression is a lossy, paid step nobody should get without asking —
+    # while the three shipped brand configs pin `compress`, because their minimal-density styles
+    # declare 160–300-character slide budgets and the measured panels ran 5.8x over them. Scope is
+    # carousels only: images, reels, override briefs and unbound decks never read this key. An
+    # unknown word is refused by `_coerce`'s Literal check at load, before a run id exists and
+    # before a cent moves; there is no clamp and no nearest-match, because a misspelled mode is a
+    # different run than the one the operator asked for.
+    carousel_copy_mode: Literal["verbatim", "compress"] = "verbatim"
     reel_overlay_text: Literal["seed_frame", "in_model", "none"] = "seed_frame"
     reel_audio: bool = True
     reel_duration_s: int = 5  # 4–30; out of range is CLAMPED at pre-flight, never rejected here
@@ -147,8 +226,12 @@ class RunConfig:
     # reaches its own timeout only while this exceeds it plus the analyze/copy/image stages.
     # Raised 25 → 45 in v2.1.3/D48: with image_job_timeout_s at 600 s and the FR-317 single
     # resubmit, a 25-minute ceiling would truncate the very delivery guarantee the operator
-    # mandated — the deadline must outlive one worst-case wave plus its resubmit.
-    run_deadline_min: int = 45
+    # mandated — the deadline must outlive one worst-case wave plus its resubmit. Raised again
+    # 45 → 60 in v2.2.0/D49, because the gauntlet adds up to `run.gauntlet.rounds_max` further
+    # render rounds AFTER that worst case: the same wall clock now has to hold the first pass, its
+    # FR-317 resubmit, and the fix rounds the quality gate orders on top. All four shipped configs
+    # pin this explicitly, so the raise reaches real runs and not only a config that omits the key.
+    run_deadline_min: int = 60
 
 
 @dataclass(slots=True)
@@ -199,6 +282,13 @@ class PlatformConfig:
     # per-platform — `_default_platform` overrides it from `_PLATFORM_SLIDE_MAX`, and the generic
     # `_DEFAULT_SLIDE_MAX` stands here for a platform that table has never heard of.
     carousel_slides: int = _DEFAULT_SLIDE_MAX
+    # v2.2.0: the ASSIGN-time floor, the other end of the same clamp. A source post with fewer
+    # usable panels than this is not bindable for this platform and the binder looks for another —
+    # LinkedIn defaults to 3 because a two-slide LinkedIn document reads as a truncated post, and
+    # the feed platforms stay at the global `plan.MIN_DECK_SLIDES`. `_default_platform` overrides
+    # it from `_PLATFORM_MIN_PANELS`; the generic `_DEFAULT_MIN_PANELS` stands here for a platform
+    # that table has never heard of. Never above `carousel_slides` — `_validate` refuses the pair.
+    min_carousel_panels: int = _DEFAULT_MIN_PANELS
     aspect_ratios: dict[str, str] = field(default_factory=dict)  # OVERRIDE only; defaults 10 FR-21
     conventions: dict[str, str] = field(default_factory=dict)  # length/tone/hashtag prompt hints
 
@@ -234,6 +324,14 @@ class ModelsConfig:
 
     analysis: str = "anthropic/claude-sonnet-5"
     copy: str = "openai/gpt-5.6-luna"
+    # v2.2.0 (D49): the gauntlet's own role. It is a SEPARATE role from `analysis` rather than a
+    # reuse of it because the two do different jobs at different volumes — analysis transcribes
+    # source slides once per post, the critic panel judges every rendered frame up to three times
+    # per deck — so their model, their token ceiling and their price line must be movable
+    # independently. Runtime resolves `models.critic or models.analysis`, so a config that never
+    # names it still runs; `budget._ROLE_PRICE_KEY` maps it onto the `sonnet` price block, without
+    # which every critic call would price at $0 and the estimate would lie.
+    critic: str = "anthropic/claude-sonnet-5"
     # FR-280 (amended v2.1.0, then v2.1.3/D48): the TEXT-TO-IMAGE route is the default now (was
     # `gpt-image-2-image-to-image`). D46 took the style registry's reference images out of every
     # render job, so the common job carries no reference at all and the reference-bearing sibling
@@ -250,6 +348,20 @@ class ModelsConfig:
     image_profile: str = "gpt-image-2"  # FR-281 — changes only on a model FAMILY change
     video_profile: str = "seedance-2-5"
     reasoning_effort: Literal["low", "medium", "high"] = "low"  # `copy` role only (Luna)
+    # The CRITIC role's own effort knob (F5, Session 5.5). A sibling scalar rather than a role
+    # keyed dict because `reasoning_effort` above already ships as a plain scalar in every config
+    # on disk, and a config file is data (NFR-19): the key an operator has already written keeps
+    # its shape, and the role that needed its own answer gets its own row.
+    #
+    # The default is `low` because UNSET is the expensive setting, not the cheap one. With no
+    # `reasoning` param in the request at all, Sonnet-5 thinks at its own full effort and bills
+    # every one of those tokens inside `completion_tokens` (the same billing behaviour the
+    # `max_tokens` comment below describes) — which is how Session 5's acceptance run spent $1.30
+    # on critic calls the pre-flight had quoted at a fraction of that. `low` bounds the thinking
+    # without touching the answer's own token cap, which stays the safety valve. Living here
+    # rather than in the shipped YAMLs is deliberate: the bound then applies to every config
+    # written before the key existed, with no file edit.
+    critic_reasoning_effort: Literal["low", "medium", "high"] = "low"
     # DELIBERATELY EMPTY (spikes/RESULTS.md §E): neither shipped model advertises `temperature`,
     # and sending it under `provider.require_parameters` returns HTTP 404. The key survives for a
     # model that does support it; FR-129 as written needs a D15 amendment.
@@ -258,13 +370,21 @@ class ModelsConfig:
     # that originally sized it at 12000 are gone; FR-27 keeps the role for the check). The value
     # stays: `reasoning_effort` is None for this role yet OpenRouter still bills 0–3,057 Sonnet-5
     # reasoning tokens INSIDE `completion_tokens`, so even a short verdict needs real headroom.
-    max_tokens: dict[str, int] = field(default_factory=lambda: {"analysis": 12000, "copy": 3000})
+    # `critic` at 8000 (v2.2.0, FR-322): a critic answers with structured verdicts — up to 3
+    # defects a frame across up to 8 frames, each carrying a code, a zone, a confidence and 200
+    # characters of detail — and Sonnet bills its unbidden reasoning inside `completion_tokens`
+    # here exactly as it does for `analysis`. A truncated verdict is not a lenient verdict: it is
+    # an unparseable one, which drops the critic for the whole deck and degrades the gate.
+    max_tokens: dict[str, int] = field(
+        default_factory=lambda: {"analysis": 12000, "copy": 3000, "critic": 8000})
     # NFR-111 floors: below this a cap buys truncation retries as the normal path rather than
     # saving money, so a smaller value is clamped up and warned about. `copy` sits at a third of
     # its default; `analysis` at half its cap, because the floor has to clear the unbidden
-    # reasoning tokens billed inside `completion_tokens`, not merely clear zero.
+    # reasoning tokens billed inside `completion_tokens`, not merely clear zero. `critic` at half
+    # its cap for the same reason, sized so a minimum defect report still fits behind the
+    # reasoning tokens rather than being cut off mid-verdict.
     max_tokens_floor: dict[str, int] = field(
-        default_factory=lambda: {"analysis": 6000, "copy": 1000})
+        default_factory=lambda: {"analysis": 6000, "copy": 1000, "critic": 4000})
     price_per_unit: PriceTable = field(default_factory=PriceTable)
     # 600 (FR-259 as amended v2.1.3/D48, was 300, was 180): run 20260813_143420_oyo4 lost 11 of 30
     # image jobs at the 180 s ceiling and 300 s did not clear the tail. A slide's wall clock
@@ -455,6 +575,10 @@ class StylesConfig:
     (`styles.validate`, FR-314/FR-295) — a typo'd selector that quietly thinned the rotation would
     be indistinguishable from a deliberate one-style run.
 
+    `rotation` (v2.2.0) is the block's second per-run dial and sits here for the same reason: WHERE
+    the rotation starts is a fact about this run, not about the authored looks, so changing it must
+    not mean editing a style. It carries no style content either — it is one word naming an offset.
+
     The FR-314 amendment supersedes the D46/F3 tombstone that stood here (`styles.refs_per_job`,
     removed when a meta-style stopped shipping reference images). The tombstone's real claim —
     "the registry is never config" — still holds: this block names keys, it does not carry style
@@ -463,6 +587,14 @@ class StylesConfig:
 
     #: Style keys from `prompts/styles.yaml` this run may assign. Empty = all of them.
     enabled: list[str] = field(default_factory=list)
+    #: v2.2.0 (FR-291 as amended) — where the deterministic rotation STARTS. `seeded` (the default)
+    #: offsets it by a stable hash of the run id, so two runs of the same config do not open with
+    #: the same style and a daily batch stops walking the registry in the same marching order;
+    #: `fixed` pins the offset at 0, which is the pre-v2.2.0 rotation and the setting that makes a
+    #: $0 preview forecast the paid run's assignment key by key. Neither value changes the pool,
+    #: its FILE order, or the fact that within one run each pick is a pure function of
+    #: `entry.order` (`styles.assign_styles` / `styles.rotation_seed`).
+    rotation: Literal["seeded", "fixed"] = "seeded"
 
 
 @dataclass(slots=True)
@@ -587,6 +719,7 @@ def load_config(name: str | Path | None = None, *, configs_dir: Path | None = No
     _reject_interpolation(raw, path.name, "")
 
     ctx = _Ctx(file=path.name)
+    _migrate_run_keys(raw, ctx)
     cfg: Config = _build(Config, raw, "", ctx)
     cfg.name, cfg.path, cfg.description = path.stem, path, _describe(text, raw)
     cfg.platforms = _build_platforms(raw.get("platforms"), cfg.run.platforms, ctx)
@@ -594,6 +727,38 @@ def load_config(name: str | Path | None = None, *, configs_dir: Path | None = No
     _validate(cfg, ctx)
     cfg.defaults_applied, cfg.warnings = tuple(ctx.defaults), tuple(ctx.warnings)
     return cfg
+
+
+def _migrate_run_keys(raw: dict[str, Any], ctx: _Ctx) -> None:
+    """v2.2.0/D49: `run.vision_check` -> `run.gauntlet.enabled`, once, with one line to the operator.
+
+    The key is REMOVED from the schema, not merely deprecated — the FR-105 single-shot check it
+    switched no longer exists in any form (`vision_check.check()` is deleted, and `false` now means
+    *no post-render gate at all* rather than *fall back to the old one*). Every shipped config and
+    every operator's own file names it, so dropping it silently would (a) warn "unknown config key"
+    and (b) quietly turn a `vision_check: false` run into a GAUNTLETED one, which spends money the
+    file explicitly said not to spend. Aliasing it is therefore the honest migration and the safe
+    one: the boolean means the same thing, and the sentence says where it moved.
+
+    An explicit `run.gauntlet.enabled` always wins — a file that names both has already been
+    migrated and the old key is a leftover, so the new key is authoritative and the line says so.
+    """
+    run = raw.get("run")
+    if not isinstance(run, MutableMapping) or "vision_check" not in run:
+        return
+    legacy = bool(run.pop("vision_check"))
+    gauntlet = run.get("gauntlet")
+    if isinstance(gauntlet, MutableMapping) and gauntlet.get("enabled") is not None:
+        ctx.warn(f"run.vision_check is gone (v2.2.0/D49) and run.gauntlet.enabled "
+                 f"({bool(gauntlet['enabled'])}) is what this run uses — delete the old key")
+        return
+    if not isinstance(gauntlet, MutableMapping):
+        gauntlet = {}
+        run["gauntlet"] = gauntlet
+    gauntlet["enabled"] = legacy
+    ctx.warn(f"run.vision_check is gone (v2.2.0/D49) — the FR-105 single-shot check is replaced by "
+             f"the three-critic gauntlet, so this run reads it as run.gauntlet.enabled: "
+             f"{str(legacy).lower()}. Rename the key in your config to silence this")
 
 
 def list_configs(configs_dir: Path | None = None) -> list[ConfigSummary]:
@@ -737,6 +902,14 @@ _BOUNDS: dict[str, tuple[float, float, str]] = {
     "run.trend_history_days": (0, 365, "a whole number of days, 0–365 (0 disables the window)"),
     "run.max_trend_reuses_per_run": (1, 50, "a whole number of creatives per trend, 1–50"),
     "run.run_deadline_min": (1, 720, "a whole number of minutes, 1–720"),
+    # v2.2.0 (D49). `rounds_max` starts at 1 — a gate that never judges is `enabled: false`, not a
+    # zero here — while `rounds_max_image` legitimately allows 0: judge a standalone image and
+    # report, without ever paying for a second render of it.
+    "run.gauntlet.rounds_max": (1, 6, "a whole number of rounds per deck, 1–6"),
+    "run.gauntlet.rounds_max_image": (
+        0, 3, "a whole number of rounds, 0–3 (0 judges without ever re-rendering)"),
+    "run.gauntlet.deck_budget_usd": (
+        0.0, 2.00, "a number of dollars per deck, 0.00–2.00 (0 allows no re-render at all)"),
     "run.text_budgets.image_headline": (1, 400, "a character count, 1–400"),
     "run.text_budgets.image_subline": (1, 400, "a character count, 1–400"),
     "run.text_budgets.slide": (1, 400, "a character count, 1–400"),
@@ -909,7 +1082,8 @@ def _default_platform(name: str) -> PlatformConfig:
     """
     formats = ["image", "carousel", "reel"] if name in _REEL_PLATFORMS else ["image", "carousel"]
     return PlatformConfig(
-        formats=formats, carousel_slides=_PLATFORM_SLIDE_MAX.get(name, _DEFAULT_SLIDE_MAX))
+        formats=formats, carousel_slides=_PLATFORM_SLIDE_MAX.get(name, _DEFAULT_SLIDE_MAX),
+        min_carousel_panels=_PLATFORM_MIN_PANELS.get(name, _DEFAULT_MIN_PANELS))
 
 
 def _build_platforms(raw: Any, active: Sequence[str], ctx: _Ctx) -> dict[str, PlatformConfig]:
@@ -934,6 +1108,9 @@ def _build_platforms(raw: Any, active: Sequence[str], ctx: _Ctx) -> dict[str, Pl
         if entry.get("carousel_slides") is None:  # likewise per-platform: it is a platform ceiling
             ctx.defaults.append(f"platforms.{name}.carousel_slides")
             entry["carousel_slides"] = _default_platform(name).carousel_slides
+        if entry.get("min_carousel_panels") is None:  # and the floor at the other end of it
+            ctx.defaults.append(f"platforms.{name}.min_carousel_panels")
+            entry["min_carousel_panels"] = _default_platform(name).min_carousel_panels
         built[name] = _build(PlatformConfig, entry, f"platforms.{name}.", ctx)
     return built
 
@@ -997,6 +1174,19 @@ def _validate(cfg: Config, ctx: _Ctx) -> None:
         if not 1 <= entry.carousel_slides <= 20:
             ctx.fail(f"platforms.{name}.carousel_slides", entry.carousel_slides,
                      "a whole number of slides, 1–20")
+        # v2.2.0: the floor lives in the same bounds as the ceiling and may never cross it. A floor
+        # above the max is not a strict config, it is a platform that can bind NO post at all —
+        # every candidate is refused for having too few panels and too many at once — so it is
+        # refused at load rather than discovered as an empty plan after Collect has been paid for.
+        if not 1 <= entry.min_carousel_panels <= 20:
+            ctx.fail(f"platforms.{name}.min_carousel_panels", entry.min_carousel_panels,
+                     "a whole number of source panels, 1–20")
+        if entry.min_carousel_panels > entry.carousel_slides:
+            ctx.refuse(
+                f"platforms.{name}.min_carousel_panels is {entry.min_carousel_panels} but "
+                f"platforms.{name}.carousel_slides is {entry.carousel_slides} — the ASSIGN floor "
+                "cannot be above the platform's own hard max, or no source post is bindable for "
+                f"{name} at all; lower the floor or raise the max")
         if name == "instagram" and not 2 <= entry.carousel_slides <= 10:
             ctx.warn(  # SHOULD, not SHALL — Instagram's own ceiling (FR-257, 60 FR-221)
                 f"platforms.instagram.carousel_slides is {entry.carousel_slides}; Instagram "
@@ -1057,6 +1247,14 @@ def carousel_throughput_warning(cfg: Config) -> str | None:
     worst case would fire on every config ever loaded and teach the operator to skip the line.
     Real Virlo decks are 5–8 panels; the tail beyond that is what this is watching for.
 
+    THE GAUNTLET RIDES THE SAME CLOCK (v2.2.0/D49). Every wave above is the FIRST pass; a deck that
+    fails its critic panel re-renders its failing frames and is judged again, up to
+    `run.gauntlet.rounds_max` times, and those rounds are render waves like any other. Folding
+    `rounds_max × image_job_timeout_s` in here rather than raising a second warning is deliberate:
+    the operator has ONE deadline and one wall clock, and two advisories about the same minute
+    teach them to skip both. The sentence names the gauntlet's share explicitly so the remedy list
+    can include the knob that actually causes it.
+
     A nudge to re-check one pairing, not a scheduler model — which is why it warns rather than
     fails, and stays silent unless the projection genuinely clears the deadline.
     """
@@ -1076,19 +1274,35 @@ def carousel_throughput_warning(cfg: Config) -> str | None:
     # plan, and a projection that assumes every job times out twice would fire on the shipped
     # defaults at every load — teaching the operator to skip the line. The sentence still
     # states the doubled figure so the true ceiling is on record.
-    projected_s = waves * cfg.models.image_job_timeout_s
+    # v2.2.0: the gauntlet's fix rounds are render waves too, so they ride the SAME projection.
+    # `rounds_max - 1`, not `rounds_max`: round 1 renders nothing — it judges the frames the waves
+    # above already produced — and only rounds 2..N re-render. Failing frames re-render
+    # concurrently, so each of those rounds costs one image timeout, exactly like a wave.
+    #
+    # The shipped defaults land at precisely the deadline and therefore stay silent (4 waves + 2
+    # gauntlet rounds x 600 s = 60 min = run_deadline_min), which is the sizing the 45 -> 60 raise
+    # was chosen for. That is the bar this whole advisory is held to: it must fire on a config that
+    # genuinely cannot finish, and never on the one the tool ships with, or it teaches the operator
+    # to skip the line.
+    gauntlet_rounds = max(0, cfg.run.gauntlet.rounds_max - 1) if cfg.run.gauntlet.enabled else 0
+    gauntlet_s = gauntlet_rounds * cfg.models.image_job_timeout_s
+    projected_s = waves * cfg.models.image_job_timeout_s + gauntlet_s
     if projected_s <= cfg.run.run_deadline_min * 60:
         return None
     doubled_s = projected_s * _RESUBMIT_ATTEMPTS
+    gauntlet_clause = (
+        f", plus up to {gauntlet_rounds} gauntlet re-render round(s) "
+        f"(~{gauntlet_s // 60} min, run.gauntlet.rounds_max)" if gauntlet_rounds else "")
     return (f"a full-length {slide_max}-slide deck is ~{waves} render waves at "
-            f"models.max_inflight_render_jobs {lanes}, and at models.image_job_timeout_s "
+            f"models.max_inflight_render_jobs {lanes}{gauntlet_clause}, and at "
+            f"models.image_job_timeout_s "
             f"{cfg.models.image_job_timeout_s} s that is a worst case of "
             f"~{projected_s // 60} min for ONE carousel (~{doubled_s // 60} min if every job "
             f"also burns its FR-317 resubmit) — over run.run_deadline_min "
             f"{cfg.run.run_deadline_min} min, with {decks} planned. Renders already submitted "
             f"when the deadline fires are paid for and abandoned (20 §8); raise "
-            f"run_deadline_min, lower a platform's carousel_slides hard max, or shorten "
-            f"image_job_timeout_s")
+            f"run_deadline_min, lower a platform's carousel_slides hard max, lower "
+            f"run.gauntlet.rounds_max, or shorten image_job_timeout_s")
 
 
 def windows_violation(cfg: Config) -> str | None:

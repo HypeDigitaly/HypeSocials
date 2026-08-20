@@ -3,7 +3,8 @@
 Public API: `estimate(config, entries)` (10 FR-107, 30 NFR-18/FR-282) · `job_projection(config,
 entry, job)` (the expected cost of ONE submission) · `trim(config, entries, cap_usd)`
 (FR-28/FR-106) · `Budget(cap_usd)` with `fits`/`commit`/`reserve`/`release`/`reconcile`/`summary`
-(FR-106 a/b/c, FR-84/85) · `format_usd`.
+(FR-106 a/b/c, FR-84/85) · `critic_price_gap(config)` (pre-flight's "can the gauntlet be priced at
+all", FR-326) · `format_usd`.
 
 Invariants:
 - **No network, no clock.** The estimate is config arithmetic only, so it appears before any
@@ -54,12 +55,6 @@ _COPY_TOKENS_PER_SIBLING = 120  # FR-99's per-sibling brief inside the grouped c
 _FILTER_PROMPT_TOKENS = 400
 _FILTER_TOKENS_PER_TOPIC = 120
 _FILTER_VERDICT_TOKENS = 60
-#: vision_check_question.md grew a third question and the carrier now quotes each asset's locked
-#: text as the mismatch referent (v2.1.1 FR-27/FR-105) — a full deck can ride ~2 KB of expected
-#: text, so the old 250 under-counted the estimate the Confirm gate shows.
-_VISION_CHECK_PROMPT_TOKENS = 900
-_VISION_CHECK_COMPLETION_TOKENS = 200  # per-slide verdicts, not prose (FR-105)
-_VISION_CHECK_MIN_PX = 1536  # FR-105: check inputs are NEVER downscaled below this
 #: FR-306's slide-intelligence pass (D46 §0.11), role `analysis`: `slide_intel_question.md` plus
 #: the fixed carrier turn the slide images ride on, then one answer object per slide
 #: (`onimage_text` verbatim + an English `visual_brief` + `brand_marks`).
@@ -83,7 +78,39 @@ _RETRY_TOKEN_BUMP = 8192  # a retried call's cap grows by min(cap, this) ...
 _RETRY_TOKEN_CEILING = 16384  # ... and is then clamped here, which the estimate must not ignore
 #: Which `price_per_unit.llm.<key>` block prices each role. Keyed by ROLE, not by model id: a rate
 #: belongs to whatever model was configured when it was typed in, so a swap keeps it (FR-282).
-_ROLE_PRICE_KEY: dict[str, str] = {"analysis": "sonnet", "copy": "luna"}
+#: `critic` rides the `sonnet` block for the same reason `analysis` does — it is the same family of
+#: model doing a vision-plus-structured-output job — but it is its OWN role (30 §2/D49) so its
+#: model, its token ceiling and its price line move independently. Without this row
+#: `_llm_call_price` would raise `KeyError` on every critic line, and a row pointing nowhere would
+#: price the whole gauntlet at $0 — the estimate would then show a quality gate that costs nothing,
+#: which is the one estimator error that is never safe (D11).
+_ROLE_PRICE_KEY: dict[str, str] = {"analysis": "sonnet", "copy": "luna", "critic": "sonnet"}
+#: FR-326's per-call arithmetic (gauntlet spec §5), RE-BASED ON MEASUREMENT (F5, Session 5.5).
+#: The prompt side is the critic template plus the `DeckContract` blocks it carries (expected
+#: per-frame line blocks, required/forbidden marks, style DNA, layout zones); the completion side
+#: is up to 3 defect objects per frame across up to 8 frames PLUS the reasoning Sonnet bills
+#: inside `completion_tokens`.
+#:
+#: Both numbers were guesses (1,500 / 700) until Session 5's live acceptance run measured the real
+#: calls: ≈18,300 prompt and ≈5,000 completion tokens each. The old pair under-quoted the gate by
+#: an order of magnitude — $1.30 of critic spend the operator was never shown — and understating
+#: is the one estimator error that is never safe (D11).
+#:
+#: Two honest caveats, because a constant nobody can explain rots:
+#: - 18,300 is the measured WHOLE prompt side, and `_critic_call_price` still adds this deck's
+#:   own image tokens on top of it. That double-counts the frames the measured calls carried, so
+#:   the quote leans high by design — the safe direction, and cheaper to explain than a figure
+#:   split into "text part" and "image part" that no log line can ever confirm.
+#: - The completion side is RE-BASED on the promised second measurement (F5-tail, Session 5.6).
+#:   The provisional 5,000 was measured with the critic role sending no `reasoning` field at all,
+#:   i.e. Sonnet thinking at full effort inside `completion_tokens`. F5 then bound that role at
+#:   `models.critic_reasoning_effort: low`, and canary run `20260819_170148_2z4y` measured what
+#:   that is actually worth: 4,769 completion tokens across 11 critic calls, ≈434 a call. 1,000 is
+#:   the honest-high quote at ~2.3x the measurement — room for a deck that hands every critic
+#:   three defects on eight frames, without going back to quoting an order of magnitude of
+#:   headroom nobody spends. This number only ever moves against a measurement (D11).
+_CRITIC_PROMPT_TOKENS = 18300
+_CRITIC_COMPLETION_TOKENS = 1000
 _MICRO = 1_000_000
 _DEFAULT_ORIGIN = "built-in default"
 
@@ -241,12 +268,6 @@ def _llm_call_price(config: Config, role: str, prompt: int, completion: int, rea
     return (round(total, 8), key, unpriced[2], unpriced[3])
 
 
-def _check_price(config: Config, image_tokens: int) -> Priced:
-    """One vision-check call — inputs at NATIVE render resolution, never downscaled (FR-105)."""
-    return _llm_call_price(config, "analysis", _VISION_CHECK_PROMPT_TOKENS + image_tokens,
-                           _VISION_CHECK_COMPLETION_TOKENS, 0)
-
-
 def _line(code: str, label: str, category: SpendCategory, unit: str, quantity: float,
           priced: Priced, orders: Sequence[int], *, allowance: bool = False,
           blocking: bool = False) -> EstimateLine:
@@ -269,10 +290,11 @@ def estimate(config: Config, entries: Sequence[PlanEntry]) -> Estimate:
 
     Covered bullet by bullet (10 §9, FR-107 as amended v2.1.0): the batched topic-filter screen at
     its worst-case topic bound; **one slide-intelligence call per bound carousel source post**
-    (FR-306/§0.11 — post-Confirm spend, quoted before the gate); vision-check calls — one
-    multi-image call per deck carrying every slide's image tokens, plus a second call for the
-    anchor check; seed-frame renders and their checks; the compound moderation-retry +
-    vision-re-render allowance; the carousel anchor-failure N+1 contingency; check image tokens at
+    (FR-306/§0.11 — post-Confirm spend, quoted before the gate); seed-frame renders; the
+    moderation-retry allowance; **the gauntlet's critic panel and per-deck re-render budget**
+    (FR-326/spec §5 — `allowance=True` lines, displayed and worst-case provisioned, never gating,
+    and the ONLY post-render gate lines there are since D49 deleted the FR-105 `vision_check` row);
+    the carousel anchor-failure N+1 contingency; critic image tokens at
     native render resolution; a reasoning allowance on every Luna call plus FR-99's split
     per-creative calls; the FR-127 + FR-41 retry allowance on every LLM call; per-platform
     resolution; **carousel slides at each entry's own ASSIGN-fixed deck length** (§0.4′: the bound
@@ -296,6 +318,7 @@ def estimate(config: Config, entries: Sequence[PlanEntry]) -> Estimate:
     for entry in entries:
         _entry_lines(config, entry, lines)
     _llm_lines(config, entries, lines)
+    _gauntlet_lines(config, entries, lines)
 
     per_entry = {entry.order: 0.0 for entry in entries}
     for line in lines:
@@ -334,28 +357,33 @@ def _deck_slides(config: Config, entry: PlanEntry) -> int:
 
 
 def _entry_lines(config: Config, entry: PlanEntry, lines: list[EstimateLine]) -> None:
-    """Render lines, vision-check lines and worst-case allowances for ONE plan entry."""
+    """Render lines and the worst-case moderation allowance for ONE plan entry.
+
+    The post-render gate's own lines are NOT here: `_gauntlet_lines` quotes them once for the whole
+    plan (FR-326), as `allowance=True` rows that are displayed and provisioned and never gate a
+    creative (FR-106a).
+    """
     orders, run = (entry.order,), config.run
-    image_priced, native_px = _image_price(config, entry.platform)
-    slide_tokens = _image_tokens(max(native_px, _VISION_CHECK_MIN_PX), entry.aspect_ratio)
-    checked_images = 0  # how many images this entry sends to a vision check, if any
-    primary = image_priced  # what a moderation retry or a vision re-render would cost
+    image_priced, _native_px = _image_price(config, entry.platform)
+    primary = image_priced  # what a moderation retry would cost
 
     if entry.creative_format == "image":
         lines.append(_line("image_render", f"image render · {entry.asset_id}",
                            SpendCategory.RENDER, "render", 1, image_priced, orders))
-        checked_images = 1
     elif entry.creative_format == "carousel":
         slides = _deck_slides(config, entry)
         lines.append(_line("carousel_slides", f"carousel slides ({slides}) · {entry.asset_id}",
                            SpendCategory.RENDER, "render", slides, image_priced, orders))
-        checked_images = slides
         if run.carousel_anchor:
-            # Slide 1 failing falls the deck back to N independent renders and the failed slide-1
-            # job is still billed — worst case N+1, carried by the estimate, not discovered.
+            # TWO units, not one (v2.2.0). FR-95's anchor-failure shape gained a step: a dead
+            # anchor now buys ONE fresh anchor attempt before the deck falls back to N independent
+            # reference-free renders, so the worst case is the failed slide-1 job PLUS the failed
+            # re-anchor PLUS the N-render burst — N+2 billed renders, not N+1. Both extra jobs are
+            # billed on submission whether or not they land (FR-106), so the estimate carries them
+            # rather than letting the second one surface as an overrun on a paid run.
             lines.append(_line("anchor_contingency_allowance",
                                f"carousel anchor-failure contingency · {entry.asset_id}",
-                               SpendCategory.RENDER, "render", 1, image_priced, orders,
+                               SpendCategory.RENDER, "render", 2, image_priced, orders,
                                allowance=True))
     else:  # reel
         reel_priced: Priced = (config.reel_price_per_second, config.reel_price_key,
@@ -371,7 +399,6 @@ def _entry_lines(config: Config, entry: PlanEntry, lines: list[EstimateLine]) ->
         if run.reel_overlay_text == "seed_frame":
             lines.append(_line("reel_seed_frame", f"reel seed frame · {entry.asset_id}",
                                SpendCategory.RENDER, "render", 1, image_priced, orders))
-            checked_images = 1
         else:
             primary = reel_priced
         lines.append(_line(
@@ -379,30 +406,15 @@ def _entry_lines(config: Config, entry: PlanEntry, lines: list[EstimateLine]) ->
             f"reel clip ({run.reel_duration_s}s @ {run.reel_resolution}) · {entry.asset_id}",
             SpendCategory.RENDER, "second", run.reel_duration_s, reel_priced, orders))
 
-    check_priced: Priced | None = None
-    if run.vision_check and checked_images:
-        # FR-105: ONE multi-image call per deck, priced with EVERY slide's image tokens.
-        check_priced = _check_price(config, slide_tokens * checked_images)
-        lines.append(_line("vision_check",
-                           f"vision check ({checked_images} images) · {entry.asset_id}",
-                           SpendCategory.LLM, "call", 1, check_priced, orders))
-        if entry.creative_format == "carousel" and run.carousel_anchor:
-            lines.append(_line("vision_check_anchor", f"anchor vision check · {entry.asset_id}",
-                               SpendCategory.LLM, "call", 1, _check_price(config, slide_tokens),
-                               orders))
-
-    # FR-107's retry allowance is COMPOUND per checked asset: one moderation retry (FR-97) AND one
-    # vision-check re-render (FR-105) — independent failure classes, so both are carried.
+    # FR-107's moderation retry (FR-97) — the one retry class that is not the gauntlet's. The
+    # FR-105 `vision_check` / `vision_check_anchor` call lines and the `vision_retry_allowance`
+    # that rode beside them are DELETED with the machinery they priced (v2.2.0/D49): the
+    # post-render gate is `_gauntlet_lines` below, which quotes the critic panel and the per-deck
+    # re-render budget as `allowance=True` rows. Leaving the old lines in would bill the operator's
+    # estimate twice for one gate — once for a check that no longer exists.
     lines.append(_line("moderation_retry_allowance",
                        f"moderation retry allowance · {entry.asset_id}",
                        SpendCategory.RENDER, "retry", 1, primary, orders, allowance=True))
-    if check_priced is not None:
-        both = (None if primary[0] is None or check_priced[0] is None
-                else round(primary[0] + check_priced[0], 8))
-        lines.append(_line("vision_retry_allowance",
-                           f"vision-check re-render allowance (render + re-check) · {entry.asset_id}",
-                           SpendCategory.RENDER, "retry", 1, (both, *primary[1:]), orders,
-                           allowance=True))
 
 
 def _widened_cap(out: int) -> int:
@@ -573,10 +585,21 @@ def _llm_lines(config: Config, entries: Sequence[PlanEntry], lines: list[Estimat
     estimator fidelity fix). Over-stating is the safe direction; under-stating is the one
     unacceptable estimator error (D11).
 
+    **D54 compress mode needs no line and no factor here, and that is measured rather than
+    assumed.** Every copy call is already billed at the FULL `max_tokens.copy` completion ceiling
+    below, so a compressed answer — which is longer than a list of `P1.panel.3` labels — is inside
+    a number this estimator already charges for; its prompt side is comparable to the verbatim
+    candidate table, since both carry the same post's panels. The one shape that issues a SECOND
+    call is a MIXED group (some creatives compressing, some selecting), which `copywrite`
+    partitions by mode: it cannot arise under the shipped all-carousel configs, where every entry
+    of a topic is a bound deck and the partition is therefore whole. Should mixed groups ever
+    become normal, this is the line that has to double for them.
+
     The style-brief analysis line that used to live here is gone (v2.0.0/D41): the visual authority
     is the local meta-style registry, so no LLM is asked what a trend looks like. The `analysis`
-    ROLE survives as the vision check's role and is priced in `_entry_lines` via `_check_price`
-    (FR-27/FR-105) — the model, the key and the max-tokens budget all keep working.
+    ROLE survives as the slide-intelligence pass's role (FR-306) — the model, the key and the
+    max-tokens budget all keep working — and the post-render gate rides its own `critic` role
+    (v2.2.0/D49), priced in `_gauntlet_lines`.
     """
     planned = [e for e in entries
                if not (e.creative_format == "reel" and not config.reels_plannable)]
@@ -632,6 +655,163 @@ def _llm_lines(config: Config, entries: Sequence[PlanEntry], lines: list[Estimat
     lines.append(_line("copy_split_allowance",
                        f"split per-creative copy allowance ({split_calls})", SpendCategory.LLM,
                        "call", split_calls, split, [e.order for e in planned], allowance=True))
+
+
+# --------------------------------------------------------------------------- the gauntlet
+
+
+def _gauntlet_frames(config: Config, entry: PlanEntry) -> int:
+    """How many rendered frames this creative hands the critic panel — 0 when it is not judged.
+
+    A carousel is judged as a DECK (one multi-image call carrying every slide, spec §2), a
+    standalone image is its one render, and a reel contributes its SEED FRAME only: the finished
+    video is out of gauntlet scope (spec §7), so a reel whose overlay text is not a seed frame
+    renders nothing the panel can look at and is quoted nothing.
+    """
+    if entry.creative_format == "carousel":
+        return _deck_slides(config, entry)
+    if entry.creative_format == "image":
+        return 1
+    return 1 if config.run.reel_overlay_text == "seed_frame" else 0
+
+
+def _gauntlet_rounds(config: Config, entry: PlanEntry) -> int:
+    """Judging rounds this creative can buy — `rounds_max` for decks, `rounds_max_image` otherwise.
+
+    Clamped up to 1 because `rounds_max_image: 0` means "judge and report, never re-render" (30 §2)
+    rather than "do not judge": the panel still runs once, and that call is still paid for. The
+    re-render half of that distinction is `_gauntlet_rerenders`.
+    """
+    gauntlet = config.run.gauntlet
+    rounds = (gauntlet.rounds_max if entry.creative_format == "carousel"
+              else gauntlet.rounds_max_image)
+    return max(1, int(rounds))
+
+
+def _gauntlet_rerenders(config: Config, entry: PlanEntry) -> bool:
+    """Can this creative actually spend its `deck_budget_usd`, or only ever be judged?
+
+    Spec §2's loop breaks at `if round == rounds_max`, so re-renders exist only from round 2
+    onwards. At the shipped defaults that makes decks (3 rounds) re-renderable and standalone
+    images and seed frames (1 round) not — quoting the $0.30 cap for a frame that can never buy a
+    second render would inflate the worst case with money the loop cannot reach.
+    """
+    gauntlet = config.run.gauntlet
+    rounds = (gauntlet.rounds_max if entry.creative_format == "carousel"
+              else gauntlet.rounds_max_image)
+    return int(rounds) >= 2
+
+
+def _critic_call_price(config: Config, entry: PlanEntry, frames: int) -> Priced:
+    """ONE critic's ONE round over `frames` rendered images (spec §5's frozen arithmetic).
+
+    Images are priced at the platform's NATIVE render tier — these are the frames we just paid to
+    render, attached at the size they came back at — which is why an 8-frame 4:5 deck at the `1k`
+    tier lands on ≈1,119 tokens/frame, ≈27k input on top of the measured prompt side, and ≈$0.10 a
+    call (F5's re-base; the pre-measurement figure was ≈$0.028). A `2k` deck costs materially more
+    per call and the operator sees that in this line rather than in the invoice.
+
+    The completion side is `_CRITIC_COMPLETION_TOKENS`, bounded by `max_tokens.critic` (30 §2): a
+    cap set below the report's real size cannot make the call cheaper than the cap allows.
+    Reasoning is priced at 0 not because the critic does none — `models.critic_reasoning_effort`
+    bounds it at `low`, it does not switch it off — but because Sonnet bills its thinking INSIDE
+    `completion_tokens`, so those tokens are already inside the measured completion constant. A
+    separate reasoning line would charge them twice, and `price_per_unit.llm.sonnet` carries no
+    `reasoning_per_mtok` rate to charge them with. A per-critic `model` override does not change
+    the rate either: prices belong to the role's price block, not to a model id (FR-282).
+    """
+    _, native_px = _image_price(config, entry.platform)
+    return _llm_call_price(
+        config, "critic", _CRITIC_PROMPT_TOKENS + frames * _image_tokens(native_px,
+                                                                        entry.aspect_ratio),
+        min(config.max_tokens_for("critic"), _CRITIC_COMPLETION_TOKENS), 0)
+
+
+def _gauntlet_lines(config: Config, entries: Sequence[PlanEntry],
+                    lines: list[EstimateLine]) -> None:
+    """FR-326/spec §5: `Σ deck_budget_usd + decks x critics x rounds x est_call_usd`, ALL allowance.
+
+    Two line kinds, one per creative and one for the plan:
+
+    - `gauntlet_critics` — the panel's LLM spend, `enabled critics x rounds` calls at this
+      creative's own frame count. Deliberately the worst case: FR-324's round-2 scoping means
+      rounds 2 and 3 re-judge only the re-rendered frames for `brief`/`craft` (~55-60 % cheaper in
+      practice), and a deck that passes round 1 — the common case — buys one round, not three.
+    - `gauntlet_rerender_allowance` — the per-deck re-render cap itself, quoted once per creative
+      that can reach round 2. It is a REAL gate inside `RerenderFn`, so the cap IS the worst case;
+      the estimator does not need to guess how many frames fail.
+
+    Both carry `allowance=True`, which is the whole point of the line kind and the acceptance test
+    FR-106a pins: the gauntlet is **displayed** in the worst case and **provisioned** for, and it
+    never enters `expected_usd`, never moves a per-entry share, and therefore can never trim a
+    creative out of the plan. A quality gate that deletes the creative it was meant to improve is
+    the failure mode this rule exists to prevent.
+
+    Nothing is quoted when nothing will be judged: `gauntlet.enabled: false` is the rollback knob
+    (no gate at all), every critic disabled is the same thing by another route, and a creative that
+    hands the panel no frame (a reel without a seed frame) buys no call.
+    """
+    gauntlet = config.run.gauntlet
+    if not gauntlet.enabled:
+        return
+    critics = sum(1 for critic in gauntlet.critics.values() if critic.enabled)
+    if critics <= 0:
+        return
+    rerendering: list[PlanEntry] = []
+    for entry in entries:
+        if entry.creative_format == "reel" and not config.reels_plannable:
+            continue  # FR-131 blocked it at planning time; it renders nothing to judge
+        frames = _gauntlet_frames(config, entry)
+        if frames <= 0:
+            continue
+        rounds = _gauntlet_rounds(config, entry)
+        lines.append(_line(
+            "gauntlet_critics",
+            f"gauntlet critic panel ({critics} critic(s) x {rounds} round(s), {frames} frame(s)) "
+            f"· {entry.asset_id}",
+            SpendCategory.LLM, "call", critics * rounds,
+            _critic_call_price(config, entry, frames), (entry.order,), allowance=True))
+        if _gauntlet_rerenders(config, entry):
+            rerendering.append(entry)
+    if not rerendering or gauntlet.deck_budget_usd <= 0:
+        return  # `deck_budget_usd: 0.00` legally means "judge, never re-render" — not an unset rate
+    key = "run.gauntlet.deck_budget_usd"
+    priced: Priced = (gauntlet.deck_budget_usd, key, _origin(config, key), config.models.image)
+    lines.append(_line(
+        "gauntlet_rerender_allowance",
+        f"gauntlet re-render budget ({len(rerendering)} x {format_usd(gauntlet.deck_budget_usd)} "
+        "per-deck cap)",
+        SpendCategory.RENDER, "retry", len(rerendering), priced,
+        [entry.order for entry in rerendering], allowance=True))
+
+
+def critic_price_gap(config: Config) -> str | None:
+    """Does the enabled gauntlet have a real rate to price its critic calls with? (FR-282/FR-326)
+
+    Pre-flight's predicate — the one place that answers "will the Confirm gate tell the truth about
+    the quality gate", exported here because `_ROLE_PRICE_KEY` and the rate table are this module's
+    business and no caller may re-derive them. Returns the whole sentence to report, or `None` when
+    the block is priced or when nothing will be judged (`gauntlet.enabled: false`, or every critic
+    switched off — an estimate for work that never happens needs no rate).
+
+    The caller GRADES it. The estimator's convention is that an unpriced line reports and never
+    refuses (FR-282; only FR-131's unpriced reel blocks), so this belongs in `warnings`: the run
+    can still deliver, it just cannot quote its critic spend, and the governance banner already
+    counts the line. It is a warning worth having because the gauntlet is the larger half of the
+    worst case — an operator reading a $0 quality gate is reading a number that will not hold.
+    """
+    gauntlet = config.run.gauntlet
+    if not gauntlet.enabled or not any(critic.enabled for critic in gauntlet.critics.values()):
+        return None
+    table_key = _ROLE_PRICE_KEY["critic"]
+    key = f"models.price_per_unit.llm.{table_key}"
+    rates = config.models.price_per_unit.llm.get(table_key) or {}
+    missing = [name for name in ("input_per_mtok", "output_per_mtok") if not rates.get(name)]
+    if not missing:
+        return None
+    return (f"models.critic ({config.models.critic}) has no usable rate: {key} is missing "
+            f"{', '.join(missing)} — every gauntlet critic call prices at $0, so the worst case "
+            "shown at the Confirm gate understates this run (FR-282/FR-326)")
 
 
 # --------------------------------------------------------------------------- trimming
@@ -864,7 +1044,7 @@ class Budget:
                       asset_id: str | None = None) -> Reservation | None:
         """FR-106c: atomically claim discretionary spend, or return `None` if it does not fit.
 
-        The only spend the cap can still decline — vision-check re-renders, moderation retries,
+        The only spend the cap can still decline — gauntlet fix re-renders, moderation retries,
         LLM retries. Decide-and-debit happen under one lock, so concurrent callers can never
         jointly exceed the cap. `None` means "do not submit"; there is no partial reservation.
         """
@@ -971,6 +1151,6 @@ class Budget:
 
 __all__ = [
     "Budget", "Estimate", "EstimateLine", "Priced", "Reservation", "ReservationKind",
-    "ReservationState", "SpendCategory", "SpendRow", "SpendSummary", "TrimResult", "estimate",
-    "format_usd", "job_projection", "trim",
+    "ReservationState", "SpendCategory", "SpendRow", "SpendSummary", "TrimResult",
+    "critic_price_gap", "estimate", "format_usd", "job_projection", "trim",
 ]

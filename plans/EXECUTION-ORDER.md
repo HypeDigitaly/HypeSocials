@@ -340,6 +340,41 @@ plans/xmasterplan-slideshow-fidelity.md.
 
 ---
 
+# SESSION H — Carousel Copy Compress Mode + Style Doubling-Down (v2.3.0, D54/D55)
+
+**Goal: operator-toggled compress+humanize copy mode for panel-mapped carousels; style registry
+doubled down to 4 keys incl. the new `quiet-luxury-night-photoreal` style.**
+
+```
+/xecutor Read plans/SESSION-5.8-CLOSEOUT.md first, then execute ALL waves of
+plans/xmasterplan-compress-mode-and-style-doubledown.md (SESSION H).
+
+  W1  PRD amendments FIRST (D15): D54+D55 rulings, FR-331/332/333 blocks,
+      FR-99/100/101/302/303/304(d) amendments, FR-73 meta keys, FR-56 six prompts,
+      FR-259, FR-133, diagram rebuild + amendment log v2.3.0
+  W2  Code: C-a python-pro config/cli/menu (carousel_copy_mode key + compress pinned in the
+      three brand configs, --copy-mode flag, wizard step + wizard_help)
+      · C-b python-pro copywrite core (mode threading, group split by mode, _call_compress,
+        _compressed_deck ONE-walk texts+panel_map, quoted=() receipts, fallback to the
+        verbatim mapped deck) + models.CopyCompressed + AssetRecord.copy_mode + runner
+        + console surfaces (runner:925, previews:356, preflight:605/622, FR-297c block)
+      · C-c prompt-engineer (copy_compress_system.md + _BUILT_INS twin + _ALLOWLIST row
+        + _budget_line compress branch; vendor prompts/humanizer_skill.md from
+        github.com/blader/humanizer SKILL.md, MIT, verbatim)
+  W3  Styles, SAME change: author quiet-luxury-night-photoreal in prompts/styles.yaml
+      + styles.enabled 4-key list in all three brand configs
+  W4  Tests re-base (copywrite, copy_verbatim_filter, config, menu, styles, prompts_engine,
+      template_parity, gauntlet dry-run one-walk invariant, gallery marker, console_inventory,
+      preflight/previews wordings) · conductor: CLAUDE.md glossary D54 carve-out + NAVIGATION.md
+  W5  (operator present, cheapest first): pytest -> --list-monitors / --preview-sources ($0)
+      -> --preview-analysis (LLM-only: compressed texts within min(config,style) budgets,
+      source language kept, humanized, no handles/URLs) -> ONE paid run (2 carousels, low cap)
+      -> meta.yaml / gallery / gauntlet inspection (zero translated/identity_leak, no
+      missing_text) -> SESSION-H-CLOSEOUT.md
+```
+
+---
+
 ## Standing rules for every session
 
 Restate these verbatim in every subagent prompt — they have been load-bearing on this project:

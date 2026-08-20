@@ -1,4 +1,4 @@
-"""The interactive wizard — the action choice and four prompts between `run.bat` and a run.
+"""The interactive wizard — the action choice and five prompts between `run.bat` and a run.
 
 Module contract
 ---------------
@@ -12,12 +12,13 @@ Public API: `Console` · `MenuResult` · `run_menu()` · `await offer_reduced_pl
 Invariants:
 - **Numbers and Enter, never spelling** (30 §4): every prompt shows the value in effect and takes
   a bare Enter to keep it (FR-57); a bad answer re-asks instead of guessing intent.
-- **Five inputs, and the counter derives from the live ones** (FR-300/NFR-16): config, counts,
-  cap, briefs, confirm. `_live_steps()` is the ordered list; `_step()` reads a step's position
-  out of it. No call site ever types a counter — a step a run does not ask is absent from the
-  list, and numerator and denominator move together. (v2.0.0 deleted two steps this way: the
-  source picker, because Virlo is the only source, and the mode picker, because generation has
-  no modes.)
+- **Six inputs, and the counter derives from the live ones** (FR-56/FR-300/NFR-16): config,
+  counts, copy mode, cap, briefs, confirm. `_live_steps()` is the ordered list; `_step()` reads a
+  step's position out of it. No call site ever types a counter — a step a run does not ask is
+  absent from the list, and numerator and denominator move together. (v2.0.0 deleted two steps
+  this way: the source picker, because Virlo is the only source, and the mode picker, because
+  generation has no modes. v2.3.0/D54 added one, the carousel copy mode, and it is the first step
+  that is *conditional*: it exists only for a run that plans carousels — FR-333.)
 - **Every step explains itself** (FR-284) from `wizard_help.md` — purpose lines on every run,
   fuller prose on `?`. `?` **re-asks**: returning the pre-fill instead would validate on the cap,
   counts and briefs steps and silently advance three steps.
@@ -71,11 +72,20 @@ _HELP: dict[str, str] = {}
 _FORMATS = ("image", "carousel", "reel")
 _PLURAL = {"image": "images", "carousel": "carousels", "reel": "reels"}
 _COUNT_KEYS = {**{name: name for name in _FORMATS}, **{v: k for k, v in _PLURAL.items()}}
-#: NFR-16's five inputs, in ask order — the ONE source of every `n/N` counter (FR-300). The keys
+#: FR-56's six inputs, in ask order — the ONE source of every `n/N` counter (FR-300). The keys
 #: are also `wizard_help.md`'s section names (`purpose.<key>` and `<key>`).
-_WIZARD_STEPS = ("config", "counts", "cap", "briefs", "confirm")
+_WIZARD_STEPS = ("config", "counts", "copy_mode", "cap", "briefs", "confirm")
 #: `--quick` / action [2] asks nothing before the price (FR-285), so one live step remains.
 _QUICK_STEPS = ("confirm",)
+#: What the copy-mode step accepts (FR-333): the two keys 30 §4 promises, plus the words they
+#: stand for, because the prompt's pre-fill IS the word currently in effect (FR-57) and a bare
+#: Enter therefore hands that word straight back.
+_COPY_MODES = {"1": "verbatim", "verbatim": "verbatim", "2": "compress", "compress": "compress"}
+#: Each mode in one clause, for the confirm notice's copy-mode line (FR-333). What the mode DOES
+#: to the slides, not what it is called: "compress" alone tells an operator nothing about whether
+#: the words on the frames will still be the post's own.
+_COPY_MODE_NOTES = {"verbatim": "panels render as the post wrote them",
+                    "compress": "panels shortened to the style budget"}
 _PREFERRED_CONFIGS = ("hypedigitaly", "default")  # shipped picker default (30 §2 §Niche packs)
 _BRIEF_SUFFIXES = (".yaml", ".yml", ".md", ".txt")
 _RATING_PROMPT = ("Fidelity of this batch to its trends? "
@@ -151,7 +161,7 @@ def run_menu(base: cli.Options | None = None, *, console: Console | None = None,
     Args:
         base: options from any flags supplied without `--yes`. They pre-fill the prompts instead
             of the raw config (30 §5); what the wizard never asks (`--platforms`,
-            `--vision-check`) survives untouched.
+            `--gauntlet`/`--no-gauntlet`) survives untouched.
         console: I/O seam, defaulting to real `input`/`print`.
         configs_dir: override the `configs/` folder (tests).
     """
@@ -176,6 +186,14 @@ def run_menu(base: cli.Options | None = None, *, console: Console | None = None,
         if config is None:
             return None
         _pick_counts(io, config, steps)
+        # FR-333: the copy-mode step exists only for a run that plans carousels, and the counts
+        # prompt above is where that number is finally settled — so the live list is re-derived
+        # HERE, once, rather than guessed before a config was even chosen. The two counters
+        # already printed state the wizard's full six-step shape, which is the honest prediction
+        # for every shipped config (all of them are all-carousel); an images-only answer shortens
+        # the list from this point on rather than leaving a hole in the numbering.
+        steps = _live_steps(quick=False, carousels=config.run.formats.get("carousel", 0))
+        _pick_copy_mode(io, config, steps)
         _pick_cap(io, config, steps)
         briefs = _pick_briefs(io, config, opts, steps)
         _say_confirm_ahead(io, config, steps)
@@ -185,7 +203,7 @@ def run_menu(base: cli.Options | None = None, *, console: Console | None = None,
         return None
 
 
-def _live_steps(*, quick: bool) -> tuple[str, ...]:
+def _live_steps(*, quick: bool, carousels: int = 1) -> tuple[str, ...]:
     """The steps THIS run actually asks, in ask order — the only source of an `n/N` counter.
 
     FR-300: counters are DERIVED from a position in this list, never typed at the call site. A
@@ -193,11 +211,20 @@ def _live_steps(*, quick: bool) -> tuple[str, ...]:
     never disagree — which is exactly what broke when v2.0.0 deleted two of the seven steps while
     seven call sites still printed a hardcoded seven-step counter.
 
-    The one branch today is `--quick` / action [2], which asks nothing before the price (FR-285)
-    and so runs with the confirm notice alone. A future config-disabled step joins by filtering
-    this list here and nowhere else.
+    Two branches today, and this is the one place either is expressed:
+
+    - `--quick` / action [2] asks nothing before the price (FR-285) and runs with the confirm
+      notice alone.
+    - `carousels` is how many carousels the run plans, and 0 drops the copy-mode step (FR-333):
+      `run.carousel_copy_mode` governs bound carousel decks and nothing else, so on an
+      images-and-reels run it is a question whose answer cannot reach a single creative. The
+      default of 1 means "assume the wizard will ask everything", which is what the two steps
+      ahead of the counts prompt have to assume — the carousel count is not settled until that
+      prompt is answered, and every shipped config plans carousels.
     """
-    return _QUICK_STEPS if quick else _WIZARD_STEPS
+    if quick:
+        return _QUICK_STEPS
+    return tuple(key for key in _WIZARD_STEPS if key != "copy_mode" or carousels > 0)
 
 
 def _pick_action(io: Console) -> str:
@@ -287,15 +314,26 @@ def _say_confirm_ahead(io: Console, config: Config, steps: Sequence[str]) -> Non
     "(off)" to it. This is the last screen before money moves, and a line reading
     `brand hypelead · ratio 0.50` on a run that will sign nothing is a false statement about the
     creatives the operator is about to buy. The key name is printed because it is the cure.
+
+    The copy-mode line (FR-333) appears on the same terms and for the same reason, whenever this
+    run plans carousels: compress is what decides whether a deck ships its source panels or a
+    shortened rewrite of them, and it is the one answer above that changes what the slides SAY
+    rather than how many there are. `--quick` reaches this notice too, having asked nothing — so
+    for that path this line is the only place the mode is stated before the price.
     """
     minutes = "5-8 minutes" if config.run.formats.get("reel", 0) else "about 3 minutes"
     branding = config.branding
     brand_line = (f"brand {branding.brand} · ratio {branding.brand_ratio:.2f} · {branding.mode}"
                   " · config, not asked" if branding.enabled else
                   "branding: off (branding.enabled: false) · no wordmark on any creative")
-    _step(io, steps, "confirm", f"A run of this shape takes {minutes}, and everything",
-          "it makes lands under " + _fit(config.output.dir.rstrip("/\\"), 40) + "/<run id>/",
-          _fit(brand_line, _FACTS_WIDTH))
+    facts = [f"A run of this shape takes {minutes}, and everything",
+             "it makes lands under " + _fit(config.output.dir.rstrip("/\\"), 40) + "/<run id>/",
+             _fit(brand_line, _FACTS_WIDTH)]
+    if config.run.formats.get("carousel", 0):
+        mode = config.run.carousel_copy_mode
+        facts.append(_fit(f"carousel copy mode: {mode} - {_COPY_MODE_NOTES[mode]}",
+                          _FACTS_WIDTH))
+    _step(io, steps, "confirm", *facts)
 
 
 def _pick_config(io: Console, opts: cli.Options, steps: Sequence[str],
@@ -523,8 +561,39 @@ def _pick_counts(io: Console, config: Config, steps: Sequence[str]) -> None:
         return
 
 
+def _pick_copy_mode(io: Console, config: Config, steps: Sequence[str]) -> None:
+    """Step 3 (D54/FR-333/FR-284): how a bound deck's source panels reach our slides.
+
+    Returns without asking — and without printing — when `copy_mode` is not a live step, which is
+    `_live_steps`' way of saying this run plans no carousels (FR-333). The guard lives here rather
+    than at the call site so that "when is this asked" is one fact in one place: `_live_steps`
+    decides, the step obeys, and `run_menu` reads as the flat sequence 30 §4 describes.
+
+    The pre-fill is the WORD in effect, not the key that selects it (FR-57: the value currently in
+    effect is what a prompt must show, and a bare Enter hands it straight back), while `1` and `2`
+    are accepted because 30 §4 promises them — the same number-or-name leniency the briefs step
+    already offers.
+    """
+    if "copy_mode" not in steps:
+        return
+    while True:
+        _step(io, steps, "copy_mode",
+              "[1] verbatim - each source panel's own words, rendered as they stand",
+              "[2] compress - the same panel, shortened to the style's budget and"
+              "\n         humanised, still in the source post's own language",
+              f"in effect: {config.run.carousel_copy_mode}")
+        answer = io.prompt("  pick a copy mode", config.run.carousel_copy_mode,
+                           help_key="copy_mode")
+        mode = _COPY_MODES.get(answer.strip().lower())
+        if mode is None:
+            io.say(f"  '{_fit(answer, 20)}' is not 1 (verbatim) or 2 (compress)")
+            continue
+        config.run.carousel_copy_mode = mode  # type: ignore[assignment]
+        return
+
+
 def _pick_cap(io: Console, config: Config, steps: Sequence[str]) -> None:
-    """Step 3 (D11/FR-284): the run's spend cap, VALIDATED against the one price floor.
+    """Step 4 (D11/FR-284): the run's spend cap, VALIDATED against the one price floor.
 
     No plan estimate here, deliberately. The floor is `Config.min_single_creative_usd` READ, never
     recomputed; a second estimator would need plan entries that do not exist yet, would omit the
@@ -551,7 +620,7 @@ def _pick_cap(io: Console, config: Config, steps: Sequence[str]) -> None:
 
 def _pick_briefs(io: Console, config: Config, opts: cli.Options,
                  steps: Sequence[str]) -> tuple[tuple[str, int], ...]:
-    """Step 4 (FR-171/D26/FR-284): names and counts only — never blocks, blank Enter is none."""
+    """Step 5 (FR-171/D26/FR-284): names and counts only — never blocks, blank Enter is none."""
     folder = Path(config.briefs_dir)
     names = _brief_names(folder)
     _step(io, steps, "briefs")
@@ -609,14 +678,18 @@ def _options_from(opts: cli.Options, config: Config,
 
     `notion` is carried over from the resolved config rather than from a prompt: it is not a
     wizard question any more (FR-300 withdrew the mode/Notion step), but it still has a flag, so
-    the round-trip stays exact. The source list stopped travelling entirely at W3.5 — Virlo is
-    the only source and `sources.active` is a config-file fact with no flag twin left.
+    the round-trip stays exact. `copy_mode` travels the same way and for the same reason — the
+    copy-mode step (FR-333) writes its answer onto `config.run`, and reading it back off the
+    config here covers both doors at once: the step that asked, and the quick path that did not.
+    The source list stopped travelling entirely at W3.5 — Virlo is the only source and
+    `sources.active` is a config-file fact with no flag twin left.
     """
     return replace(
         opts, action=cli.Action.RUN, config_name=config.name,
         counts={name: int(config.run.formats.get(name, 0)) for name in _FORMATS},
         budget_usd=config.run.spend_cap_usd,
-        notion=config.run.notion_influence, briefs=briefs, yes=False)
+        notion=config.run.notion_influence,
+        copy_mode=config.run.carousel_copy_mode, briefs=briefs, yes=False)
 
 
 # --------------------------------------------------------------------------- post-plan prompts
