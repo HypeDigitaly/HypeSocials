@@ -34,7 +34,7 @@ from typing import Any
 import pytest
 
 from hypesocials import gauntlet, prompts_engine, render, styles
-from hypesocials.config import BrandingConfig, Config
+from hypesocials.config import BrandingConfig, Config, PlatformConfig
 from hypesocials.generate import reel
 from hypesocials.generate import refs as refs_module
 from hypesocials.models import (
@@ -908,3 +908,55 @@ async def test_kie_out_of_credits_is_latched_and_packaged(tmp_path: Path) -> Non
     assert env.credits_exhausted is True
     assert record.status is AssetStatus.FAILED
     assert "kie_credits_exhausted" in (record.skip_reason or "")
+
+
+# ---- D60 ------------- FR-342: the seed frame is an IMAGE job; the clip is not, and never was
+
+
+async def test_fr342_the_seed_frame_and_its_gauntlet_fix_ride_the_platforms_image_tier(
+    tmp_path: Path,
+) -> None:
+    """The last two of FR-342's five image sites, and the one place the two vocabularies meet.
+
+    A reel chain submits TWO different kinds of job on one entry: the seed frame is a GPT Image 2
+    render, priced and submitted at `platforms.<name>.image_resolution` like any other image, and
+    the clip is Seedance, priced per second and submitted at `run.reel_resolution`. Two keys, two
+    enums, two price tables — and one `RenderParams.resolution` field carrying both. That is why
+    this test asserts all three values in one place: a wire-in that reached for the wrong accessor
+    would send `720p` to the image model or `2k` to the video model, and neither is a value the
+    other provider has ever heard of.
+
+    The fix re-render is included for the same reason the standalone image's is: it replaces the
+    frame the CLIP is then built from (FR-24), so a seed frame re-rendered at the wrong tier
+    changes the video, not just a still.
+    """
+    trace: list[str] = []
+    env = make_env(tmp_path, trace)
+    env.config.platforms["tiktok"] = PlatformConfig(carousel_slides=6, image_resolution="2k")
+    env.config.run.gauntlet.rounds_max_image = 2
+    env.llm_call = critics(trace, True, False)  # failed, then clean after the canned fix
+    submit = Submitter([ok(SEED_URL, task="job_seed"), ok(SEED_URL_2, task="job_seed_retry"),
+                        ok(CLIP_URL, task="job_clip")], trace)
+
+    await reel.render_reel(make_entry(), env, make_folder(tmp_path), submit=submit)
+
+    seeds = submit.of("seed_frame")
+    assert len(seeds) == 2, "the frame and exactly one gauntlet fix"
+    assert [call["params"].resolution for call in seeds] == ["2k", "2k"], \
+        "both seed frames are IMAGE jobs and read `platforms.tiktok.image_resolution`"
+    assert submit.of("clip")[0]["params"].resolution == env.config.run.reel_resolution == "720p", \
+        "the Seedance clip keeps `run.reel_resolution` — FR-342 never touched the video site"
+
+
+async def test_fr342_a_seed_frame_on_an_unpinned_platform_keeps_the_engine_default_tier(
+    tmp_path: Path,
+) -> None:
+    """The D58 shape at the reel's image site — unchanged for any config that did not opt in."""
+    env = make_env(tmp_path)
+    assert "tiktok" not in env.config.platforms, "the fixture config pins nothing per platform"
+    submit = Submitter([ok(SEED_URL, task="job_seed"), ok(CLIP_URL, task="job_clip")])
+
+    await reel.render_reel(make_entry(), env, make_folder(tmp_path), submit=submit)
+
+    assert submit.of("seed_frame")[0]["params"].resolution == "1k"
+    assert submit.of("clip")[0]["params"].resolution == "720p"

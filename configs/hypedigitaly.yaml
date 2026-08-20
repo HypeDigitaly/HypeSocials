@@ -75,6 +75,18 @@ run:
     enabled: true
     fail_action: degrade
 
+platforms:
+  # FR-342 (v2.5.1) - 2K image renders on every platform. Operator decision 2026-08-20, taken for
+  # colour accuracy: the 1K tier was washing out the teal spine and softening small type. Cost of
+  # the pin: render $0.03 -> $0.05 per slide, and the gauntlet critics then read a bigger frame,
+  # 1,398 -> 3,278 vision tokens each - together roughly +$3-6 on a 9-carousel run. The pre-flight
+  # estimate prices THIS tier, so the raise is always visible at the Confirm gate before it is
+  # spent. Naming a platform here does not reset its other keys: formats, carousel_slides and
+  # min_carousel_panels stay at the per-platform engine defaults (config.py `_default_platform`).
+  linkedin:  { image_resolution: 2k }
+  instagram: { image_resolution: 2k }
+  tiktok:    { image_resolution: 2k }
+
 sources:
   # ONE monitor by operator decision (2026-08-11). GET /v1/agents returns three ids for this key,
   # but only this one was created in Virlo's web app (source: web_app, team_id: null) and so is the

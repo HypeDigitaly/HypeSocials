@@ -29,6 +29,7 @@ written against the contract, in parallel with the module itself.
 
 from __future__ import annotations
 
+import colorsys
 import dataclasses
 import math
 import re
@@ -1368,10 +1369,16 @@ def test_d57_the_twelve_key_selection_validates_clean_under_the_shipped_brand() 
     barrier, asserted against the real registry and the real twelve-key list — no errors, and no
     warnings either.
 
-    "No warnings" is the stronger half and covers more since D56: it means no style in the SHIPPED
-    file is over the 120-word ceiling, leaks an unresolved either/or, declares a dead `list_mode`
-    **or ships without a `match_profile`**. `validate` walks the whole registry for warnings, not
-    just the selection, so this one assertion covers all nineteen entries.
+    "No warnings" is the stronger half and covers more with every session. Since D56 it means no
+    style in the SHIPPED file is over the 120-word ceiling, leaks an unresolved either/or out of
+    `render_prompt`, declares a dead `list_mode` **or ships without a `match_profile`**. Since D60
+    it also means none of them names more type families than a reader can tell apart (FR-348) and
+    none of them leaves a CHOICE open in any DNA field, not just in `render_prompt` (FR-349) — and
+    because `_PALETTE_CONTRACT_ENFORCED` is `True`, the `errors == []` line above now additionally
+    means every palette in the file obeys the one-accent-hue, one-eighth-of-frame contract
+    (FR-347). `validate` walks the whole registry for warnings, not just the selection, so this one
+    assertion covers all nineteen entries; the D60 test at the foot of this file says the same
+    thing from the other end, under both brands and with nothing enabled.
     """
     registry = _shipped()
     config = _config(brand="hypelead", formats={"image": 0, "carousel": 6, "reel": 0},
@@ -1630,7 +1637,7 @@ def test_fr350_no_shipped_style_reserves_a_band_for_a_crop_this_pipeline_stopped
     Seven styles used to end their `text_placement` with "bottom 12% clear (4:5 crop)". The
     pipeline renders 1:1 (`generate/plan.py`), so that sentence reserved an eighth of every slide
     for a crop nobody takes — and it did it in a DNA field, which means on every slide of every
-    deck (FR-189). The replacement is "all text inside the central 80% of a 1:1 frame", which is
+    deck (FR-189). The replacement is "all text inside the central 80% of the 1:1 frame", which is
     the same protection stated in the frame we actually produce.
 
     The raw file is read as BYTES as well as through the parsed styles, and neither check is
@@ -1646,7 +1653,7 @@ def test_fr350_no_shipped_style_reserves_a_band_for_a_crop_this_pipeline_stopped
         "FR-350: `prompts/styles.yaml` still names the 4:5 crop somewhere — frames render 1:1"
     assert hits == [], (
         "FR-350: a style still reserves the retired crop band. Replace it with the 1:1 wording "
-        '("all text inside the central 80% of a 1:1 frame"):\n  ' + "\n  ".join(hits))
+        '("all text inside the central 80% of the 1:1 frame"):\n  ' + "\n  ".join(hits))
 
 
 def test_fr350_the_guard_catches_a_planted_bottom_twelve_percent_band() -> None:
@@ -1656,7 +1663,7 @@ def test_fr350_the_guard_catches_a_planted_bottom_twelve_percent_band() -> None:
     and the crop it was reserved for were written as one phrase, and a guard that caught only the
     ratio would pass a style that said "bottom 12% clear" and nothing more.
     """
-    clean = _style("planted", text_placement="All text inside the central 80% of a 1:1 frame.")
+    clean = _style("planted", text_placement="All text inside the central 80% of the 1:1 frame.")
     assert _dna_hits(_CROP_BAND, clean, ("text_placement",)) == [], "the fixture must start clean"
 
     planted = dataclasses.replace(
@@ -1666,3 +1673,881 @@ def test_fr350_the_guard_catches_a_planted_bottom_twelve_percent_band() -> None:
     assert len(hits) == 2, f"the band and the ratio are two hits, not one: {hits}"
     assert "'bottom 12%'" in hits[0] and "'4:5'" in hits[1], hits
     assert all(hit.startswith("planted.text_placement: ") for hit in hits), hits
+
+
+# ---- D60 -------------------------------------------------------------------------------------
+# The COLOUR and TYPE contracts (FR-347/348/349) and the FR-350 house spine.
+#
+# D59 closed the question "which channel may describe a device"; D60 closes the three questions
+# under it — how many accent HUES a style may carry and how much frame they may take (FR-347),
+# how many type FAMILIES it may name (FR-348), and whether any DNA field may still hand the
+# render model a CHOICE (FR-349). The first is an FR-295 error since the shipped nineteen were
+# re-authored clean; the other two are warnings over prose and always will be.
+#
+# The split below is the same one the FR-339 section above makes and for the same reason: what
+# the VALIDATOR does is tested through `styles.validate` against synthetic styles, and what the
+# SHIPPED FILE says is tested by guards that live in this module and never in `hypesocials/`.
+# A house rule about which corner our counter sits in is not a property of the registry format,
+# and a third-party override registry that puts its page number elsewhere is not defective.
+
+
+def _validated(subject: MetaStyle, *, brand: str = "hypedigitaly") -> tuple[list[str], list[str]]:
+    """`validate` over a registry of `subject` plus two clean fillers, as `(errors, warnings)`.
+
+    The fillers are not decoration: `_MIN_USABLE_STYLES` is 3, so a one-style registry earns the
+    thin-pool warning on every call and every `warnings == []` assertion below would be measuring
+    that instead of the defect under test. Two clean siblings put the pool at three and take the
+    thin-pool line off the board, and they carry no palette and no type prose of their own, so
+    they can never contribute a finding.
+    """
+    registry = _registry(subject, _style("filler-one"), _style("filler-two"))
+    return styles.validate(registry, _config(brand=brand))
+
+
+# ------------------------------------------------------------- FR-347: the palette contract
+
+
+def test_fr347_accent_hexes_in_two_hue_families_are_an_error_naming_both_and_their_angles(
+) -> None:
+    """The defect FR-347 was written for: a deck wearing two accents reads as two brands.
+
+    Both lines here are otherwise perfect — each states its own `under 1/8` bound — so the ONLY
+    thing wrong is that a teal at 177° and an orange at 15° are 162° apart, and a hue family is
+    30° wide. That isolation is the point: the finding must be about the pair, not a side effect
+    of a missing coverage clause on one of them.
+
+    The message has to name both HEXES and both ANGLES because "your accents span two families"
+    is a diagnosis an author cannot act on — `palette` lines are prose and a style may carry five
+    of them, so the fix is only obvious once the line says which two colours it means.
+    """
+    subject = _style("subject", palette=[
+        "ACCENT teal #0FCFC4: rules, marks and the payoff phrase, under 1/8 of frame",
+        "CONTRAST orange #E8501E: the kicker and the drawn arrow, under 1/8 of frame"])
+
+    errors, warnings = _validated(subject)
+
+    assert len(errors) == 1, errors
+    assert "span more than one hue family" in errors[0]
+    assert "#0FCFC4 at 177°" in errors[0] and "#E8501E at 15°" in errors[0]
+    assert "(FR-347)" in errors[0] and "style 'subject'" in errors[0]
+    assert "prompts/styles.yaml" in errors[0], "the registry ORIGIN rides every finding (FR-184)"
+    assert warnings == [], f"a hue-family error is not also a warning: {warnings}"
+
+
+def test_fr347_an_accent_line_with_no_coverage_bound_is_an_error_naming_that_line() -> None:
+    """"Sparingly" is not a number, and an accent the model is not held to spreads over the frame.
+
+    One accent, one hue, nothing else wrong — the line simply never says how much of the frame it
+    may take. The finding quotes the LINE rather than the style, because that is the string the
+    author has to go and edit, and a style may carry several accent-candidate lines.
+    """
+    subject = _style("subject", palette=[
+        "GROUND cream #F6F0E4: flat, edge to edge",
+        "ACCENT teal #0FCFC4: rules, marks and the payoff phrase"])
+
+    errors, warnings = _validated(subject)
+
+    assert len(errors) == 1, errors
+    assert "states no coverage bound" in errors[0]
+    assert '"ACCENT teal #0FCFC4: rules, marks and the payoff phrase"' in errors[0]
+    assert "`under 1/8`" in errors[0], "the message carries the spelling of the fix"
+    assert warnings == []
+
+
+@pytest.mark.parametrize("clause", ["under 1/8", "under 8%", "max 1/8", "≤ 1/8", "at most 1/8"])
+def test_fr347_every_authored_spelling_of_a_coverage_clause_satisfies_the_accent_line(
+    clause: str,
+) -> None:
+    """Five spellings, one regex, no finding — because an author writes prose, not a schema.
+
+    The vocabulary is fixed in `styles._COVERAGE` and repeated in `styles.yaml`'s authoring block,
+    and this is the test that stops those two drifting apart: a spelling the block invites and the
+    regex has never heard of would refuse a correctly authored registry at exit 2 (FR-295), which
+    is the most expensive possible way to be pedantic about wording.
+
+    `under 8%` is in the list on purpose — it is 0.08, comfortably under the ceiling, and it is
+    the percentage branch of the regex, which divides by 100 where the others divide one integer
+    by another.
+    """
+    subject = _style("subject", palette=[f"ACCENT teal #0FCFC4: rules and marks, {clause}"])
+
+    errors, warnings = _validated(subject)
+
+    assert errors == [], f"{clause!r} is a legal coverage clause: {errors}"
+    assert warnings == []
+
+
+@pytest.mark.parametrize(("clause", "share"), [("under 1/5", "20.0%"), ("under 1/6", "16.7%"),
+                                               ("under 25%", "25.0%")])
+def test_fr347_a_coverage_bound_over_one_eighth_is_the_ceiling_error_not_a_missing_clause(
+    clause: str, share: str,
+) -> None:
+    """A bound that IS stated but is too generous is its own finding, and says so.
+
+    The distinction matters to the author: "you wrote no bound" and "you wrote 1/5" need different
+    edits, and a validator that collapsed them into one message would send someone to add a clause
+    that is already on the line. The reported share is the PARSED number, not the author's words,
+    so a `1/6` and a `16%` that mean the same thing report the same way.
+    """
+    subject = _style("subject",
+                     palette=[f"ACCENT teal #0FCFC4: rules and marks, {clause} of frame"])
+
+    errors, warnings = _validated(subject)
+
+    assert len(errors) == 1, errors
+    assert f"allows {share} of frame" in errors[0]
+    assert "the ceiling is 1/8 (12.5%)" in errors[0]
+    assert "states no coverage bound" not in errors[0], "a stated bound is not a missing one"
+    assert warnings == []
+
+
+def test_fr347_a_saturated_ground_cast_is_legal_until_it_shares_the_accents_hue_family() -> None:
+    """Plan 4a rule 6, both halves: a photographic style's ground may be a COLOUR, and the accent
+    it carries has to be a different one.
+
+    Honey wood at #B07C4A is saturated (S 0.58) and is `ugc-tabletop-statement`'s real tabletop,
+    chosen so this test cannot pass on a colour no style would ever use. Against a teal accent
+    148° away it is exactly what the rule permits. Against a vermilion accent 16° away it is the
+    defect: the accent has nothing to be seen against, and a viewer reads the frame as one warm
+    wash rather than as a ground with something on it.
+
+    The clean half runs FIRST and asserts zero findings, because the failing half proves nothing
+    if a saturated ground turns out to be reported always.
+    """
+    ground = "GROUND honey wood #B07C4A: the table, the largest surface"
+    contrasting = _style("subject", palette=[
+        ground, "ACCENT glazed teal #0FCFC4: one ceramic object, under 1/8 of frame"])
+
+    assert _validated(contrasting) == ([], []), "a warm cast under a cool accent is the rule"
+
+    clashing = _style("subject", palette=[
+        ground, "ACCENT vermilion #E2522B: the payoff phrase, under 1/8 of frame"])
+    errors, warnings = _validated(clashing)
+
+    assert len(errors) == 1, errors
+    assert "the saturated ground #B07C4A at 29°" in errors[0]
+    assert "does not contrast with its ground cast" in errors[0]
+    assert warnings == []
+
+
+def test_fr347_a_palette_with_no_saturated_accent_at_all_is_silently_legal() -> None:
+    """Zero accents is a LOOK, not a defect — and this is the precondition Session L needs.
+
+    `mono-cutout-editorial` arrives in Session L with a palette of exactly this shape: a near-white
+    ground, a near-black text ink and one warm grey for support, and nothing in it that clears the
+    S ≥ 0.45 saturation floor. If FR-347 had been written to DEMAND an accent, that style could not
+    be authored at all — it would refuse every run of every config that enabled it (exit 2, $0),
+    and the cure would be to invent a colour the design does not want.
+
+    So the assertion is the ABSENCE of all four findings: no hue-family line (there is no family),
+    no coverage line (there is nothing to bound), no ceiling line and no ground-clash line. Not one
+    warning either — a monochrome palette is not even advised about.
+    """
+    subject = _style("subject", palette=[
+        "GROUND paper #F5F5F5: flat, edge to edge, most of frame",
+        "TEXT ink #1A1A1A: headline, paragraph, rules",
+        "SUPPORT warm grey #9B9A96: captions, hairlines, the swipe cue"])
+
+    errors, warnings = _validated(subject)
+
+    assert errors == [], f"a monochrome palette states no accent to bound: {errors}"
+    assert warnings == []
+    # And the reason, pinned at the predicate rather than inferred from the silence above: not one
+    # of those three hexes is a colour doing accent work, so no accent rule has anything to apply
+    # to. A future saturation-floor change that made warm grey an "accent" fails HERE, with the
+    # hex named, instead of surfacing as a mysterious refusal three tests further down.
+    assert [value for value in ("F5F5F5", "1A1A1A", "9B9A96") if styles._saturated(value)] == []
+
+
+@pytest.mark.parametrize(("line", "is_background"), [
+    ("GROUND honey wood #B07C4A: the table", True),
+    ("GROUNDS warm paper #B07C4A: bands, gutter, margins", True),
+    ("GROUND + CAPTION BANDS warm paper #B07C4A: bands and margins", True),
+    ("SURFACE top panel sepia #B07C4A: the upper panel's cast", True),
+    ("DEPTH bronze #B07C4A: the recessed plane", True),
+    ("SHADOW umber #B07C4A: cast shadow under the subject", True),
+    ("FOCAL violet #B07C4A: the subject's jacket", False),
+    ("PRACTICAL amber #B07C4A: the lamp in shot", False),
+    ("ACCENT teal #B07C4A: rules and marks", False),
+    ("warm ochre #B07C4A with no role token at all", False),
+])
+def test_fr347_a_lines_role_is_read_off_its_leading_token_and_decides_ground_from_accent(
+    line: str, is_background: bool,
+) -> None:
+    """The vocabulary that decides whether a saturated hex is a CAST or an ACCENT.
+
+    Every case carries the SAME hex, so nothing about the answer can come from the colour: the
+    only variable is the word the line opens with. `GROUNDS` and `GROUND + CAPTION BANDS` are in
+    the list because two shipped styles really open lines that way, and a background rule that
+    only knew the singular would hold `meme-caricature-panels`' panel casts to the accent rules.
+
+    The last four are the DEFAULT, and it is deliberately the strict one: `FOCAL`, `PRACTICAL`,
+    `ACCENT` and a line with no capitalised opening at all are accent CANDIDATES. An author opts
+    INTO the background vocabulary and never falls into it by writing prose, because a rule that
+    let an unrecognised word mean "ground" would let one typo silence the whole contract.
+    """
+    assert styles._is_background_role(line) is is_background
+
+    # …and the consequence, through the public door: an unbounded ACCENT line is a finding, an
+    # unbounded GROUND line is not, on identical bytes but for the leading word.
+    errors, _ = _validated(_style("subject", palette=[line]))
+    assert (errors == []) is is_background, errors
+
+
+def test_fr347_the_enforcement_switch_moves_the_same_findings_between_errors_and_warnings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`_PALETTE_CONTRACT_ENFORCED` is ONE line and changes ONE thing — which list holds the
+    findings. Nothing about their content, count, order or wording moves with it.
+
+    That is the whole design of the switch and why it earns a test of its own. It shipped `False`
+    because the contract was written after the nineteen styles were, and flipping it early would
+    have refused every run of every config on day one; it is `True` today because Session K
+    re-authored all nineteen clean. Set back to `False` it must still be a working TRIAGE mode —
+    an operator editing the registry sees the same lines at pre-flight and the run continues — and
+    a triage mode that reported different things than the enforcing mode would be worthless.
+
+    Two defects are planted at once so the ORDER survives the move as well: a finding list at
+    pre-flight is read top to bottom.
+    """
+    subject = _style("subject", palette=[
+        "ACCENT teal #0FCFC4: rules and marks, under 1/5 of frame",
+        "CONTRAST orange #E8501E: the kicker, under 1/8 of frame"])
+
+    assert styles._PALETTE_CONTRACT_ENFORCED is True, "D60 flipped it; this test is not the flip"
+    enforced_errors, enforced_warnings = _validated(subject)
+    assert len(enforced_errors) == 2 and enforced_warnings == []
+
+    monkeypatch.setattr(styles, "_PALETTE_CONTRACT_ENFORCED", False)
+    warned_errors, warned_warnings = _validated(subject)
+
+    assert warned_errors == [], "in warning mode a palette defect cannot refuse a run"
+    assert warned_warnings == enforced_errors, \
+        "the same lines, in the same order, in the same words — only the list changed"
+
+
+def test_fr347_the_whole_shipped_registry_is_clean_under_both_brands_with_the_switch_on() -> None:
+    """All NINETEEN, not just the twelve the configs enable — with FR-347 enforcing.
+
+    The D57 test above validates the twelve-key SELECTION and is the barrier that catches a config
+    drifting from the registry. This one is the other axis: `validate` walks every entry in the
+    file for findings whether or not the run can assign it, so a style that is enabled by nobody
+    today and re-enabled next month is held to the same contract now, while the person who
+    authored it is still in the room.
+
+    Both brands are checked because `brand_ok` filters the POOL and not the walk — but a
+    brand-filtered pool is what decides whether the empty-pool and per-format arms fire, and those
+    would bury a palette finding under a refusal about something else entirely.
+
+    `enabled=[]` means "every style this brand can wear", which is the widest pool the selector
+    can produce and therefore the strictest reading of "the registry is clean".
+    """
+    registry = _shipped()
+    assert len(registry.styles) == SHIPPED_STYLES, "the walk has to cover all of them"
+    assert styles._PALETTE_CONTRACT_ENFORCED is True, \
+        "with the switch off this test would pass on a registry full of palette defects"
+
+    for brand in ("hypedigitaly", "hypelead"):
+        config = _config(brand=brand, formats={"image": 0, "carousel": 6, "reel": 0}, enabled=[])
+
+        errors, warnings = styles.validate(registry, config)
+
+        assert errors == [], f"brand {brand!r}: the shipped registry would refuse a run: {errors}"
+        assert warnings == [], f"brand {brand!r}: {warnings}"
+        # Said again by NAME, so a future reader can see which three contracts this covers even
+        # after some unrelated finding starts appearing in one of these lists.
+        for finding in [*errors, *warnings]:
+            assert not any(tag in finding for tag in ("FR-347", "FR-348", "FR-349")), finding
+
+
+# ------------------------------------------------- FR-349: the variant scan over every DNA field
+
+#: The planted CHOICE every FR-349 case below uses. One string, so a test that fails names a
+#: clause a reader can find instantly, and so the parametrised field sweep is measuring the FIELD
+#: and never the sentence. It is a real one: `letterpress-print-carousel`'s counter zone said
+#: exactly this until Session K resolved it to tracked caps of the body family.
+_PLANTED_CHOICE = "small mono or tracked caps"
+
+
+def test_fr349_a_choice_planted_in_typography_warns_and_names_the_field_and_the_clause() -> None:
+    """M9's heuristic, off `render_prompt` and onto the prose the model executes just as literally.
+
+    `style_dna` ships `typography` byte-identically to every slide of a deck (FR-189), so "small
+    mono or tracked caps" is not one decision left open — it is one decision left open NINE TIMES,
+    resolved independently on each slide, which is precisely the drift M9 was written to stop. The
+    field is the only thing that changed; the consequence did not.
+
+    The message names the FIELD and quotes the CLAUSE because a style carries seven scanned fields
+    and any of them may be a paragraph: "this style leaves a choice open" is not a fix.
+    """
+    subject = _style("subject",
+                     typography=f"Body grotesque at 4% cap height; {_PLANTED_CHOICE}.")
+
+    errors, warnings = _validated(subject)
+
+    assert errors == [], "FR-349 is a warning; a style that names two type sizes still renders"
+    assert len(warnings) == 1, warnings
+    assert "`typography` leaves a choice open" in warnings[0]
+    assert f'"{_PLANTED_CHOICE}."' in warnings[0], "the clause is quoted, not summarised"
+    assert "(FR-349)" in warnings[0] and "style 'subject'" in warnings[0]
+
+
+def test_fr349_a_negated_clause_is_a_ban_list_and_a_ban_list_is_never_a_choice() -> None:
+    """The rule that makes the scan usable at all: "no serif, script or display face" is EXACTLY
+    what a well-written type rule looks like, and it is built out of the same word the scan hunts.
+
+    Without the negation carve-out FR-349 would warn about correct authoring on nearly every style
+    in the file, an author would learn to ignore its output within a week, and the one real leak it
+    exists to catch would print in the middle of eleven false ones. The negation is judged per
+    CLAUSE, so a `no` three sentences earlier cannot launder a genuine choice — the second half
+    below is that half of the rule, with both spellings in one style.
+    """
+    banning = _style("subject", typography="One grotesque family; no serif, script or display face.")
+
+    assert _validated(banning) == ([], []), "a ban list is authoring, not a defect"
+
+    # The `no` belongs to its own clause and does not reach across the `; ` boundary.
+    mixed = _style("subject", typography=(
+        "No serif, script or display face; the counter sets in " + _PLANTED_CHOICE + "."))
+    _, warnings = _validated(mixed)
+
+    assert len(warnings) == 1, f"the ban clause passes and the choice clause warns: {warnings}"
+    assert _PLANTED_CHOICE in warnings[0] and "no serif" not in warnings[0].lower()
+
+
+@pytest.mark.parametrize("field", ["exclusions", "layout_zones"])
+def test_fr349_the_two_fields_deliberately_left_out_of_the_scan_stay_out_of_it(field: str) -> None:
+    """Two absences, both decisions, both the kind a future reader "fixes" by widening a tuple.
+
+    `exclusions` is out because it is a BAN LIST by construction and scanning it would report
+    every style in the file for being written correctly — the negation rule already covers the
+    prose that reads like a ban, and a list whose whole purpose is banning does not need to be
+    read one clause at a time to be understood.
+
+    `layout_zones` is out because a zone is GATED by role (FR-339): a `counter_slot` zone reaches
+    the render prompt only on a deck that quoted a counter, so a choice inside it is not the
+    unconditional every-slide instruction the DNA fields are. It is also the field FR-339 asked
+    authors to move their device specs INTO, and a scan that punished them there would undo D59.
+    """
+    over = ({"exclusions": [_PLANTED_CHOICE]} if field == "exclusions" else
+            {"layout_zones": [LayoutZone("top-right corner", "counter", _PLANTED_CHOICE,
+                                         role="counter_slot")]})
+    subject = _style("subject", **over)
+
+    errors, warnings = _validated(subject)
+
+    assert errors == [] and warnings == [], f"FR-349 does not read `{field}`: {warnings}"
+
+
+def test_fr349_leaves_the_render_prompt_rule_exactly_where_m9_left_it() -> None:
+    """`render_prompt` keeps its OWN rule, its own message and its own single report.
+
+    The two scans deliberately do not overlap. M9's rule is older, it is stated at the field level
+    rather than the clause level, and its message names the markers it found rather than quoting a
+    clause — so a style whose `render_prompt` says "a teal or cobalt ground" must still produce the
+    one M9 line it always produced, and must NOT also produce an FR-349 line about the same
+    sentence. One defect, one line: two reports of one sentence train an operator to skim.
+
+    The second half proves the absence is scoped rather than accidental — the same style's
+    `text_placement` gets its own FR-349 line, so the scan is running and is simply not reading
+    `render_prompt`.
+    """
+    subject = _style("subject", render_prompt="A flat card on a teal or cobalt ground.")
+
+    _, warnings = _validated(subject)
+
+    assert len(warnings) == 1, warnings
+    assert "`render_prompt` still offers a choice (or)" in warnings[0], "M9's wording, untouched"
+    assert warnings[0].endswith("(M9)"), "the M9 rule is not re-badged as FR-349"
+
+    both = _style("subject", render_prompt="A flat card on a teal or cobalt ground.",
+                  text_placement=f"Headline upper third; {_PLANTED_CHOICE}.")
+    _, pair = _validated(both)
+
+    assert len(pair) == 2 and pair[0].endswith("(M9)") and pair[1].endswith("(FR-349)")
+
+
+@pytest.mark.parametrize(("field", "over", "reported_as"), [
+    ("palette", {"palette": [f"ACCENT teal #0FCFC4: rules {_PLANTED_CHOICE}, under 1/8 of frame"]},
+     "palette"),
+    ("typography", {"typography": f"Body grotesque; {_PLANTED_CHOICE}."}, "typography"),
+    ("text_placement", {"text_placement": f"Headline upper third; {_PLANTED_CHOICE}."},
+     "text_placement"),
+    ("image_treatment", {"image_treatment": f"Flat vector, hard shadow; {_PLANTED_CHOICE}."},
+     "image_treatment"),
+    ("visual_pacing", {"visual_pacing": f"One idea per frame; {_PLANTED_CHOICE}."},
+     "visual_pacing"),
+    ("list_mode.layout", {"list_mode": ListMode(reflow_over_chars=110, max_rows=4,
+                                                layout=f"Rows flush left; {_PLANTED_CHOICE}.")},
+     "list_mode.layout"),
+    ("per_format_guidance", {"per_format_guidance": {
+        "carousel_cover": f"Cover: one full-bleed statement; {_PLANTED_CHOICE}."}},
+     "per_format_guidance.carousel_cover"),
+])
+def test_fr349_every_scanned_field_reports_the_same_planted_choice_under_its_own_name(
+    field: str, over: dict, reported_as: str,
+) -> None:
+    """All seven scanned fields, one planted clause, seven distinct field names in the output.
+
+    The sweep is here because the field LIST is the requirement — FR-349 names exactly these seven
+    and deliberately excludes two others (the test above), so a field silently dropped from
+    `_dna_prose` is a hole nothing else in the suite would notice. Every one of them reaches the
+    render model: `palette`, `typography`, `text_placement`, `image_treatment` and `visual_pacing`
+    are `style_dna` itself, `list_mode.layout` fires into `{{list_treatment}}` on a list slide, and
+    `per_format_guidance` is what separates a cover from a body slide.
+
+    `per_format_guidance` reports under its own KEY (`per_format_guidance.carousel_cover`) rather
+    than under the block name, because the block holds several entries and the author needs to know
+    which one to edit — that specificity is asserted here and nowhere else.
+    """
+    subject = _style("subject", **over)
+
+    errors, warnings = _validated(subject)
+
+    assert errors == [], errors
+    assert len(warnings) == 1, f"{field}: {warnings}"
+    assert f"`{reported_as}` leaves a choice open" in warnings[0]
+    assert _PLANTED_CHOICE in warnings[0]
+
+
+# ---------------------------------------------------------------- FR-348: the type contract
+
+
+def test_fr348_three_families_named_in_typography_warn_in_the_rules_own_words() -> None:
+    """One display family plus one body family is what a reader tells apart at a glance and what a
+    render model holds across a deck. A third set of shapes is a third voice competing for the
+    same slide, and the styles that shipped with four looked like four different decks stapled
+    together — which is the measurement FR-348 was adopted from.
+
+    Serif, grotesque and script is the shape `editorial-voxel-carousel` really shipped with before
+    Session K resolved its script annotation into a drawn mark. The warning has to carry the RULE
+    TEXT and not just a count, because "3 type families" is a fact and "one display family + one
+    body family; a third family only as a mono utility" is the decision the author has to make.
+    """
+    subject = _style("subject", typography=(
+        "A Didone serif headline, a grotesque body, one script annotation per slide."))
+
+    errors, warnings = _validated(subject)
+
+    assert errors == [], "FR-348 is a heuristic over prose and never refuses a run"
+    assert len(warnings) == 1, warnings
+    assert "name 3 type families (sans, script, serif)" in warnings[0]
+    assert "one display family + one body family; a third family only as a mono utility" \
+        in warnings[0]
+    assert warnings[0].endswith("(FR-348)")
+
+
+def test_fr348_a_third_family_is_tolerated_when_it_is_the_mono_utility() -> None:
+    """The carve-out, on bytes identical to the test above but for the third family's class.
+
+    A code or terminal identity needs a monospace utility for the thing it is imitating — a build
+    log, a shell prompt, a chip of version string — and that utility is not a third VOICE: nobody
+    reads a mono label as a second display face. The three shipped styles that use it are named in
+    the PRD and pinned by a guard further down; the validator itself cannot know whether a style IS
+    a terminal, and a heuristic that guessed would fail the honest styles and pass the dishonest.
+    """
+    subject = _style("subject", typography=(
+        "A Didone serif headline, a grotesque body, a mono chip label at the foot."))
+
+    assert _validated(subject) == ([], []), "serif + sans + mono is the tolerated three"
+
+    # Four is four, carve-out or not: the exception is one family wide and is not a licence.
+    four = _style("subject", typography=(
+        "A Didone serif headline, a grotesque body, a mono chip label, one script annotation."))
+    _, warnings = _validated(four)
+
+    assert len(warnings) == 1 and "name 4 type families" in warnings[0], warnings
+
+
+def test_fr348_a_family_named_only_in_a_layout_zone_counts_toward_the_same_two() -> None:
+    """A style specifies type in two places, so both are counted.
+
+    `typography` is the obvious one; a zone's `text_treatment` is the one that hides a family, and
+    it hides it in the field FR-339 asked authors to MOVE their device specs into. A counter zone
+    reading "small grey mono uppercase" is a real third family arriving through the door D59 just
+    opened, and a count that only read `typography` would report the registry as clean while the
+    slides carried three faces.
+
+    The third family here is `script` rather than `mono` on purpose: mono is the carve-out (test
+    above), so a mono zone would prove nothing about whether zones are read at all. Note this
+    corrects the K contract's own example — "grotesque in typography, serif + mono in a zone"
+    is three classes WITH mono, which FR-348 tolerates by design.
+    """
+    subject = _style("subject",
+                     typography="A Didone serif headline over a grotesque body.",
+                     layout_zones=[LayoutZone("lower margin", "annotation",
+                                              "a script hand-lettered aside, one line")])
+
+    errors, warnings = _validated(subject)
+
+    assert errors == []
+    assert len(warnings) == 1, warnings
+    assert "`typography` and the layout zones name 3 type families (sans, script, serif)" \
+        in warnings[0]
+
+
+def test_fr348_a_family_a_style_forbids_is_not_a_family_it_names() -> None:
+    """The negation rule again, on the count instead of on the choice — same clause splitter, same
+    reason. A style that says "never a serif, a script or a woodtype face" has named three classes
+    and USES none of them; counting them would make the clearest possible authoring the loudest
+    possible warning, and the author's only cure would be to delete the rule.
+    """
+    subject = _style("subject", typography=(
+        "One grotesque family at three weights; never a serif, a script or a woodtype face."))
+
+    assert _validated(subject) == ([], []), "a banned family is not a named one"
+
+    # The same three words without the `never` are the ordinary three-family warning, so the
+    # difference above is the negation and not the sentence.
+    named = _style("subject", typography=(
+        "One grotesque family at three weights, a serif pull-quote, a script signature."))
+    _, warnings = _validated(named)
+
+    assert len(warnings) == 1 and "name 3 type families" in warnings[0], warnings
+
+
+def test_fr348_the_only_shipped_styles_naming_the_mono_class_are_the_four_that_may() -> None:
+    """The guard the validator cannot be: WHICH shipped styles get the mono carve-out.
+
+    FR-348's exception exists for a code/terminal identity, and the PRD names three of them —
+    `build-log-mono`, `circuit-atlas-dark`, `terminal-mockup-deck`. The shipped file has a FOURTH,
+    and it is not a drift: `hypelead-brand-card` is the HypeLead house card and its brand type
+    stack is literally Geist + Geist Mono, so the word `mono` on its kicker line names the brand's
+    own typeface rather than an extra voice borrowed for effect. It also does not spend the
+    carve-out — Geist and Geist Mono are `sans` + `mono`, two classes, so that style would pass
+    FR-348 with the exception deleted. The three terminal identities are the ones actually leaning
+    on it, and all four are pinned here so a fifth style quietly reaching for a mono utility shows
+    up as a named failure rather than as one more warning nobody reads.
+
+    Counted through the module's OWN predicates (`_clauses`, `_NEGATION`, `_TYPE_FAMILIES`) rather
+    than by grepping for the word: "no mono anywhere" is a ban, not a use, and a grep would report
+    every style that forbids one.
+    """
+    naming_mono = []
+    for style in _shipped().styles:
+        prose = [style.typography, *(zone.text_treatment for zone in style.layout_zones)]
+        for text in prose:
+            clauses = [clause for clause in styles._clauses(text)
+                       if not styles._NEGATION.search(clause)]
+            if any(styles._TYPE_FAMILIES["mono"].search(clause) for clause in clauses):
+                naming_mono.append(style.key)
+                break
+
+    assert naming_mono == ["hypelead-brand-card", "build-log-mono", "circuit-atlas-dark",
+                           "terminal-mockup-deck"], \
+        ("FR-348's mono carve-out is for a code/terminal identity plus HypeLead's own Geist Mono "
+         f"brand stack. A style outside that set reached for a monospace utility: {naming_mono}")
+
+
+# ------------------------------------------- FR-350: the house spine, guarded over shipped bytes
+#
+# Five items shared by EVERY carousel-affine style and nothing more (30 §FR-350). Items 1 and 5
+# are FR-347 and FR-348 and are enforced by `validate` above; items 2, 3 and 4 are house prose
+# with no validator behind them at all, on purpose — "our counter lives top-right" is a decision
+# about OUR deck, not a property of the registry format, and an override registry that puts its
+# page number in the other corner is not defective. So they are guarded HERE, exactly like the
+# FR-339 scrub, and every guard below has a planted-failure twin or is paired with a predicate
+# assertion, because a regex over bytes that are already clean is indistinguishable from a regex
+# that is silently broken.
+
+#: J's exact safe-area wording (FR-350 item 4). One string, quoted once, so the guard and any
+#: future re-authoring cannot drift into two spellings of the same rule — and so a style that
+#: paraphrases it ("keep text well inside the frame") fails rather than passing on a synonym.
+_SAFE_AREA_PHRASE = "inside the central 80% of the 1:1 frame"
+
+#: The devices FR-350 item 3 places, as opposed to FR-339's wider list of devices it GATES. A
+#: signature and a lockup are not here: `hypelead-brand-card` really does sit its logo lockup
+#: top-left and that is its brand's own layout, not the counter corner this item is about.
+_CORNER_DEVICE = re.compile(r"\b(chip|badge|counter|page number)\b", re.IGNORECASE)
+
+
+def _counter_zones(style: MetaStyle) -> list[LayoutZone]:
+    """This style's `counter_slot` zones — the gated channel FR-338 renders a counter through."""
+    return [zone for zone in style.layout_zones if zone.role == "counter_slot"]
+
+
+def _left_corner_devices(style: MetaStyle) -> list[str]:
+    """Every CLAUSE of this style's authored text that puts a counter-ish device at the top-LEFT.
+
+    Read off a YAML dump of the whole style rather than off a field list, because item 3 says
+    "no prose ANYWHERE": a `per_format_guidance` note, an `exclusions` line and a zone's
+    `text_treatment` all reach a render prompt or a future author just as well as `text_placement`
+    does, and a field-by-field scan would have to be kept in step with the schema forever.
+
+    Scoped to the CLAUSE — the dump split on `;`, `,`, `.` and newlines — and that scope is the
+    whole design. Two shipped styles legitimately say "top-left" in a sentence that also names a
+    device somewhere else in it: `build-log-mono`'s `render_prompt` reads "a mono micro-label
+    top-left …, a position chip top-right", which is the rule being FOLLOWED. A window-based
+    proximity scan would report it, an author would delete a correct sentence to silence the
+    guard, and the counter would end up somewhere worse.
+    """
+    dump = yaml.safe_dump(dataclasses.asdict(style), allow_unicode=True, sort_keys=False)
+    return [" ".join(clause.split()) for clause in re.split(r"[;,.\n]", dump)
+            if "top-left" in clause.lower() and _CORNER_DEVICE.search(clause)]
+
+
+def _ground_value(style: MetaStyle) -> float | None:
+    """The HSV *value* of the first `GROUND` palette line's first hex, or `None` if it has neither.
+
+    `colorsys` rather than `styles._hsv` on purpose: item 2 is a claim about a colour, and a guard
+    that measured it with the module's own helper would agree with that helper even if the helper
+    were wrong about what "value" means.
+    """
+    for line in style.palette:
+        if not styles._palette_role(line).startswith("GROUND"):
+            continue
+        found = styles._HEX.findall(line)
+        if not found:
+            continue
+        red, green, blue = (int(found[0][index:index + 2], 16) / 255 for index in (0, 2, 4))
+        return colorsys.rgb_to_hsv(red, green, blue)[2]
+    return None
+
+
+def test_fr350_every_shipped_style_is_carousel_affine_which_is_what_puts_it_under_the_spine(
+) -> None:
+    """The precondition the four guards below all rest on, asserted rather than assumed.
+
+    FR-350 binds "every carousel-affine style and nothing more", and it spells out what that means
+    in the same breath: `format_affinity` contains `carousel`. Today that is all nineteen, so the
+    guards can each walk the whole registry — but that is a FACT about the shipped file in August
+    2026, not a property of the spine, and the day an image-only or reel-only style is authored,
+    the guards below start holding it to rules it was never under. This test is where that shows
+    up: it fails with the new style named, and the fix is to filter the guards rather than to
+    widen the spine.
+
+    Read off `format_affinity` and NOT through `styles.fmt_affine`, which is a stricter question
+    and a different one. `fmt_affine` additionally drops the four `carousel_role: slides_only`
+    entries (`meme-caricature-panels`, `ugc-tabletop-statement` and their teal twins), because
+    under anchor chaining a style that cannot set slide 1 is never ASSIGNED to a deck at all.
+    Those four still render carousel SLIDES when a deck is built from them by hand, they still
+    ship `carousel` in their affinity, and their counters, safe areas and grounds are read by a
+    viewer swiping the same batch — so the spine binds them, and using the assignment predicate
+    here would quietly exempt four of the nineteen from the house rules.
+    """
+    registry = _shipped()
+
+    not_affine = [style.key for style in registry.styles
+                  if "carousel" not in style.format_affinity]
+
+    assert not_affine == [], (
+        "FR-350 binds the carousel-affine styles only. These are not, so the four guards below "
+        f"must start filtering instead of walking the whole registry: {not_affine}")
+    # The narrower predicate, pinned as the difference it is: four of the nineteen are inert on a
+    # carousel PLAN (D57) and are still under the spine. A future reader swapping one for the
+    # other above would silently drop them from every guard in this section.
+    inert = [style.key for style in registry.styles
+             if not styles.fmt_affine(style, "carousel")]
+    assert inert == ["meme-caricature-panels", "ugc-tabletop-statement",
+                     "meme-caricature-panels-teal", "ugc-tabletop-statement-teal"], inert
+
+
+def test_fr350_every_shipped_counter_slot_zone_places_its_counter_top_right() -> None:
+    """Item 3, first half: one corner, registry-wide, so a reader learns where to look ONCE.
+
+    A counter that moves corner by style is the defect — a viewer swiping a batch of our decks
+    reads the position as meaning something, and it means nothing. Three styles sat theirs
+    top-left before Session K (`editorial-voxel-carousel`, `letterpress-print-carousel` and its
+    teal twin); this is what stops the fourth.
+
+    The zone `position` is the string that becomes `{{counter_rule}}`, so it is the only place the
+    corner is actually stated to a render model — a style whose `text_placement` says "top-right"
+    and whose zone says "top-left" renders top-left.
+    """
+    zoned = {style.key: zone for style in _shipped().styles for zone in _counter_zones(style)}
+    assert len(zoned) == 8, f"the FR-339 roster is eight styles; this guard sees {len(zoned)}"
+
+    misplaced = [f"{key}: {zone.position!r}" for key, zone in sorted(zoned.items())
+                 if "top-right" not in zone.position.lower()]
+
+    assert misplaced == [], (
+        "FR-350 item 3: the counter is top-right on every deck we ship, so a reader learns the "
+        f"position once. Move the zone's `position`:\n  " + "\n  ".join(misplaced))
+
+
+def test_fr350_no_shipped_style_puts_a_chip_badge_or_counter_at_the_top_left() -> None:
+    """Item 3, second half: the corner is also not contradicted anywhere ELSE in the style.
+
+    The zone guard above reads the gated channel. This one reads everything — `render_prompt`,
+    the DNA fields, `per_format_guidance`, `exclusions`, every zone — because a style that says
+    top-right in its zone and "the page chip sits top-left" in its cover guidance has told the
+    model both, and FR-189 ships both to every slide. That is the same two-descriptions-of-one-
+    device defect FR-339 exists to prevent, aimed at the position rather than at the existence.
+
+    Reported per style with the clause quoted, so the failure IS the edit.
+    """
+    hits = [f"{style.key}: {clause}" for style in _shipped().styles
+            for clause in _left_corner_devices(style)]
+
+    assert hits == [], (
+        "FR-350 item 3: a counter, chip or badge is placed top-left in a style's prose. The "
+        f"counter corner is top-right registry-wide:\n  " + "\n  ".join(hits))
+
+
+def test_fr350_every_shipped_style_states_the_safe_area_in_the_frame_we_actually_render() -> None:
+    """Item 4: one sentence, in `text_placement`, in J's exact words, on all nineteen.
+
+    This replaced "bottom 12% clear (4:5 crop)", which reserved an eighth of every slide for a crop
+    this pipeline stopped taking (the FR-350 pre-check further up asserts that band is gone). The
+    replacement has to be in `text_placement` specifically: that field is `style_dna`, so the rule
+    reaches every slide of every deck unconditionally, which is the only way a safe area works.
+
+    The phrase is pinned VERBATIM rather than by keyword because paraphrase is how a rule stops
+    being a rule — "keep text well inside the frame" is advice, "inside the central 80% of the 1:1
+    frame" is a measurement a render model can execute.
+    """
+    missing = [style.key for style in _shipped().styles
+               if _SAFE_AREA_PHRASE not in style.text_placement]
+
+    assert missing == [], (
+        f'FR-350 item 4: `text_placement` must carry "{_SAFE_AREA_PHRASE}" word for word — a '
+        f"paraphrase is advice, not a measurement: {missing}")
+
+
+def test_fr350_every_graphic_shipped_style_grounds_itself_at_a_value_extreme() -> None:
+    """Item 2: a flat graphic look puts its type on near-white or near-black, never on a mid-tone.
+
+    A ground at V 0.5 is where legibility goes to die — the accent stops reading as an accent, the
+    text needs an outline it should not need, and the craft critic reports a contrast defect nobody
+    authored. Both extremes are allowed because both work; the middle is what is banned.
+
+    PHOTOGRAPHIC styles are exempt and the exemption is the whole of plan 4a rule 6: a photographed
+    room HAS a cast, and demanding a value extreme of it would mean lighting every scene to the same
+    two exposures. The seven exempt today are `photoreal-ambient-caption`, `anime-noir-statement`,
+    `ugc-tabletop-statement`, `quiet-luxury-night-photoreal` and the three teal twins
+    (`quiet-luxury-night-photoreal-teal`, `photoreal-ambient-caption-teal`,
+    `ugc-tabletop-statement-teal`) — `ugc-tabletop-statement`'s honey-wood table at V 0.69 is
+    exactly the mid-tone ground this rule would otherwise forbid, and it is the right ground for a
+    photograph of a table.
+
+    The exempt count is asserted too: if a style flips `motion_profile` to `photographic` to escape
+    this guard, the roster below changes and says so.
+    """
+    registry = _shipped()
+    exempt = [style.key for style in registry.styles if style.motion_profile == "photographic"]
+    assert len(exempt) == 7, f"the photographic roster moved: {exempt}"
+
+    mid_toned = [f"{style.key}: V {_ground_value(style):.2f}" for style in registry.styles
+                 if style.motion_profile == "graphic"
+                 and not (_ground_value(style) is not None
+                          and (_ground_value(style) >= 0.85 or _ground_value(style) <= 0.20))]
+
+    assert mid_toned == [], (
+        "FR-350 item 2: a `motion_profile: graphic` style grounds at V >= 0.85 or V <= 0.20. A "
+        f"mid-tone ground is where an accent stops reading and type needs an outline:\n  "
+        + "\n  ".join(mid_toned))
+
+
+def test_fr350_icon_ledger_retired_its_footer_strip_for_a_hairline_that_draws_nothing_when_empty(
+) -> None:
+    """Wave 4a rule 1, on the one style it was written about.
+
+    `icon-ledger-carousel` used to close every slide with a solid teal banner strip across the
+    foot. Two things were wrong with it and the second is the expensive one: the strip was a slab
+    of the accent hue, which broke FR-347's 1/8 bound on its own, and it was drawn UNCONDITIONALLY
+    — a deck that quoted no signature still got the band, so the style reserved a strip of every
+    frame for a string that was not there. The replacement is a hairline rule plus the quoted
+    signature, and nothing at all when nothing is quoted, which is FR-340's empty-zone rule stated
+    inside the zone that owns it.
+
+    Both spellings are checked over the WHOLE style, because the strip was described in five
+    places (`render_prompt`, `text_placement`, `visual_pacing`, `per_format_guidance`,
+    `exclusions`) and a scrub that left one of them would put the band back on every slide.
+    """
+    style = styles.style_for(_shipped(), "icon-ledger-carousel")
+    dump = yaml.safe_dump(dataclasses.asdict(style), allow_unicode=True).lower()
+    brand_zones = [zone for zone in style.layout_zones if zone.role == "brand_slot"]
+
+    assert "strip" not in dump and "banner" not in dump, \
+        "the retired footer band is described somewhere in this style again (wave 4a rule 1)"
+    assert len(brand_zones) == 1, brand_zones
+    assert "hairline" in brand_zones[0].text_treatment, \
+        f"the signature sits on a hairline rule now, not a band: {brand_zones[0].text_treatment}"
+    assert "nothing at all is drawn here when nothing is quoted" in brand_zones[0].text_treatment, \
+        "FR-340: an empty zone is LEFT OUT of the frame, never filled with a default graphic"
+
+
+@pytest.mark.parametrize("key", ["letterpress-print-carousel", "letterpress-print-carousel-teal"])
+def test_fr350_the_letterpress_pair_retired_its_terracotta_body_ground(key: str) -> None:
+    """The owed SESSION-I ruling, settled by wave 4a and pinned here (rules 1 and 2).
+
+    Both letterpress styles used to run a cream COVER and a terracotta BODY — two grounds in one
+    style, the second of them (#B5573C) a saturated warm mid-tone. That is three separate spine
+    breaks at once: a second ground, a ground the accent cannot contrast against, and a mid-tone
+    for a `motion_profile: graphic` look. Settled as cream everywhere, cover and body alike, with
+    the ink carrying the difference — vermilion on the plain style, deep teal on the twin.
+
+    Exactly ONE `GROUND` line is the structural half of that and is what a re-authoring would undo
+    first: a style that grows a second ground line has grown a second look, whatever the hexes say.
+    The retired hex is checked over the whole style AND over the raw file, because a `# DELIBERATE`
+    comment reintroducing it as an option would not survive parsing into any field.
+    """
+    style = styles.style_for(_shipped(), key)
+    raw = (REPO / "prompts" / "styles.yaml").read_text(encoding="utf-8").upper()
+    grounds = [line for line in style.palette if styles._palette_role(line).startswith("GROUND")]
+
+    assert "B5573C" not in yaml.safe_dump(dataclasses.asdict(style)).upper(), \
+        f"{key}: the retired terracotta body ground is back in the style"
+    assert "B5573C" not in raw, "…or is back in the file as a comment offering it as an option"
+    assert len(grounds) == 1, f"{key}: one ground, cover and body alike — got {grounds}"
+    assert "cover and body alike" in grounds[0], \
+        f"{key}: the ground line says out loud that it is the same on both — {grounds[0]}"
+
+
+def test_fr350_the_top_right_guards_catch_a_counter_planted_in_the_wrong_corner() -> None:
+    """The arm that stops both item-3 guards from passing because they match nothing.
+
+    Same discipline as the FR-339 planted twin above and for the same reason: a guard over bytes
+    that are already clean is indistinguishable from a regex with a lost `re.IGNORECASE` or a
+    field name typo'd out of the scan, and the day someone re-authors a style is the day it would
+    have mattered. Both halves of item 3 are fired at a style built to be caught, through
+    `dataclasses.replace` on a clean fixture, so the ONLY difference between passing and failing is
+    the planted sentence.
+
+    The last block is the SCOPE, asserted as an absence: a device named top-left in one clause and
+    a corner named in ANOTHER is not a hit. That is `build-log-mono`'s real `render_prompt` shape,
+    and it is the decision a future reader is most likely to "fix" by widening the scan to a
+    character window — which would report the one style in the file that states the rule correctly.
+    """
+    clean = _style("planted")
+    assert _counter_zones(clean) == [] and _left_corner_devices(clean) == [], \
+        "the fixture must start clean, or the plant below proves nothing"
+
+    zoned = dataclasses.replace(clean, layout_zones=[
+        LayoutZone("top-left corner, on the first baseline", "slide counter",
+                   "small tracked caps", role="counter_slot")])
+    assert [zone for zone in _counter_zones(zoned)
+            if "top-right" not in zone.position.lower()], "the zone guard missed a top-left counter"
+
+    prosed = dataclasses.replace(
+        clean, per_format_guidance={"carousel_slide": "A page-number chip top-left on every body "
+                                                      "slide, above the headline."})
+    hits = _left_corner_devices(prosed)
+    assert len(hits) == 1, hits
+    assert "top-left" in hits[0] and "chip" in hits[0], hits
+
+    # Scope: the device and the corner in two different clauses is the rule being FOLLOWED.
+    following = dataclasses.replace(clean, render_prompt=(
+        "A mono micro-label top-left closing on a cursor block, a position chip top-right."))
+    assert _left_corner_devices(following) == [], \
+        "a label top-left beside a chip top-right is correct authoring, not a hit"
+
+
+def test_fr350_the_safe_area_guard_catches_a_style_that_paraphrases_the_sentence() -> None:
+    """The same planted-defect discipline for item 4, aimed at the failure that actually happens.
+
+    Nobody deletes a safe-area rule; they REWRITE it, and a paraphrase is what a rewrite produces.
+    So the plant is not an empty `text_placement` — it is a style that says the right thing in the
+    wrong words, which a keyword guard ("80%", "safe area") would wave straight through and which
+    a render model cannot execute.
+    """
+    clean = _style("planted", text_placement=f"Margins 7%; all text {_SAFE_AREA_PHRASE}.")
+    assert _SAFE_AREA_PHRASE in clean.text_placement, "the fixture must start clean"
+
+    paraphrased = dataclasses.replace(
+        clean, text_placement="Margins 7%; keep all text well inside the frame, 80% of it.")
+    dropped = dataclasses.replace(clean, text_placement="Margins 7%; headline in the upper third.")
+
+    for style in (paraphrased, dropped):
+        assert _SAFE_AREA_PHRASE not in style.text_placement, \
+            f"the guard would pass this style: {style.text_placement}"

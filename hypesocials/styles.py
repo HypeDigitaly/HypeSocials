@@ -73,9 +73,11 @@ upload memo and the brief-photo attachment now live entirely in `generate/refs.p
 
 from __future__ import annotations
 
+import colorsys
 import hashlib
 import logging
 import math
+import re
 import zlib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -368,6 +370,14 @@ def _one_line(exc: Exception) -> str:
     return " ".join(str(exc).split())
 
 
+def _snippet(text: str, limit: int = 60) -> str:
+    """The opening of some prose, whitespace-collapsed and cut to `limit` characters with an
+    ellipsis when it was cut — enough for an operator to find the line in `styles.yaml` without
+    printing a paragraph into a console the caller wraps at 78 characters."""
+    flat = " ".join(text.split())
+    return f"{flat[:limit]}…" if len(flat) > limit else flat
+
+
 # --------------------------------------------------------------------------------------------
 # Predicates — the registry's own vocabulary, so no caller re-derives it
 # --------------------------------------------------------------------------------------------
@@ -504,6 +514,297 @@ def _first_sentence(text: str) -> str:
 
 
 # --------------------------------------------------------------------------------------------
+# Palette contract (FR-347) — the accent rule, read off the hexes an author really wrote
+# --------------------------------------------------------------------------------------------
+
+#: FR-347's ONE switch. `False` is WARNING MODE: the palette findings ride `validate`'s warnings
+#: list, the operator sees them at pre-flight and the run continues. `True` makes the same
+#: findings ERRORS — FR-295 exit-2 material, $0 spent, in the same list and the same wording as
+#: an empty `render_prompt`; nothing about the refusal's shape changes, only which list the lines
+#: land in (`preflight._check_styles` grades whatever comes back in `errors`).
+#:
+#: It was born `False` because the contract was written AFTER the nineteen shipped styles were:
+#: flipping it before their prose was re-authored would have refused every run of every config on
+#: day one, a self-inflicted outage rather than a guard rail. SESSION K's Wave 4 brought all 19
+#: shipped styles clean in warning mode and then flipped this one line to `True` (D60, 2026-08-20):
+#: from here on a palette that breaks the accent rule cannot reach a paid render. Set it back to
+#: `False` only to triage a registry edit, never to ship one.
+_PALETTE_CONTRACT_ENFORCED = True
+#: A `#RRGGBB` anywhere in a palette line, case-insensitive and word-bounded so a range written
+#: `#0FCFC4-#57E6DC` reads as the two colours it names.
+_HEX = re.compile(r"#([0-9A-Fa-f]{6})\b")
+#: The ROLE token a palette line opens with: its leading run of capitals (plus spaces, `+` and
+#: `/`), ending at the first lowercase letter, `#` or `:` on the line. `ACCENT teal #0C8897: …`
+#: yields `ACCENT`, `GROUND + CAPTION BANDS cream …` yields the whole compound.
+_ROLE = re.compile(r"^([A-Z][A-Z +/]*?)(?=\s*(?:[a-z#:]|$))")
+#: Role words that name a BACKGROUND — the frame's own cast rather than something sitting on it.
+#: A saturated hex under one of these is legal and is NOT counted as a second accent: a
+#: photographic style's ground is allowed to be warm or cold (plan 4a rule 6). It is measured for
+#: one thing only, that it contrasts with the accent family below.
+_BACKGROUND_ROLES = ("GROUND", "GROUNDS", "SURFACE", "DEPTH", "SHADOW")
+#: The spellings of a coverage clause an author may write on an accent line — `under 1/8`,
+#: `under 10%`, `max 1/8`, `at most 1/8`, `<= 1/8`, `≤ 1/8`. One regex, so the validator and the
+#: authoring block in `styles.yaml` cannot drift into two different vocabularies.
+_COVERAGE = re.compile(
+    r"under\s+(\d+)\s*/\s*(\d+)|under\s+(\d+)\s*%|(?:≤|<=|max|at most)\s*1\s*/\s*(\d+)", re.I)
+#: Saturation floor for "this hex does ACCENT work". Under 0.45 a colour reads as a tinted
+#: neutral — a warm grey, a sepia cast, an oak ground — and no viewer calls it the accent; the
+#: shipped palettes' real accents all sit well above it and their casts well below.
+_ACCENT_SATURATION_FLOOR = 0.45
+#: Value band for the same question. Under 0.15 the hue is black in practice and over 0.95 it is
+#: glare, and neither end can carry an accent's job of being the one thing the eye lands on.
+_ACCENT_VALUE_BAND = (0.15, 0.95)
+#: How wide one hue FAMILY is, in degrees. Two hues inside 30° read as one colour to a viewer
+#: (teal at 176° and teal at 186° is one accent, not two); past it the second hue reads as
+#: another brand on the same deck, which is the defect this contract exists to stop.
+_HUE_FAMILY_DEGREES = 30.0
+#: The share of frame an accent may take: 1/8. Past that it stops being an accent and becomes the
+#: ground — the "one accent, used sparingly" rule stated as a number the author writes on the
+#: palette line itself, so the render prompt carries the bound instead of implying it.
+_MAX_ACCENT_COVERAGE = 0.125
+
+
+def _hsv(hex6: str) -> tuple[float, float, float]:
+    """`RRGGBB` (no `#`, either case) as `(hue in degrees, saturation, value)`.
+
+    Hue comes back in degrees rather than `colorsys`' 0-1 turn because every rule above is stated
+    in degrees, and one conversion in one place beats three at the call sites.
+    """
+    red, green, blue = (int(hex6[index:index + 2], 16) / 255 for index in (0, 2, 4))
+    hue, saturation, value = colorsys.rgb_to_hsv(red, green, blue)
+    return hue * 360, saturation, value
+
+
+def _saturated(hex6: str) -> bool:
+    """Is this hex a COLOUR doing accent work, rather than a tint, a cast or a near-neutral?
+
+    The whole palette contract turns on this one predicate: a hex that answers `True` on a
+    non-background line is an ACCENT and is held to the accent rules, and everything else is
+    furniture the contract says nothing about.
+    """
+    _, saturation, value = _hsv(hex6)
+    floor, ceiling = _ACCENT_VALUE_BAND
+    return saturation >= _ACCENT_SATURATION_FLOOR and floor <= value <= ceiling
+
+
+def _hue_distance(first: float, second: float) -> float:
+    """Circular distance between two hues in degrees — 350° and 10° are 20° apart, not 340°."""
+    gap = abs(first - second) % 360
+    return min(gap, 360 - gap)
+
+
+def _palette_role(line: str) -> str:
+    """The role token a palette line opens with (`ACCENT`, `GROUND + CAPTION BANDS`), or `""`.
+
+    A line with no capitalised opening — an author writing plain prose — yields `""`, which is an
+    accent candidate: the contract's default is to HOLD a saturated hex to the accent rules and
+    to let the `GROUND`/`SURFACE` vocabulary be the thing an author opts into.
+    """
+    match = _ROLE.match(line.strip())
+    return match.group(1).strip() if match else ""
+
+
+def _is_background_role(line: str) -> bool:
+    """Does this palette line describe the ground, rather than something sitting on it?
+
+    A compound role counts when it STARTS with a background word (`GROUND + CAPTION BANDS` is a
+    ground), because the leading word is the one that says what the hex mostly covers.
+    """
+    role = _palette_role(line)
+    return any(role == word or role.startswith(f"{word} ") or role.startswith(f"{word}+")
+               for word in _BACKGROUND_ROLES)
+
+
+def _coverage_bound(line: str) -> float | None:
+    """The share of frame this line allows itself as a fraction (`under 1/8` → 0.125), or `None`.
+
+    `None` means the line states no bound at all, which is a finding of its own — an accent the
+    model is not held to is an accent it will spread, and "sparingly" is not a number.
+    """
+    match = _COVERAGE.search(line)
+    if not match:
+        return None
+    if match.group(1):
+        return int(match.group(1)) / int(match.group(2))
+    if match.group(3):
+        return int(match.group(3)) / 100
+    return 1 / int(match.group(4))
+
+
+def _palette_findings(style: MetaStyle, where: str) -> list[str]:
+    """FR-347: what this style's `palette` gets wrong about its accent — one line per defect.
+
+    Four findings, all read off the HEXES rather than off the prose around them, so the answer is
+    the same whatever vocabulary an author reaches for:
+
+    1. the accent hexes span more than one hue family (names the hexes and their hue angles);
+    2. a line carrying an accent hex states no coverage clause;
+    3. an accent line's coverage bound is over 1/8 of frame;
+    4. a saturated GROUND hex sits inside the accent's own hue family, so the accent has nothing
+       to contrast against (plan 4a rule 6 — a cast is legal, a cast in the accent's hue is not).
+
+    **Zero accent hexes is silently legal.** A style may be built entirely of neutrals; that is a
+    look, not a defect, and the contract has nothing to say about it.
+
+    Which LIST these lines land in is `_PALETTE_CONTRACT_ENFORCED`'s decision, not this function's
+    — it returns findings and `validate` files them as warnings or as errors.
+    """
+    out: list[str] = []
+    accents: list[tuple[str, float]] = []
+    grounds: list[tuple[str, float]] = []
+    for line in style.palette:
+        hexes = [value.upper() for value in _HEX.findall(line) if _saturated(value)]
+        if not hexes:
+            continue  # a line of neutrals is furniture: no accent rule applies to it
+        if _is_background_role(line):
+            grounds.extend((value, _hsv(value)[0]) for value in hexes)
+            continue
+        accents.extend((value, _hsv(value)[0]) for value in hexes)
+        bound = _coverage_bound(line)
+        if bound is None:
+            out.append(f'{where}: the accent line "{_snippet(line)}" states no coverage bound — '
+                       "an accent the model is not held to spreads over the frame; write the "
+                       "share on the line itself (`under 1/8`) (FR-347)")
+        # Floats: `under 2/16` lands on 0.125 exactly, but a percentage clause divides by 100 and
+        # can land a hair either side of it, so the epsilon keeps a bound that IS 1/8 out of the
+        # report instead of failing an author for arithmetic they never did.
+        elif bound > _MAX_ACCENT_COVERAGE + 1e-9:
+            out.append(f'{where}: the accent line "{_snippet(line)}" allows {bound:.1%} of frame '
+                       f"— the ceiling is 1/8 ({_MAX_ACCENT_COVERAGE:.1%}), past which the accent "
+                       "IS the ground (FR-347)")
+    hues = [hue for _, hue in accents]
+    if any(_hue_distance(one, two) > _HUE_FAMILY_DEGREES for one in hues for two in hues):
+        named = ", ".join(f"#{value} at {round(hue)}°" for value, hue in accents)
+        out.append(f"{where}: the accent hexes span more than one hue family ({named}) — one "
+                   "style carries ONE accent hue, and a second one reads as a different brand on "
+                   f"the same deck (a family is {_HUE_FAMILY_DEGREES:.0f}° wide) (FR-347)")
+    for value, hue in grounds:
+        if hues and all(_hue_distance(hue, other) <= _HUE_FAMILY_DEGREES for other in hues):
+            out.append(f"{where}: the saturated ground #{value} at {round(hue)}° sits inside the "
+                       "accent's own hue family, so the accent does not contrast with its ground "
+                       "cast — cool the ground or move the accent (FR-347)")
+    return out
+
+
+# --------------------------------------------------------------------------------------------
+# DNA prose scans (FR-349 unresolved choices, FR-348 type families)
+# --------------------------------------------------------------------------------------------
+
+#: The words that turn a marker into a BAN LIST instead of a choice. "no serif, script or display
+#: face" names three families it forbids and is exactly what a well-written rule looks like;
+#: "small mono or tracked caps" is a decision the author left to the image model. Word-bounded,
+#: so `nothing` counts and `nonsense` does not.
+_NEGATION = re.compile(r"\b(no|not|never|nothing|none|nor|neither|without|rather than)\b", re.I)
+#: FR-348's five type CLASSES and the words that name them. Word-bounded and case-insensitive,
+#: and a hyphen IS a boundary in Python's `\b` — so `sans-serif` names two classes (which is what
+#: an author writing it means) and `monogram` names none.
+_TYPE_FAMILIES = {
+    "serif": re.compile(r"\b(serif|didone|slab)\b", re.I),
+    "sans": re.compile(r"\b(sans|grotesque|geometric|humanist|gothic)\b", re.I),
+    "mono": re.compile(r"\b(mono|monospace)\b", re.I),
+    "script": re.compile(r"\b(script|handwritten|hand-lettered|marker)\b", re.I),
+    "woodtype": re.compile(r"\b(woodtype|display face|display type)\b", re.I),
+}
+#: FR-348's ceiling: one display family and one body family. Two is what a reader tells apart at
+#: a glance and what a render model holds across a deck; a third family is a third set of shapes
+#: competing for the same slide, and the styles that shipped with four looked like four different
+#: decks stapled together.
+_MAX_TYPE_FAMILIES = 2
+
+
+def _clauses(text: str) -> list[str]:
+    """Some prose as the CLAUSES a marker or a negation is judged inside.
+
+    Whitespace is collapsed first, then the text splits on `; `, `. `, `: ` and newlines — the
+    four places an author ends one thought and starts another. The clause is the unit because the
+    negation rule needs it: "no serif, script or display face" must keep its `no` and its `or` in
+    one string, and the sentence three sentences later must not borrow that `no`.
+
+    (The collapse consumes newlines before the split sees them, so the newline branch only fires
+    if a caller ever hands this raw multi-line text. It is kept because the rule is stated with
+    it, and a split that quietly loses a case is worse than an alternative that rarely fires.)
+    """
+    flat = " ".join(str(text).split())
+    return [clause for clause in re.split(r";\s+|\.\s+|:\s+|\n", flat) if clause]
+
+
+def _leaky(clause: str) -> bool:
+    """Does this clause leave the image model a CHOICE it should have been handed resolved?
+
+    The same `_VARIANT_MARKERS` the `render_prompt` rule uses, padded so a clause ending on "or"
+    is caught too, minus every clause that also carries a negation — which is how a ban list is
+    written, and a ban list is never a choice (FR-349).
+    """
+    padded = f" {clause.lower()} "
+    return any(marker in padded for marker in _VARIANT_MARKERS) and not _NEGATION.search(clause)
+
+
+def _dna_prose(style: MetaStyle) -> list[tuple[str, str]]:
+    """Every field the FR-349 scan reads, as `(field name, prose)` in the order it reports them.
+
+    This is the prose an image model EXECUTES — the five DNA fields plus the list layout and the
+    per-format notes — and deliberately nothing else. `exclusions` are out because a ban list is
+    WRITTEN with the marker words ("no serif, script or display face") and scanning it would warn
+    about correct authoring. `layout_zones` are out because a zone is gated by role (FR-339) and
+    is not unconditional DNA. `render_prompt` is out because it already has its own rule in
+    `_style_warnings`, unchanged since M9 — one field, one message, never a double report.
+    """
+    prose = [("palette", line) for line in style.palette]
+    prose += [("typography", style.typography), ("text_placement", style.text_placement),
+              ("image_treatment", style.image_treatment), ("visual_pacing", style.visual_pacing)]
+    if style.list_mode is not None:
+        prose.append(("list_mode.layout", style.list_mode.layout))
+    prose += [(f"per_format_guidance.{name}", value)
+              for name, value in style.per_format_guidance.items()]
+    return prose
+
+
+def _choice_warnings(style: MetaStyle, where: str) -> list[str]:
+    """FR-349: one line per DNA clause that still offers the render model a choice.
+
+    The `render_prompt` heuristic (M9) was always right and was always looking at ONE field. The
+    DNA fields reach the model just as literally — `style_dna` ships them byte-identically across
+    a deck (FR-189) — so "a teal or cobalt rule" in `text_placement` buys exactly the slide-by-
+    slide drift M9 was written to stop.
+    """
+    return [f'{where}: `{field}` leaves a choice open — "{_snippet(clause)}" — the image model '
+            "resolves it differently on every slide of one deck; settle it on one value, or say "
+            "what decides it (FR-349)"
+            for field, text in _dna_prose(style) for clause in _clauses(text) if _leaky(clause)]
+
+
+def _type_family_warning(style: MetaStyle, where: str) -> list[str]:
+    """FR-348: does this style name more type families than a reader can tell apart? (0 or 1 line)
+
+    Counted over the non-negated clauses of `typography` and of every zone's `text_treatment`,
+    because those are the two places a style specifies type at all. A clause that BANS a family
+    ("no script, no woodtype") does not name one for the purposes of this count.
+
+    The carve-out: a THIRD family is tolerated when it is `mono`, because a code or terminal
+    identity needs a monospace utility for the thing it is imitating and that utility is not a
+    third voice. The PRD limits the carve-out to those identities by name (`build-log-mono`,
+    `circuit-atlas-dark`, `terminal-mockup-deck`) and a TEST guard pins that list, not this
+    function — the validator reads words and cannot know whether a style IS a terminal, and a
+    heuristic that guessed would fail the honest styles and pass the dishonest ones.
+
+    A heuristic, therefore a warning and never an error: a style naming three families still
+    renders, and FR-295's exit 2 is for registries that cannot render at all.
+    """
+    named: set[str] = set()
+    for text in [style.typography, *(zone.text_treatment for zone in style.layout_zones)]:
+        for clause in _clauses(text):
+            if _NEGATION.search(clause):
+                continue
+            named |= {name for name, pattern in _TYPE_FAMILIES.items() if pattern.search(clause)}
+    if len(named) <= _MAX_TYPE_FAMILIES or (len(named) == _MAX_TYPE_FAMILIES + 1
+                                            and "mono" in named):
+        return []
+    return [f"{where}: `typography` and the layout zones name {len(named)} type families "
+            f"({', '.join(sorted(named))}) — one display family + one body family; a third family "
+            "only as a mono utility (FR-348)"]
+
+
+# --------------------------------------------------------------------------------------------
 # Pre-flight validation (FR-295)
 # --------------------------------------------------------------------------------------------
 
@@ -527,6 +828,18 @@ def validate(reg: StyleRegistry, config: Config) -> tuple[list[str], list[str]]:
     FR-318 joins the same arithmetic through `brand_ok`: with `branding.enabled` false the pool
     loses its `brand_slot: true` house cards, and a run that has nothing left keeps the ordinary
     FR-295 refusal shape — exit 2 at $0 — with the switch named as the cause.
+
+    FR-347 (D60) is the one finding set with TWO MODES, and `_PALETTE_CONTRACT_ENFORCED` is the
+    whole of the difference. In warning mode (`False`, what ships) a palette that breaks the
+    accent contract prints at pre-flight and the run proceeds; enforced (`True`) the identical
+    lines are errors and the registry refuses at $0 like any other FR-295 defect. Nothing else
+    moves with that flag — same checks, same wording, same exit path — so the day the shipped
+    nineteen are re-authored clean is a one-line change with no second behaviour to re-test.
+
+    The two other D60 contracts are warnings by construction and have no mode: FR-348 counts the
+    type families a style names and FR-349 scans every DNA field for an unresolved choice. Both
+    are heuristics over prose, both leave a style that still renders exactly as authored, and
+    `_style_warnings` carries them beside the M9 `render_prompt` rule they generalise.
     """
     errors: list[str] = []
     warnings: list[str] = []
@@ -552,6 +865,11 @@ def validate(reg: StyleRegistry, config: Config) -> tuple[list[str], list[str]]:
         if bad := [value for value in style.brand_affinity if value not in _BRANDS]:
             errors.append(f"{where}: unknown brand_affinity {', '.join(sorted(bad))} — allowed: "
                           f"{', '.join(_BRANDS)} (FR-290)")
+        # FR-347's findings ride ONE switch: warnings while the shipped registry is being
+        # re-authored, errors the day `_PALETTE_CONTRACT_ENFORCED` flips. Computed the same way
+        # either side of it, so the flip changes where the lines print and nothing else.
+        findings = _palette_findings(style, where)
+        (errors if _PALETTE_CONTRACT_ENFORCED else warnings).extend(findings)
         warnings.extend(_style_warnings(style, where))
     if selector := _selector_errors(reg, enabled):
         errors.extend(selector)
@@ -648,6 +966,12 @@ def _style_warnings(style: MetaStyle, where: str) -> list[str]:
     is for defects that make a run impossible (no render instruction, no affine format, an empty
     pool), and none of these do. A style with no `match_profile` still renders exactly as authored
     — only the matcher that has to choose between styles is left reading the wrong field (D56).
+
+    D60 widens the same idea twice. FR-348 counts the TYPE FAMILIES a style names across
+    `typography` and its zones' `text_treatment`, and FR-349 takes M9's either/or heuristic off
+    `render_prompt` alone and runs it over every DNA field the model executes. The M9 rule below
+    is untouched and stays separate: it reads one field with its own message, and the two new
+    scans deliberately do not read that field, so no style is reported twice for one sentence.
     """
     out: list[str] = []
     if (words := len(style.render_prompt.split())) > _MAX_RENDER_WORDS:
@@ -669,6 +993,8 @@ def _style_warnings(style: MetaStyle, where: str) -> list[str]:
         out.append(f"{where}: `render_prompt` still offers a choice ({', '.join(leaks)}) — the "
                    "image model resolves it differently on every slide of one deck; resolve it to "
                    "one value (M9)")
+    out.extend(_type_family_warning(style, where))
+    out.extend(_choice_warnings(style, where))
     return out
 
 

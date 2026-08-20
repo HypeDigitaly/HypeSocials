@@ -276,7 +276,8 @@ async def _seed_frame(
     prompt = _seed_prompt(entry, env, copyset, refs)
     if prompt is None:
         return _seed_failed(entry, env, folder, "prompt assembly failed (FR-260)")
-    params = RenderParams(prompt=prompt, aspect_ratio=ASPECT_9_16)
+    params = RenderParams(prompt=prompt, aspect_ratio=ASPECT_9_16,
+                          resolution=env.config.image_resolution(entry.platform))  # FR-342
     outcome = spend.add(await submit(entry, params, RenderRefs(image_urls=_urls(refs)),
                                      job="seed_frame", priority=RenderPriority.WAVE1,
                                      kind="projected",
@@ -381,7 +382,8 @@ async def _gate_seed(
         if prompt is None:
             return gauntlet.RerenderResult(status="failed")
         again = spend.add(await submit(
-            entry, RenderParams(prompt=prompt, aspect_ratio=ASPECT_9_16),
+            entry, RenderParams(prompt=prompt, aspect_ratio=ASPECT_9_16,
+                                resolution=env.config.image_resolution(entry.platform)),
             RenderRefs(image_urls=_urls(refs)), job="seed_frame",
             priority=RenderPriority.WAVE1, kind="discretionary",
             label=f"seed-frame gauntlet re-render · {entry.asset_id}"))

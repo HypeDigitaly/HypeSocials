@@ -480,7 +480,8 @@ async def _image(entry: PlanEntry, env: Env, folder: AssetFolder, submit: Any) -
     prompt = _assemble(entry, env, attached)
     if prompt is None:
         return _fail(entry, env, folder, "prompt_assembly_failed — unresolved placeholder (FR-260)")
-    params = RenderParams(prompt=prompt, aspect_ratio=entry.aspect_ratio)
+    params = RenderParams(prompt=prompt, aspect_ratio=entry.aspect_ratio,
+                          resolution=env.config.image_resolution(entry.platform))  # FR-342
     try:
         outcome = await submit(entry, params, RenderRefs(image_urls=urls), job="image",
                                priority=RenderPriority.WAVE1, kind="projected",
@@ -662,7 +663,8 @@ async def _gauntlet_image(
             return gauntlet.RerenderResult(status="failed")
         try:
             again = await submit(
-                entry, RenderParams(prompt=prompt, aspect_ratio=entry.aspect_ratio),
+                entry, RenderParams(prompt=prompt, aspect_ratio=entry.aspect_ratio,
+                                    resolution=env.config.image_resolution(entry.platform)),
                 RenderRefs(image_urls=[ref.url for ref in attached]), job="image",
                 priority=RenderPriority.WAVE1, kind="discretionary",
                 label=f"gauntlet re-render · {entry.asset_id}")

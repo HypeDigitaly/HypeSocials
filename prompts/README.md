@@ -82,6 +82,15 @@ is advisory, not required: a style that omits it raises a warning, never an
 error, and the matcher falls back to a stand-in derived from the first sentence
 of that style's `render_prompt` — a sentence that says how the style LOOKS, not
 what it SUITS, so an authored line beats the fallback every time.
+Since v2.5.1 (D60) pre-flight also reads the `palette` lines as DATA, not prose:
+every `#RRGGBB` is parsed to HSV and the FR-347 palette contract is an ERROR —
+one accent hue family, a coverage clause of at most 1/8 on every accent line,
+background roles (`GROUND`/`SURFACE`/`DEPTH`/`SHADOW`) exempt, zero accents legal
+— while the FR-349 variant scan (an unresolved "A or B" in any DNA field, negated
+ban-lists excepted) and the FR-348 type-family count (more than two families,
+a third `mono` tolerated) stay warnings. The house spine (FR-350: counter
+top-right, ground at a value extreme, text inside the central 80% of the 1:1
+frame) is enforced by test guards over the shipped file, not at load.
 
 **FR-183's second copy.** Every shipped template also exists as a compiled
 built-in in `prompts_engine._BUILT_INS`, used when the file is missing,

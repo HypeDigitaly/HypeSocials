@@ -344,21 +344,33 @@ platforms:
   # jobs per deck queued behind `max_inflight_render_jobs`, and the engine warns at load when the
   # worst-case full plan cannot plausibly finish inside the deadline.
   #
+  # `image_resolution` is `1k` or `2k` (FR-342, v2.5.1) - the tier every IMAGE job for this
+  # platform is submitted at AND the tier the Confirm-gate estimate prices, read through one
+  # accessor so the approved price and the submitted job can never disagree. The brand configs
+  # pin 2k; the engine default stays 1k here so a config that never opted in is never re-priced.
+  # 2K roughly doubles the per-slide render price and more than doubles the gauntlet's per-frame
+  # vision tokens, so raising it is a spend decision - the pre-flight estimate will show it.
+  # There is no 4k: NFR-13/FR-192 cap the house at 2K and the renderer clamps anything higher.
+  # Lower case only, exactly like run.reel_resolution - `2K` is refused at load, not corrected.
+  #
   # Aspect-ratio defaults are owned by prds/10-pipeline.md FR-21; `aspect_ratios` here is an
   # OVERRIDE map only.
   linkedin:
     formats: [image, carousel]
     carousel_slides: 20            # LinkedIn document/carousel posts accept well past this
+    image_resolution: 1k           # 1k | 2k (FR-342); brand configs pin 2k, the default does not
     aspect_ratios: {}              # e.g. { image: "1:1" } to deviate from the FR-21 default
     conventions: {}                # caption length / tone / hashtag hints - prompt guidance only
   instagram:
     formats: [image, carousel]
     carousel_slides: 10            # Instagram's own hard ceiling is 10 (FR-257) - do not raise
+    image_resolution: 1k           # 1k | 2k (FR-342); brand configs pin 2k, the default does not
     aspect_ratios: {}
     conventions: {}
   tiktok:
     formats: [image, carousel, reel]   # reels default to TikTok only
     carousel_slides: 20            # TikTok photo posts accept up to 35; 20 is the sane working max
+    image_resolution: 1k           # 1k | 2k (FR-342); brand configs pin 2k, the default does not
     aspect_ratios: {}
     conventions: {}
 

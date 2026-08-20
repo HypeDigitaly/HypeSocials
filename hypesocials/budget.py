@@ -39,6 +39,7 @@ from typing import Any, Literal
 
 from hypesocials.config import Config
 from hypesocials.models import PlanEntry, PlanEntryStatus
+from hypesocials.render.profiles import effective_image_tier
 
 # Token-model constants: how the ENGINE uses the models (FR-105 sizes, shipped template shapes),
 # not operator knobs — the cost levers are `max_tokens.*` and `reasoning_effort` (30 §2).
@@ -258,15 +259,38 @@ def _image_tokens(long_edge: int, aspect_ratio: str) -> int:
     return math.ceil(edge * edge * factor / _IMAGE_TOKEN_DIVISOR)
 
 
-def _image_price(config: Config, platform: str) -> tuple[Priced, int]:
+def _image_price(config: Config, platform: str, *,
+                 aspect_ratio: str | None = None) -> tuple[Priced, int]:
     """FR-107's per-platform resolution: the render tier's rate, plus its native long edge.
 
-    30 §2 ships no per-platform image-resolution key yet (NFR-13 names the intent), so the tier
-    falls back to `1k` — exactly what `render/profiles.py` sends when `RenderParams.resolution` is
-    unset. A future `platforms.<name>.image_resolution` is picked up here with no other change;
-    an unknown tier becomes an unpriced line naming the missing key, never a silent re-tier.
+    The tier comes from `platforms.<name>.image_resolution`, real since FR-342 (v2.5.1) and read
+    through `Config.image_resolution()` — the SAME accessor every image render calls before it
+    fills in `RenderParams.resolution`. That shared read is what makes the Confirm gate honest:
+    the estimate below quotes the rate for the tier the run is about to submit at, so a config
+    that pins `2k` is quoted at the 2K rate and never at the 1K one it stopped buying.
+
+    `aspect_ratio` closes the other half of that promise. The tier is per-PLATFORM, but the
+    provider clamps per RATIO — 20 §8c's 1K-only ratios render at 1K however they were asked for
+    — so pricing the configured tier alone would quote 2K for an Instagram image at FR-21's 4:5
+    and buy 1K. The entry's ratio therefore goes through `profiles.effective_image_tier`, the
+    same clamp the render path runs, and there is exactly one clamp table between them. `None`
+    means "no ratio in hand, do not clamp"; it is not the same as `""`, which the provider treats
+    as unset and renders at 1K.
+
+    The long edge that comes back with the price is the EFFECTIVE tier's native pixel size, and
+    it is not decoration — the gauntlet's critics read the rendered frames, so a taller tier
+    costs more vision tokens per frame as well as more per render, and `_image_tokens` needs this
+    number to charge for that too. Clamping before the lookup is what keeps that arithmetic
+    honest as well: a 4:5 frame is charged as the 1024 px it arrives at, not the 2048 px it asked.
+
+    An unknown tier stays an unpriced line naming the missing `models.price_per_unit.image.<tier>`
+    key, never a silent re-tier onto a cheaper neighbour: an unpriced line is a question the
+    operator answers at the gate, whereas a substituted price is a wrong number they approve.
+    Its long edge falls back to `_DEFAULT_LONG_EDGE_PX` so the vision arithmetic still runs.
     """
-    tier = str(getattr(config.platform(platform), "image_resolution", "") or "1k").lower()
+    tier = config.image_resolution(platform)
+    if aspect_ratio is not None:  # what Kie RENDERS, not what config asked for (FR-342)
+        tier = effective_image_tier(aspect_ratio, tier)
     key = f"models.price_per_unit.image.{tier}"
     priced = (config.models.price_per_unit.image.get(tier), key, _origin(config, key),
               config.models.image)
@@ -393,7 +417,8 @@ def _entry_lines(config: Config, entry: PlanEntry, lines: list[EstimateLine]) ->
     creative (FR-106a).
     """
     orders, run = (entry.order,), config.run
-    image_priced, _native_px = _image_price(config, entry.platform)
+    image_priced, _native_px = _image_price(config, entry.platform,
+                                            aspect_ratio=entry.aspect_ratio)
     primary = image_priced  # what a moderation retry would cost
 
     if entry.creative_format == "image":
@@ -470,7 +495,7 @@ def job_projection(config: Config, entry: PlanEntry, job: str) -> float:
     if job == "clip":
         return round((config.reel_price_per_second or 0.0)
                      * max(int(config.run.reel_duration_s), 0), 6)
-    (price, *_), _ = _image_price(config, entry.platform)
+    (price, *_), _ = _image_price(config, entry.platform, aspect_ratio=entry.aspect_ratio)
     return round(price or 0.0, 6)
 
 
@@ -824,7 +849,7 @@ def _critic_call_price(config: Config, entry: PlanEntry, frames: int) -> Priced:
     `reasoning_per_mtok` rate to charge them with. A per-critic `model` override does not change
     the rate either: prices belong to the role's price block, not to a model id (FR-282).
     """
-    _, native_px = _image_price(config, entry.platform)
+    _, native_px = _image_price(config, entry.platform, aspect_ratio=entry.aspect_ratio)
     return _llm_call_price(
         config, "critic", _CRITIC_PROMPT_TOKENS + frames * _image_tokens(native_px,
                                                                         entry.aspect_ratio),

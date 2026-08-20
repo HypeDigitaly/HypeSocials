@@ -1021,3 +1021,151 @@ def test_fr333_d58_withdrew_a_pin_not_the_feature_compress_is_still_reachable(
     # And a config may still pin it directly — D58 changed three files, not the key's vocabulary.
     assert load(tmp_path, "run:\n  carousel_copy_mode: compress\n").run.carousel_copy_mode == (
         "compress")
+
+
+# ---- D60 ----------------------------- FR-342: `platforms.<name>.image_resolution` (the 2K pin)
+#
+# One key with two readers, which is the whole reason it is worth this many tests. `budget.
+# _image_price` turns it into the `models.price_per_unit.image.<tier>` line the operator approves
+# at the Confirm gate, and every image render puts the same string into `RenderParams.resolution`.
+# Both go through `Config.image_resolution()`, so the gate cannot quote one tier and the run buy
+# another — CLAUDE.md rule 7 spelled out as a method. What is tested here is the LOADING half:
+# what the file may say, what an absent key becomes, what a typo costs, and what the three shipped
+# brand configs really pin. The spending half is in `tests/test_budget.py`, the wire-in in
+# `tests/test_carousel.py`, `tests/test_generate_waves.py` and `tests/test_reel.py`.
+
+
+def test_fr342_image_resolution_round_trips_on_a_platform_that_names_it(tmp_path: Path) -> None:
+    """The plain case: a platform pins `2k` and both readers see `2k`.
+
+    Asserted through the accessor as well as off the dataclass, because the accessor is the one
+    every caller is required to use and a field that loaded correctly behind a broken accessor
+    would still price and render at 1K.
+    """
+    cfg = load(tmp_path, "platforms:\n  linkedin:\n    image_resolution: 2k\n")
+
+    assert cfg.platform("linkedin").image_resolution == "2k"
+    assert cfg.image_resolution("linkedin") == "2k"
+
+
+def test_fr342_an_omitted_key_defaults_to_1k_and_says_so_in_defaults_applied(
+    tmp_path: Path,
+) -> None:
+    """FR-50's honesty line has to cover this key, and the D58 shape is why.
+
+    The engine default is `1k` — a config that never asked for 2K keeps paying exactly what it
+    paid before FR-342 existed, because a shipped pin that silently re-priced every run is the
+    mistake D58 was the correction for. But "you are paying 1K because you never said" and "you
+    are paying 1K because you wrote 1k" are different situations, and `defaults_applied` is the
+    only place the run log tells them apart.
+
+    The platform entry here is PRESENT and merely omits the key, which is the case that would slip
+    through: a wholly absent `platforms.linkedin` block records the whole block instead, so a
+    generic-path regression would still look fine from a test that never wrote the entry.
+    """
+    cfg = load(tmp_path, "platforms:\n  linkedin:\n    carousel_slides: 5\n")
+
+    assert cfg.platform("linkedin").carousel_slides == 5, "the entry is present, not defaulted"
+    assert cfg.image_resolution("linkedin") == "1k"
+    assert "platforms.linkedin.image_resolution" in cfg.defaults_applied
+    # And the other side of it: a file that DOES write the key is not reported as having defaulted.
+    pinned = load(tmp_path, "platforms:\n  linkedin:\n    image_resolution: 2k\n")
+    assert "platforms.linkedin.image_resolution" not in pinned.defaults_applied
+
+
+def test_fr342_a_tier_outside_the_two_the_house_buys_is_one_line_at_load(tmp_path: Path) -> None:
+    """FR-69's one-line refusal, on the key most likely to be typed hopefully.
+
+    `4k` is the value an operator reaches for, and it is refused rather than clamped for a reason
+    the Confirm gate owns: `render/profiles.py` folds a 4K request down to 2K (FR-192), so a config
+    that accepted `4k` would let the estimator quote a price the renderer was never going to buy.
+    A gate that quotes a number the run cannot spend is worse than no gate.
+
+    The line names the KEY, the VALUE and the allowed set, because all three are what an operator
+    needs to fix it without opening the schema — the same shape `notion_influence` and
+    `run.reel_resolution` produce.
+    """
+    line = refusal(tmp_path, "platforms:\n  linkedin:\n    image_resolution: 4k\n")
+
+    assert "platforms.linkedin.image_resolution" in line
+    assert "'4k'" in line
+    assert "one of: 1k | 2k" in line
+
+
+def test_fr342_the_tier_is_case_sensitive_exactly_like_its_reel_resolution_sibling(
+    tmp_path: Path,
+) -> None:
+    """`2K` is refused at load, and that is a documented match rather than an oversight.
+
+    `_coerce` checks the `Literal` with no lower-casing, which is how `run.reel_resolution` has
+    always behaved — `720P` gets the same refusal `2K` gets here. Keeping the two keys identical
+    is worth more than being lenient on one of them: an operator who learns that resolutions are
+    written lower-case learns it once, and a $0 refusal before a run id exists is the cheapest
+    possible place to be told.
+
+    The accessor's own lower-casing is the SEPARATE thing (next test) and does not contradict this:
+    it exists for objects built in code, which never went through `_coerce` at all.
+    """
+    line = refusal(tmp_path, "platforms:\n  linkedin:\n    image_resolution: 2K\n")
+
+    assert "platforms.linkedin.image_resolution" in line and "'2K'" in line
+    assert "one of: 1k | 2k" in line
+    # The sibling this matches, asserted beside it so the pairing is a decision and not a rumour.
+    reel = refusal(tmp_path, "run:\n  reel_resolution: 720P\n")
+    assert "run.reel_resolution" in reel and "'720P'" in reel
+
+
+def test_fr342_the_accessor_lower_cases_and_falls_back_to_1k_for_an_unmentioned_platform(
+    tmp_path: Path,
+) -> None:
+    """`Config.image_resolution()` is a READER, not a second validator, and the two halves of that
+    are both load-bearing.
+
+    The lower-casing is for objects that never met `_coerce` — the estimator's `SimpleNamespace`
+    test doubles, a hand-built `Config`, an override applied in code. A caller comparing the answer
+    to a literal `"2k"` must not have to think about it, and this is the only place that promise is
+    checked, because a file can no longer deliver an upper-case value at all (test above).
+
+    The `1k` fallback is FR-132's defaulting seen from this key: `platform()` invents an entry for a
+    platform the file never mentioned, and what that entry must price and render at is exactly what
+    `render/profiles.py` sends for an unset `RenderParams.resolution`, which is 1K. Anything else
+    would make an unmentioned platform cost more than a mentioned one.
+    """
+    cfg = load(tmp_path, "platforms:\n  linkedin:\n    image_resolution: 2k\n")
+
+    assert cfg.image_resolution("mastodon") == "1k", "FR-132: an unmentioned platform still reads"
+    assert "mastodon" not in cfg.platforms, "…and reading it does not create it"
+
+    cfg.platforms["linkedin"].image_resolution = "2K"  # type: ignore[assignment]
+    assert cfg.image_resolution("linkedin") == "2k", "lower-cased for the caller, always"
+    cfg.platforms["linkedin"].image_resolution = ""  # type: ignore[assignment]
+    assert cfg.image_resolution("linkedin") == "1k", "empty means unset, and unset is 1K"
+
+
+def test_fr342_the_three_shipped_brand_configs_pin_2k_on_the_three_platforms_they_publish_to(
+) -> None:
+    """The operator decision of 2026-08-20, pinned as data: 2K everywhere for colour accuracy.
+
+    It is money, which is why it is asserted by NAME on all three configs rather than checked once.
+    The pin costs $0.03 -> $0.05 per rendered slide and takes the critic's vision tokens from 1,398
+    to 3,278 per frame — roughly +$3-6 on a nine-carousel run — so a config that silently lost the
+    block would quietly halve the render quality the operator is paying for, and a config that
+    silently gained a fourth platform would quietly raise the bill.
+
+    `default` staying `1k` is the D58 shape and is the other half of the same decision: the pin
+    lives in the three brand files that opted into it, never in the engine's own default, so a
+    config that inherits `default.yaml` and nothing else keeps paying what it always paid. It is
+    read through `load_config` rather than off the YAML so a key that loads to something other than
+    what it looks like on disk is caught here.
+    """
+    for name in ("hypedigitaly", "hypedigitaly-cs", "hypedigitaly-fresh"):
+        cfg = load_config(name, configs_dir=CONFIGS_DIR)
+
+        for platform in ("linkedin", "instagram", "tiktok"):
+            assert cfg.image_resolution(platform) == "2k", \
+                f"{name}: {platform} lost D60's 2K pin — every slide silently re-prices to 1K"
+        assert cfg.image_resolution("default") == "1k", \
+            f"{name}: the 2K pin is per-platform and opt-in; `default` is not one of the three"
+
+    assert load_config("default", configs_dir=CONFIGS_DIR).image_resolution("linkedin") == "1k", \
+        "the ENGINE default never re-prices a config that did not opt in (D58 shape)"

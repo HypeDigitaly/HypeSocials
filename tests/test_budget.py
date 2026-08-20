@@ -172,13 +172,24 @@ def test_fr326_critic_image_tokens_are_priced_at_native_render_resolution(
     The gate has NEVER downscaled: it reads the render we just paid for, at the size we paid for
     it (`vision_check.load_images` sends native bytes, and that invariant outlived the check it was
     written for). So the resolution tier moves this price, and must.
+
+    **RE-BASED at D60/FR-342 onto a 1:1 entry, and the ratio is now load-bearing.** This fixture's
+    default image ratio is 4:5, which is one of 20 §8c's 1K-ONLY ratios: whatever tier a platform
+    pins, Kie renders 4:5 at 1K, so both sides of the comparison below used to come back 1,024 px
+    and the price rightly did not move. That was invisible while `_image_price` read the configured
+    tier straight off the platform; since FR-342 it runs the entry's ratio through
+    `profiles.effective_image_tier` — the same clamp the render path runs — and the old assertion
+    started failing with the two tiers priced identically, which was the CORRECT answer to the
+    question the test was accidentally asking. 1:1 is what a carousel slide and a house image
+    actually render at, and at 1:1 the tier really does decide the pixel count.
     """
     cfg.run.gauntlet.enabled = True
 
     def at_tier(tier: str) -> float:
         cfg.platforms["linkedin"] = SimpleNamespace(  # type: ignore[assignment]
             carousel_slides=5, image_resolution=tier)
-        price = one(estimate(cfg, [entry(0, trend_key="t1")]), "gauntlet_critics").unit_price
+        price = one(estimate(cfg, [entry(0, trend_key="t1", aspect_ratio="1:1")]),
+                    "gauntlet_critics").unit_price
         assert price is not None
         return price
 
@@ -263,16 +274,35 @@ def test_no_monitors_and_brief_only_plans_are_never_charged_for_a_screen(cfg: Co
 
 
 def test_fr107_per_platform_resolution(cfg: Config) -> None:
-    """"**per-platform resolution**, since price scales with output size"."""
+    """"**per-platform resolution**, since price scales with output size".
+
+    **RE-BASED at D60/FR-342, twice over, and both moves are the same idea.**
+
+    The ratio is now 1:1 because 4:5 is one of 20 §8c's 1K-only ratios (see the FR-326 test above):
+    at 4:5 both platforms below would price at 1K however they were configured, and the test would
+    be measuring the clamp rather than the per-platform key.
+
+    The 4K expectation became `image.2k` for the reason FR-342 exists. The estimate is a promise
+    about what the run will BUY, and FR-192's production ceiling folds a 4K request down to 2K at
+    the provider — so quoting `image.4k` here would put a price on the gate that no render was ever
+    going to be billed at. `effective_image_tier` is the estimator's public twin of the renderer's
+    own clamp, both sides run it, and the number the operator approves is the number Kie sends.
+
+    A 4K platform can now ONLY exist as the `SimpleNamespace` below: `PlatformConfig.
+    image_resolution` is a `Literal["1k", "2k"]`, so a config file naming `4k` is refused at load
+    (`tests/test_config.py`). The double is kept anyway, deliberately — the accessor is a reader
+    and not a validator, and this is where that division of labour is exercised.
+    """
     cfg.platforms["linkedin"] = SimpleNamespace(  # type: ignore[assignment]
         carousel_slides=5, image_resolution="1k")
     cfg.platforms["instagram"] = SimpleNamespace(  # type: ignore[assignment]
         carousel_slides=5, image_resolution="4k")
-    est = estimate(cfg, [entry(0, platform="linkedin"), entry(1, platform="instagram")])
+    est = estimate(cfg, [entry(0, platform="linkedin", aspect_ratio="1:1"),
+                         entry(1, platform="instagram", aspect_ratio="1:1")])
     cheap, dear = lines(est, "image_render")
 
     assert (cheap.unit_price, cheap.price_key) == (0.03, "models.price_per_unit.image.1k")
-    assert (dear.unit_price, dear.price_key) == (0.08, "models.price_per_unit.image.4k")
+    assert (dear.unit_price, dear.price_key) == (0.05, "models.price_per_unit.image.2k")
     assert est.per_entry_usd[1] > est.per_entry_usd[0]
 
 
@@ -1235,3 +1265,93 @@ def test_the_retry_allowance_prices_the_cap_llm_will_actually_ask_for() -> None:
         # `_widen` answers 0 when no wider ask is legal (FR-127 forbids an identical retry); the
         # estimate still has to price FR-41's parse retry, which re-bills at the original cap.
         assert budget._widened_cap(cap) == (_widen(cap, ceiling) or cap)
+
+
+# ---- D60 ------------------------------ FR-342: the gate quotes the tier the provider will send
+#
+# The two re-bases above are the old FR-107 tests moved onto 1:1 entries. What follows is the NEW
+# behaviour underneath them: `_image_price` no longer prices what the CONFIG asked for, it prices
+# what Kie will RENDER, and the difference between those two is a per-ratio clamp the render path
+# has always run and the estimator used to be blind to. A gate that quotes 2K and buys 1K is not
+# a rounding error — it is CLAUDE.md rule 7 broken, because the number the operator approved is
+# not the number the run spends.
+
+
+def test_fr342_a_one_k_only_ratio_is_priced_at_1k_however_its_platform_was_pinned(
+    cfg: Config,
+) -> None:
+    """20 §8c's clamp, at the gate: an Instagram image at FR-21's 4:5 renders 1K and is billed 1K.
+
+    Both entries below sit on the SAME `2k` platform, so the configured tier cannot be what
+    separates them — the only difference is the aspect ratio, and 4:5 is one of the ratios the
+    provider will not render above 1K. The carousel slide at 1:1 gets the 2K rate the platform
+    pinned; the 4:5 image does not, because nobody is going to sell us 2K pixels for it.
+
+    This is the arm that would silently over-quote every Instagram image post if the estimator
+    ever stopped running the clamp: 0.05 charged, 0.03 spent, per frame, invisibly.
+    """
+    cfg.platforms["instagram"] = PlatformConfig(carousel_slides=5, image_resolution="2k")
+    est = estimate(cfg, [entry(0, platform="instagram", aspect_ratio="4:5"),
+                         entry(1, "carousel", platform="instagram", aspect_ratio="1:1")])
+
+    image = one(est, "image_render")
+    slides = one(est, "carousel_slides")
+
+    assert (image.unit_price, image.price_key) == (0.03, "models.price_per_unit.image.1k"), \
+        "FR-342: 4:5 is a 1K-only ratio at the provider, so 1K is what the gate may quote"
+    assert (slides.unit_price, slides.price_key) == (0.05, "models.price_per_unit.image.2k"), \
+        "…and 1:1 on the same platform really does buy the tier the config pinned"
+
+
+def test_fr342_the_critics_vision_tokens_follow_the_effective_tier_and_not_the_configured_one(
+    cfg: Config,
+) -> None:
+    """The second reader of the same clamp, and the more expensive one to get wrong.
+
+    `_image_price` hands back a long EDGE beside the price, and the gauntlet's critics are billed
+    on it: they read the frames we rendered at the size we rendered them, so a 2K frame costs
+    roughly 3,278 vision tokens where a 1K frame costs 1,398. If the estimator took the long edge
+    off the configured tier instead of the effective one, every 4:5 creative on a 2K platform
+    would be quoted for pixels that were never rendered — the same defect as the price above, in
+    a line an operator is far less likely to check by hand.
+
+    Asserted as two comparisons rather than as two magic numbers: at 4:5 the tier makes NO
+    difference (the clamp erases it), at 1:1 it makes one. Those two facts together are the clamp,
+    and they survive a re-priced token table.
+    """
+    cfg.run.gauntlet.enabled = True
+
+    def critic_price(tier: str, ratio: str) -> float:
+        cfg.platforms["linkedin"] = PlatformConfig(carousel_slides=5, image_resolution=tier)
+        price = one(estimate(cfg, [entry(0, trend_key="t1", aspect_ratio=ratio)]),
+                    "gauntlet_critics").unit_price
+        assert price is not None
+        return price
+
+    assert critic_price("2k", "4:5") == critic_price("1k", "4:5"), \
+        "FR-342: a 1K-only ratio renders 1K on either platform, so the critics read the same frame"
+    assert critic_price("2k", "1:1") > critic_price("1k", "1:1"), \
+        "…and at a ratio the provider WILL render at 2K, the taller frame costs more to read"
+
+
+def test_fr342_a_four_k_platform_is_priced_at_the_ceiling_the_renderer_will_actually_send(
+    cfg: Config,
+) -> None:
+    """FR-192's ceiling, at the gate rather than at the wire.
+
+    4K is declared by Kie's enum and never requested by this engine: `profiles._image_resolution`
+    folds it to 2K on every image job. The estimator runs the same fold through the public twin, so
+    a hand-built 4K platform is quoted at the 2K rate — the rate the render will really be billed
+    at — instead of at a 4K rate no job will ever produce.
+
+    It cannot come from a config file any more (`Literal["1k", "2k"]` refuses it at load), which is
+    exactly why the double is built by hand here: the accessor is a READER, the load step is the
+    validator, and this is the test that keeps those two jobs from merging.
+    """
+    cfg.platforms["linkedin"] = SimpleNamespace(  # type: ignore[assignment]
+        carousel_slides=5, image_resolution="4k")
+
+    render = one(estimate(cfg, [entry(0, aspect_ratio="1:1")]), "image_render")
+
+    assert (render.unit_price, render.price_key) == (0.05, "models.price_per_unit.image.2k")
+    assert not render.unpriced, "the folded tier IS priced; only an unknown tier is not"

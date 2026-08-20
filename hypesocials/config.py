@@ -289,6 +289,29 @@ class PlatformConfig:
     # it from `_PLATFORM_MIN_PANELS`; the generic `_DEFAULT_MIN_PANELS` stands here for a platform
     # that table has never heard of. Never above `carousel_slides` — `_validate` refuses the pair.
     min_carousel_panels: int = _DEFAULT_MIN_PANELS
+    # v2.5.1 (D60/FR-342): the render tier every IMAGE job for this platform is submitted at, and
+    # the tier the Confirm-gate estimate prices — one key read through `Config.image_resolution()`
+    # by both, so the number the operator approves is the number the run buys. It is per-platform
+    # because it is a fact about where the creative lands: a LinkedIn document is read at desk
+    # width and a TikTok photo post at thumbnail size, and those do not deserve the same spend.
+    #
+    # The ENGINE default stays `1k` — the D58 shape, learned when a shipped pin silently re-priced
+    # every run that had never asked for it. A config that does not name this key keeps paying
+    # exactly what it paid before FR-342 existed, and `render/profiles.py` already sends `1K` for
+    # an unset `RenderParams.resolution`, so the default is also what the wire was already doing.
+    # The three brand configs pin `2k` (operator decision 2026-08-20, colour accuracy) — that is
+    # an opt-in written in their own files, visible in the estimate, not a default anyone inherits.
+    #
+    # Two tiers only, never three: NFR-13/FR-192 cap the house at 2K, and `profiles._image_
+    # resolution` clamps a 4K request down anyway — offering `4k` here would let the estimator
+    # quote a price the renderer would never buy, which is the one thing the Confirm gate may not
+    # do. `8k` was never a Kie tier at all.
+    #
+    # CASE-SENSITIVE, matching its `run.reel_resolution` sibling: the plain `_coerce` Literal check
+    # runs with no lower-casing, so `2K` is refused at load with the ordinary one-line ConfigError
+    # naming the key, the value and `one of: 1k | 2k`. That refusal is the same shape `720P` gets
+    # from `reel_resolution` today, and it costs $0 — a typo here is caught before a run id exists.
+    image_resolution: Literal["1k", "2k"] = "1k"
     aspect_ratios: dict[str, str] = field(default_factory=dict)  # OVERRIDE only; defaults 10 FR-21
     conventions: dict[str, str] = field(default_factory=dict)  # length/tone/hashtag prompt hints
 
@@ -660,6 +683,34 @@ class Config:
     def platform(self, name: str) -> PlatformConfig:
         """That platform's entry, defaulted if the file never mentioned it (FR-132)."""
         return self.platforms.get(name) or _default_platform(name)
+
+    def image_resolution(self, platform: str) -> str:
+        """That platform's image render tier, `1k` or `2k` (FR-342). THE one accessor.
+
+        Both readers come through here on purpose. The estimator (`budget._image_price`) turns the
+        answer into a `models.price_per_unit.image.<tier>` line at the Confirm gate, and every
+        image render (`generate/`) puts the same string into `RenderParams.resolution`. Two
+        readers of one key means the gate cannot lie: whatever tier the operator approved a price
+        for is the tier the run submits, and there is no second place to change one without the
+        other. That is CLAUDE.md rule 7 spelled out as a method.
+
+        What comes back is what the CONFIG asked for. The provider then clamps it per aspect
+        ratio (20 §8c's 1K-only ratios, FR-192's 2K ceiling), and both sides run that same clamp
+        — the renderer inside `profiles._image_resolution`, the estimator through its public twin
+        `profiles.effective_image_tier` — so the two still agree on the tier actually bought.
+
+        Lower-cased on the way out so a caller may compare it to a literal `"2k"` without
+        thinking, and defaulted to `1k` when the attribute is empty or absent — the estimator's
+        test doubles hand this method bare `SimpleNamespace` platforms, and a run that reaches
+        here with nothing set should price and render what `render/profiles.py` sends for an unset
+        resolution, which is 1K.
+
+        NOT a validator. A value outside the Literal cannot survive `load_config`, so anything odd
+        arriving here came from a hand-built object rather than a file; it is passed through, and
+        an unknown tier surfaces downstream as an unpriced estimate line naming the missing price
+        key rather than as a silent re-tier of a paid render.
+        """
+        return str(self.platform(platform).image_resolution or "1k").lower()
 
     def language_for(self, platform: str) -> str:
         return self.run.languages.get(platform, "en")
@@ -1139,6 +1190,9 @@ def _build_platforms(raw: Any, active: Sequence[str], ctx: _Ctx) -> dict[str, Pl
         if entry.get("min_carousel_panels") is None:  # and the floor at the other end of it
             ctx.defaults.append(f"platforms.{name}.min_carousel_panels")
             entry["min_carousel_panels"] = _default_platform(name).min_carousel_panels
+        # `image_resolution` (FR-342) gets NO hop here, and that is the point: unlike the three
+        # above, its default is the same `1k` on every platform, so `_build` below defaults it and
+        # records `platforms.<name>.image_resolution` in `defaults_applied` on the ordinary path.
         built[name] = _build(PlatformConfig, entry, f"platforms.{name}.", ctx)
     return built
 
@@ -1215,6 +1269,8 @@ def _validate(cfg: Config, ctx: _Ctx) -> None:
                 f"platforms.{name}.carousel_slides is {entry.carousel_slides} — the ASSIGN floor "
                 "cannot be above the platform's own hard max, or no source post is bindable for "
                 f"{name} at all; lower the floor or raise the max")
+        # No arm here for `image_resolution` (FR-342): its `Literal["1k", "2k"]` already refuses
+        # everything else in `_coerce`, naming the key, the value and `one of: 1k | 2k`.
         if name == "instagram" and not 2 <= entry.carousel_slides <= 10:
             ctx.warn(  # SHOULD, not SHALL — Instagram's own ceiling (FR-257, 60 FR-221)
                 f"platforms.instagram.carousel_slides is {entry.carousel_slides}; Instagram "

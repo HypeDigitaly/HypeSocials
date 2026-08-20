@@ -200,6 +200,39 @@ def _image_resolution(aspect_ratio: str, requested: str | None) -> str:
     return _IMAGE_RESOLUTION_CEILING if resolution == "4K" else resolution
 
 
+def effective_image_tier(aspect_ratio: str, tier: str | None) -> str:
+    """The image tier Kie will ACTUALLY render, lower-cased — `1k` or `2k` (FR-342).
+
+    The estimator's twin of `_image_resolution`, and the reason it is public. FR-342 makes one
+    key (`platforms.<name>.image_resolution`) decide both what the Confirm gate quotes and what
+    the run submits, and that promise breaks the moment the two sides disagree about what the
+    provider does with the request. They cannot disagree here, because both go through the one
+    clamp below: what config ASKED for is not always what Kie RENDERS.
+
+    Two clamps, both owned by `_image_resolution` and neither duplicated here:
+
+    * 20 §8c's 1K-only ratios (`5:4`, `4:5`, `3:1`, `1:3`, `9:21`, plus `auto`/unset) come back
+      at 1K whatever was requested — so an Instagram image at FR-21's 4:5 is priced at the 1K
+      rate because 1K is what arrives, not at the 2K rate its platform pinned;
+    * FR-192's production ceiling folds 4K down to 2K.
+
+    Lower-cased on the way out because the price table and `Config.image_resolution()` speak in
+    lower case (`models.price_per_unit.image.2k`) while Kie's own enum is upper (`2K`); this is
+    the seam between those two vocabularies, so it is the place to do the conversion.
+
+    A tier OUTSIDE the enum comes back untouched, and that is the one place this helper parts
+    company with `_image_resolution`. The render path must send Kie something legal, so it falls
+    an unknown value back to `1K`; the estimator must NOT, because quoting an unrecognised tier at
+    the 1K rate is the silent re-tier FR-282 forbids — a wrong number the operator approves at the
+    gate. Handing the odd value straight back keeps it unpriced, so the estimate names the missing
+    `models.price_per_unit.image.<tier>` key and asks instead of guessing. Unset (`None`/`""`)
+    is not that case: it means "nothing requested", which really is 1K on the wire.
+    """
+    if tier and tier.upper() not in _IMAGE_RESOLUTIONS:
+        return tier.lower()  # not a tier this provider has — the caller must not price it
+    return _image_resolution(aspect_ratio, tier).lower()
+
+
 def _clamped_duration(seconds: int | None) -> int:
     low, high = SEEDANCE_DURATION_RANGE
     return max(low, min(high, int(seconds or _SEEDANCE_DEFAULT_DURATION_S)))
@@ -259,5 +292,6 @@ def get(name: str) -> RenderProfile:
 __all__ = [
     "GPT_IMAGE_2", "MAX_PROMPT_CHARS", "PROFILES", "PROFILE_NAMES", "ReferenceLimits",
     "RenderProfile",
-    "SEEDANCE_2_5", "SEEDANCE_DURATION_RANGE", "UnknownProfileError", "get",
+    "SEEDANCE_2_5", "SEEDANCE_DURATION_RANGE", "UnknownProfileError", "effective_image_tier",
+    "get",
 ]

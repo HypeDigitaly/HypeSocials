@@ -111,6 +111,42 @@
 #     scale names the rung after its size ("smallest label 1x"), never after the gated device. A
 #     FIXED list never names the gated device at all: a gated zone is not fixed across the deck,
 #     because on most decks it is not there.
+#   - **One palette VOCABULARY, one accent HUE** (FR-347, v2.5.1/D60). Every palette line opens on
+#     a role word from the fixed set - background `GROUND`/`GROUNDS`/`SURFACE`/`DEPTH`/`SHADOW`,
+#     primary `TEXT`/`SUPPORT`/`MUTED`, accent `ACCENT`. A `FOCAL`, `HIGHLIGHT` or `FOOTER` line
+#     reads as an accent line to the validator, which is how a second saturated hue used to hide.
+#     ONE hue family carries every accent in a style (values of it are free - a light teal and a
+#     deep teal are one family, a teal and an orange are two), and EVERY line carrying a saturated
+#     hex (S at or above 0.45, V between 0.15 and 0.95) states its own coverage ON THAT LINE -
+#     `under 1/8`, `under 8%`, `max 1/10` - bounded at 1/8 of frame. The 2026-08-20 paid deck
+#     licensed teal at "under 1/5" plus a full-width footer strip, and that strip measured 30
+#     points of hue drift, worst 69: a large flat mid-tone is the one field these models cannot hit
+#     twice running. A PHOTOGRAPHIC ground's own cast - honey wood, sepia, a tungsten falloff - is
+#     a `GROUND` or `SURFACE` line, never an accent, and the accent has to contrast with it. ZERO
+#     accents is legal. Findings are WARNINGS until `styles._PALETTE_CONTRACT_ENFORCED` flips, and
+#     FR-295 errors after it - exit 2, $0 spent.
+#   - **Two type families** (FR-348). One display family, one body family, and as many weights and
+#     cuts of them as the style likes; a THIRD is legal only as a MONO utility, and only where the
+#     identity is code or terminal (`build-log-mono`, `circuit-atlas-dark`, `terminal-mockup-deck`
+#     - a test guard pins that list). An annotation that wants a script or a marker is a DRAWN mark
+#     instead, and a counter, kicker or footer sets in the body family at small tracked caps rather
+#     than in a family of its own. The scan reads `typography` AND every zone's `text_treatment`,
+#     so a family named in a zone counts exactly as much as one named in the DNA.
+#   - **No unresolved choice in ANY prose field** (FR-349, widening the `render_prompt` rule above).
+#     `" or "`, `"either "` and `"variant "` are scanned in `palette`, `typography`,
+#     `text_placement`, `image_treatment`, `visual_pacing`, `list_mode.layout` and every
+#     `per_format_guidance` value. Resolve each to ONE value, or to a condition the SOURCE decides
+#     ("a list-shaped panel sets as rows; any other long panel takes the card pair") - never by
+#     deleting the rule to silence the scan. A NEGATED clause is fine and always was ("no serif,
+#     script or display face" is a ban list, not a choice), and `exclusions` are not scanned at all.
+#   - **The house spine** (FR-350), shared by every carousel-affine style and nothing more: one
+#     accent hue at or under 1/8 of frame with its coverage stated; a ground at a value extreme (V
+#     at or above 0.85, or at or under 0.20) on every `motion_profile: graphic` style, a
+#     photographic one keeping its cast; the counter TOP-RIGHT, in the `counter_slot` zone's
+#     `position` and in no prose anywhere else; the sentence "inside the central 80% of the 1:1
+#     frame" in `text_placement`, with no band anywhere still reserved for the retired 4-by-5
+#     crop (a test guard reads the raw file for that one); two type families. FREE, and never
+#     unified: margins, type scale, ground hex, motif, accent hue. The swipe cue stays wordless.
 #   - `list_mode` (FR-304b, v2.2.0) — the style's LIST TREATMENT, and the frozen shape is:
 #
 #         list_mode:
@@ -192,10 +228,10 @@ styles:
     palette:
       - "GROUND plaster #EDEAE4: walls, most of frame"
       - "SURFACE warm grey #B7B2AA: furnishing, floor, shadow side"
-      - "ACCENT pale oak #C2A278: one warm wood/ceramic object"
+      - "ACCENT pale oak #C2A278: one warm wood/ceramic object; under 1/8 of frame"
       - "SHADOW near-black #14120F: cast shadows, doorway, caption plate"
       - "TEXT white #FFFFFF: caption only, nothing else this bright"
-      - "accent+shadow under 25% of frame; ground carries the rest"
+      - "shadow under 20% of frame; ground carries the rest"
     typography: >-
       Neutral grotesque sans only (Inter/Helvetica Now species); no second family, display face,
       script or all-caps. Caption SEMIBOLD-BOLD, never lighter. Cap height 4.5-6% of frame, same
@@ -205,10 +241,9 @@ styles:
     text_placement: >-
       One caption block, upper-left third: left edge 8% of width, top 10% of height. All text
       inside the central 80% of the 1:1 frame. Over low-detail negative space, never on the
-      subject or a hard edge. Under 60 chars: floats, faint drop shadow. 60+ chars, or ground
-      lighter than mid-grey:
-      soft charcoal plate, ~25% opacity, rounded, padding ~1 cap height. Same x, size and
-      treatment every slide.
+      subject or a hard edge. Under 60 chars: floats, faint drop shadow. From 60 chars up: soft
+      charcoal plate, ~25% opacity, rounded, padding ~1 cap height, and a ground lighter than
+      mid-grey takes that plate at any length. Same x, size and treatment every slide.
     image_treatment: >-
       Candid available-light photograph: sensor grain, honest lens character, real depth of field.
       One room, one accent object, max four props. No studio lighting, no styled flat lay, no
@@ -224,11 +259,11 @@ styles:
       max_rows: 5
       layout: >-
         A list panel sets as one left-aligned column on the charcoal plate: one source line per
-        row, a leading number or bullet welded to its own row's text, rows sharing one left edge
-        and one type size, an over-long row wrapping under its own first word with a hanging
-        indent. A label and its value never separate and never swap rows. Rows shrink together,
-        never one alone, and no row is ever dropped; the plate grows downward and the photograph
-        behind it simplifies to make room.
+        row, the line's own leading numeral welded to its own row's text and its bullet where it
+        has one, rows sharing one left edge and one type size, an over-long row wrapping under its
+        own first word with a hanging indent. A label and its value never separate and never swap
+        rows. Rows shrink together, never one alone, and no row is ever dropped; the plate grows
+        downward and the photograph behind it simplifies to make room.
       overflow: reflow
     per_format_guidance:
       carousel_cover: "Cover: the widest view of the room, establishing the space; the quoted text sits high-left over the emptiest wall at the largest size it will hold."
@@ -255,7 +290,7 @@ styles:
       deck of short serif lines, never as a grey paragraph. The hero object fills the lower half:
       physically rendered voxel toy figures, matte moulded surfaces, lit like studio product
       photography, casting soft contact shadows on the cream. Hand-drawn teal accents:
-      four-point sparkles, motion ticks, one script annotation with an arrow. Supporting
+      four-point sparkles, motion ticks, one drawn annotation stroke with an arrow. Supporting
       graphics: an icon-and-label list column, a dark terminal-window card.
     # DELIBERATE, do not "fix" back: the swipe cue carries NO WORDS. Both source frames letter it
     # ("swipe→"), but a lettered cue nobody quoted is invented text becoming pixels — the one thing
@@ -263,15 +298,15 @@ styles:
     # quoted in the TEXT block still renders, as the zone says.
     subject_mode: scene_open
     layout_zones:
-      - {position: "top-left corner, on the band-1 line inside the top 10 percent", content: "slide-position badge", role: counter_slot,
+      - {position: "top-right corner, on the band-1 line inside the top 10 percent", content: "slide-position badge", role: counter_slot,
          text_treatment: "outlined rounded-rectangle chip, tracked-out uppercase bold sans +8% at 1/4 the headline's cap height, numeral heavy and total lighter; carries only the counter string quoted in the TEXT block"}
       - {position: "upper 40 percent, full width, kicker directly above the headline",
          content: headline,
          text_treatment: "tracked-out uppercase sans kicker over a Didone serif headline in two or three lines with the payoff line set LARGER than the setup line, near-black with one saturated teal phrase, thin teal double rule beneath; headline cap height 11-14% of frame height at two lines, stepping to 9% at three lines and 7% at four"}
-      - {position: "left column of the middle band, or one annotation line under the headline",
+      - {position: "left column of the middle band, the annotation line sitting under the headline",
          content: body,
-         text_treatment: "icon-and-label rows — a white rounded-square icon tile, then a tracked-out uppercase bold sans label, then its value under the label in regular sans at 0.75x the label size in shadow grey — or a single handwritten-script line in teal with a drawn arrow"}
-      - {position: "top-right corner", content: "swipe cue",
+         text_treatment: "icon-and-label rows — a white rounded-square icon tile, then a tracked-out uppercase bold sans label, then its value under the label in regular sans at 0.75x the label size in shadow grey; one annotation line sets in that same label sans, in teal, beside a drawn arrow"}
+      - {position: "bottom-right corner", content: "swipe cue",
          text_treatment: "hand-drawn teal arrow glyph only — a single confident ink stroke with a slight taper, never a geometric chevron — a mark, never a lettered word, unless a swipe string is quoted in the TEXT block"}
     format_affinity: [image, carousel]
     brand_affinity: []
@@ -283,30 +318,29 @@ styles:
     motion_profile: graphic
     palette:
       - "GROUND cream #F6F0E4: flat, edge to edge, never white"
-      - "TEXT near-black #14120F: kicker, headline setup, labels, chip"
+      - "TEXT near-black #14120F: kicker, headline setup, labels, and the setup half of a two-part payoff"
       - "ACCENT teal #0C8897: payoff, rules, sparkles, ticks, arrow; max 1/10"
-      - "CONTRAST orange #E8501E: once a frame, splits a two-part payoff"
       - "DEPTH grey #CFC7B8: contact shadow, sub-labels"
       - "SURFACE white #FFFFFF: tiles, card border; only pure white"
     typography: >-
-      3 families max. Didone serif headline: leading 0.92-1.00, 2-3 lines, payoff LARGER than setup.
+      Two families. Didone serif headline: leading 0.92-1.00, 2-3 lines, payoff LARGER than setup.
       Tracked-out uppercase bold grotesque +8%: kicker and labels at 1/4 headline cap height.
-      One script, one annotation. Scale kicker 1x / label 1.3x / body 1.4x / headline 4x,
-      nothing between. Headline: to 45 chars 2 lines at 11-14%; 46-70 3 at 9%; 71-90 4 at 7%;
-      floor 6%.
+      Annotations are DRAWN marks, never a third family. Scale kicker 1x / label 1.3x / body 1.4x
+      / headline 4x, nothing between. Headline: to 45 chars 2 lines at 11-14%; 46-70 3 at 9%;
+      71-90 4 at 7%; floor 6%.
     text_placement: >-
-      4 bands, 6% margin. B1 top 10%: corner marks only, drawn swipe arrow right. B2 10-45%:
-      kicker, headline, teal double rule; flush left, ragged right. B3 45-62%: quoted string as
-      short left-aligned lines, icon-and-label column, or terminal card. B4 62-100%: hero centred,
-      contact shadow inside bottom margin. Bands and left edge identical every slide; only B3
-      changes.
+      4 bands, 6% margin; all text inside the central 80% of the 1:1 frame. B1 top 10%: corner
+      marks only. B2 10-45%: kicker, headline, teal double rule; flush left, ragged right. B3
+      45-62%: a list-shaped panel sets as the icon-and-label column, a screen panel as the
+      terminal card, every other quoted string as short left-aligned lines. B4 62-100%: hero
+      centred, contact shadow inside the bottom margin, the drawn swipe arrow at its right. Bands
+      and left edge identical every slide; only B3 changes.
     image_treatment: >-
-      Voxel/glossy 3D props, studio product shots: matte surfaces, soft contact shadows. One
-      hero; two only when DOING something together. Ink per frame: 4-8 sparkles, max 3 ticks, 1
-      script annotation + 1 arrow, 1 rule under headline.
-      Mock-ups DESIGNED: unquoted copy greeks to grey bars sized as that text would be (filler, no
-      meaning); a string the TEXT block quotes renders literally and in full, in its own language,
-      never greeked.
+      Voxel/glossy 3D props, studio product shots: matte surfaces, soft contact shadows. One hero;
+      two only when DOING something together. Ink per frame: 4-8 sparkles, max 3 ticks, 1 drawn
+      annotation mark + 1 arrow, 1 rule under headline. Mock-ups DESIGNED: unquoted copy greeks to
+      grey bars sized as that text would be (filler, no meaning); a string the TEXT block quotes
+      renders literally and in full, in its own language, never greeked.
     visual_pacing: >-
       Loud headline, quiet ground, one hero; every slide = kicker, headline, object. FIXED: ground,
       accent, margin, bands, rule weight, type scale. MAY CHANGE: headline line count, B3 content,
@@ -324,13 +358,13 @@ styles:
         Beyond six rows the column splits into two equal columns, left filled first.
       overflow: two_column
     per_format_guidance:
-      carousel_cover: "Cover: the full stacked headline with the teal payoff phrase at maximum scale, the largest hero object, and the top-left chip only when a counter string is quoted in the TEXT block."
-      carousel_slide: "Body slide: drop the headline by roughly a third, keep the kicker and the teal rule, and give the freed middle band to the quoted line, the icon-and-label list, or the terminal card. Same cream ground, same rule weight, same corners as the cover — the top-left chip appears only where a counter string is quoted."
+      carousel_cover: "Cover: the full stacked headline with the teal payoff phrase at maximum scale, the largest hero object, and the top-right chip only when a counter string is quoted in the TEXT block."
+      carousel_slide: "Body slide: drop the headline by roughly a third, keep the kicker and the teal rule, and give the freed middle band to whichever B3 device the quoted panel's own shape names. Same cream ground, same rule weight, same corners as the cover — the top-right chip appears only where a counter string is quoted."
     exclusions:
       - "platform UI and overlays: pagination dots, search fields, share sheets, 'related content' banners"
       - "list rows, chips and icon nodes carry invented abstract glyphs, never a competitor, creator or platform mark; a mark the TOOL MARKS line sanctions sets at icon size beside its row"
       - "legible text inside a screenshot, terminal card, phone or device screen beyond what image_treatment sanctions — greeked grey bars stand in for every unquoted string"
-      - "lettered navigation cues — the top-right swipe mark is a drawn arrow glyph and carries no words"
+      - "lettered navigation cues — the bottom-right swipe mark is a drawn arrow glyph and carries no words"
       - "photographic environments, gradient meshes, lens flares, drop-shadowed glass panels: the ground is a flat cream field and stays flat"
 
   - key: letterpress-print-carousel
@@ -341,27 +375,33 @@ styles:
     render_prompt: >-
       Risograph and letterpress poster grammar: one paper tone plus exactly two ink colours, with
       visible paper grain, distressed ink texture inside the letterforms and slight
-      misregistration at the edges of solids. Type does the work — a towering display face set
-      tight and huge, with one phrase set apart in the second ink; a longer quoted string runs
+      misregistration at the edges of solids. Type does the work — a towering condensed grotesque
+      set tight and huge, with one phrase set apart in the second ink; a longer quoted string runs
       underneath in a lighter weight of the same family, left-aligned, up to six lines with
-      generous leading. Hand-drawn marker underlines, circled cues and one small pixel-art mascot
-      sit in the accent ink. Any screenshot inset rides on a white card held by translucent tape
-      strips; its body copy is greeked into grey bars. Nothing glossy, nothing gradient, nothing
+      generous leading. Hand-drawn underlines, circled cues and one small pixel-art mascot sit in
+      the accent ink. Any screenshot inset rides on a white card held by translucent tape strips;
+      its body copy is greeked into grey bars. Nothing glossy, nothing gradient, nothing
       photographic. High text tolerance.
     # DELIBERATE, do not "fix" back: (1) the swipe cue carries NO WORDS, though both source frames
     # letter it — an unquoted word is invented text becoming pixels. (2) The source's letterspaced
     # mono meta line ("JUN ©2026 · CHASE AI · 03 / 07") is NOT adopted: every string in it would be
     # invented, and the only counter this deck may print is the one quoted in the TEXT block.
+    # (3) D60/FR-347: the TERRACOTTA BODY GROUND IS RETIRED — cream paper on the cover and on
+    # every body slide, black plus vermilion on both. This settles the ruling that
+    # SESSION-I-CLOSEOUT.md:42 left owed. A saturated mid-tone filling a whole frame is the one
+    # field gpt-image-2 cannot hit twice running: the 2026-08-20 paid run measured 30 points of
+    # hue drift on such a field, worst 69, against 1 on a near-black ground and 6 on cream. So
+    # the second ink stays an ink, the paper stays paper, and the deck keeps its two inks.
     subject_mode: scene_open
     layout_zones:
-      - {position: "top-left corner", content: "slide-position badge", role: counter_slot,
-         text_treatment: "outlined rounded-rectangle chip in the accent ink, small mono or tracked caps at 1.6-2% of frame height; the counter string quoted in the TEXT block only"}
+      - {position: "top-right corner", content: "slide-position badge", role: counter_slot,
+         text_treatment: "outlined rounded-rectangle chip in the accent ink, tracked caps of the body family at 1.6-2% of frame height; the counter string quoted in the TEXT block only"}
       - {position: "top two-thirds on the cover, upper-left third with a generous margin on a body slide",
          content: headline,
-         text_treatment: "towering display type set tight, one ink for the setup lines and the second ink (or a reversed solid black bar) for the payoff phrase; cover cap height 14-20% of frame height stepping down one tier per extra line, body-slide cap height 8-11%"}
+         text_treatment: "towering condensed caps set tight, the first ink for the setup lines and the second ink for the payoff phrase; on a body slide that payoff phrase reverses out of a solid black bar instead; cover cap height 14-20% of frame height stepping down one tier per extra line, body-slide cap height 8-11%"}
       - {position: "middle band, left-aligned", content: body,
-         text_treatment: "lighter weight of the headline family at 3-4% cap height, leading 1.35, 30-46 characters per line, two to six lines, one phrase allowed in the heavy weight, one hand-drawn marker underline allowed"}
-      - {position: "lower-right, or top-right on a body slide", content: "swipe cue",
+         text_treatment: "lighter weight of the headline family at 3-4% cap height, leading 1.35, 30-46 characters per line, two to six lines, one phrase allowed in the heavy weight, one hand-drawn underline allowed"}
+      - {position: "lower-right corner", content: "swipe cue",
          text_treatment: "hand-drawn circled arrow in the accent ink — a drawn mark, never a lettered word, unless a swipe string is quoted in the TEXT block"}
     format_affinity: [carousel]
     brand_affinity: []
@@ -372,30 +412,32 @@ styles:
     max_onimage_chars: {headline: 90, subline: 160, slide: 300}
     motion_profile: graphic
     palette:
-      - "GROUNDS cream #E8DCC3 (cover only), terracotta #B5573C (body slides only)"
-      - "ON CREAM: black #1A1714 (headline setup, paragraph, rules) + vermilion #E2522B (payoff, kicker, chip, marks)"
-      - "ON TERRACOTTA: cream #F3E9D8 (headline, paragraph) + black #1A1714 (reversed bar, chip, marks)"
-      - "one tone + two inks a slide, fixed by the ground; never a third"
+      - "GROUND cream #E8DCC3: cover and body alike, flat edge to edge"
+      - "TEXT black #1A1714: headline setup, paragraph, rules, the reversed bar"
+      - "ACCENT vermilion #E2522B: payoff phrase, kicker, drawn marks; under 1/8 of frame"
+      - "SURFACE paper white #F3E9D8: the taped inset card, the reversed type"
+      - "one paper tone plus exactly two inks a slide; never a third"
     typography: >-
-      Cover display: condensed woodtype uppercase, -2% tracking, 0.88 leading, cap 14-20%, down a
-      tier per extra line: 40 chars = 2 lines at 14-20%; 41-65 = 3 at 11%; 66-90 = 4 at 8.5%; floor
-      8%. Body headline: ultra-heavy geometric lowercase sans 8-11%, 2 lines, one phrase reversed in
-      a black bar. Paragraph: lighter weight 3-4%, leading 1.35, 30-46 chars, one heavy phrase.
-      Marker for annotations. Display:paragraph 5:1 to 8:1.
+      ONE condensed grotesque family, weights only; no second family. Cover: heaviest, uppercase,
+      -2% tracking, 0.88 leading, cap 14-20%, down a tier per extra line: 40 chars = 2 lines at
+      14-20%; 41-65 = 3 at 11%; 66-90 = 4 at 8.5%; floor 8%. Body headline: same weight,
+      lowercase, 8-11%, 2 lines, one phrase reversed in a black bar. Paragraph: light weight 3-4%,
+      leading 1.35, 30-46 chars, one heavy phrase. Annotations drawn, never set. Display:paragraph
+      5:1 to 8:1.
     text_placement: >-
-      Margins 8% left/right, 6% top, 8% bottom. Cover: headline in the top two thirds; deck line
-      under a hand-drawn underline lower-left; drawn cue lower-right. Body: headline upper-left
-      third, paragraph across the middle band ragged right, inset card lower half. One axis: flush
-      left, never centred.
+      Margins 8% sides, 6% top, 8% bottom; all text inside the central 80% of the 1:1 frame.
+      Cover: headline in the top two thirds; deck line under a hand-drawn underline lower-left;
+      drawn cue lower-right. Body: headline upper-left third, paragraph across the middle band
+      ragged right, inset card lower half. One axis: flush left, never centred.
     image_treatment: >-
       Flat inks on textured paper; misregistration never on body-size type. A pixel-art mascot is
       the only illustration, max once a slide; max one underline and one circled mark a frame. Inset
       mock-ups are DESIGNED, not blank: unquoted copy greeks to grey bars sized as that text would
       be (filler, no meaning); a string the TEXT block quotes renders in full, never greeked.
     visual_pacing: >-
-      One typographic statement a slide, one paragraph, one drawn mark. FIXED: margins, ink pair
-      per ground, rule weight, type scale, mascot style. MAY CHANGE: words, inset, mascot pose,
-      mark position.
+      One typographic statement a slide, one paragraph, one drawn mark. FIXED: margins, paper
+      tone, ink pair, rule weight, type scale, mascot style. MAY CHANGE: words, inset, mascot
+      pose, mark position.
     list_mode:
       reflow_over_chars: 200
       max_rows: 7
@@ -406,11 +448,11 @@ styles:
         separate, a label and its value never swap rows. Rows share one left edge, baseline rhythm
         and size, and all shrink together rather than one being cut or dropped; an over-long row
         wraps under its own first word, clear of the hanging number. A hairline rule in the second
-        ink separates rows only at five rows or more.
+        ink separates rows only from five rows upward.
       overflow: reflow
     per_format_guidance:
-      carousel_cover: "Cover: aged cream paper with visible grain. The headline is towering condensed woodtype-style uppercase filling two thirds of the frame — black ink for the setup lines, vermilion for the payoff line, distressed ink texture inside every letterform. Hand-circled cue lower-right; the outlined position chip appears top-left only when a counter string is quoted in the TEXT block."
-      carousel_slide: "Body slide: saturated terracotta ground with film grain. The headline is lowercase ultra-heavy geometric sans in cream with one phrase reversed inside a solid black highlight bar; a longer quoted string sets beneath it in the lighter cream weight across the middle band. Insets ride on a taped white card. The position chip sits top-left in mono caps only when a counter string is quoted in the TEXT block."
+      carousel_cover: "Cover: aged cream paper with visible grain. The headline is towering condensed uppercase in the family's heaviest weight, filling two thirds of the frame — black ink for the setup lines, vermilion for the payoff line, distressed ink texture inside every letterform. Hand-circled cue lower-right; the outlined position chip appears top-right only when a counter string is quoted in the TEXT block."
+      carousel_slide: "Body slide: the SAME cream paper as the cover, grain and all. The headline is lowercase in the family's heaviest weight, black on the cream, with one phrase reversed in cream inside a solid black bar; a longer quoted string sets beneath it in the light weight across the middle band. Insets ride on a taped white card. The position chip sits top-right in tracked caps only when a counter string is quoted in the TEXT block."
     exclusions:
       - "platform UI and overlays: pagination dots, search fields, play triangles, player chrome, 'related content' banners"
       - "watermarks, app badges, usernames, @handles, real account names or author credits printed as a rule or footer"
@@ -453,10 +495,10 @@ styles:
     palette:
       - "GROUND + CAPTION BANDS warm paper #EFE6D2: bands, gutter, margin"
       - "TEXT + FRAMES ink black #1B1815: captions, rules, outlines"
-      - "TOP PANEL sepia #8A6A46: its dominant tone; no saturated hue there"
-      - "BOTTOM PANEL tungsten #E9B36A: the lamp and its falloff"
-      - "FOCAL violet-blue #4A3FA8: one object in the bottom panel, nowhere else"
-      - "FOOTER warm grey (black at 45%): the signature line only"
+      - "SURFACE top panel sepia #8A6A46: its dominant tone; no saturated hue there"
+      - "SURFACE bottom panel tungsten #E9B36A: the lamp and its falloff"
+      - "ACCENT violet-blue #4A3FA8: one object in the bottom panel, nowhere else; under 1/8 of frame"
+      - "MUTED warm grey (black at 45%): the signature line only"
     typography: >-
       One heavy condensed sans for the panel captions: sentence case, terminal period, tracking -1%,
       cap height 4-5% of frame, IDENTICAL on both captions and on every frame of a deck; a longer
@@ -465,9 +507,10 @@ styles:
       serif or italic.
     text_placement: >-
       Fixed stack: band, panel, gutter, band, panel, footer. Caption bands are full-width paper
-      strips at 9% of frame height (12% when either caption wraps to two lines - then BOTH do), the
+      strips at 9% of frame height (12% when one caption wraps to two lines - then BOTH do), the
       caption centred both ways inside. Panels equal height, 1.5pt black frame rule, gutter 3-4%,
-      outer paper margin 3%. Footer alone, centred, bottom 6%. The artwork carries no lettering.
+      outer paper margin 3%. Footer alone, centred, bottom 6%. All text inside the central 80% of
+      the 1:1 frame. The artwork carries no lettering.
     image_treatment: >-
       Ink-outline caricature, gouache and watercolour washes, paper tooth: varying line weight, flat
       washes, no digital gradient. Warm tungsten light; clutter and paperwork above, clean empty
@@ -523,11 +566,11 @@ styles:
     motion_profile: photographic
     palette:
       - "GROUND blue-black #0B1016: room, sky, the frame's cast"
-      - "FOREGROUND near-black #05070A: bottom third, under the statement"
-      - "ACCENT teal #17B7B0: ribbons, rim light, rules, one word of the statement; light, never paint"
-      - "COUNTERLIGHT amber #E8A64C: one practical lamp, under 1/10 frame"
-      - "HIGHLIGHT bokeh white #DCE7F2: window lights, statement type"
-      - "cool everywhere but the amber practical"
+      - "SHADOW near-black #05070A: bottom third, under the statement"
+      - "ACCENT teal #17B7B0: ribbons, rim light, rules, one word of the statement; light, never paint, under 1/8 of frame"
+      - "SUPPORT warm practical #D9B98C: one lamp and its falloff, under 1/10 frame"
+      - "TEXT bokeh white #DCE7F2: window lights, statement type"
+      - "cool everywhere but that one warm practical"
     typography: >-
       One display serif for the statement: sharp entry serifs, tracking -1%, leading 0.95, white
       with exactly one teal word, terminal period. Ladder: to 40 chars 2 lines at 9-10%; 41-70 3 at
@@ -536,9 +579,10 @@ styles:
       italic or second serif.
     text_placement: >-
       Upper two thirds stay picture. A soft gradient to near-black begins at 62% of frame height,
-      opaque by 78%: that band is the statement's ground, built by light, not a drawn box. Statement
-      flush left on an 8% margin, first baseline ~74%, never crossing the figure. Footer centred in
-      the bottom 5% between teal hairlines. Nothing text-bearing in the outer 8%.
+      opaque by 78%: that band is the statement's ground, built by light, not a drawn box.
+      Statement flush left on an 8% margin, first baseline ~74%, never crossing the figure. Footer
+      centred in the bottom 5% between teal hairlines. All text inside the central 80% of the 1:1
+      frame.
     image_treatment: >-
       Painterly anime cel shading, brushwork in shadow, heavy rim light on the figure's edge,
       rain-streaked glass, deep bokeh depth, volumetric haze. Displays carry 2-5 abstract teal
@@ -554,11 +598,12 @@ styles:
       layout: >-
         A list panel abandons the poster statement for a NIGHT CARD in the dark band: a near-black
         panel at ~70% opacity between the 8% margins, top edge at 55% of frame height, a teal
-        hairline above the first row. Rows set in the display serif at 3.5-4%, white, left-aligned,
-        one source line per row, separated by teal hairlines at 25% opacity. A leading number or
-        bullet stays welded to its row; a label and its value never separate; rows shrink together,
-        never one alone, no row dropped; an over-long row wraps under its own first word. No teal
-        word on a list frame - here the teal is the rules. The scene above the card is unchanged.
+        hairline above the first row. Rows set in the display serif at 3.5-4%, white,
+        left-aligned, one source line per row, separated by teal hairlines at 25% opacity. The
+        line's own leading numeral stays welded to its row, its bullet where it has one; a label
+        and its value never separate; rows shrink together, never one alone, no row dropped; an
+        over-long row wraps under its own first word. No teal word on a list frame - here the teal
+        is the rules. The scene above the card is unchanged.
       overflow: reflow
     per_format_guidance:
       carousel_role: cover_only
@@ -601,7 +646,7 @@ styles:
     palette:
       - "GROUND honey wood #B07C4A: the table, the largest surface"
       - "SURFACE oat linen #DCCFB8: paper, cloth, the defocused wall"
-      - "OBJECT cream ceramic #EFE7D8: the mug; the lightest object"
+      - "SURFACE cream ceramic #EFE7D8: the mug; the lightest object"
       - "SHADOW warm #4A3624: side-light shadows, the band under the text"
       - "TEXT white #FFFFFF: the statement only; nothing else this bright"
       - "one cool object (a closed silver laptop) keeps the frame off monochrome"
@@ -630,13 +675,14 @@ styles:
       reflow_over_chars: 130
       max_rows: 5
       layout: >-
-        A list panel keeps the statement block's position and type but sets as rows: one source line
-        per row, flush left on the same margin, separated by a full blank line rather than a rule, a
-        leading number or bullet welded to its row. A label and its value never separate. Rows share
-        one size and shrink together, never one alone, and no row is dropped; an over-long row wraps
-        under its own first word with a hanging indent. The block grows downward into the defocused
-        band and the camera frames enough dark background to hold it. Nothing is drawn behind the
-        rows: no plate, no card, no rule.
+        A list panel keeps the statement block's position and type but sets as rows: one source
+        line per row, flush left on the same margin, separated by a full blank line rather than a
+        rule, the line's own leading numeral welded to its row and its bullet where it has one. A
+        label and its value never separate. Rows share one size and shrink together, never one
+        alone, and no row is dropped; an over-long row wraps under its own first word with a
+        hanging indent. The block grows downward into the defocused band and the camera frames
+        enough dark background to hold it. Nothing is drawn behind the rows: no plate, no card, no
+        rule.
       overflow: reflow
     per_format_guidance:
       carousel_role: slides_only
@@ -656,13 +702,12 @@ styles:
     render_prompt: >-
       Flat ecru canvas with a strict vertical stack, everything flush left on one axis. At the top
       a small tracked-out teal kicker slot, lettered only where the TEXT block quotes a kicker
-      string and otherwise a short teal rule; under it an oversized tight-tracking geometric sans
-      headline in near-black across two lines with one phrase in teal; then a browser-window
-      mock-up — rounded corners, three traffic-light dots, pale chrome bar — holding a plausible
-      product screen whose body copy is greeked into grey bars; then the quoted text in regular
-      sans, two to four left-aligned lines. A hairline-flanked signature slot closes the foot when
-      the zones declare one. Soft card shadow only, no gradient, no 3D. Mood: announcement,
-      product-launch clarity.
+      string, left out otherwise; under it an oversized tight-tracking geometric sans headline in
+      near-black across two lines with one phrase in teal; then a browser-window mock-up — rounded
+      corners, three traffic-light dots, pale chrome bar — holding a plausible product screen
+      whose body copy is greeked into grey bars; then the quoted text in regular sans, two to four
+      left-aligned lines. A hairline-flanked signature slot closes the foot when the zones declare
+      one. Soft card shadow only, no gradient, no 3D. Mood: announcement, product-launch clarity.
     # RESOLVED, do not re-open: the axis is FLUSH LEFT. One source frame centres and one ranges
     # left; centring breaks first under a long verbatim string, so left is the deck default and the
     # style states one axis rather than a choice (M9).
@@ -670,7 +715,7 @@ styles:
     layout_zones:
       - {position: "upper quarter, flush left, kicker slot immediately above the headline",
          content: headline,
-         text_treatment: "an oversized tight-tracking geometric sans headline in near-black, cap height 7-9% of frame height in two lines, stepping to three lines at 6% over 45 characters and four lines at 5% over 75, one phrase in teal; above it the tracked-out uppercase teal kicker at 1.6% cap height, which letters only where the TEXT block quotes a kicker string and otherwise carries a short teal rule"}
+         text_treatment: "an oversized tight-tracking geometric sans headline in near-black, cap height 7-9% of frame height in two lines, stepping to three lines at 6% over 45 characters and four lines at 5% over 75, one phrase in teal; above it the tracked-out uppercase teal kicker at 1.6% cap height, which letters only where the TEXT block quotes a kicker string and is left out of the frame otherwise"}
       - {position: "centre of the frame, spanning 84 percent of the canvas width", content: "browser-window mock-up",
          text_treatment: "no lettering inside the window except a string the TEXT block quotes for it — greeked grey bars stand in for every other string"}
       - {position: "directly beneath the browser card, flush left", content: body,
@@ -689,9 +734,9 @@ styles:
     palette:
       - "GROUND ecru #F4EFE2: flat, edge to edge"
       - "TEXT near-black #16151A: headline setup, caption"
-      - "ACCENT teal #0C8897: kicker, one headline phrase, footer rules; no fill over the kicker"
+      - "ACCENT teal #0C8897: kicker, one headline phrase, footer rules, no fill over the kicker; under 1/8 of frame"
       - "SURFACE white #FFFFFF: browser body and chrome bar; only pure white"
-      - "FILLER chrome grey #D6D2C8: greeked bars and empty blocks only"
+      - "MUTED chrome grey #D6D2C8: greeked bars and empty blocks only"
       - "colour and photography ONLY inside the browser card"
     typography: >-
       Tight-tracking geometric sans (Poppins/Gilroy); no serif, script or second family. Kicker:
@@ -701,9 +746,10 @@ styles:
       headline 5x.
     text_placement: >-
       Strict vertical stack, 8% margin, flush left on ONE axis: kicker, headline, browser card,
-      caption. Rhythm: kicker at 8% of frame height, headline from 12%, card top at 34%, caption 5%
-      below the card. The kicker letters only where a string is quoted, else a teal rule or clear
-      space. Card spans 84% of width, centred; nothing touches the edge.
+      caption; all text inside the central 80% of the 1:1 frame. Rhythm: kicker at 8% of frame
+      height, headline from 12%, card top at 34%, caption 5% below the card. The kicker letters
+      only where a string is quoted and is left out of the frame otherwise. Card spans 84% of
+      width, centred; nothing touches the edge.
     image_treatment: >-
       Flat ecru canvas, one element of depth: the browser window, 16px radius, chrome bar ~7% of
       card height, one soft shadow. INSIDE: a plausible product screen, not a wireframe - colour,
@@ -719,13 +765,13 @@ styles:
       max_rows: 6
       layout: >-
         A list panel shrinks the browser card to the upper half and sets rows beneath it on the
-        ecru: one source line per row, each led by a small teal square bullet or its own source
-        number, rows separated by a chrome-grey hairline. A label and its value stay on one row,
-        never swapping or separating; rows share one left edge, size and rhythm and shrink together,
-        never one alone, no row dropped; an over-long row wraps under its own first word with a
-        hanging indent. A two-sided comparison sets as two equal ecru columns with one hairline
-        between, each keeping source order, the two row-aligned. No row is set inside the browser
-        card.
+        ecru: one source line per row, each led by its own source numeral — a small teal square
+        bullet where the line carries no number — rows separated by a chrome-grey hairline. A
+        label and its value stay on one row, never swapping or separating; rows share one left
+        edge, size and rhythm and shrink together, never one alone, no row dropped; an over-long
+        row wraps under its own first word with a hanging indent. A two-sided comparison sets as
+        two equal ecru columns with one hairline between, each keeping source order, the two
+        row-aligned. No row is set inside the browser card.
       overflow: two_column
     per_format_guidance:
       carousel_cover: "Cover: the browser card at its largest, the headline at full scale, and the signature slot closing the frame when this deck is signed."
@@ -779,8 +825,8 @@ styles:
       - "GROUND light #FAFAF7, dot grid 6%, 24px pitch"
       - "GROUND dark #14130F, vignette; only if the cover used it"
       - "TEXT #14130F on light, #FAFAF7 on dark"
-      - "ACCENT FILL teal #0FCFC4-#57E6DC: highlight and CTA pills only"
-      - "ACCENT TYPE teal #0A7F78: on teal, kicker dot, chip numerals, dashes"
+      - "ACCENT teal fill #0FCFC4-#57E6DC: highlight and CTA pills only; under 1/8 of frame"
+      - "ACCENT teal type #0A7F78: type on teal, the kicker dot, numeral discs, dashes; under 1/8 of frame"
       - "SURFACE white #FFFFFF cards on light, charcoal +6% on dark"
       - "teal accent only: fills + strokes under 1/8 frame"
     typography: >-
@@ -796,9 +842,10 @@ styles:
       width, 16px radius, 4% padding; rows 1.5 cap heights apart, never a rule.
     image_treatment: >-
       Flat vector surfaces. Per frame: dot-grid ground, ONE teal bloom in ONE corner, max THREE
-      cards, max ONE mock-up, max ONE of a dashed connector run or an icon-node row. Card mock-ups
-      are chrome-grey bars and blocks (filler, no meaning); a quoted string renders in full, never
-      greeked. Only gradient: the two-stop teal of the pills.
+      cards, max ONE mock-up, ONE connective device — a list-shaped panel takes the icon-node row,
+      every other frame the dashed connector run. Card mock-ups are chrome-grey bars and blocks
+      (filler, no meaning); a quoted string renders in full, never greeked. Only gradient: the
+      two-stop teal of the pills.
     visual_pacing: >-
       One headline, one highlight pill, 2-4 card rows, one CTA. Ground mode is chosen on the cover,
       never changed in a deck. FIXED: ground mode, margins, dot pitch, card radius, numeral-disc
@@ -808,13 +855,14 @@ styles:
       max_rows: 6
       layout: >-
         A list panel sets as card rows in one white card in the middle band: one source line per
-        row, each led by a numbered teal chip (filled circle, one cap height, numeral in teal deep)
-        or a teal check, the row text in regular grotesque, any value flush right. A label and its
-        value never separate, swap or merge; rows share one left edge, size and height and shrink
-        together, never one alone, no row dropped; an over-long row wraps under its own first word,
-        clear of its chip. Beyond six rows the card splits into two equal cards, left filled first.
-        A two-sided comparison sets as two cards with matching row counts and aligned baselines. On
-        the dark ground the card is charcoal +6%, rows off-white.
+        row, each led by its own source numeral in a filled teal disc one cap high, the numeral in
+        teal deep, a teal check where the line carries no number; the row text in regular
+        grotesque, any value flush right. A label and its value never separate, swap or merge;
+        rows share one left edge, size and height and shrink together, never one alone, no row
+        dropped; an over-long row wraps under its own first word, clear of its chip. Beyond six
+        rows the card splits into two equal cards, left filled first. A two-sided comparison sets
+        as two cards with matching row counts and aligned baselines. On the dark ground the card
+        is charcoal +6%, rows off-white.
       overflow: two_column
     per_format_guidance:
       carousel_cover: "Cover: the headline at full scale with the teal pill on the payoff line, one card row at most, the CTA pill at the foot."
@@ -866,10 +914,10 @@ styles:
     palette:
       - "GROUND night black #0A0C10: room, sky, most of frame"
       - "SURFACE charcoal #1C2026: desk, mullions, chair back, closed laptop"
-      - "SKYLINE warm white #E8E2D4: lit tower windows, glass reflection; under 15%"
-      - "PRACTICAL amber #C89055: one far lamp, street glow; under 8%"
+      - "SURFACE warm white #E8E2D4: lit tower windows, glass reflection; under 15%"
+      - "ACCENT amber #C89055: one far lamp, street glow; under 8%"
       - "TEXT white #FFFFFF: the caption only; nothing else this bright"
-      - "no saturated hue; black, charcoal and warm light only"
+      - "that one accent apart: black, charcoal and warm light only"
     typography: >-
       One neutral grotesque sans, MEDIUM weight only: never bold, never light, no display face,
       serif, script, italic or all-caps. Caption white, sentence case, tracking 0, leading 1.25, cap
@@ -929,12 +977,13 @@ styles:
     render_prompt: >-
       Brutalist build-log slide on a flat near-black field, printed with the same chrome grid on
       every frame: a mono micro-label top-left closing on a solid cursor block, a position chip
-      top-right, a signature slot at the foot, a drawn arrow opposite it. The statement is bold
-      monospace-grotesque uppercase in warm cream, two to four short lines, tight leading, wide
-      tracking, filling the upper third. Beneath it a humanist sans paragraph sets in mid-grey,
-      sentence case, two to five short lines at reading size. Teal appears only in the micro-labels
-      and the cursor, never in the statement and never in the paragraph. Flat ink, one hairline
-      rule, nothing photographic, nobody in frame. Mood: technical, sequential, work in progress.
+      top-right and a signature slot at the foot, each only when one is quoted, a drawn arrow
+      opposite it. The statement is bold monospace-grotesque uppercase in warm cream: two to four
+      short lines, tight leading, wide tracking, upper third. Beneath it a humanist sans paragraph
+      in mid-grey, sentence case, two to five short lines at reading size. Teal appears only in
+      the micro-labels and the cursor, never in the statement, never in the paragraph. Flat ink,
+      one hairline rule, nothing photographic, nobody in frame. Mood: technical, sequential, work
+      in progress.
     # DELIBERATE, do not "fix" back: (1) the series kicker and the step eyebrow LETTER only what the
     # TEXT block quotes for them. A standing "THE BUILD_" printed on every slide would be invented
     # text becoming pixels, which is the one thing the verbatim contract exists to stop; the
@@ -972,8 +1021,8 @@ styles:
     palette:
       - "GROUND dark #0D0D0D: odd slides and every cover, flat edge to edge"
       - "GROUND cream #F2F0EA: even slides, flat edge to edge"
-      - "STATEMENT cream #F2F0EA on dark, near-black #14120F on cream"
-      - "BODY grey #9A9A9A: paragraph, counter, signature, hairline; both grounds"
+      - "TEXT cream #F2F0EA on dark, near-black #14120F on cream"
+      - "SUPPORT grey #9A9A9A: paragraph, counter, signature, hairline; both grounds"
       - "ACCENT teal #0FCFC4 on dark, #0A7F78 on cream: micro-labels and cursor, under 5%"
       - "one ground, one statement colour, one accent a slide"
     typography: >-
@@ -983,10 +1032,10 @@ styles:
       max one semibold phrase. Micro-labels: mono uppercase, cap 1.5%, +14%.
       Scale: label 1x, paragraph 1.7x, statement 5x.
     text_placement: >-
-      One chrome grid every slide: margins 7% sides, 6% top, 7% bottom, a body-grey hairline at 11%
-      of frame height. Kicker top-left on the 7% line above it; statement flush left from 26%;
-      paragraph from 52%; the drawn arrow bottom-right on the 93% line. One axis, flush left, never
-      centred. The outer 7% carries no type.
+      One chrome grid every slide: margins 7% sides, 6% top, 7% bottom, a body-grey hairline at
+      11% of frame height. Kicker top-left on the 7% line above it; statement flush left from 26%;
+      paragraph from 52%; the drawn arrow bottom-right on the 93% line. One axis, flush left,
+      never centred. All text inside the central 80% of the 1:1 frame.
     image_treatment: >-
       Flat ink on a solid field: no photograph, no paper texture, no gradient, no glow behind type.
       The COVER carries ONE hero object and a body slide none - a studio-rendered 3D form in glass,
@@ -1031,9 +1080,9 @@ styles:
       headline block sits across the top in two to three tight lines with one phrase in teal.
       Beneath it a ledger of numbered rows: each row is a white rounded card under a soft shadow,
       carrying a flat clay pictogram inside a filled teal circle at its left, a short bold title
-      beside the pictogram, and one line of grey description under that title. A solid teal banner
-      strip closes the foot of the frame. Flat vector work throughout, no photography, no gradient
-      mesh, no neon, no glass. Mood: practical, itemised, briefing-deck clarity.
+      beside the pictogram, and one line of grey description under that title. A teal hairline
+      closes the foot. Flat vector work throughout, no photography, no gradient mesh, no neon, no
+      glass. Mood: practical, itemised, briefing-deck clarity.
     subject_mode: scene_open
     layout_zones:
       - {position: "top band, flush left, from the top margin to 30 percent of frame height", content: headline,
@@ -1041,9 +1090,9 @@ styles:
       - {position: "middle band, full content width, rows stacked downward from 34 percent of frame height", content: body,
          text_treatment: "numbered icon-card rows: a white rounded card per row, a flat clay pictogram in a filled teal circle at the left, the row title beside it in semibold at 3% cap height, one grey description line under the title at 2.2% only where the quoted line has a second part"}
       - {position: "top-right corner, on the headline's first baseline", content: "slide-position badge", role: counter_slot,
-         text_treatment: "small teal-outlined rounded chip in mono uppercase at 1.5% of frame height, tracking +14%, carrying the counter string quoted in the TEXT block and nothing else"}
-      - {position: "foot of the frame, full width, welded to the bottom edge", content: "signature line", role: brand_slot,
-         text_treatment: "a solid teal banner strip at 7% of frame height, the signature string quoted in the TEXT block set inside it centred in letterspaced uppercase ecru at 1.6% cap height, tracking +14%; the strip stays a plain band of teal when nothing is quoted for it"}
+         text_treatment: "small teal-outlined rounded chip, body sans in small tracked caps at 1.5% of frame height, tracking +14%, carrying the counter string quoted in the TEXT block and nothing else"}
+      - {position: "foot of the frame, centred above the bottom margin", content: "signature line", role: brand_slot,
+         text_treatment: "a teal hairline rule across the content width, the signature string quoted in the TEXT block centred beneath it in letterspaced uppercase teal at 1.6% cap height, tracking +14%; nothing at all is drawn here when nothing is quoted for it"}
     format_affinity: [image, carousel]
     brand_affinity: []
     brand_slot: false
@@ -1056,7 +1105,7 @@ styles:
     palette:
       - "GROUND ecru #F2EDE1: flat, edge to edge, most of frame"
       - "TEXT near-black #17161A: headline, row titles"
-      - "ACCENT teal #00A59A: pictogram circles, one headline phrase, footer strip; under 1/5"
+      - "ACCENT teal #0A7F78: pictogram circles, one headline phrase, the foot rule; under 1/8"
       - "SURFACE white #FFFFFF: the row cards; only pure white"
       - "SUPPORT grey #7C7A74: row descriptions, hairlines"
       - "DEPTH warm #D8D0C1: card shadows, the hero object's contact shadow"
@@ -1067,11 +1116,11 @@ styles:
       Description: regular, cap 2.2%, leading 1.35, one line. Scale: smallest label 1x, description
       1.45x, row title 2x, headline 6x.
     text_placement: >-
-      Margins 7%, flush left on ONE axis; only the footer line is centred. Headline from the top
-      margin to 30% of frame height; the ledger stacks downward from 34%, cards at content width,
-      2.5% apart; the footer strip welded to the bottom edge at 7% of frame height. No card touches
-      the outer margin and no row runs under the strip: a full ledger drops the headline a tier
-      instead.
+      Margins 7%, flush left on ONE axis; only the foot line is centred. All text inside the
+      central 80% of the 1:1 frame. Headline from the top margin to 30% of frame height; the
+      ledger stacks downward from 34%, cards at content width, 2.5% apart; the foot rule sits on
+      the bottom margin. No card touches the outer margin and no row runs under that rule: a full
+      ledger drops the headline a tier instead.
     image_treatment: >-
       Flat vector with one depth cue: cards at a 20px radius under one warm diffuse shadow, nothing
       else lifted. Pictograms are flat clay glyphs - rounded, single weight, no outline, no gradient
@@ -1081,9 +1130,10 @@ styles:
       words is not drawn; max 6 rows, 1 hero, no photograph, no neon, no glass. A circle
       carries the REAL mark at glyph size in its own colours when the TOOL MARKS line sanctions it.
     visual_pacing: >-
-      A ledger read top to bottom: one headline, three to six rows, one footer strip. FIXED: ground,
-      margins, axis, card radius and shadow, circle size, type scale, strip height. MAY CHANGE:
-      headline line count, how many rows the frame carries, the pictograms, the cover's hero object.
+      A ledger read top to bottom: one headline, three to six rows, the foot rule. FIXED: ground,
+      margins, axis, card radius and shadow, circle size, type scale, foot rule weight. MAY
+      CHANGE: headline line count, how many rows the frame carries, the pictograms, the cover's
+      hero object.
     list_mode:
       reflow_over_chars: 140
       max_rows: 6
@@ -1099,10 +1149,10 @@ styles:
         cards, the left filled first.
       overflow: two_column
     per_format_guidance:
-      carousel_cover: "Cover: the headline at full scale with its teal phrase, then one ledger row per quoted line to a maximum of two; a cover that quotes only a headline draws no rows at all and never an empty card. ONE matte clay hero object — its subject taken from the cover's own content — sits on the ecru with a soft contact shadow. The teal footer strip closes the frame; the position chip sets top-right only where a counter string is quoted in the TEXT block."
-      carousel_slide: "Body slide: no hero object at all. Drop the headline by roughly a third and give the freed middle band to the ledger, where a longer quoted panel sets as numbered icon-card rows at reading size — one row per quoted line and never an empty card. Ground, margins, card radius, circle size, type scale and footer strip are identical to the cover; only the headline, the rows and their pictograms change."
+      carousel_cover: "Cover: the headline at full scale with its teal phrase, then one ledger row per quoted line to a maximum of two; a cover that quotes only a headline draws no rows at all and never an empty card. ONE matte clay hero object — its subject taken from the cover's own content — sits on the ecru with a soft contact shadow. The teal foot rule closes the frame; the position chip sets top-right only where a counter string is quoted in the TEXT block."
+      carousel_slide: "Body slide: no hero object at all. Drop the headline by roughly a third and give the freed middle band to the ledger, where a longer quoted panel sets as numbered icon-card rows at reading size — one row per quoted line and never an empty card. Ground, margins, card radius, circle size, type scale and foot rule are identical to the cover; only the headline, the rows and their pictograms change."
     exclusions:
-      - "watermarks, usernames and @handles — the footer strip letters only the signature string quoted in the TEXT block"
+      - "watermarks, usernames and @handles — the foot rule carries only the signature string quoted in the TEXT block"
       - "a pictogram is an abstract clay glyph, never a competitor, creator or platform mark"
       - "photography, gradient meshes, neon glow, glassmorphism and lens flares — the ecru ground stays flat"
       - "legible text inside a pictogram, an ornament or the hero object, and charts, graphs or dashboards as decoration — the ledger is rows of words, never a data visualisation"
@@ -1149,10 +1199,9 @@ styles:
     palette:
       - "GROUND near-black #07090C: the field, most of frame"
       - "SURFACE charcoal #131820: cards, chips, the vignette's core"
-      - "ACCENT teal #0FCFC4: traces, node glow, chip rings, one headline phrase; under 1/6"
-      - "GLOW teal deep #0C8897: the diffusion under every trace and node"
+      - "ACCENT teal #0FCFC4 over its deep #0C8897 glow: traces, node glow, chip rings, one headline phrase; under 1/8"
       - "TEXT white #FFFFFF: the headline; off-white #D9DEE4 for card rows"
-      - "FILLER grey #4A525C: greeked bars in an unlabelled chip only"
+      - "MUTED grey #4A525C: greeked bars in an unlabelled chip only"
     typography: >-
       One tight bold grotesque plus one mono; no serif, script or display face. Headline: bold, -2%,
       leading 0.98, sentence case, cap 7-9% in 2 lines, exactly one teal phrase; over 45 chars 3 at
@@ -1160,10 +1209,10 @@ styles:
       card. Node labels: mono uppercase, +14%, cap 1.6%. Scale: node label 1x, card row 1.55x,
       headline 5x. Type never glows.
     text_placement: >-
-      Margins 7%. Headline flush left from the top margin to 26% of frame height; the diagram centred
-      on the vertical axis in the 30-62% band; the card pair from 66% to the bottom margin, cards at
-      content width, 2% apart. The lattice runs BEHIND the headline and the cards - no trace crosses
-      type.
+      Margins 7%; all text inside the central 80% of the 1:1 frame. Headline flush left from the
+      top margin to 26% of frame height; the diagram centred on the vertical axis in the 30-62%
+      band; the card pair from 66% to the bottom margin, cards at content width, 2% apart. The
+      lattice runs BEHIND the headline and the cards - no trace crosses type.
     image_treatment: >-
       Flat dark vector, light the only depth: hairline teal traces, nodes with a soft bloom, cards on
       a low ambient shadow. NODE CAP, binding: one diagram a frame, one hub, AT MOST SIX labelled
@@ -1191,7 +1240,7 @@ styles:
       overflow: reflow
     per_format_guidance:
       carousel_cover: "Cover: the headline at full scale with its teal phrase, the lattice at its brightest, and ONE diagram at its largest — a single hub with at most six labelled chips. The card pair may drop to one card to give the diagram the room; the position chip sets top-right only where a counter string is quoted in the TEXT block."
-      carousel_slide: "Body slide: the SAME near-black field, the same lattice weight and the same vignette as the cover. Drop the headline by roughly a third; the diagram may be replaced by the card pair, or by list rows where the quoted panel is a list. The node cap and the greeking rule hold on every slide — a slide never gains a second diagram to fit more items in."
+      carousel_slide: "Body slide: the SAME near-black field, the same lattice weight and the same vignette as the cover. Drop the headline by roughly a third; a list-shaped panel replaces the diagram with list rows, and any other long panel replaces it with the card pair. The node cap and the greeking rule hold on every slide — a slide never gains a second diagram to fit more items in."
     exclusions:
       - "platform UI and overlays: player chrome, pagination dots, search fields, tab bars"
       - "a chip glyph is an abstract geometric symbol, never a competitor, creator or platform mark; a mark the TOOL MARKS line sanctions renders at chip size"
@@ -1228,7 +1277,7 @@ styles:
       - {position: "the foot of the card, a single evenly spaced row", content: "engagement glyphs",
          text_treatment: "three simple outline glyphs in the muted grey — a heart, a speech bubble, a reply arrow — at 2% of frame height, carrying no numbers, no labels and no counters beside them"}
       - {position: "top-right of the ground, clear of the card", content: "slide-position badge", role: counter_slot,
-         text_treatment: "small grey mono uppercase at 1.4% of frame height, tracking +12%, carrying the counter string quoted in the TEXT block and nothing else"}
+         text_treatment: "grey body grotesque, small tracked caps at 1.4% of frame height, tracking +12%, carrying the counter string quoted in the TEXT block and nothing else"}
     format_affinity: [image, carousel]
     brand_affinity: []
     brand_slot: false
@@ -1242,7 +1291,7 @@ styles:
       - "GROUND off-white #F1EFEA: field behind the card, faint tonal wash"
       - "SURFACE white #FFFFFF: the card, pure white only"
       - "TEXT near-black #1A1A1E: quoted body, handle line"
-      - "ACCENT teal #00A59A: avatar circle and its mark, the head's hairline"
+      - "ACCENT teal #00A59A: avatar circle and its mark, the head's hairline; under 1/8 of frame"
       - "MUTED grey #9B9A96: meta bar, engagement glyphs, counter, filler bars"
       - "DEPTH shadow #D5D1C8: the card's one soft shadow, nothing else lifted"
     typography: >-
@@ -1253,8 +1302,9 @@ styles:
     text_placement: >-
       One card, centred both ways, 84% of width, top at 18% of frame height, foot clear of the
       bottom 14%. Inside: padding 6% of card width all round; head row at the top, hairline under
-      it, body 2 cap heights below, glyph row on the bottom padding line. Ground margins 8%. A
-      longer quote grows the card DOWNWARD, still centred.
+      it, body 2 cap heights below, glyph row on the bottom padding line. Ground margins 8%; all
+      text inside the central 80% of the 1:1 frame. A longer quote grows the card DOWNWARD, still
+      centred.
     image_treatment: >-
       Flat vector: one card, one shadow, one hairline, three glyphs a frame; no texture beyond the
       ground's faint wash, no gradient, no photograph, no 3D. The avatar is an ABSTRACT geometric
@@ -1333,18 +1383,19 @@ styles:
       - "GROUND near-black #0B0D11: the desk field behind the window"
       - "SURFACE charcoal #161A21: window, boxes, bubbles; title bar a step lighter"
       - "TEXT off-white #DDE2E8: mono lines, box copy, bubble copy"
-      - "ACCENT teal #0FCFC4: syntax, cursor block, check glyph, one headline phrase; under 1/6"
+      - "ACCENT teal #0FCFC4: syntax, cursor block, check glyph, one headline phrase; under 1/8"
       - "MUTED grey #5A626C: gutter marks, greeked bars, cross glyph, traffic dots"
-      - "HEADLINE white #FFFFFF: the headline only"
+      - "TEXT white #FFFFFF: the headline only"
     typography: >-
       One monospace plus one tight grotesque; no serif, script or display face. Headline: semibold,
       -1%, leading 1.05, sentence case, cap 5.5-7% in 2 lines, one teal phrase; over 45 chars 3 at
       4.5%, over 75 chars 4 at 4%, floor 3.8%. Window, box and bubble copy: mono regular, cap 2.2%,
       leading 1.5, 34-52 chars. Scale: smallest label 1x, mono line 1.6x, headline 4x.
     text_placement: >-
-      Margins 7%, flush left on ONE axis. Headline from the top margin to 22% of frame height; the
-      window from 26% spanning 86% of width, centred, its title bar 6% of the window's height; boxes
-      and bubbles stack below at content width, 2% apart, clear of the bottom margin.
+      Margins 7%, flush left on ONE axis; all text inside the central 80% of the 1:1 frame.
+      Headline from the top margin to 22% of frame height; the window from 26% spanning 86% of
+      width, centred, its title bar 6% of the window's height; boxes and bubbles stack below at
+      content width, 2% apart, clear of the bottom margin.
     image_treatment: >-
       Flat dark UI: one window, one soft shadow, 12px radii, three flat traffic dots in the muted
       grey with NO lettering and no OS furniture around them. GREEKING is the positive rule: every
@@ -1370,7 +1421,7 @@ styles:
       overflow: two_column
     per_format_guidance:
       carousel_cover: "Cover: the headline at full scale over ONE editor window at its largest, its lines carrying the quoted string with the teal cursor block closing them. Boxes and bubbles stay off the cover. The position chip sets top-right only where a counter string is quoted in the TEXT block."
-      carousel_slide: "Body slide: the SAME dark desk, the SAME window geometry, title bar and gutter as the cover. Drop the headline by roughly a third; the freed room goes to the window's lines, the box pair, or one chat-bubble pair. A longer quoted panel sets as numbered mono rows inside the window at reading size."
+      carousel_slide: "Body slide: the SAME dark desk, the SAME window geometry, title bar and gutter as the cover. Drop the headline by roughly a third; the freed room goes to the window's lines, a rejected-versus-preferred panel takes the box pair, a message exchange one chat-bubble pair. A longer quoted panel sets as numbered mono rows inside the window at reading size."
     exclusions:
       - "real product, platform and app marks, named or drawn: operating-system furniture, editor and IDE logos, terminal and shell brands, chat apps, cloud consoles and model vendors — their wordmarks, icons, colour themes and window decorations; the window is generic"
       - "platform UI outside the mock-up itself: pagination dots, search overlay, share sheet, notification toast"
@@ -1398,31 +1449,33 @@ styles:
     render_prompt: >-
       Risograph and letterpress poster grammar: one paper tone plus exactly two ink colours, with
       visible paper grain, distressed ink texture inside the letterforms and slight
-      misregistration at the edges of solids. Type does the work — a towering display face set
-      tight and huge, with one phrase set apart in the second ink; a longer quoted string runs
+      misregistration at the edges of solids. Type does the work — a towering condensed grotesque
+      set tight and huge, with one phrase set apart in the second ink; a longer quoted string runs
       underneath in a lighter weight of the same family, left-aligned, up to six lines with
-      generous leading. Hand-drawn marker underlines, circled cues and one small pixel-art mascot
-      sit in the accent ink. Any screenshot inset rides on a white card held by translucent tape
-      strips; its body copy is greeked into grey bars. Nothing glossy, nothing gradient, nothing
+      generous leading. Hand-drawn underlines, circled cues and one small pixel-art mascot sit in
+      the accent ink. Any screenshot inset rides on a white card held by translucent tape strips;
+      its body copy is greeked into grey bars. Nothing glossy, nothing gradient, nothing
       photographic. High text tolerance.
     # DELIBERATE, do not "fix" back: (1) the swipe cue carries NO WORDS, though both source frames
     # letter it — an unquoted word is invented text becoming pixels. (2) The source's letterspaced
     # mono meta line ("JUN ©2026 · CHASE AI · 03 / 07") is NOT adopted: every string in it would be
     # invented, and the only counter this deck may print is the one quoted in the TEXT block.
-    # (3) D57: only the CREAM ground's accent ink moves to teal. The terracotta body ground keeps
-    # black as its second ink, because this style prints one tone plus exactly TWO inks a slide and
-    # a teal at the value of terracotta reads as mud rather than as an accent. The teal therefore
-    # lands on the cover — the slide the feed actually shows — and the deck stays a two-ink deck.
+    # (3) D57 as amended by D60/FR-347: the TERRACOTTA BODY GROUND IS RETIRED, and the deep teal
+    # #0A7F78 is the second ink on cream paper — cover and body slides alike. This settles the
+    # ruling that SESSION-I-CLOSEOUT.md:42 left owed: a teal at the value of terracotta read as
+    # mud rather than as an accent, and a saturated mid-tone filling a whole frame is the one
+    # field gpt-image-2 cannot hit twice running (30 points of hue drift measured on 2026-08-20,
+    # worst 69, against 6 on cream). The deck stays a two-ink deck and the teal stays an ink.
     subject_mode: scene_open
     layout_zones:
-      - {position: "top-left corner", content: "slide-position badge", role: counter_slot,
-         text_treatment: "outlined rounded-rectangle chip in the accent ink, small mono or tracked caps at 1.6-2% of frame height; the counter string quoted in the TEXT block only"}
+      - {position: "top-right corner", content: "slide-position badge", role: counter_slot,
+         text_treatment: "outlined rounded-rectangle chip in the accent ink, tracked caps of the body family at 1.6-2% of frame height; the counter string quoted in the TEXT block only"}
       - {position: "top two-thirds on the cover, upper-left third with a generous margin on a body slide",
          content: headline,
-         text_treatment: "towering display type set tight, one ink for the setup lines and the second ink (or a reversed solid black bar) for the payoff phrase; cover cap height 14-20% of frame height stepping down one tier per extra line, body-slide cap height 8-11%"}
+         text_treatment: "towering condensed caps set tight, the first ink for the setup lines and the second ink for the payoff phrase; on a body slide that payoff phrase reverses out of a solid black bar instead; cover cap height 14-20% of frame height stepping down one tier per extra line, body-slide cap height 8-11%"}
       - {position: "middle band, left-aligned", content: body,
-         text_treatment: "lighter weight of the headline family at 3-4% cap height, leading 1.35, 30-46 characters per line, two to six lines, one phrase allowed in the heavy weight, one hand-drawn marker underline allowed"}
-      - {position: "lower-right, or top-right on a body slide", content: "swipe cue",
+         text_treatment: "lighter weight of the headline family at 3-4% cap height, leading 1.35, 30-46 characters per line, two to six lines, one phrase allowed in the heavy weight, one hand-drawn underline allowed"}
+      - {position: "lower-right corner", content: "swipe cue",
          text_treatment: "hand-drawn circled arrow in the accent ink — a drawn mark, never a lettered word, unless a swipe string is quoted in the TEXT block"}
     format_affinity: [carousel]
     brand_affinity: []
@@ -1431,30 +1484,32 @@ styles:
     max_onimage_chars: {headline: 90, subline: 160, slide: 300}
     motion_profile: graphic
     palette:
-      - "GROUNDS cream #E8DCC3 (cover only), terracotta #B5573C (body slides only)"
-      - "ON CREAM: black #1A1714 (headline setup, paragraph, rules) + teal #0A7F78 (payoff, kicker, chip, marks)"
-      - "ON TERRACOTTA: cream #F3E9D8 (headline, paragraph) + black #1A1714 (reversed bar, chip, marks)"
-      - "one tone + two inks a slide, fixed by the ground; never a third"
+      - "GROUND cream #E8DCC3: cover and body alike, flat edge to edge"
+      - "TEXT black #1A1714: headline setup, paragraph, rules, the reversed bar"
+      - "ACCENT deep teal #0A7F78: payoff phrase, kicker, drawn marks; under 1/8 of frame"
+      - "SURFACE paper white #F3E9D8: the taped inset card, the reversed type"
+      - "one paper tone plus exactly two inks a slide; never a third"
     typography: >-
-      Cover display: condensed woodtype uppercase, -2% tracking, 0.88 leading, cap 14-20%, down a
-      tier per extra line: 40 chars = 2 lines at 14-20%; 41-65 = 3 at 11%; 66-90 = 4 at 8.5%; floor
-      8%. Body headline: ultra-heavy geometric lowercase sans 8-11%, 2 lines, one phrase reversed in
-      a black bar. Paragraph: lighter weight 3-4%, leading 1.35, 30-46 chars, one heavy phrase.
-      Marker for annotations. Display:paragraph 5:1 to 8:1.
+      ONE condensed grotesque family, weights only; no second family. Cover: heaviest, uppercase,
+      -2% tracking, 0.88 leading, cap 14-20%, down a tier per extra line: 40 chars = 2 lines at
+      14-20%; 41-65 = 3 at 11%; 66-90 = 4 at 8.5%; floor 8%. Body headline: same weight,
+      lowercase, 8-11%, 2 lines, one phrase reversed in a black bar. Paragraph: light weight 3-4%,
+      leading 1.35, 30-46 chars, one heavy phrase. Annotations drawn, never set. Display:paragraph
+      5:1 to 8:1.
     text_placement: >-
-      Margins 8% left/right, 6% top, 8% bottom. Cover: headline in the top two thirds; deck line
-      under a hand-drawn underline lower-left; drawn cue lower-right. Body: headline upper-left
-      third, paragraph across the middle band ragged right, inset card lower half. One axis: flush
-      left, never centred.
+      Margins 8% sides, 6% top, 8% bottom; all text inside the central 80% of the 1:1 frame.
+      Cover: headline in the top two thirds; deck line under a hand-drawn underline lower-left;
+      drawn cue lower-right. Body: headline upper-left third, paragraph across the middle band
+      ragged right, inset card lower half. One axis: flush left, never centred.
     image_treatment: >-
       Flat inks on textured paper; misregistration never on body-size type. A pixel-art mascot is
       the only illustration, max once a slide; max one underline and one circled mark a frame. Inset
       mock-ups are DESIGNED, not blank: unquoted copy greeks to grey bars sized as that text would
       be (filler, no meaning); a string the TEXT block quotes renders in full, never greeked.
     visual_pacing: >-
-      One typographic statement a slide, one paragraph, one drawn mark. FIXED: margins, ink pair
-      per ground, rule weight, type scale, mascot style. MAY CHANGE: words, inset, mascot pose,
-      mark position.
+      One typographic statement a slide, one paragraph, one drawn mark. FIXED: margins, paper
+      tone, ink pair, rule weight, type scale, mascot style. MAY CHANGE: words, inset, mascot
+      pose, mark position.
     list_mode:
       reflow_over_chars: 200
       max_rows: 7
@@ -1465,11 +1520,11 @@ styles:
         separate, a label and its value never swap rows. Rows share one left edge, baseline rhythm
         and size, and all shrink together rather than one being cut or dropped; an over-long row
         wraps under its own first word, clear of the hanging number. A hairline rule in the second
-        ink separates rows only at five rows or more.
+        ink separates rows only from five rows upward.
       overflow: reflow
     per_format_guidance:
-      carousel_cover: "Cover: aged cream paper with visible grain. The headline is towering condensed woodtype-style uppercase filling two thirds of the frame — black ink for the setup lines, deep teal for the payoff line, distressed ink texture inside every letterform. Hand-circled cue lower-right; the outlined position chip appears top-left only when a counter string is quoted in the TEXT block."
-      carousel_slide: "Body slide: saturated terracotta ground with film grain. The headline is lowercase ultra-heavy geometric sans in cream with one phrase reversed inside a solid black highlight bar; a longer quoted string sets beneath it in the lighter cream weight across the middle band. Insets ride on a taped white card. The position chip sits top-left in mono caps only when a counter string is quoted in the TEXT block."
+      carousel_cover: "Cover: aged cream paper with visible grain. The headline is towering condensed uppercase in the family's heaviest weight, filling two thirds of the frame — black ink for the setup lines, deep teal for the payoff line, distressed ink texture inside every letterform. Hand-circled cue lower-right; the outlined position chip appears top-right only when a counter string is quoted in the TEXT block."
+      carousel_slide: "Body slide: the SAME cream paper as the cover, grain and all. The headline is lowercase in the family's heaviest weight, black on the cream, with one phrase reversed in cream inside a solid black bar; a longer quoted string sets beneath it in the light weight across the middle band. Insets ride on a taped white card. The position chip sits top-right in tracked caps only when a counter string is quoted in the TEXT block."
     exclusions:
       - "platform UI and overlays: pagination dots, search fields, play triangles, player chrome, 'related content' banners"
       - "watermarks, app badges, usernames, @handles, real account names or author credits printed as a rule or footer"
@@ -1508,10 +1563,10 @@ styles:
     palette:
       - "GROUND + CAPTION BANDS warm paper #EFE6D2: bands, gutter, margin"
       - "TEXT + FRAMES ink black #1B1815: captions, rules, outlines"
-      - "TOP PANEL sepia #8A6A46: its dominant tone; no saturated hue there"
-      - "BOTTOM PANEL tungsten #E9B36A: the lamp and its falloff"
-      - "FOCAL teal #00A59A: one object in the bottom panel, nowhere else"
-      - "FOOTER warm grey (black at 45%): the signature line only"
+      - "SURFACE top panel sepia #8A6A46: its dominant tone; no saturated hue there"
+      - "SURFACE bottom panel tungsten #E9B36A: the lamp and its falloff"
+      - "ACCENT teal #00A59A: one object in the bottom panel, nowhere else; under 1/8 of frame"
+      - "MUTED warm grey (black at 45%): the signature line only"
     typography: >-
       One heavy condensed sans for the panel captions: sentence case, terminal period, tracking -1%,
       cap height 4-5% of frame, IDENTICAL on both captions and on every frame of a deck; a longer
@@ -1520,9 +1575,10 @@ styles:
       serif or italic.
     text_placement: >-
       Fixed stack: band, panel, gutter, band, panel, footer. Caption bands are full-width paper
-      strips at 9% of frame height (12% when either caption wraps to two lines - then BOTH do), the
+      strips at 9% of frame height (12% when one caption wraps to two lines - then BOTH do), the
       caption centred both ways inside. Panels equal height, 1.5pt black frame rule, gutter 3-4%,
-      outer paper margin 3%. Footer alone, centred, bottom 6%. The artwork carries no lettering.
+      outer paper margin 3%. Footer alone, centred, bottom 6%. All text inside the central 80% of
+      the 1:1 frame. The artwork carries no lettering.
     image_treatment: >-
       Ink-outline caricature, gouache and watercolour washes, paper tooth: varying line weight, flat
       washes, no digital gradient. Warm tungsten light; clutter and paperwork above, clean empty
@@ -1585,10 +1641,10 @@ styles:
     palette:
       - "GROUND night black #0A0C10: room, sky, most of frame"
       - "SURFACE charcoal #1C2026: desk, mullions, chair back, closed laptop"
-      - "SKYLINE warm white #E8E2D4: lit tower windows, glass reflection; under 15%"
-      - "PRACTICAL teal #0C8897: one far light, its cast on the glass; under 8%"
+      - "SURFACE warm white #E8E2D4: lit tower windows, glass reflection; under 15%"
+      - "ACCENT teal #0C8897: one far light, its cast on the glass; under 8%"
       - "TEXT white #FFFFFF: the caption only; nothing else this bright"
-      - "that practical apart: black, charcoal and warm light only"
+      - "that one accent apart: black, charcoal and warm light only"
     typography: >-
       One neutral grotesque sans, MEDIUM weight only: never bold, never light, no display face,
       serif, script, italic or all-caps. Caption white, sentence case, tracking 0, leading 1.25, cap
@@ -1671,10 +1727,10 @@ styles:
     palette:
       - "GROUND plaster #EDEAE4: walls, most of frame"
       - "SURFACE warm grey #B7B2AA: furnishing, floor, shadow side"
-      - "ACCENT teal #0A7F78: one glazed ceramic object, nothing else this saturated"
+      - "ACCENT teal #0A7F78: one glazed ceramic object, nothing else this saturated; under 1/8 of frame"
       - "SHADOW near-black #14120F: cast shadows, doorway, caption plate"
       - "TEXT white #FFFFFF: caption only, nothing else this bright"
-      - "accent+shadow under 25% of frame; ground carries the rest"
+      - "shadow under 20% of frame; ground carries the rest"
     typography: >-
       Neutral grotesque sans only (Inter/Helvetica Now species); no second family, display face,
       script or all-caps. Caption SEMIBOLD-BOLD, never lighter. Cap height 4.5-6% of frame, same
@@ -1684,10 +1740,9 @@ styles:
     text_placement: >-
       One caption block, upper-left third: left edge 8% of width, top 10% of height. All text
       inside the central 80% of the 1:1 frame. Over low-detail negative space, never on the
-      subject or a hard edge. Under 60 chars: floats, faint drop shadow. 60+ chars, or ground
-      lighter than mid-grey:
-      soft charcoal plate, ~25% opacity, rounded, padding ~1 cap height. Same x, size and
-      treatment every slide.
+      subject or a hard edge. Under 60 chars: floats, faint drop shadow. From 60 chars up: soft
+      charcoal plate, ~25% opacity, rounded, padding ~1 cap height, and a ground lighter than
+      mid-grey takes that plate at any length. Same x, size and treatment every slide.
     image_treatment: >-
       Candid available-light photograph: sensor grain, honest lens character, real depth of field.
       One room, one glazed teal object, max four props. No studio lighting, no styled flat lay, no
@@ -1703,11 +1758,11 @@ styles:
       max_rows: 5
       layout: >-
         A list panel sets as one left-aligned column on the charcoal plate: one source line per
-        row, a leading number or bullet welded to its own row's text, rows sharing one left edge
-        and one type size, an over-long row wrapping under its own first word with a hanging
-        indent. A label and its value never separate and never swap rows. Rows shrink together,
-        never one alone, and no row is ever dropped; the plate grows downward and the photograph
-        behind it simplifies to make room.
+        row, the line's own leading numeral welded to its own row's text and its bullet where it
+        has one, rows sharing one left edge and one type size, an over-long row wrapping under its
+        own first word with a hanging indent. A label and its value never separate and never swap
+        rows. Rows shrink together, never one alone, and no row is ever dropped; the plate grows
+        downward and the photograph behind it simplifies to make room.
       overflow: reflow
     per_format_guidance:
       carousel_cover: "Cover: the widest view of the room, establishing the space; the quoted text sits high-left over the emptiest wall at the largest size it will hold."
@@ -1751,7 +1806,7 @@ styles:
     palette:
       - "GROUND honey wood #B07C4A: the table, the largest surface"
       - "SURFACE oat linen #DCCFB8: paper, cloth, the defocused wall"
-      - "OBJECT glazed teal ceramic #00A59A: the mug; the one saturated object, under 8% of frame"
+      - "ACCENT glazed teal ceramic #00A59A: the mug; the one saturated object, under 8% of frame"
       - "SHADOW warm #4A3624: side-light shadows, the band under the text"
       - "TEXT white #FFFFFF: the statement only; nothing else this bright"
       - "one cool object (a closed silver laptop) keeps the frame off monochrome"
@@ -1780,13 +1835,14 @@ styles:
       reflow_over_chars: 130
       max_rows: 5
       layout: >-
-        A list panel keeps the statement block's position and type but sets as rows: one source line
-        per row, flush left on the same margin, separated by a full blank line rather than a rule, a
-        leading number or bullet welded to its row. A label and its value never separate. Rows share
-        one size and shrink together, never one alone, and no row is dropped; an over-long row wraps
-        under its own first word with a hanging indent. The block grows downward into the defocused
-        band and the camera frames enough dark background to hold it. Nothing is drawn behind the
-        rows: no plate, no card, no rule.
+        A list panel keeps the statement block's position and type but sets as rows: one source
+        line per row, flush left on the same margin, separated by a full blank line rather than a
+        rule, the line's own leading numeral welded to its row and its bullet where it has one. A
+        label and its value never separate. Rows share one size and shrink together, never one
+        alone, and no row is dropped; an over-long row wraps under its own first word with a
+        hanging indent. The block grows downward into the defocused band and the camera frames
+        enough dark background to hold it. Nothing is drawn behind the rows: no plate, no card, no
+        rule.
       overflow: reflow
     per_format_guidance:
       carousel_role: slides_only

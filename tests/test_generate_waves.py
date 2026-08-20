@@ -33,7 +33,7 @@ import pytest
 
 from hypesocials import gauntlet, generate, render, styles
 from hypesocials.budget import Budget
-from hypesocials.config import BrandingConfig, Config
+from hypesocials.config import BrandingConfig, Config, PlatformConfig
 from hypesocials.generate import refs as refs_module
 from hypesocials.models import (
     AssetStatus,
@@ -1262,3 +1262,58 @@ async def test_a_gauntlet_fix_is_measured_on_the_file_that_actually_ships(
     record = report.records[entry.asset_id]
     assert record.vision_check_result is VisionCheckResult.RETRIED_PASSED
     assert record.native_size_rendered == "1536x1024 (3:2)", "the SECOND file is the one on disk"
+
+
+# ---- D60 -------------- FR-342: the standalone image and its gauntlet fix, at the approved tier
+
+
+async def test_fr342_a_standalone_image_and_its_gauntlet_fix_both_carry_the_platforms_tier(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two of FR-342's five image sites in one chain, because they are one decision.
+
+    `generate._image` submits the frame and `generate._gauntlet_image` submits its fix, and both
+    read `Config.image_resolution()` — the same accessor `budget._image_price` quoted at the
+    Confirm gate. The fix matters as much as the frame: it REPLACES the file that ships, so a
+    re-render that fell back to 1K would hand the operator a 1K deliverable they were quoted 2K
+    for, and the only visible evidence would be the pixel dimensions of a file nobody measures.
+
+    `rounds_max_image` is raised to 2 for the same reason the FR-27 test above raises it — a lone
+    frame is gated at ONE round by default, and one round judges without ever re-rendering, so at
+    the default this test would silently cover one site instead of two.
+    """
+    entry = make_entry()
+    env = make_env(tmp_path, [entry])
+    env.config.platforms["linkedin"] = PlatformConfig(carousel_slides=6, image_resolution="2k")
+    env.config.run.gauntlet.rounds_max_image = 2
+    env.llm_call = critics(True, False)  # failed, then clean after the canned fix
+    renders = Renders([ok(task="kie_first"), ok(task="kie_retry")])
+    monkeypatch.setattr(render, "run", renders)
+
+    await generate.create([entry], env)
+
+    assert len(renders.calls) == 2, "the frame and exactly one gauntlet fix"
+    assert [call["params"].resolution for call in renders.calls] == ["2k", "2k"], \
+        "the fix REPLACES the shipped file, so it renders at the tier the gate approved"
+    assert all(call["params"].aspect_ratio == "1:1" for call in renders.calls), \
+        "…and at a ratio the provider will really render at 2K (20 §8c)"
+
+
+async def test_fr342_an_image_on_an_unpinned_platform_keeps_the_engine_default_tier(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The D58 shape at the other image site: a config that never opted in is unchanged.
+
+    `1k` is what `profiles._image_resolution` already sent for an unset `RenderParams.resolution`,
+    so FR-342 made the string explicit without moving a single byte on the wire for any config
+    that ignored the key.
+    """
+    entry = make_entry()
+    env = make_env(tmp_path, [entry])
+    assert "linkedin" not in env.config.platforms, "the fixture config pins nothing per platform"
+    renders = Renders([ok()])
+    monkeypatch.setattr(render, "run", renders)
+
+    await generate.create([entry], env)
+
+    assert [call["params"].resolution for call in renders.calls] == ["1k"]

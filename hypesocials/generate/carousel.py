@@ -790,8 +790,13 @@ class _Deck:
           would put a $0 job with no taskId in `self.outcomes` and in the meta's job list.
         """
         try:
+            # FR-342: the render tier comes from the ONE accessor the Confirm-gate estimator also
+            # read (`budget._image_price`), so a slide is submitted at exactly the tier its price
+            # was approved at. `profiles._image_resolution` upper-cases it and clamps per ratio.
             outcome = await self.submit(
-                self.entry, RenderParams(prompt=prompt, aspect_ratio=self.entry.aspect_ratio),
+                self.entry, RenderParams(
+                    prompt=prompt, aspect_ratio=self.entry.aspect_ratio,
+                    resolution=self.env.config.image_resolution(self.entry.platform)),
                 RenderRefs(image_urls=list(urls)), job="slide", priority=priority, kind=kind,
                 label=label)
         except render.KieOutOfCredits as exc:

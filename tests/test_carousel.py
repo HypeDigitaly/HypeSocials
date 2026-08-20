@@ -46,7 +46,7 @@ import yaml
 from PIL import Image
 
 from hypesocials import gauntlet, prompts_engine as pe, render, styles
-from hypesocials.config import BrandingConfig, Config
+from hypesocials.config import BrandingConfig, Config, PlatformConfig
 from hypesocials.generate import carousel as carousel_module
 from hypesocials.generate import refs as refs_module
 from hypesocials.generate.carousel import GUIDANCE_COVER, GUIDANCE_SLIDE, render_carousel
@@ -102,6 +102,11 @@ class Call:
     label: str
     prompt: str
     image_urls: list[str]
+    #: D60/FR-342 — the render TIER this slide was submitted at, straight off `RenderParams`.
+    #: Defaulted and last so every positional/keyword construction above it still holds; empty
+    #: means the deck sent no resolution at all, which is what a pre-FR-342 submission looked
+    #: like and is exactly the regression the test at the foot of this file watches for.
+    resolution: str = ""
 
     @property
     def url(self) -> str:
@@ -120,7 +125,8 @@ class FakeSubmit:
         match = _SLIDE_NO.search(label)
         call = Call(index=len(self.calls), slide=int(match.group(1)) if match else 0, job=job,
                     priority=priority, kind=kind, label=label, prompt=params.prompt,
-                    image_urls=list(refs.image_urls))
+                    image_urls=list(refs.image_urls),
+                    resolution=str(getattr(params, "resolution", "") or ""))
         self.calls.append(call)
         self.events.append(f"submit:{call.slide}:{kind}")
         answer = self.rule(call) if self.rule is not None else ok(call)
@@ -2784,3 +2790,54 @@ async def test_an_unanchored_deck_records_only_the_reference_free_route(tmp_path
     record = await render_carousel(entry, env, make_folder(tmp_path, entry), submit=FakeSubmit())
 
     assert record.model_ids == [env.config.models.image, env.config.models.image_profile]
+
+
+# ---- D60 ---------------------- FR-342: every slide is submitted at the tier its price approved
+
+
+async def test_fr342_every_slide_of_a_deck_carries_the_platforms_configured_render_tier(
+    tmp_path: Path,
+) -> None:
+    """The deck half of FR-342's one-key promise: what the Confirm gate quoted is what goes out.
+
+    `budget._image_price` and `_Deck._submit` read the SAME accessor (`Config.image_resolution`),
+    so a config that pins `2k` on LinkedIn is quoted at `models.price_per_unit.image.2k` and then
+    submits at 2K. Before FR-342 the second half simply did not happen: `RenderParams.resolution`
+    was never set on a slide, `profiles._image_resolution` filled the gap with its `1K` default,
+    and every deck the three brand configs rendered was quoted for pixels it did not buy.
+
+    Asserted on EVERY slide and not just the anchor, because the anchor and the body slides go
+    through different arms of `_submit` (wave 1 vs wave 2, chained reference vs not) and a tier
+    wired into one of them is a deck rendered at two sizes.
+    """
+    entry = make_entry(slides=3)
+    env = make_env(tmp_path, entry, texts=["one", "two", "three"])
+    env.config.platforms["linkedin"] = PlatformConfig(carousel_slides=6, image_resolution="2k")
+    submit = FakeSubmit()
+
+    await render_carousel(entry, env, make_folder(tmp_path, entry), submit=submit)
+
+    assert len(submit.calls) == 3
+    assert [call.resolution for call in submit.calls] == ["2k", "2k", "2k"], \
+        "one deck, one tier — the anchor and the body slides read the same key"
+
+
+async def test_fr342_a_deck_on_an_unpinned_platform_still_renders_at_the_engine_default(
+    tmp_path: Path,
+) -> None:
+    """The D58 shape, seen from the wire: a config that never opted in buys exactly what it always
+    bought.
+
+    `1k` is not a fallback here, it is the engine default — and the value matters beyond the price,
+    because it is also what `profiles._image_resolution` sends for an unset resolution. So the
+    string that now travels explicitly on every slide is the string the provider was already
+    receiving implicitly, and no config that ignored FR-342 saw its renders change.
+    """
+    entry = make_entry(slides=2)
+    env = make_env(tmp_path, entry, texts=["one", "two"])
+    assert "linkedin" not in env.config.platforms, "the fixture config pins nothing per platform"
+    submit = FakeSubmit()
+
+    await render_carousel(entry, env, make_folder(tmp_path, entry), submit=submit)
+
+    assert [call.resolution for call in submit.calls] == ["1k", "1k"]

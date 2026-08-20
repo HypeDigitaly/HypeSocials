@@ -32,67 +32,68 @@ Czech panel plus its FR-186 echo is ~2,700 uncuttable characters of TEXT block o
   budget, the panel and every SAFETY rule still arrive, and what a hard truncation eats is
   confined to the droppable tail prose F1-E demoted. That is the property the reorder was for.
 
-**RE-measured on the shipped bytes, 2026-08-20, after v2.5.0/D59** (`assembled` = the filled
+**RE-measured on the shipped bytes, 2026-08-20, after v2.5.1/D60** (`assembled` = the filled
 template before any fit pass; `cut` = the last-resort trio trim; `over` = characters hard-truncated
-past the floors). Every row moved this session, so nothing below is carried over from the D56/D57
-measurement — the whole table is a re-base, and the four edits behind it pull against each other:
+past the floors). D60 touched NO template, NO engine code on this path and no slot the fit pass
+reads — every number below moved because `prompts/styles.yaml` was re-authored under FR-347/348/
+349/350, and it moved almost entirely in one direction:
 
-* **D59 moved the counter spec out of `style_dna` and into `{{counter_rule}}`** (FR-338). That is a
-  move from a CUTTABLE field into an UNCUTTABLE slot: the trio trim can shorten `style_dna`,
-  nothing can shorten the slot. It costs 194-279 characters on the eight styles that declare a
-  `counter_slot` zone and the 86-character house-default line on the other eleven — +2,727 across
-  the registry, all of it uncuttable.
-* **FR-340's empty-zone rule added 132 characters of fixed template prose** and the anchor block
-  another 18 (`carousel_slide.md`'s fixed prose 10,576 -> 10,699). Every style pays that equally.
-* **The exclusions dedup paid for it** on the ten styles that had duplicated lines: -2,690
-  characters registry-wide, uncuttable as well (`icon-ledger-carousel` 892 -> 469,
-  `hypelead-brand-card` 987 -> 602, `anime-noir-statement` 838 -> 570).
-* **FR-350's 4:5 band removal and the FR-339 scrub** took a further 788 out of the TRIO itself
-  (`style_dna` -495, `render_prompt` -293) — money off the thing the trim eats, not off the core.
-
-The mechanism is worth stating because it explains the whole table: a style went UP unless its
-exclusions were deduped. All nine styles with untouched exclusions rose by +171 to +248 at tier A;
-the ten deduped ones landed anywhere from -171 to +175 depending on whether the dedup outran the
-new costs.
+* **The safe-area sentence reached the other twelve styles.** J left "inside the central 80% of
+  the 1:1 frame" on seven of the nineteen; FR-350 item 4 requires it on every carousel-affine
+  style, so twelve more gained it at ~55 characters each. It lands in `text_placement`, which IS
+  one of the five DNA rows, so it is CUTTABLE trio and grows tier-A cut very nearly 1:1.
+* **FR-347's coverage clauses cost a few characters on eleven palette lines** across ten styles
+  (`under 1/8`, `under 8%` — an accent the model is not held to spreads over the frame). Also
+  `style_dna`, also charged straight against the trim.
+* **The retirements paid part of it back, and paid it back unevenly.** `icon-ledger-carousel` lost
+  its solid teal footer strip from `render_prompt` (-23) plus four more places that described it;
+  both `letterpress` styles lost the terracotta body ground and the whole cover/body split that
+  went with it; `editorial-voxel-carousel` lost the orange CONTRAST hex and its script family
+  ("3 families max" -> "Two families"); `anime-noir-statement` lost the amber COUNTERLIGHT hex;
+  `platform-showcase-card` gave back 12 characters of `render_prompt`.
+* **Registry-wide the cuttable trio grew +947 characters** while the eight `counter_slot` slots
+  grew +39 and F1-A's `{{list_treatment}}` +253 — the last two UNCUTTABLE, which is why sixteen of
+  the nineteen moved further at tier A than their own trio did (the trim has to find an uncuttable
+  slot's growth somewhere, and the trio is the only place it can look).
 
     style                                asm@700  cut@700 |  asm@1500  cut@1500  over
-    photoreal-ambient-caption             20,401    1,095 |    21,808     1,694   804
-    editorial-voxel-carousel              20,630    1,322 |    22,037     1,727 1,000
-    letterpress-print-carousel            20,661    1,359 |    22,068     1,713 1,045
-    meme-caricature-panels                19,535      234 |    20,942     1,639     0
-    anime-noir-statement                  20,724    1,416 |    22,131     1,970   851
-    ugc-tabletop-statement                20,269      966 |    21,676     1,665   701
-    platform-showcase-card                20,547    1,244 |    21,954     1,671   973
-    hypelead-brand-card                   20,547    1,240 |    21,954     1,789   855
-    quiet-luxury-night-photoreal          20,671    1,365 |    22,078     1,972   796
-    build-log-mono                        20,710    1,409 |    22,117     1,846   961
-    icon-ledger-carousel                  20,805    1,499 |    22,212     1,903   999
-    circuit-atlas-dark                    20,712    1,419 |    22,119     1,851   958
-    social-quote-card                     20,615    1,308 |    22,022     1,665 1,047
-    terminal-mockup-deck                  20,638    1,330 |    22,045     1,700 1,035
-    letterpress-print-carousel-teal       20,656    1,354 |    22,063     1,710 1,043
-    meme-caricature-panels-teal           19,521      217 |    20,928     1,627     0
-    quiet-luxury-night-photoreal-teal     20,683    1,381 |    22,090     1,978   802
-    photoreal-ambient-caption-teal        20,466    1,157 |    21,873     1,734   829
-    ugc-tabletop-statement-teal           20,293      988 |    21,700     1,679   711
+    photoreal-ambient-caption             20,491    1,185 |    21,898     1,727   861
+    editorial-voxel-carousel              20,756    1,451 |    22,163     1,800 1,053
+    letterpress-print-carousel            20,771    1,468 |    22,178     1,775 1,093
+    meme-caricature-panels                19,618      314 |    21,025     1,695    20
+    anime-noir-statement                  20,794    1,487 |    22,201     1,992   899
+    ugc-tabletop-statement                20,306    1,005 |    21,713     1,665   738
+    platform-showcase-card                20,644    1,346 |    22,051     1,709 1,032
+    hypelead-brand-card                   20,694    1,393 |    22,101     1,853   938
+    quiet-luxury-night-photoreal          20,673    1,371 |    22,080     1,973   797
+    build-log-mono                        20,741    1,445 |    22,148     1,865   973
+    icon-ledger-carousel                  20,816    1,516 |    22,223     1,903 1,010
+    circuit-atlas-dark                    20,740    1,431 |    22,147     1,867   970
+    social-quote-card                     20,699    1,394 |    22,106     1,707 1,089
+    terminal-mockup-deck                  20,740    1,433 |    22,147     1,761 1,076
+    letterpress-print-carousel-teal       20,771    1,468 |    22,178     1,775 1,093
+    meme-caricature-panels-teal           19,604      297 |    21,011     1,685    16
+    quiet-luxury-night-photoreal-teal     20,681    1,381 |    22,088     1,977   801
+    photoreal-ambient-caption-teal        20,556    1,251 |    21,963     1,766   887
+    ugc-tabletop-statement-teal           20,329    1,036 |    21,736     1,679   747
 
-**The worst case changed hands, and it got better.** `icon-ledger-carousel` is the tightest style
-now at 1,499 (from 1,393) — the only one that took every cost at once: a 236-character
-`counter_slot` line, 109 MORE characters of `{{list_treatment}}` (F1-A's slot, also uncuttable) and
-the template's 132. `anime-noir-statement`, the previous worst, came DOWN 1,554 -> 1,416: no
-counter zone, so it paid only the 86-character house default and got 268 characters of exclusions
-back. So the registry's worst tier-A trim improved by 55 characters even though most individual
-styles LOST headroom — which is the shape an uneven dedup has: it pays back most where the
-duplication was worst, and the worst style is exactly where the ceiling is measured.
+**The worst case did NOT change hands this time, and it got slightly worse.**
+`icon-ledger-carousel` is still the tightest style at 1,516 (from 1,499): retiring the footer strip
+took 23 characters out of its `render_prompt`, and its `counter_slot` zone put 15 straight back
+into an uncuttable slot, so the one style that already paid every uncuttable cost at once paid one
+more. `anime-noir-statement` is the runner-up at 1,487 (from 1,416). `_TRIO_CUT_CEILING` below
+stays 1,600, which leaves 84 characters of headroom on the worst style — that is thin, it is meant
+to be read that way, and the next session that wants a paragraph should take it out of the
+template rather than out of this number.
 
-**The `meme-caricature-panels` pair stopped being zero** — 0 -> 234 and 0 -> 217. Nothing about
-those two styles changed; they are simply two of the eleven styles that declare no `counter_slot`
-zone, and this fixture's deck IS counted (`slide_counter="07 / 12"`), so FR-338's house-default
-line arrives where pre-D59 such a style got no placement at all — the 86 characters that moved them
-off zero are the house corner, not an absence line. **The five D57 variants still track their originals** to within ~65
-characters at tier A (`letterpress` 1,359 -> 1,354, `ugc-tabletop` 966 -> 988, `photoreal-ambient`
-1,095 -> 1,157, `quiet-luxury` 1,365 -> 1,381, `meme-caricature` 234 -> 217), so the teal spine is
-still an accent re-role rather than a rewrite.
+**Tier B is now 19 of 19.** The `meme-caricature-panels` pair were the last two styles that fitted
+a 1,500-character panel with no hard truncation at all; they now go over by 20 and 16 characters.
+Their tier-A trim is still the mildest in the file by a distance (314 and 297 against a registry
+median near 1,400), so this is a pair crossing a line by twenty characters, not a style getting
+fat. **The five D57 variants still track their originals** to within ~95 characters at tier A
+(`letterpress` 1,468 -> 1,468, `ugc-tabletop` 1,005 -> 1,036, `photoreal-ambient` 1,185 -> 1,251,
+`quiet-luxury` 1,371 -> 1,381, `meme-caricature` 314 -> 297), so the teal spine is still an accent
+re-role rather than a rewrite.
 
 **The finding this table carries, stated rather than asserted away.** Session 5.5's plan expected
 `chars_cut == 0` at tier A. It is not 0, and since D59 it is not 0 for ANYBODY: all NINETEEN
@@ -103,18 +104,21 @@ counter, which is the point of FR-338 and not a regression in them.
 
 Nothing is LOST at this tier — the trim is proportional, floored at 40%, logged as
 `prompt_hard_trimmed`, and the whole rulebook survives — but the headroom F1-B was aiming for is
-still not there and D59 spent a little more of it. The template's fixed prose came down
-11,838 -> 10,576 under F1-B and is back up to 10,699, while F1-A's `{{list_treatment}}` slot adds
-656-955 uncuttable characters on exactly the slides that were already the tightest.
-`_TRIO_CUT_CEILING` below is where that headroom is watched, and it is UNCHANGED at 1,600 — the
-worst case improved by 55 characters this session, so nothing here argues for touching it. Raising
-it is a decision about the deck's look, never a fix.
+still not there and D59, then D60, each spent a little more of it. The template's fixed prose came
+down 11,838 -> 10,576 under F1-B, went back to 10,699 under D59's empty-zone rule and is UNTOUCHED
+by D60, while F1-A's `{{list_treatment}}` slot adds 692-955 uncuttable characters on seventeen of
+the nineteen styles — exactly the slides that were already the tightest (the `meme-caricature`
+pair declare no `list_mode` and pay 0, which is most of why they sit 1,100 characters clear of
+everybody else). `_TRIO_CUT_CEILING` below is where that headroom is watched, and it is UNCHANGED
+at 1,600: the worst case rose 17 characters this session and there are 84 left, which is a reason
+to compress something, not a reason to move the bar. Raising it is a decision about the deck's
+look, never a fix.
 
 **The known limitation, past both tiers.** A PATHOLOGICAL 1,500-character panel — every single word
 accented — doubles the FR-186 echo instead of adding a quarter to it, and the raw assembly runs
-2.7-4k past the 19,800-character wall (`assembled - MAX_PROMPT_CHARS`: 2,693 for
-`meme-caricature-panels`, 3,963 for `icon-ledger-carousel` — which took the worst of this one from
-`anime-noir-statement` too, at 3,882 — re-measurable exactly as the table above is). There the
+2.8-4.0k past the 19,800-character wall (`assembled - MAX_PROMPT_CHARS`: 2,762 for
+`meme-caricature-panels-teal`, 3,974 for `icon-ledger-carousel`, with `anime-noir-statement` a
+hair behind it at 3,952 — re-measurable exactly as the table above is). There the
 truncation reaches THROUGH the droppable tail and into the safety rules: only the exclusions and
 the @handle ban survive. That boundary is measured and pinned by the last
 test in this file rather than hidden, because closing it is a change to FR-186's echo policy or to
@@ -145,14 +149,14 @@ LIVE_WORST_PANEL_CHARS = 700
 
 #: The most the last-resort trim may take out of the style trio at tier A before this stops being
 #: headroom and starts being a slide that renders in a different look than its neighbours. The
-#: measured worst on the shipped bytes is 1,499 (`icon-ledger-carousel`) after v2.5.0/D59, which
-#: TOOK the title from `anime-noir-statement` at 1,416 and is 55 characters better than the 1,554
-#: this file measured before it; the runner-up is `circuit-atlas-dark` at 1,419. The number stays
-#: 1,600 across that move — a ceiling that follows the measurement down is not a ceiling, and D59
-#: bought its headroom with an exclusions dedup that will not repeat. It sits just above the worst
-#: so an edit that costs the deck another paragraph shows up HERE, loudly, instead of showing up
-#: three weeks later as a blocked deck. If this trips: compress the template, the anchor block or
-#: that style's `style_dna` — do not raise the number.
+#: measured worst on the shipped bytes is 1,516 (`icon-ledger-carousel`) after v2.5.1/D60, up 17
+#: from the 1,499 D59 left; the runner-up is `anime-noir-statement` at 1,487. The number stays
+#: 1,600 across both moves — a ceiling that follows the measurement is not a ceiling, and D59
+#: bought its headroom with an exclusions dedup that will not repeat while D60 spent a little of
+#: it back on the FR-350 safe-area sentence. It sits just above the worst so an edit that costs the
+#: deck another paragraph shows up HERE, loudly, instead of showing up three weeks later as a
+#: blocked deck. If this trips: compress the template, the anchor block or that style's
+#: `style_dna` — do not raise the number.
 _TRIO_CUT_CEILING = 1_600
 
 #: The rules F1-E moved to the TOP of CONSTRAINTS, each identified by a phrase that appears
@@ -501,9 +505,10 @@ def test_at_the_panel_sanity_extreme_a_truncation_can_only_eat_the_droppable_tai
 ) -> None:
     """TIER B. `PANEL_SANITY_CHARS` is what `copywrite` admits, so 1,500 characters of panel is a
     shape the pipeline must survive — and at that length the uncuttable TEXT block alone is ~2,700
-    characters, so SEVENTEEN of the nineteen shipped styles DO hard-truncate here (measured after
-    D59, unchanged in count from D56/D57 — the two that still fit are the `meme-caricature-panels`
-    pair, whose terse panel grammar is the shortest DNA in the file; see the table above).
+    characters, so ALL NINETEEN shipped styles hard-truncate here (measured after v2.5.1/D60; it
+    was seventeen of nineteen under D59, and the two that used to fit were the
+    `meme-caricature-panels` pair, whose terse panel grammar is still the shortest DNA in the file
+    — they now go over by 20 and 16 characters. See the table above).
 
     What this pins is that F1-E's reorder holds when it does. The prompt still lands inside the
     budget (never a guaranteed HTTP 500), the panel is still quoted verbatim, every SAFETY rule
@@ -535,12 +540,14 @@ def test_a_panel_of_nothing_but_accented_words_is_the_boundary_this_fit_does_not
     uncuttable by contract. At natural Czech density (~1 word in 4) that echo costs ~600 characters
     on a 700-character panel and ~1,100 on a 1,500-character one. On a PATHOLOGICAL panel — 1,500
     characters where every single word carries a diacritic — the echo roughly doubles the panel
-    instead, and the assembly runs ~2.6-3.1k past the wall: no reference stack, no style and no
+    instead, and the assembly runs ~2.8-4.0k past the wall: no reference stack, no style and no
     template compression closes that, because the overrun is the locked words restating themselves.
 
     This is asserted as a MEASUREMENT rather than as a bar to clear, and the measurement is worse
-    than tier B: a 2,121-character truncation eats the whole droppable tail AND reaches up into the
-    safety rules — on the shipped bytes only the exclusions and the @handle/URL ban survive it.
+    than tier B: on `REGISTRY.styles[0]` (`photoreal-ambient-caption`, the style this test happens
+    to reach for) a 2,412-character truncation eats the whole droppable tail AND reaches up into
+    the safety rules — on the shipped bytes only the exclusions and the @handle/URL ban survive it,
+    and seventeen of the other eighteen styles land in the same place.
     That is the honest boundary of what F1's repair covers. Two things still hold and are what
     make the case survivable rather than silent: the prompt is inside the wall (so it submits at
     all), and the loss is a clean SUFFIX of the declared order, so the two rules that outrank
