@@ -670,6 +670,60 @@ def test_the_offset_rules_never_resurrect_a_lookalike_the_earlier_rules_refused(
     assert slide_intel.detect_counter(([], ["1/2 cup of oats"], []), ("a",) * 3, 3) is None
 
 
+# --------------------------------------- FR-313 amended (v2.5.0, D59): the rule that said yes
+
+
+@pytest.mark.parametrize(
+    ("chrome", "panels", "count", "rule"),
+    [
+        # Rule 1 — the denominator IS the deck's length. The same fixture the accept table above
+        # uses for the bare convention, asked the second question: on what evidence?
+        ((["3/6"], ["4/6"], []), ("a", "b", "c"), 6, slide_intel.RULE_DENOMINATOR),
+        # Rule 2 — three prefix badges, each stating the place it sits in. A prefix counter names
+        # no total, so rule 1 can never reach it and this is the rule that must fire.
+        (([], [], []), ("// 01 THE HOOK", "// 02 THE TURN", "// 03 THE CLOSE"), 3,
+         slide_intel.RULE_POSITIONAL),
+        # Rule 3 — the live-corpus shape: an unnumbered cover, `1/ 6` … `6/ 6` on positions 2–7,
+        # denominator 6 == 7 − 1. Corroborated by the deck's own length.
+        (([], ["1/ 6"], ["2/ 6"], ["3/ 6"], ["4/ 6"], ["5/ 6"], ["6/ 6"]), ("p",) * 7, 7,
+         slide_intel.RULE_LEADING_OFFSET),
+        # Rule 4 — the offset alone: Virlo returned five panels of a nine-panel post, so the
+        # denominator (9) corroborates nothing. Weakest accept, and the one an operator with a
+        # wrong badge on screen should suspect first — which is the whole reason this is recorded.
+        (([], ["1/9"], ["2/9"]), ("p",) * 5, 5, slide_intel.RULE_CONSTANT_OFFSET),
+    ])
+def test_the_spec_names_which_accept_rule_believed_the_evidence(
+    chrome: tuple[list[str], ...], panels: tuple[str, ...], count: int, rule: str,
+) -> None:
+    """D59: the four rules are not equally strong, so `meta.yaml` records WHICH one said yes.
+
+    Rules 1 and 3 check the badges against the source deck's own length; rules 2 and 4 believe the
+    badges alone. All four ship a real badge onto every slide of a paid deck, and when one comes
+    out wrong the operator's first question is how sure the detection ever was. Without this field
+    the only way to answer it is to re-run the deck.
+    """
+    spec = slide_intel.detect_counter(chrome, panels, count)
+
+    assert spec is not None and spec.rule == rule
+
+
+def test_the_rule_is_evidence_about_the_detection_never_part_of_the_badge() -> None:
+    """It rides on the spec, so it must not be able to change what the spec renders.
+
+    Two guarantees in one: a spec built BY HAND names no rule (nothing detected it, and `""` is
+    the honest answer — which is also what keeps the frozen-spec equality test above green), and
+    two specs that differ only in `rule` format the identical badge. A field that could move a
+    digit would be a detection receipt with a rendering side effect.
+    """
+    plain = slide_intel.CounterSpec(pad=2, separator=" / ", total_pad=2)
+    detected = slide_intel.CounterSpec(pad=2, separator=" / ", total_pad=2,
+                                       rule=slide_intel.RULE_CONSTANT_OFFSET)
+
+    assert plain.rule == "", "a hand-built convention is not a detection"
+    assert [plain.format(n, 6) for n in (1, 6)] == [detected.format(n, 6) for n in (1, 6)]
+    assert plain != detected, "and the two are still distinguishable — the receipt is real data"
+
+
 @pytest.mark.parametrize(
     ("line", "is_chrome"),
     [

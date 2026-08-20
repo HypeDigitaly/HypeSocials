@@ -45,7 +45,7 @@ import pytest
 import yaml
 from PIL import Image
 
-from hypesocials import gauntlet, render, styles
+from hypesocials import gauntlet, prompts_engine as pe, render, styles
 from hypesocials.config import BrandingConfig, Config
 from hypesocials.generate import carousel as carousel_module
 from hypesocials.generate import refs as refs_module
@@ -1924,26 +1924,43 @@ async def test_a_counted_source_deck_numbers_every_slide_over_our_own_length(
 
 
 async def test_an_uncounted_source_deck_orders_no_badge_at_all(tmp_path: Path) -> None:
-    """The absence is the common case and it is STATED, not left to the model.
+    """The absence is the common case, and on a style that describes a chip it is STATED.
 
-    A style whose layout describes a position chip, with no string to put in it, is the single
+    A style whose layout declares a position chip, with no string to put in it, is the single
     biggest hallucination site the render models have: they fill it with an invented "01", a "3/7"
-    that matches no deck, or a page number. So an uncounted deck quotes no counter and its
-    template says the frame carries none.
+    that matches no deck, or a page number. So an uncounted deck quotes no counter, and where the
+    style asked for a badge the slide is told out loud that this deck carries none.
+
+    **D59/FR-338 moved that sentence into `{{counter_rule}}`** and gated it on the style, which is
+    the second half of this test. The old prose said "this deck carries no slide counter" on every
+    slide of every deck — including decks in styles that never described a chip, where it was a
+    paragraph of uncuttable prompt suppressing a device nobody had ordered. Now: a declaring style
+    gets the absence line, a silent style gets an empty slot, and neither gets a badge.
     """
-    entry = make_entry(slides=3, source_post_id="post-a")
-    env = make_env(tmp_path, entry, texts=["one", "two", "three"], trends=make_trends(panels=3))
-    give_intel(env, panels=3, chrome=["@knox | skool.com/knox", "swipe on", ""])
-    env.llm_call = CriticStub()
-    submit = FakeSubmit()
+    counter_zone = LayoutZone("top-right corner", "slide-position badge", "small mono chip",
+                              role="counter_slot")
+    declaring = make_style(tmp_path)
+    declaring.layout_zones = [*declaring.layout_zones, counter_zone]
 
-    await render_carousel(entry, env, make_folder(tmp_path, entry), submit=submit)
+    for style, declares in ((make_style(tmp_path), False), (declaring, True)):
+        entry = make_entry(slides=3, source_post_id="post-a")
+        env = make_env(tmp_path, entry, texts=["one", "two", "three"],
+                       trends=make_trends(panels=3), style=style)
+        give_intel(env, panels=3, chrome=["@knox | skool.com/knox", "swipe on", ""])
+        env.llm_call = CriticStub()
+        submit = FakeSubmit()
 
-    for call in submit.calls:
-        assert "counter (render verbatim)" not in call.prompt
-        assert "this deck carries no slide counter" in call.prompt.lower()
-    assert all("/ 03" not in system for system in env.llm_call.systems), \
-        "and every critic is told to expect no badge either"
+        await render_carousel(entry, env, make_folder(tmp_path, entry), submit=submit)
+
+        assert submit.calls, "the deck rendered"
+        for call in submit.calls:
+            assert "counter (render verbatim)" not in call.prompt
+            stated = pe._NO_COUNTER_LINE.lower() in call.prompt.lower()
+            assert stated is declares, (
+                "a style that declares a counter_slot zone is told the deck carries none; "
+                "a style that never described a chip is told nothing (D59/FR-338)")
+        assert all("/ 03" not in system for system in env.llm_call.systems), \
+            "and every critic is told to expect no badge either"
 
 
 async def test_the_counter_travels_into_the_gauntlet_contract(tmp_path: Path) -> None:
@@ -1986,6 +2003,105 @@ async def test_a_deck_with_no_slide_intelligence_counts_nothing(tmp_path: Path) 
     assert not hasattr(env, "slide_intel"), "the field is optional by design"
     assert all("counter (render verbatim)" not in call.prompt for call in submit.calls)
     assert record.status is AssetStatus.SUCCESS and record.slide_count == 2
+
+
+# ------------------------------------------- FR-313 (D59): the counter receipt on `meta.yaml`
+
+
+async def test_a_counted_decks_meta_records_the_badge_and_the_rule_that_found_it(
+    tmp_path: Path,
+) -> None:
+    """FR-313 amended (D59): the deck says on disk that it counts itself, and on what evidence.
+
+    A wrong page badge is one of the few defects an operator can see instantly and cannot debug at
+    all — the badge is drawn by a render model from a string the pipeline detected six stages
+    earlier. So the detection is filed beside the artifacts: WHICH accept rule believed it (a
+    denominator that equalled the source deck's own length is the strong one; an uncorroborated
+    offset is the one to doubt first), the source's hand described structurally, and slide 1's
+    badge as this deck actually ordered it.
+
+    `sample` is re-based onto OUR three slides exactly as the rendered badge is — a receipt that
+    said "01 / 06" about a deck shipping "01 / 03" would document a badge nobody rendered.
+    """
+    entry = make_entry(slides=3, source_post_id="post-a")
+    env = make_env(tmp_path, entry, texts=["one", "two", "three"], trends=make_trends(panels=6))
+    give_intel(env, panels=6, chrome=[f"@knox | skool.com/knox | 0{n} / 06 | swipe"
+                                      for n in range(1, 7)])
+    folder = make_folder(tmp_path, entry)
+
+    record = await render_carousel(entry, env, folder, submit=FakeSubmit())
+
+    stored = packager.read_meta(folder.path)["counter"]
+    assert stored == record.counter, "the record and the file are one document, not two"
+    assert stored["detected"] is True
+    assert stored["rule"] == "denominator", (
+        "rule 1: the badges' denominator WAS the source deck's length — the strongest evidence")
+    assert stored["sample"] == "01 / 03", "our own length, in their hand"
+    assert "pad=2" in stored["pattern"] and "sep=' / '" in stored["pattern"], (
+        "the spacing around the slash is the source's typography: described, not normalised")
+    assert "numerator_only=False" in stored["pattern"], "this convention showed a total"
+
+
+async def test_an_uncounted_bound_deck_still_files_a_counter_row_saying_no(
+    tmp_path: Path,
+) -> None:
+    """The absence is the common case, so it is RECORDED rather than left to a missing key.
+
+    "This deck ships no badge" is what `detected: false` claims, and it is the claim that matters:
+    a reader branches on that one bool and never on whether three strings happen to be empty. The
+    row exists for every bound deck — including one whose vision pass degraded and never got to
+    look — because a key that appears only on counted decks makes every reader ask two questions
+    where the schema should answer one.
+    """
+    entry = make_entry(slides=3, source_post_id="post-a")
+    env = make_env(tmp_path, entry, texts=["one", "two", "three"], trends=make_trends(panels=3))
+    give_intel(env, panels=3, chrome=["@knox | skool.com/knox", "swipe on", ""])
+    folder = make_folder(tmp_path, entry)
+
+    record = await render_carousel(entry, env, folder, submit=FakeSubmit())
+
+    assert record.counter == {"detected": False, "rule": "", "pattern": "", "sample": ""}
+    assert packager.read_meta(folder.path)["counter"] == record.counter
+
+    blind = make_entry(slides=2, asset_id="0003_carousel_linkedin", source_post_id="post-a")
+    blind_env = make_env(tmp_path, blind, texts=["one", "two"], trends=make_trends(panels=2))
+    blind_folder = make_folder(tmp_path, blind)
+
+    degraded = await render_carousel(blind, blind_env, blind_folder, submit=FakeSubmit())
+
+    assert not hasattr(blind_env, "slide_intel"), "no vision pass ran on this one at all"
+    assert degraded.counter == {"detected": False, "rule": "", "pattern": "", "sample": ""}, (
+        "a deck that never got to look still ships no badge, and that is what the row states")
+
+
+async def test_a_creative_that_bound_no_source_deck_files_no_counter_row_at_all(
+    tmp_path: Path,
+) -> None:
+    """`None`, not `detected: false` — the question is about a deck that does not exist.
+
+    An override brief binds no source post (FR-144/§0.14d), and neither does an image or a reel.
+    "Their deck carried no counter" would be an answer about nobody's deck, so the field stays
+    null and the gallery, the publisher and the operator all read the same absence.
+    """
+    entry = make_entry(slides=2, brief_name="ai-audit-cta", brief_influence="override")
+    env = make_env(tmp_path, entry, texts=["one", "two"])
+    env.campaign_briefs = {"ai-audit-cta": Brief(
+        name="ai-audit-cta", description="a standing CTA card", influence="override",
+        visual_directives={"scene": "ZZBRIEF a laptop on a bare desk, one product card"},
+        copy_directives={"message": "book an AI audit"})}
+    folder = make_folder(tmp_path, entry)
+
+    record = await render_carousel(entry, env, folder, submit=FakeSubmit())
+
+    assert not entry.source_post_id, "an override brief is never bound to a post at ASSIGN"
+    assert record.counter is None
+    stored = packager.read_meta(folder.path)
+    assert "counter" in stored and stored["counter"] is None, (
+        "written as an explicit null, so the key means the same thing on every creative")
+    # Images and reels reach the same value from the other side: neither packager passes the
+    # field, so the dataclass default is what their `meta.yaml` carries.
+    assert AssetRecord(asset_id="0004_image_linkedin", source="t1", source_name="AI tool stacks",
+                       platform="linkedin", creative_format="image").counter is None
 
 
 # --------------------------------------------- D-A sanctioned tool marks (v2.1.2, visual fidelity)

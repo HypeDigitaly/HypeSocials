@@ -115,6 +115,7 @@ Two rules govern every row below, and the second is the one people forget:
 | `{{visual_brief}}` | that slide's English **foreground-content** directive from slide intelligence (FR-306/308/316): the chart, table, code block, icon grid, list, diagram, arrows and quantities the source slide showed — **never** its background or scenery, never a colour, typeface or gradient, never platform chrome or pagination widgets, never a creator name. Ranked below `style_dna` on every question of look; competitor marks in it are genericized and the whole value takes the competitor strip; cuttable under truncation; empty when intelligence degraded | carousel_slide **only** |
 | `{{slide_panel_source}}` | FR-304's position line — `source panel 3 of 7` — so the model knows this slide mirrors one specific source slide. Empty for an unbound or override-brief deck | carousel_slide **only** |
 | `{{list_treatment}}` | FR-304b's list layout for **this frame**: the assigned style's `list_mode.layout` prose plus its `overflow` sentence, led by *"This frame's text is a LIST and is set as one:"*. Fired per slide, off that slide's own mapped panel (`styles.is_list_panel`); **empty** on a panel that trips no trigger, on a style with no `list_mode`, and under an override brief. Never a ceiling — it changes how the rows are LAID OUT, never what the panel says — and never cuttable under truncation | carousel_slide **only** |
+| `{{counter_rule}}` | FR-338's counter line for **this deck**: where the assigned style's `counter_slot` zone puts the position badge (the zone's own words, from the same formatter the critic's `{{layout_zones}}` uses), the house corner — *small, body family, top-right inside the safe area; no chip, no badge* — when the style declares no such zone, or the flat statement that this deck carries **no** counter at all. **Empty** on a style-less context, under an override brief, and on an uncounted deck whose style never asked for a badge. It exists because this role names no `{{layout_zones}}` slot: the zone that PLACES the badge reached the critic and never the deck renderer. Never cuttable under truncation | carousel_slide **only** |
 | `{{onimage_text}}` | the exact strings to render, resolved from the copy call's reference labels — plus, on a branded creative, the `wordmark (render verbatim): "…"` entry (with a spelling aid only where a word carries a non-ASCII character). On a mapped deck this is the source panel's own text, emoji, line breaks and `#` tokens included (§0.14b) | all render templates |
 | `{{branding_block}}` | accent colours per `branding.mode`, font character, placement hint, background hint, and the profile's `never:` guards. **Never the wordmark** — that travels in the TEXT block. Empty when the creative is unbranded, and empty of extras when the assigned style is itself a brand style (`brand_slot: true`) | image_post, carousel_slide, reel_seed_frame |
 | `{{text_budgets}}` | the on-image character budget **in force for this call** — the tighter of the style's `max_onimage_chars` and config `text_budgets`. On a CAROUSEL the wording forks on `build_context(carousel_copy_mode=…)` (D54): verbatim states the headline ceiling and says a `panel_text` string carries none (B6), compress states the headline ceiling **and** the real per-slide `min(config.slide, style.slide)` figure, because a compressed line is ours and is measured against it | copywriter_system, copy_compress_system + the three gpt-image-2 render templates |
@@ -160,7 +161,7 @@ actually enforces. A role's set is exact: not a minimum, not a suggestion.
 | `gauntlet_fix.md` | *(none)* |
 | `slide_intel_question.md` | *(none)* |
 | `image_post.md` | `render_prompt`, `layout_zones`, `onimage_text`, `reference_roles`, `exclusions`, `text_budgets`, `brief_directives`, `niche_visual_world`, `content_sentence`, `branding_block` |
-| `carousel_slide.md` | `slide_index`, `style_dna`, `render_prompt`, `onimage_text`, `reference_roles`, `exclusions`, `text_budgets`, `brief_directives`, `niche_visual_world`, `branding_block`, `visual_brief`, `slide_panel_source`, `tool_marks`, `slide_counter`, `list_treatment` |
+| `carousel_slide.md` | `slide_index`, `style_dna`, `render_prompt`, `onimage_text`, `reference_roles`, `exclusions`, `text_budgets`, `brief_directives`, `niche_visual_world`, `branding_block`, `visual_brief`, `slide_panel_source`, `tool_marks`, `slide_counter`, `list_treatment`, `counter_rule` |
 | `carousel_anchor_instruction.md` | *(none)* |
 | `reel_seed_frame.md` | `render_prompt`, `layout_zones`, `onimage_text`, `reference_roles`, `exclusions`, `text_budgets`, `brief_directives`, `niche_visual_world`, `branding_block` |
 | `reel_director.md` | `through_line`, `seed_frame_ref`, `onimage_text`, `audio_cue`, `exclusions`, `brief_directives`, `motion_beat`, `motion_profile` |
@@ -175,14 +176,18 @@ the only branding a video model needs to know about is the wordmark already
 burnt into its seed frame — which reaches it inside `{{onimage_text}}`, under
 the CONTINUITY rule that it persists unchanged.
 
-`visual_brief`, `slide_panel_source` and `list_treatment` are allowlisted for
-`carousel_slide.md` and nowhere else. A single image, a reel frame and the
+`visual_brief`, `slide_panel_source`, `list_treatment` and `counter_rule` are
+allowlisted for `carousel_slide.md` and nowhere else. A single image, a reel frame and the
 anchor block have no source panel to mirror, so a template that drifted into
 naming one of them there fails loudly (FR-260) instead of rendering a blank
 line. `list_treatment` joined them at Session 5.5 (F1-A): it used to ride as a
 gated append onto `{{layout_zones}}` — a slot the slide role does not name — so
 the one role that maps source panels was the only one never told to set a list
 as one, while the `system` critic judged slides against exactly that rule.
+`counter_rule` joined them at D59 (FR-338) with the same story and the same
+slot: the deck's position badge is placed by a `counter_slot` LAYOUT ZONE, the
+slide role names no `{{layout_zones}}`, and so the renderer was left inferring a
+badge from whatever chip STYLE_DNA described — on uncounted decks too.
 
 **Why the niche reaches a render through a narrow slot.** `{{niche_descriptor}}`
 also carries `audience`, which is copy context, and no render role may resolve
@@ -294,7 +299,8 @@ pass that trimmed it would silently drop slides from the answer.
   cloned a wordmark because the layout description spelled it out
   (`spikes/RESULTS.md` §B). The rule: the TEXT block is the only source of
   renderable words; every other section describes structure; a text zone with
-  no quoted replacement renders empty.
+  no quoted replacement is left out of the frame — never a bar, rule, block or
+  placeholder standing in for words (FR-340, D59).
 - **Do not delete the exclusions-scope line** ("The exclusions below are this
   house style's own forbid-list. They never restrict the TEXT block above…").
   A brand's own house style forbids its own wordmark among its exclusions;

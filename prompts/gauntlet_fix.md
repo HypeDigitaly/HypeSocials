@@ -44,8 +44,8 @@ Resolve these in order, and never by changing words:
 3. Fix legibility and fit by changing the LAYOUT — more lines, tighter leading,
    a wider block, the plate or card STYLE_DNA describes, a simpler ground.
 4. Keep STYLE_DNA, the anchor's scene and the deck's palette unchanged.
-Fix only the named defects; everything else stays as rendered, the position
-badge and every sanctioned mark included.
+Fix only the named defects; everything else stays as rendered, a quoted
+position badge and every sanctioned mark included.
 The quoted strings are locked. Shortening, re-wording, translating, ellipsing or
 dropping any of them is a worse failure than the defect being fixed.
 
@@ -66,9 +66,9 @@ invented_text | full_frame | This frame carried lettering the TEXT block does no
 invented_text | card | The card in this frame carried lettering that the TEXT block does not quote[ — about {chars} characters]; label its contents with greeked bars and unlettered shapes instead.
 signature | * | Render the wordmark exactly as the TEXT block quotes it, once, in the {zone} area, and no other signature or logotype anywhere in the frame.
 signature | full_frame | When the TEXT block quotes a wordmark, render it once, exactly as quoted; when it quotes none, this frame is unsigned and carries no signature line or logotype.
-counter_value | * | Render the position badge exactly as the TEXT block's counter line quotes it, once, in the {zone} chip, and no other page number, "N of M" or pip trail anywhere.
-counter_value | chip | Render the position badge exactly as the TEXT block's counter line quotes it, once, in the chip treatment STYLE_DNA describes.
-counter_value | full_frame | When the TEXT block quotes no counter line, this deck has no position badge: no page number, no "N of M", no pip trail anywhere in the frame.
+counter_value | * | When the TEXT block quotes a counter line, render it exactly as quoted, once, in the {zone} area the COUNTER RULE names, and no other page number or pip trail; when it quotes none, draw no badge.
+counter_value | chip | When the TEXT block quotes a counter line, render that string once in the counter zone the COUNTER RULE names and nowhere else; when it quotes none, draw no chip, badge or page number at all.
+counter_value | full_frame | When the TEXT block quotes a counter line, that string is this frame's only position mark; when it quotes none, this deck has no badge: no chip, no page number, no "N of M", no pip trail anywhere.
 translated | * | Render every quoted string in its own original language, character for character; translate nothing.
 missing_text | * | Render every string the TEXT block quotes, in full, in the {zone} area, whole and legible; give a long one more lines, tighter leading or a wider block.
 missing_text | full_frame | Render every string the TEXT block quotes, in full, whole and legible; give a long one more lines, tighter leading, a wider block or the plate STYLE_DNA describes.
@@ -82,8 +82,9 @@ style_layout | * | Place the {zone} content in the zone and treatment the layout
 style_layout | full_frame | Build the whole frame on the grid the layout describes — same zones, same plate or card treatment, same alignment and margins.
 style_consistency | * | Match slide 1 of this deck exactly in the {zone} area: same typeface, weight, scale and leading for the same role, same ground and surface, same mark position.
 style_consistency | full_frame | Match slide 1 of this deck: same palette, same typeface and weights, same grid, same background scene and surface, same graphic language, same fixed mark position.
+style_consistency | chip | A chip, badge or page number that the TEXT block's counter line does not quote is not part of this deck's style: draw none, whatever slide 1 shows.
 counter_placement | * | Put the position badge in the same place and the same chip treatment as every other slide of this deck.
-counter_placement | chip | Put the position badge in the chip STYLE_DNA describes, in the same corner and at the same size as every other slide of this deck.
+counter_placement | chip | Put the position badge in the counter zone the COUNTER RULE names, in the same corner and at the same size as every other slide of this deck.
 contrast | * | Make the {zone} lettering read at a glance on a phone: set it on the plate, card or clear ground STYLE_DNA describes, at a size that survives thumbnail scale, never on a busy ground.
 contrast | full_frame | Make every string read at a glance on a phone: set the type on the plate, card or clear ground STYLE_DNA describes, at a size that survives thumbnail scale.
 garbled | * | Draw the {zone} lettering once, cleanly: well-formed letterforms with correct accents, no doubled, ghosted, overstruck, smeared or overlapping type, and no second copy of the same words.

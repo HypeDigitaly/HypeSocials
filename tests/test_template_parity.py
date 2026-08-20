@@ -281,18 +281,24 @@ def _carousel_slide_copies() -> tuple[tuple[str, str], ...]:
              pe._BUILT_INS["gpt-image-2/carousel_slide.md"]))
 
 
-def test_both_carousel_copies_sanction_tool_marks_and_state_the_counter_absence() -> None:
-    """v2.1.2 (D-A/D-D) at the parity level — two contracts a placeholder-set check cannot see.
+def test_both_carousel_copies_sanction_tool_marks_and_defer_to_the_counter_rule() -> None:
+    """v2.1.2 (D-A/D-D) and D59/FR-338 at the parity level — contracts a placeholder-set check
+    cannot see.
 
     D-A: `{{tool_marks}}` is worthless without the rule attached to it, so both copies must carry
     the block AND the sentence that makes a named mark render for real. D-D: the conditional badge
     instruction is DELETED, and a template that still tells the model to letter this slide's
     position "exactly as the FORMAT line states" re-opens the invented-counter defect the moment
-    its file goes unreadable. The absence line is asserted against the engine's own constant, so
-    the prompt and `_style_zones` cannot describe an uncounted deck in two different ways.
+    its file goes unreadable.
+
+    **D59 moved the counter's WORDS out of the prose and into `{{counter_rule}}`**, so the absence
+    sentence is no longer written here: it is `prompts_engine._NO_COUNTER_LINE`, delivered through
+    the slot on the decks that need it, and a style that never described a chip now hears nothing
+    about counters at all. What the prose still owes is the RANKING — the slot's line outranks
+    every chip, badge and page-number device STYLE_DNA describes — because without it the model
+    reconciles two descriptions of one thing per slide, which is how byte-identical instructions
+    still produce a drifting deck (M9).
     """
-    absence = 'no position badge, no "N of M", no page number anywhere in the frame.'
-    assert pe._NO_COUNTER_LINE.endswith(absence)
     for origin, text in _carousel_slide_copies():
         # The templates are hand-wrapped prose, so every phrase is matched against the flattened
         # text: a sentence that survives a re-wrap is the thing worth pinning, not its line breaks.
@@ -302,7 +308,15 @@ def test_both_carousel_copies_sanction_tool_marks_and_state_the_counter_absence(
             f"{origin}: the slot arrived without its labelled block"
         assert "in its own true brand colours" in flat, f"{origin}: the D-A rule is not attached"
         assert "renders as the real logo" in flat, f"{origin}: the D-A exception is not stated"
-        assert absence in flat, f"{origin}: an uncounted deck is not told the counter is absent"
+        assert "{{counter_rule}}" in text, f"{origin}: FR-338's counter slot is missing"
+        assert "COUNTER RULE (ignore if empty):" in flat, \
+            f"{origin}: the slot arrived without its labelled block"
+        assert "outranks every chip, badge or page-number device STYLE_DNA describes" in flat, \
+            f"{origin}: the slot arrived without the ranking that makes it binding"
+        assert 'no chip, badge, page number or "N of M" on ANY slide, slide 1 included' in flat, \
+            f"{origin}: an absence line is not told what an absence means"
+        assert 'no position badge, no "N of M", no page' not in flat, \
+            f"{origin}: the absence sentence belongs to `_NO_COUNTER_LINE`, not to the prose (D59)"
         assert "counter (render verbatim)" not in flat, \
             f"{origin}: the label belongs to the TEXT block the engine builds, not to the prose"
         assert "exactly as the FORMAT line states" not in flat, \
@@ -409,3 +423,167 @@ def test_no_placeholder_in_the_vocabulary_is_unreachable() -> None:
     assert not unreachable, f"placeholder(s) no role can resolve: {sorted(unreachable)}"
     assert CRITIC_PLACEHOLDERS <= PLACEHOLDERS, \
         "the frozen critic vocabulary names something outside models.PLACEHOLDERS"
+
+
+# ------------------------------------------ D59: the empty-zone rule (FR-340) and the slot (338)
+#
+# Both copies again, and for the reason this whole module exists: a fallback fires only when the
+# file it stands in for is already broken, so a built-in that still carries the RETIRED licence
+# would re-open the defect at the one moment nobody is reading the prompt.
+
+#: The licence D59 retired, in both spellings it ever shipped in. It read: a text zone with no
+#: string quoted "renders empty or as a NON-TEXT GRAPHIC ELEMENT (a rule, a bar, a shape, negative
+#: space)". Written to stop the model inventing WORDS, it turned out to license the model to
+#: invent FURNITURE instead — the D59 census found empty chips, bare rules and blank cards drawn
+#: where a style's row grammar described a device and this deck had quoted nothing to put in it.
+#: FR-340's replacement removes the alternative altogether: the zone is left OUT of the frame.
+_RETIRED_EMPTY_ZONE = ("non-text graphic element", "renders empty or as a non-text graphic")
+
+#: FR-340's replacement, both halves. The first forbids the substitute object; the second is the
+#: one that actually governs a repeating device (`icon-ledger-carousel`'s ledger rows, a card
+#: grid, a chip row): it exists ONCE PER QUOTED LINE, so a cover quoting one headline draws one
+#: row and a deck quoting nothing draws none.
+_EMPTY_ZONE_RULE = ("never with a bar, rule, block or placeholder standing in for words",
+                    "exists once per quoted line and not at all when none is quoted")
+
+#: FR-338's slot, pinned as the WHOLE line rather than as the label alone: the label without its
+#: placeholder is a heading over nothing, and the placeholder without its "(ignore if empty)" is
+#: an instruction the model must obey on a deck where `counter_rule` renders to "".
+_COUNTER_SLOT_LINE = "COUNTER RULE (ignore if empty): {{counter_rule}}"
+
+
+def _copies(profile: str, role: str) -> tuple[tuple[str, str], ...]:
+    """A role's on-disk bytes and its built-in twin, as (origin, FLATTENED text) pairs.
+
+    Flattened for the reason `_carousel_slide_copies` above states: these templates are
+    hand-wrapped prose, so a phrase that survives a re-wrap is the thing worth pinning and its
+    line breaks are not. Generalised over (profile, role) because FR-340 lands on four roles at
+    once and a fourth bespoke pair-builder would be three too many.
+    """
+    key = _built_in_key(profile, role)
+    return ((str(_on_disk(profile, role)),
+             " ".join(_on_disk(profile, role).read_text(encoding="utf-8").split())),
+            (f"built-in {key}", " ".join(pe._BUILT_INS[key].split())))
+
+
+def test_fr340_the_retired_empty_zone_licence_is_in_no_prompt_this_engine_can_load() -> None:
+    """D59's deletion, checked as one — over EVERY prompt, not just the two that were edited.
+
+    The licence was one sentence in `carousel_slide.md` and one in `image_post.md`, but the shape
+    of the mistake is copy-paste: it is the natural thing to write when a template needs to say
+    what happens to an unfilled zone, and the next render template authored will want to say it
+    again. So the scan is the whole of `prompts/**/*.md` plus every `_BUILT_INS` value, which
+    makes the guard cost nothing to keep and impossible to route around by adding a fifth image
+    role.
+
+    `prompts/README.md` is in scope on purpose although it is not a role (`NOT_A_TEMPLATE`, and
+    the same reasoning applies to it): its "do not delete" list is what a future author reads
+    BEFORE editing a template, so a retired rule left standing there is the licence coming back
+    one commit later.
+
+    One copy of the retired wording does survive, and it is named here rather than left to be
+    rediscovered: `prompts_engine._EXCL` (`prompts_engine.py:1699`), a pre-F20 assembly fragment
+    from when built-ins were composed from constants instead of being byte copies of their files.
+    It has no callers left, which is exactly what the last assertion pins — the day someone
+    assembles it into a template again, this fires, and the scrub becomes due.
+    """
+    stale: list[str] = []
+    for path in sorted(pe.PROMPTS_DIR.rglob("*.md")):
+        flat = " ".join(path.read_text(encoding="utf-8").split())
+        stale += [f"{path}: {phrase!r}" for phrase in _RETIRED_EMPTY_ZONE if phrase in flat]
+    for key, text in sorted(pe._BUILT_INS.items()):
+        flat = " ".join(text.split())
+        stale += [f"built-in {key}: {phrase!r}" for phrase in _RETIRED_EMPTY_ZONE if phrase in flat]
+
+    assert stale == [], (
+        "FR-340: the retired empty-zone licence is back. A text zone with nothing quoted for it "
+        "is LEFT OUT of the frame — it is never filled with a stand-in object:\n  "
+        + "\n  ".join(stale))
+    assert not any(pe._EXCL in text for text in pe._BUILT_INS.values()), \
+        "prompts_engine._EXCL is being assembled into a built-in again and it still carries the " \
+        "pre-FR-340 licence ('leave it empty or fill it with a non-text graphic element') — " \
+        "scrub the constant or delete it"
+
+
+def test_fr340_both_image_templates_state_the_empty_zone_rule_in_both_copies() -> None:
+    """The positive half: the licence is not merely gone, the rule that replaced it is present.
+
+    A deletion on its own would leave the two image templates SILENT about an unfilled zone, and
+    silence is what the licence was written to fix — the model fills the hole with whatever the
+    style described. Both sentences are required on both templates: the first governs a single
+    zone, the second governs a REPEATING device, and `icon-ledger-carousel`'s rows are the case
+    that proved they are not the same rule (a deck can draw the right number of nothing and still
+    draw eight empty ledger cards).
+
+    `carousel_anchor_instruction.md` and `reel_seed_frame.md` are held to their own wordings in
+    the test below rather than to these — they are not full render templates and never carried
+    the licence.
+    """
+    missing: list[str] = []
+    for role in ("carousel_slide.md", "image_post.md"):
+        for origin, flat in _copies("gpt-image-2", role):
+            missing += [f"{origin}: {phrase!r}"
+                        for phrase in _EMPTY_ZONE_RULE if phrase not in flat]
+
+    assert missing == [], \
+        "FR-340: an image template lost half the empty-zone rule:\n  " + "\n  ".join(missing)
+
+
+def test_fr340_the_anchor_block_leaves_the_zone_out_and_the_seed_frame_stays_wordless() -> None:
+    """The two roles FR-340 touched differently, pinned so neither drifts toward the other.
+
+    `carousel_anchor_instruction.md` is rendered OVER a reference role line (FR-190) and lives
+    under a standing byte budget (`tests/test_prompt_fit.py`), so it states the rule in the short
+    form — the zone "is left out — no bar, rule or placeholder in its place". Re-compression is
+    the normal way this block changes, which is why the phrase is pinned here rather than trusted
+    to survive the next squeeze.
+
+    `reel_seed_frame.md` is UNCHANGED by D59 and that is the assertion: it already said an
+    unquoted zone "stays wordless", which is the same rule for a frame that carries no repeating
+    device and no counter at all. Pinning the absence of an edit is what stops a future wave from
+    "harmonising" the four templates onto one sentence and quietly giving the seed frame a ledger
+    grammar it has no use for.
+    """
+    for origin, flat in _copies("gpt-image-2", "carousel_anchor_instruction.md"):
+        assert "no bar, rule or placeholder in its place" in flat, \
+            f"{origin}: FR-340's short form is gone — a re-compression ate the rule"
+    for origin, flat in _copies("gpt-image-2", "reel_seed_frame.md"):
+        assert "stays wordless" in flat, f"{origin}: the seed frame's own empty-zone rule is gone"
+        assert all(phrase not in flat for phrase in _RETIRED_EMPTY_ZONE), \
+            f"{origin}: the seed frame never carried the licence and must not acquire it"
+
+
+def test_fr338_the_counter_rule_slot_is_on_the_carousel_slide_and_on_no_other_template() -> None:
+    """FR-338's placement, which is a decision and not an accident: SLIDES ONLY.
+
+    A counter is a property of a DECK — "07 / 12" means nothing on a single image post and nothing
+    on a reel's seed frame, and `prompts_engine.counter_rule` is only ever handed a
+    `slide_counter` by `generate.carousel`. So the slot is in `_ALLOWLIST` for this one role, and
+    a second template naming it would either resolve to a value nobody built (an
+    `UnresolvedPlaceholderError` that fails the creative before submission, FR-260) or — worse, if
+    somebody "fixed" that by widening the allowlist — start telling image posts where to put a
+    page number.
+
+    The presence half overlaps with the tool-marks test above by design: that one pins the
+    RANKING sentence that makes the slot binding, this one pins the LINE, whole, and the
+    exclusivity around it. `prompts/README.md` names the slot in prose and is correctly not in
+    scope — it is documentation, not a role, and the loop below walks `SHIPPED`.
+    """
+    for origin, flat in _copies("gpt-image-2", "carousel_slide.md"):
+        assert _COUNTER_SLOT_LINE in flat, \
+            f"{origin}: FR-338's slot line is not intact — the label and the placeholder are " \
+            "one line, and '(ignore if empty)' is what makes an uncounted deck legal"
+
+    elsewhere: list[str] = []
+    for profile, role in SHIPPED:
+        if (profile, role) == ("gpt-image-2", "carousel_slide.md"):
+            continue
+        for origin, flat in _copies(profile, role):
+            if "{{counter_rule}}" in flat:
+                elsewhere.append(origin)
+
+    assert elsewhere == [], (
+        "FR-338: `{{counter_rule}}` is a carousel-slide slot. Nothing else is ever handed a "
+        f"`slide_counter`, so this resolves to nothing and fails the creative: {elsewhere}")
+    assert {role for role, allowed in pe._ALLOWLIST.items() if "counter_rule" in allowed} == \
+        {"carousel_slide.md"}, "the allowlist is the gate; it must agree with the templates"

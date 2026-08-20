@@ -29,7 +29,9 @@ written against the contract, in parallel with the module itself.
 
 from __future__ import annotations
 
+import dataclasses
 import math
+import re
 from pathlib import Path
 
 import pytest
@@ -1477,3 +1479,190 @@ def test_d57_the_brand_card_is_absent_from_the_selection_and_would_be_dropped_an
     assert "hypelead-brand-card" not in {style.key for style in with_switch_off}
     for name in ("hypedigitaly", "hypedigitaly-cs", "hypedigitaly-fresh"):
         assert load_config(name, configs_dir=CONFIGS_DIR).branding.enabled is False
+
+
+# ------------------------------------------------- FR-339 / FR-350: what the shipped DNA may say
+#
+# Two AUTHORING contracts on the file above, both new in v2.5.0/D59, both enforced here and
+# deliberately nowhere else. FR-339 says so in as many words — "enforced by a test guard; a
+# registry-load error is NOT added (FR-295 shape untouched)" — and the reason is the same for
+# both: these are rules about the registry WE ship, not about the one an operator may author.
+# A `validate` warning would fire on every third-party registry that ever wrote the word "badge",
+# and an FR-295 error would refuse that operator's run at exit 2 over our house style.
+
+#: FR-339's regex, spelled exactly as the PRD spells it. Every one of the six words names a device
+#: that gets DRAWN, and every one of them is GATED somewhere else in the prompt: the wordmark on
+#: the TEXT block (FR-292), the counter on `{{counter_rule}}` (FR-338), the signature on the
+#: `brand_slot` zone. Named in the three DNA fields below it is UNGATED — those are reproduced
+#: byte-identically into `{{style_dna}}` on every slide of every deck no matter what the TEXT
+#: block quotes (FR-189/M9), so a `typography` line describing "a small page-number chip top-right"
+#: orders nine chips onto a nine-slide deck that quoted no counter at all. That is the M9 defect
+#: this rule exists to prevent, and it is invisible from any single slide's prompt.
+_GATED_DEVICE = re.compile(r"\b(chip|badge|counter|page number|signature|lockup)\b", re.IGNORECASE)
+
+#: The three fields FR-339 governs, and only those three. `image_treatment` and `palette` carry
+#: exactly the same unconditional weight but describe SURFACES and COLOUR rather than what gets
+#: lettered, and a rule that swept every DNA field would forbid a palette line from saying "a chip
+#: of teal". The three listed are the ones that say what type is set and where it sits — which is
+#: the only place a device can be ordered into existence by accident.
+_UNGATED_DNA = ("typography", "text_placement", "visual_pacing")
+
+#: FR-350's retired crop band. Frames render 1:1 (`generate/plan.py`), so a style still reserving
+#: "the bottom 12% (4:5 crop)" is holding an eighth of every slide clear for a frame shape this
+#: pipeline stopped producing — dead space the render model reads as a compositional instruction.
+#: Both spellings are one pattern because they always shipped as one phrase.
+_CROP_BAND = re.compile(r"4:5|bottom\s+12\s*%", re.IGNORECASE)
+
+
+def _dna_hits(pattern: re.Pattern[str], style: MetaStyle, fields: tuple[str, ...]) -> list[str]:
+    """Every match of `pattern` in `style`'s `fields`, named so the failure message IS the fix.
+
+    One hit reads `icon-ledger-carousel.typography: 'chip' in …a small counter chip top-right…`:
+    the style, the field, the offending word and enough of the sentence around it to edit without
+    opening the file. A bare `assert not hits` over a registry of nineteen styles would say only
+    that something, somewhere, said "badge".
+
+    A test-module helper rather than a `hypesocials.styles` function on purpose — see the section
+    comment above. Nothing in production may grow an opinion about these words.
+    """
+    found: list[str] = []
+    for field_name in fields:
+        text = str(getattr(style, field_name) or "")
+        for match in pattern.finditer(text):
+            excerpt = " ".join(text[max(0, match.start() - 60):match.end() + 60].split())
+            found.append(f"{style.key}.{field_name}: {match.group(0)!r} in …{excerpt}…")
+    return found
+
+
+def test_fr339_no_shipped_style_names_a_gated_device_in_its_unconditional_dna() -> None:
+    """D59's registry scrub, held in place (FR-339).
+
+    The bug this closes is one no single prompt shows you. A style's `typography`,
+    `text_placement` and `visual_pacing` become `{{style_dna}}`, which FR-189 requires to be
+    IDENTICAL on every slide of a deck — so a device described there is described on all of them,
+    unconditionally, whether or not this deck quoted anything for it. The gated channels are the
+    opposite by construction: `{{counter_rule}}` is empty on an uncounted deck (FR-338), the
+    `brand_slot` zone is omitted from `{{layout_zones}}` on an unbranded creative (FR-292), and
+    the TEXT block is the only source of renderable words at all. Two descriptions of one device,
+    one conditional and one not, is how a byte-identical instruction still produces a drifting
+    deck — the model reconciles them per slide and reconciles them differently.
+
+    Every hit is reported, not just the first: a scrub half-done reads exactly like a scrub done.
+    """
+    hits = [hit for style in _shipped().styles
+            for hit in _dna_hits(_GATED_DEVICE, style, _UNGATED_DNA)]
+
+    assert hits == [], (
+        "FR-339: a gated device is described in prose that renders on every slide. Move the "
+        "spec into the zone whose role gates it — `counter_slot` for a counter, `brand_slot` "
+        "for a signature or lockup — and delete it from the DNA field:\n  " + "\n  ".join(hits))
+
+
+def test_fr339_every_counter_slot_zone_states_its_counter_inside_the_two_hundred_char_bar() -> None:
+    """The other half of FR-339: the spec moved, and it has to stay small where it landed.
+
+    A `counter_slot` zone line is rendered whole into `{{counter_rule}}` by `prompts_engine`, and
+    that slot is UNCUTTABLE — it is in no truncation set and it is not the style trio, so every
+    character it carries is a character the last-resort trio trim has to find somewhere else
+    (`tests/test_prompt_fit.py` measures exactly that trade). 200 is the PRD's number and the
+    shipped worst is `editorial-voxel-carousel` at 192, so this is a real bar and not a formality.
+
+    The ROSTER is pinned rather than the count, because the failure that matters is a zone
+    silently DISAPPEARING: a style that loses its `counter_slot` does not break, it quietly falls
+    through to FR-338 arm (d) — the 86-character house-default line — and renders its counter in
+    a place its own layout never described. Eight styles declare one; the other eleven are meant
+    to be on the house default.
+    """
+    registry = _shipped()
+    zoned = {style.key: zone for style in registry.styles for zone in style.layout_zones
+             if zone.role == "counter_slot"}
+
+    assert sorted(zoned) == ["build-log-mono", "circuit-atlas-dark", "editorial-voxel-carousel",
+                             "icon-ledger-carousel", "letterpress-print-carousel",
+                             "letterpress-print-carousel-teal", "social-quote-card",
+                             "terminal-mockup-deck"], \
+        "a `counter_slot` zone appeared or vanished — a vanished one falls through to " \
+        f"FR-338's house-default line silently, and is not an error: {sorted(zoned)}"
+    over = [f"{key}: {len(zone.text_treatment)} chars" for key, zone in sorted(zoned.items())
+            if len(zone.text_treatment) > 200]
+    assert over == [], (
+        "FR-339: a `counter_slot` zone's `text_treatment` is over the 200-character bar, and "
+        "`{{counter_rule}}` is uncuttable — every character here is taken off the style trio "
+        f"instead: {', '.join(over)}")
+
+
+def test_fr339_the_guard_catches_a_chip_planted_in_a_styles_typography() -> None:
+    """The arm that stops the guard above from passing because it matches nothing.
+
+    A regex guard over bytes that are already clean is indistinguishable from a regex that is
+    silently broken — a stray escape, a lost `re.IGNORECASE`, a field name typo'd in
+    `_UNGATED_DNA` — and the day someone re-authors a style is the day it would have mattered.
+    So the predicate is fired at a style built to be caught, through `dataclasses.replace` on a
+    clean fixture so the ONLY difference between passing and failing is the planted sentence.
+
+    The second half is the scope, asserted as an absence: the same words in `image_treatment` are
+    NOT a hit. That is deliberate (see `_UNGATED_DNA`) and it is the kind of decision that gets
+    "fixed" by a future reader widening the tuple, which would forbid a palette line from
+    describing a chip of colour.
+    """
+    clean = _style("planted")
+    assert _dna_hits(_GATED_DEVICE, clean, _UNGATED_DNA) == [], "the fixture must start clean"
+
+    planted = dataclasses.replace(
+        clean, typography="Grotesk caps, tight tracking; a chip top-left states the page number.")
+    hits = _dna_hits(_GATED_DEVICE, planted, _UNGATED_DNA)
+
+    assert len(hits) == 2, hits
+    assert all(hit.startswith("planted.typography: ") for hit in hits), \
+        f"a hit must name the style AND the field it came from: {hits}"
+    assert "'chip'" in hits[0] and "'page number'" in hits[1], \
+        f"…and the offending word itself, or the message is not a fix: {hits}"
+    assert "chip top-left states the page number" in hits[0], "the sentence rides along"
+    # Scope, pinned as the absence it is: the same prose in a surface field is legal.
+    assert _dna_hits(_GATED_DEVICE, dataclasses.replace(
+        clean, image_treatment="Matte card with a chip of teal at the corner."),
+        _UNGATED_DNA) == [], "FR-339 governs three fields; widening the tuple is a decision"
+
+
+def test_fr350_no_shipped_style_reserves_a_band_for_a_crop_this_pipeline_stopped_making() -> None:
+    """FR-350's pre-check, done at the registry rather than at the frame (D59, ahead of Session K).
+
+    Seven styles used to end their `text_placement` with "bottom 12% clear (4:5 crop)". The
+    pipeline renders 1:1 (`generate/plan.py`), so that sentence reserved an eighth of every slide
+    for a crop nobody takes — and it did it in a DNA field, which means on every slide of every
+    deck (FR-189). The replacement is "all text inside the central 80% of a 1:1 frame", which is
+    the same protection stated in the frame we actually produce.
+
+    The raw file is read as BYTES as well as through the parsed styles, and neither check is
+    redundant: `4:5` in a `per_format_guidance` block, an `exclusions` line or a comment reaches a
+    render prompt or a future reader just as well as one in `text_placement` does, and the parsed
+    scan would never see it.
+    """
+    raw = (REPO / "prompts" / "styles.yaml").read_text(encoding="utf-8")
+    hits = [hit for style in _shipped().styles
+            for hit in _dna_hits(_CROP_BAND, style, ("text_placement",))]
+
+    assert "4:5" not in raw, \
+        "FR-350: `prompts/styles.yaml` still names the 4:5 crop somewhere — frames render 1:1"
+    assert hits == [], (
+        "FR-350: a style still reserves the retired crop band. Replace it with the 1:1 wording "
+        '("all text inside the central 80% of a 1:1 frame"):\n  ' + "\n  ".join(hits))
+
+
+def test_fr350_the_guard_catches_a_planted_bottom_twelve_percent_band() -> None:
+    """The FR-350 half of the same planted-defect discipline, and for the same reason.
+
+    Both spellings are planted in one sentence because that is how they always shipped — the band
+    and the crop it was reserved for were written as one phrase, and a guard that caught only the
+    ratio would pass a style that said "bottom 12% clear" and nothing more.
+    """
+    clean = _style("planted", text_placement="All text inside the central 80% of a 1:1 frame.")
+    assert _dna_hits(_CROP_BAND, clean, ("text_placement",)) == [], "the fixture must start clean"
+
+    planted = dataclasses.replace(
+        clean, text_placement="Headline in the upper third; bottom 12% clear (4:5 crop).")
+    hits = _dna_hits(_CROP_BAND, planted, ("text_placement",))
+
+    assert len(hits) == 2, f"the band and the ratio are two hits, not one: {hits}"
+    assert "'bottom 12%'" in hits[0] and "'4:5'" in hits[1], hits
+    assert all(hit.startswith("planted.text_placement: ") for hit in hits), hits

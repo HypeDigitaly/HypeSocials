@@ -93,13 +93,31 @@
 #     collapses to nothing extra for it and only the TEXT-block wordmark remains. It is unrelated
 #     to a `layout_zones` entry whose `role` is `brand_slot`, which only says WHERE a signature
 #     sets when one is quoted; a style can carry that zone and still be brand-neutral.
+#   - **The three DNA fields never describe a chip, badge, counter, page number, signature or
+#     lockup** (FR-339, v2.5.0/D59). `typography`, `text_placement` and `visual_pacing` are
+#     reproduced on EVERY slide unconditionally, so a chip described there is a chip the model
+#     draws whether or not anything was quoted for it — that is how an uncounted deck shipped an
+#     invented "9 STEPS • NON-TECHNICAL • NO CODING" position chip. That spec belongs ONLY in the
+#     zone that GATES it: the `counter_slot` zone's `text_treatment` (keep it at or under 200
+#     characters) for the counter, the `brand_slot` zone's for the signature or lockup. Write that
+#     zone line so it STANDS ALONE — under FR-338 a carousel slide's renderer is handed the counter
+#     zone's line by itself, through `{{counter_rule}}`, with no neighbouring zone to point back to
+#     ("on that same chrome line" resolves to nothing there); the critic still reads the whole list
+#     through `{{layout_zones}}`. A test guard enforces this with the regex
+#     `\b(chip|badge|counter|page number|signature|lockup)\b`, case-insensitive, over those three
+#     fields of every shipped style.
+#     A device that is NOT the gated one — a diagram node, a list numeral disc, a UI tag — keeps its
+#     sentence and takes a precise synonym instead ("node label", "numeral disc", "tag"), and a type
+#     scale names the rung after its size ("smallest label 1x"), never after the gated device. A
+#     FIXED list never names the gated device at all: a gated zone is not fixed across the deck,
+#     because on most decks it is not there.
 #   - `list_mode` (FR-304b, v2.2.0) — the style's LIST TREATMENT, and the frozen shape is:
 #
 #         list_mode:
 #           reflow_over_chars: 180     # required, whole number >= 0; 0 turns this trigger OFF
 #           max_rows: 6                # required, whole number >= 0; 0 turns this trigger OFF
 #           layout: >-                 # required, non-empty prose — shipped verbatim into the
-#             …                        #   render prompt, appended to {{layout_zones}}
+#             …                        #   render prompt through its own {{list_treatment}} slot
 #           overflow: reflow           # optional; `reflow` (default) or `two_column`
 #
 #     **It is a REFLOW TRIGGER, never a ceiling.** A mapped panel longer than `reflow_over_chars`,
@@ -117,7 +135,11 @@
 #     Write the `layout` prose as executable instructions in this style's own material vocabulary
 #     ("rows in the second ink, hanging number in the margin"), and always say the three things
 #     that keep a mapped panel intact: one source line per row, a label and its value never
-#     separate, and rows shrink TOGETHER rather than one being dropped.
+#     separate, and rows shrink TOGETHER rather than one being dropped. A row rule written in TWO
+#     PARTS - a title and a description under it, a label and its value - must ALSO say what the
+#     ONE-part line does: it sets as the title alone, draws no second line, and is never repeated
+#     under itself. Left unsaid, a render model fills the empty second part by copying the first,
+#     which is how the 2026-08-20 deck shipped rows whose description line repeated their title.
 #   - `match_profile` (FR-290/334/335, v2.4.0) — one to two plain sentences naming WHAT SOURCES
 #     this style suits: the content archetypes, hook shapes and post grammars it was built for, and
 #     where it is useful to say so, the ones it is wrong for. It is the only field the style MATCHER
@@ -181,9 +203,10 @@ styles:
       tracking, no outline. A longer string adds lines downward and the plate grows; never below
       4%.
     text_placement: >-
-      One caption block, upper-left third: left edge 8% of width, top 10% of height. Outer 8% and
-      bottom 12% clear (4:5 crop). Over low-detail negative space, never on the subject or a hard
-      edge. Under 60 chars: floats, faint drop shadow. 60+ chars, or ground lighter than mid-grey:
+      One caption block, upper-left third: left edge 8% of width, top 10% of height. All text
+      inside the central 80% of the 1:1 frame. Over low-detail negative space, never on the
+      subject or a hard edge. Under 60 chars: floats, faint drop shadow. 60+ chars, or ground
+      lighter than mid-grey:
       soft charcoal plate, ~25% opacity, rounded, padding ~1 cap height. Same x, size and
       treatment every slide.
     image_treatment: >-
@@ -240,8 +263,8 @@ styles:
     # quoted in the TEXT block still renders, as the zone says.
     subject_mode: scene_open
     layout_zones:
-      - {position: "top-left corner", content: "slide-position badge", role: counter_slot,
-         text_treatment: "outlined rounded-rectangle chip, small bold sans at one quarter of the headline's cap height, the position numeral heavy and the total lighter; carries the counter string quoted in the TEXT block and nothing else"}
+      - {position: "top-left corner, on the band-1 line inside the top 10 percent", content: "slide-position badge", role: counter_slot,
+         text_treatment: "outlined rounded-rectangle chip, tracked-out uppercase bold sans +8% at 1/4 the headline's cap height, numeral heavy and total lighter; carries only the counter string quoted in the TEXT block"}
       - {position: "upper 40 percent, full width, kicker directly above the headline",
          content: headline,
          text_treatment: "tracked-out uppercase sans kicker over a Didone serif headline in two or three lines with the payoff line set LARGER than the setup line, near-black with one saturated teal phrase, thin teal double rule beneath; headline cap height 11-14% of frame height at two lines, stepping to 9% at three lines and 7% at four"}
@@ -267,14 +290,14 @@ styles:
       - "SURFACE white #FFFFFF: tiles, card border; only pure white"
     typography: >-
       3 families max. Didone serif headline: leading 0.92-1.00, 2-3 lines, payoff LARGER than setup.
-      Tracked-out uppercase bold grotesque +8%: kicker, chip, labels at 1/4 headline cap height.
+      Tracked-out uppercase bold grotesque +8%: kicker and labels at 1/4 headline cap height.
       One script, one annotation. Scale kicker 1x / label 1.3x / body 1.4x / headline 4x,
       nothing between. Headline: to 45 chars 2 lines at 11-14%; 46-70 3 at 9%; 71-90 4 at 7%;
       floor 6%.
     text_placement: >-
-      4 bands, 6% margin. B1 top 10%: chip left, drawn swipe arrow right. B2 10-45%: kicker,
-      headline, teal double rule; flush left, ragged right. B3 45-62%: quoted string as short
-      left-aligned lines, icon-and-label column, or terminal card. B4 62-100%: hero centred,
+      4 bands, 6% margin. B1 top 10%: corner marks only, drawn swipe arrow right. B2 10-45%:
+      kicker, headline, teal double rule; flush left, ragged right. B3 45-62%: quoted string as
+      short left-aligned lines, icon-and-label column, or terminal card. B4 62-100%: hero centred,
       contact shadow inside bottom margin. Bands and left edge identical every slide; only B3
       changes.
     image_treatment: >-
@@ -286,8 +309,8 @@ styles:
       never greeked.
     visual_pacing: >-
       Loud headline, quiet ground, one hero; every slide = kicker, headline, object. FIXED: ground,
-      accent, margin, bands, rule weight, chip form, type scale. MAY CHANGE: headline line
-      count, B3 content, hero.
+      accent, margin, bands, rule weight, type scale. MAY CHANGE: headline line count, B3 content,
+      hero.
     list_mode:
       reflow_over_chars: 160
       max_rows: 6
@@ -304,9 +327,8 @@ styles:
       carousel_cover: "Cover: the full stacked headline with the teal payoff phrase at maximum scale, the largest hero object, and the top-left chip only when a counter string is quoted in the TEXT block."
       carousel_slide: "Body slide: drop the headline by roughly a third, keep the kicker and the teal rule, and give the freed middle band to the quoted line, the icon-and-label list, or the terminal card. Same cream ground, same rule weight, same corners as the cover — the top-left chip appears only where a counter string is quoted."
     exclusions:
-      - "platform UI and overlays: pagination dots, search fields, play triangles, tab bars, share sheets, 'related content' banners"
-      - "watermarks, app badges, usernames, @handles, follower, like or view counters"
-      - "competitor, creator and platform marks — list rows, chips and icon nodes carry invented abstract glyphs, and a made-up brand name in their place is equally forbidden; a mark the request's TOOL MARKS line sanctions is the exception and renders as the real logo in its true brand colours, at icon size beside its row"
+      - "platform UI and overlays: pagination dots, search fields, share sheets, 'related content' banners"
+      - "list rows, chips and icon nodes carry invented abstract glyphs, never a competitor, creator or platform mark; a mark the TOOL MARKS line sanctions sets at icon size beside its row"
       - "legible text inside a screenshot, terminal card, phone or device screen beyond what image_treatment sanctions — greeked grey bars stand in for every unquoted string"
       - "lettered navigation cues — the top-right swipe mark is a drawn arrow glyph and carries no words"
       - "photographic environments, gradient meshes, lens flares, drop-shadowed glass panels: the ground is a flat cream field and stays flat"
@@ -333,7 +355,7 @@ styles:
     subject_mode: scene_open
     layout_zones:
       - {position: "top-left corner", content: "slide-position badge", role: counter_slot,
-         text_treatment: "outlined rounded-rectangle chip in the accent ink, small tracked caps at 1.6-2% of frame height; the counter string quoted in the TEXT block only"}
+         text_treatment: "outlined rounded-rectangle chip in the accent ink, small mono or tracked caps at 1.6-2% of frame height; the counter string quoted in the TEXT block only"}
       - {position: "top two-thirds on the cover, upper-left third with a generous margin on a body slide",
          content: headline,
          text_treatment: "towering display type set tight, one ink for the setup lines and the second ink (or a reversed solid black bar) for the payoff phrase; cover cap height 14-20% of frame height stepping down one tier per extra line, body-slide cap height 8-11%"}
@@ -359,21 +381,21 @@ styles:
       tier per extra line: 40 chars = 2 lines at 14-20%; 41-65 = 3 at 11%; 66-90 = 4 at 8.5%; floor
       8%. Body headline: ultra-heavy geometric lowercase sans 8-11%, 2 lines, one phrase reversed in
       a black bar. Paragraph: lighter weight 3-4%, leading 1.35, 30-46 chars, one heavy phrase.
-      Chips: mono or tracked caps 1.6-2%. Marker for annotations. Display:paragraph 5:1 to 8:1.
+      Marker for annotations. Display:paragraph 5:1 to 8:1.
     text_placement: >-
       Margins 8% left/right, 6% top, 8% bottom. Cover: headline in the top two thirds; deck line
-      under a hand-drawn underline lower-left; drawn cue lower-right; counter chip top-left. Body:
-      headline upper-left third, paragraph across the middle band ragged right, inset card lower
-      half, chip top-left. One axis: flush left, never centred.
+      under a hand-drawn underline lower-left; drawn cue lower-right. Body: headline upper-left
+      third, paragraph across the middle band ragged right, inset card lower half. One axis: flush
+      left, never centred.
     image_treatment: >-
       Flat inks on textured paper; misregistration never on body-size type. A pixel-art mascot is
       the only illustration, max once a slide; max one underline and one circled mark a frame. Inset
       mock-ups are DESIGNED, not blank: unquoted copy greeks to grey bars sized as that text would
       be (filler, no meaning); a string the TEXT block quotes renders in full, never greeked.
     visual_pacing: >-
-      One typographic statement a slide, one paragraph, one drawn mark. FIXED: margins, chip form,
-      ink pair per ground, rule weight, type scale, mascot style. MAY CHANGE: words, inset, mascot
-      pose, mark position.
+      One typographic statement a slide, one paragraph, one drawn mark. FIXED: margins, ink pair
+      per ground, rule weight, type scale, mascot style. MAY CHANGE: words, inset, mascot pose,
+      mark position.
     list_mode:
       reflow_over_chars: 200
       max_rows: 7
@@ -541,12 +563,11 @@ styles:
     per_format_guidance:
       carousel_role: cover_only
       carousel_cover: "Cover: the widest night view, the statement in the lower third at full poster scale, the hairline rule closing the frame."
-      carousel_slide: "Body slide: the SAME night, the SAME room, the SAME desk and the SAME window onto the SAME skyline as the cover — one step closer at most. Never a new location, never a new camera position, never a second desk and never more than two monitors. The rim light, the palette, the dark lower band, the statement position and the type treatment are identical to the cover; only the quoted words and the small things on the desk change. THIS SCENE OUTRANKS THE SLIDE'S VISUAL BRIEF: where the brief describes another room, another angle, another background or another composition, it is describing the source deck and not this one — keep this desk under this window and place the brief's content elements into it. A long quoted panel sets in up to four tighter lines rather than spilling out of the band, and a list-shaped one sets as the night card in that same band."
+      carousel_slide: "Body slide: the SAME night, the SAME room, the SAME desk and the SAME window onto the SAME skyline as the cover — one step closer at most, never a second desk and never more than two monitors. The rim light, the palette, the dark lower band, the statement position and the type treatment are identical to the cover; only the quoted words and the small things on the desk change. THIS SCENE OUTRANKS THE SLIDE'S VISUAL BRIEF: a brief describing another room, angle, background or composition is describing the source deck, not this one — keep this desk under this window and place its content elements into it. A long quoted panel sets in up to four tighter lines rather than spilling out of the band, and a list-shaped one sets as the night card in that same band."
     exclusions:
-      - "platform UI, player chrome, progress bars, watermarks, app badges, usernames, @handles, follower or view counters"
-      - "readable interface content on the monitors — the screens carry abstract light ribbons: no windows, no code, no dashboards, no charts, and no mark except one the request's TOOL MARKS line sanctions, which may glow as a single icon and nothing more"
+      - "readable interface content on the monitors — the screens carry abstract light ribbons: no windows, no code, no dashboards, no charts, and no mark except one the TOOL MARKS line sanctions, which may glow as a single icon and nothing more"
       - "any recognisable face: the figure is seen from behind and stays anonymous"
-      - "competitor, creator and platform marks anywhere in the scene, including on the hardware, the hoodie and the city signage; distant signs stay illegible glow, and a mark the request's TOOL MARKS line sanctions is the one logo drawn for real, in its true brand colours"
+      - "no competitor, creator or platform mark on the hardware, the hoodie or the city signage; distant signs stay illegible glow"
       - "legible text outside the statement band, the night card and the footer — no titles, no subtitles, no captions burned over the picture"
 
   - key: ugc-tabletop-statement
@@ -592,8 +613,9 @@ styles:
     text_placement: >-
       One statement block, upper third, flush left on an 8% margin, first baseline ~20% of frame,
       clear of props and edges. It MUST sit over a region two stops darker than the type - the
-      defocused band; with none, the camera moves rather than the text gaining a plate. Bottom 12%
-      clear for a 4:5 crop. Position, size and treatment identical on every slide.
+      defocused band; with none, the camera moves rather than the text gaining a plate. All text
+      inside the central 80% of the 1:1 frame. Position, size and treatment identical on every
+      slide.
     image_treatment: >-
       Photoreal phone capture: golden-hour side light, shallow depth of field, honest lens softness,
       warm white balance, camera ~30 degrees above the surface every slide. Three to five lived-in
@@ -653,7 +675,7 @@ styles:
          text_treatment: "no lettering inside the window except a string the TEXT block quotes for it — greeked grey bars stand in for every other string"}
       - {position: "directly beneath the browser card, flush left", content: body,
          text_treatment: "regular sans at 2.6% cap height, leading 1.4, two to four lines, near-black at reading size"}
-      - {position: "foot of the frame, centred between hairline rules", content: "signature line",
+      - {position: "foot of the frame, centred in the bottom 6 percent, between hairline rules", content: "signature line",
          role: brand_slot,
          text_treatment: "small letterspaced uppercase sans at 1.4% cap height, tracking +20%, one line, hairline rule left and right with a small open circle at the rule's midpoint"}
     format_affinity: [image, carousel]
@@ -679,10 +701,9 @@ styles:
       headline 5x.
     text_placement: >-
       Strict vertical stack, 8% margin, flush left on ONE axis: kicker, headline, browser card,
-      caption, signature. Rhythm: kicker at 8% of frame height, headline from 12%, card top at 34%,
-      caption 5% below the card, signature centred in the bottom 6%. Kicker and signature letter
-      only where a string is quoted, else a teal rule or clear space. Card spans 84% of width,
-      centred; nothing touches the edge.
+      caption. Rhythm: kicker at 8% of frame height, headline from 12%, card top at 34%, caption 5%
+      below the card. The kicker letters only where a string is quoted, else a teal rule or clear
+      space. Card spans 84% of width, centred; nothing touches the edge.
     image_treatment: >-
       Flat ecru canvas, one element of depth: the browser window, 16px radius, chrome bar ~7% of
       card height, one soft shadow. INSIDE: a plausible product screen, not a wireframe - colour,
@@ -769,10 +790,10 @@ styles:
       1.45, max one bold phrase. CTA: Geist Mono uppercase, +12%, cap 1.8%. Scale: kicker 1x, CTA
       1.2x, row 1.6x, headline 6x.
     text_placement: >-
-      8% margin, everything flush left on one axis. Lockup top-left, one wordmark height of clear
-      space. Kicker at 14% of frame height, headline beneath, payoff in the teal pill, padding half
-      a cap height. Card band 44-82%. CTA pill in the bottom 12%. Cards span the content width, 16px
-      radius, 4% padding; rows 1.5 cap heights apart, never a rule.
+      8% margin, everything flush left on one axis. Kicker at 14% of frame height, headline
+      beneath, payoff in the teal pill, padding half a cap height. Card band 44-82%. CTA pill
+      inside the central 80% of the 1:1 frame, which holds all text. Cards span the content
+      width, 16px radius, 4% padding; rows 1.5 cap heights apart, never a rule.
     image_treatment: >-
       Flat vector surfaces. Per frame: dot-grid ground, ONE teal bloom in ONE corner, max THREE
       cards, max ONE mock-up, max ONE of a dashed connector run or an icon-node row. Card mock-ups
@@ -780,8 +801,8 @@ styles:
       greeked. Only gradient: the two-stop teal of the pills.
     visual_pacing: >-
       One headline, one highlight pill, 2-4 card rows, one CTA. Ground mode is chosen on the cover,
-      never changed in a deck. FIXED: ground mode, margins, dot pitch, card radius, chip form, type
-      scale, lockup and CTA. MAY CHANGE: headline line count, card rows.
+      never changed in a deck. FIXED: ground mode, margins, dot pitch, card radius, numeral-disc
+      form, type scale, CTA. MAY CHANGE: headline line count, card rows.
     list_mode:
       reflow_over_chars: 140
       max_rows: 6
@@ -799,10 +820,9 @@ styles:
       carousel_cover: "Cover: the headline at full scale with the teal pill on the payoff line, one card row at most, the CTA pill at the foot."
       carousel_slide: "Body slide: drop the headline to roughly half scale, keep the mono kicker, and give the middle band to the numbered cards, where a longer quoted string sets as rows at reading size. Dark mode (charcoal-green ground #14130F with vignette and teal glow) is allowed for a body slide only when the cover already used it, and then the whole deck's dark-ground roles apply: off-white type, cards lifted 6% off the ground, the teal pills unchanged."
     exclusions:
-      - "platform UI, watermarks, app badges, usernames, @handles, follower, like or view counters"
-      - "third-party channel marks and their brand colours — LinkedIn, Messenger, Instagram, WhatsApp, X, email-client glyphs: icon nodes carry invented abstract symbols only. A mark the request's TOOL MARKS line sanctions overrides this ban and renders as the real logo in its true brand colours; the ban governs every mark that line does not name"
-      - "competitor, creator and platform marks; the only logos in this frame are the wordmark quoted in the TEXT block and any mark the request's TOOL MARKS line sanctions, which renders as the real logo in its true brand colours; the badge beside the lockup stays a plain geometric mark and carries no letters"
-      - "legible text inside a card's interface mock-up beyond what image_treatment sanctions — greeked grey bars stand in for every unquoted string"
+      - "third-party channel marks and their brand colours — LinkedIn, Messenger, Instagram, WhatsApp, X, email-client glyphs: icon nodes carry invented abstract symbols only, and only the TOOL MARKS line lifts this ban"
+      - "the only logos in this frame are the wordmark quoted in the TEXT block and a mark the TOOL MARKS line sanctions; the badge beside the lockup stays a plain geometric mark and carries no letters"
+      - "legible text inside a card's interface mock-up beyond what image_treatment sanctions"
       - "photography, 3D renders, stock illustration, serif type, handwriting, neon glow and drop-shadowed glass panels"
 
   - key: quiet-luxury-night-photoreal
@@ -858,9 +878,9 @@ styles:
       2.6-3%; floor 2.6%.
     text_placement: >-
       One caption block, centred on the vertical axis inside the 40-55% band, its column at most 60%
-      of width. Outer 8% and bottom 12% clear (4:5 crop). It sits over the darkest part of the
-      picture; where the skyline behind it runs lighter than mid-grey the CAMERA reframes rather
-      than the text gaining a plate. Axis, band, size and treatment identical every slide.
+      of width. All text inside the central 80% of the 1:1 frame. It sits over the darkest part
+      of the picture; where the skyline behind it runs lighter than mid-grey the CAMERA reframes
+      rather than the text gaining a plate. Axis, band, size and treatment identical every slide.
     image_treatment: >-
       Available light only: the city through the glass, plus at most one amber practical deep in the
       room. Photoreal handheld capture - high-ISO grain, honest lens softness, real depth of field,
@@ -885,11 +905,10 @@ styles:
       overflow: reflow
     per_format_guidance:
       carousel_cover: "Cover: the widest view of the room — the whole window wall, the skyline behind it and the desk beneath it. The caption sits in its band at its ONE standard size and is never scaled up for the cover: here the cover is established by the picture, never by bigger type."
-      carousel_slide: "Body slide: the SAME room, the SAME window wall and the SAME night skyline as the cover — one step closer at most. Never a new location, never a new camera height, never a second desk, never a lit room. Palette, grain, darkness and the caption's band, axis, size and treatment are identical; only the words and the small things on the desk change. THIS SCENE OUTRANKS THE SLIDE'S VISUAL BRIEF: where the brief describes another room, another angle, another background or another composition, it is describing the source deck and not this one — keep this desk under this window and put the brief's content into it as real objects on the desk. A longer panel adds centred lines inside the band rather than setting larger; a list-shaped one sets as the centred column in that band."
+      carousel_slide: "Body slide: the SAME room, the SAME window wall and the SAME night skyline as the cover — one step closer at most, never a second desk and never a lit room. Palette, grain, darkness and the caption's band, axis, size and treatment are identical; only the words and the small things on the desk change. THIS SCENE OUTRANKS THE SLIDE'S VISUAL BRIEF: a brief describing another room, angle, background or composition is describing the source deck, not this one — put its content into this one as real objects on the desk. A longer panel adds centred lines inside the band rather than setting larger; a list-shaped one sets as the centred column in that band."
     exclusions:
-      - "platform UI of any kind: player chrome, progress bars, play buttons, pagination dots, tab bars, share and like icons"
-      - "watermarks, app badges, usernames, @handles, profile pictures, follower, like, view or comment counters"
-      - "competitor, creator and platform marks on the laptop, the notebooks, the chair, the glass and every other surface — props are unbranded unless the request's TOOL MARKS line sanctions the mark, which then renders as the real logo in its own brand colours"
+      - "platform UI of any kind: player chrome, pagination dots, tab bars, share and like icons"
+      - "props are unbranded — the laptop, the notebooks, the chair, the glass and every other surface carry no competitor, creator or platform mark"
       - "identifiable faces: anyone in frame is seen from behind, silhouetted against the window, or cropped at the edge"
       - "legible text outside the caption block — screens, notebook pages, book spines, signage and the city's own advertising stay dark and unreadable"
       - "graphic furniture: stickers, badges, chips, drawn arrows, frames, borders, gradient scrims, lens flares and light streaks as decoration"
@@ -930,7 +949,7 @@ styles:
     layout_zones:
       - {position: "top-left, on the chrome line at 7 percent of frame height", content: "series kicker",
          text_treatment: "mono uppercase in the accent teal at 1.5% of frame height, tracking +14%, closing on a solid teal cursor block one cap high; letters the kicker string quoted in the TEXT block and otherwise sets as the cursor block alone"}
-      - {position: "top-right, on that same chrome line", content: "slide-position badge", role: counter_slot,
+      - {position: "top-right, on the chrome line at 7 percent of frame height", content: "slide-position badge", role: counter_slot,
          text_treatment: "mono uppercase in the body grey at 1.5% of frame height, tracking +10%, carrying the counter string quoted in the TEXT block and nothing else"}
       - {position: "upper third, flush left, first baseline at 26 percent of frame height", content: headline,
          text_treatment: "bold monospace-grotesque, ALL CAPS, tracking +6%, leading 0.98, cream on the dark ground and near-black on the cream one; cap height 7-9% of frame in two lines, stepping to 6% at three lines and 5% at four"}
@@ -938,7 +957,7 @@ styles:
          text_treatment: "humanist sans regular in mid-grey, sentence case, cap height 2.4%, leading 1.45, 34-48 characters a line, two to five lines, at most one semibold phrase"}
       - {position: "bottom-left, at 93 percent of frame height", content: "signature line", role: brand_slot,
          text_treatment: "mono uppercase in the body grey at 1.4% of frame height, tracking +14%, one line; letters the signature string quoted in the TEXT block and stays empty otherwise"}
-      - {position: "bottom-right, on the signature's baseline", content: "swipe cue",
+      - {position: "bottom-right, on the 93 percent line", content: "swipe cue",
          text_treatment: "a drawn teal arrow one cap high — a mark, never a lettered word, unless a swipe string is quoted in the TEXT block"}
     format_affinity: [image, carousel]
     brand_affinity: []
@@ -961,13 +980,13 @@ styles:
       Bold monospace-grotesque plus one humanist sans; no serif, script or display face. Statement:
       ALL CAPS, +6%, leading 0.98, cap 7-9% in 2 lines; 46-70 chars 3 at 6%, 71-90 4 at 5%, floor
       4.5%. Paragraph: sans regular, sentence case, cap 2.4%, leading 1.45, 34-48 chars, 2-5 lines,
-      max one semibold phrase. Labels, counter, signature: mono uppercase, cap 1.4-1.5%, +10-14%.
+      max one semibold phrase. Micro-labels: mono uppercase, cap 1.5%, +14%.
       Scale: label 1x, paragraph 1.7x, statement 5x.
     text_placement: >-
       One chrome grid every slide: margins 7% sides, 6% top, 7% bottom, a body-grey hairline at 11%
-      of frame height. Kicker top-left and counter top-right on the 7% line above it; statement flush
-      left from 26%; paragraph from 52%; signature bottom-left at 93% with the drawn arrow on its
-      baseline. One axis, flush left, never centred. The outer 7% carries no type.
+      of frame height. Kicker top-left on the 7% line above it; statement flush left from 26%;
+      paragraph from 52%; the drawn arrow bottom-right on the 93% line. One axis, flush left, never
+      centred. The outer 7% carries no type.
     image_treatment: >-
       Flat ink on a solid field: no photograph, no paper texture, no gradient, no glow behind type.
       The COVER carries ONE hero object and a body slide none - a studio-rendered 3D form in glass,
@@ -976,9 +995,9 @@ styles:
       one cursor block, no icons, no sparkles, no annotation. No screen and no mock-up in this style.
     visual_pacing: >-
       A log in sequence: the cover states the build, every body slide is one step of it. FIXED:
-      chrome grid, margins, palette roles, type scale, statement and paragraph treatment, label and
-      counter form. MAY CHANGE: the ground (dark on odd slides, cream on even), statement line count,
-      the paragraph.
+      chrome grid, margins, palette roles, type scale, statement and paragraph treatment, label
+      form. MAY CHANGE: the ground (dark on odd slides, cream on even), statement line count, the
+      paragraph.
     list_mode:
       reflow_over_chars: 180
       max_rows: 6
@@ -995,8 +1014,7 @@ styles:
       carousel_cover: "Cover: the near-black ground, the kicker and its cursor block top-left, the statement at full scale across the upper third, and ONE hero object below it — a studio-rendered 3D form in glass, chrome and matte polymer with a single teal glow element, its subject taken from the cover's own content, floating on the dark field with a soft contact shadow. The position chip sets top-right only where a counter string is quoted in the TEXT block."
       carousel_slide: "Body slide: pure typography, no hero object at all. The ground follows the slide number — an odd-numbered slide keeps the near-black field with cream type, an even-numbered one takes the warm cream field with near-black type and the darker teal in its labels. Chrome grid, margins, type scale and label treatment are identical to the cover; the statement drops one tier and the paragraph takes the middle band."
     exclusions:
-      - "platform UI and overlays: player chrome, progress bars, play triangles, pagination dots, search fields, tab bars"
-      - "watermarks, app badges, usernames, @handles, real account names, follower, like or view counters — the foot slot letters only the signature string quoted in the TEXT block"
+      - "watermarks, usernames, @handles and real account names — the foot slot letters only the signature string quoted in the TEXT block"
       - "competitor, creator and platform marks and any invented substitute for one; the exception is a mark the request's TOOL MARKS line sanctions, which renders as the real logo in its true brand colours"
       - "photographic scenes, environments and any person or face — there is no camera in this style and nobody in the frame"
       - "legible text outside the declared zones: no lettering on the hero object, no code, no screen copy, no caption over the ground"
@@ -1021,11 +1039,11 @@ styles:
       - {position: "top band, flush left, from the top margin to 30 percent of frame height", content: headline,
          text_treatment: "bold condensed grotesque in near-black, sentence case, cap height 8-10% of frame in two lines, stepping to 7% at three lines and 5.5% at four, with one phrase in teal"}
       - {position: "middle band, full content width, rows stacked downward from 34 percent of frame height", content: body,
-         text_treatment: "numbered icon-card rows: a white rounded card per row, a flat clay pictogram in a filled teal circle at the left, the row title beside it in semibold at 3% cap height, one grey description line under the title at 2.2%"}
-      - {position: "top-right corner", content: "slide-position badge", role: counter_slot,
-         text_treatment: "small teal-outlined rounded chip in mono uppercase at 1.5% of frame height, carrying the counter string quoted in the TEXT block and nothing else"}
+         text_treatment: "numbered icon-card rows: a white rounded card per row, a flat clay pictogram in a filled teal circle at the left, the row title beside it in semibold at 3% cap height, one grey description line under the title at 2.2% only where the quoted line has a second part"}
+      - {position: "top-right corner, on the headline's first baseline", content: "slide-position badge", role: counter_slot,
+         text_treatment: "small teal-outlined rounded chip in mono uppercase at 1.5% of frame height, tracking +14%, carrying the counter string quoted in the TEXT block and nothing else"}
       - {position: "foot of the frame, full width, welded to the bottom edge", content: "signature line", role: brand_slot,
-         text_treatment: "a solid teal banner strip at 7% of frame height, the signature string quoted in the TEXT block set inside it centred in letterspaced uppercase ecru at 1.6% cap height; the strip stays a plain band of teal when nothing is quoted for it"}
+         text_treatment: "a solid teal banner strip at 7% of frame height, the signature string quoted in the TEXT block set inside it centred in letterspaced uppercase ecru at 1.6% cap height, tracking +14%; the strip stays a plain band of teal when nothing is quoted for it"}
     format_affinity: [image, carousel]
     brand_affinity: []
     brand_slot: false
@@ -1046,20 +1064,21 @@ styles:
       Bold condensed grotesque plus one humanist sans; no serif, script or all-caps headline.
       Headline: bold, -1%, leading 1.00, sentence case, cap 8-10% in 2 lines, one teal phrase; over
       45 chars 3 at 7%, over 75 chars 4 at 5.5%, floor 5%. Row title: semibold, cap 3%, 1-2 lines.
-      Description: regular, cap 2.2%, leading 1.35, one line. Chip and footer: mono uppercase, +14%,
-      cap 1.5%. Scale: chip 1x, description 1.45x, row title 2x, headline 6x.
+      Description: regular, cap 2.2%, leading 1.35, one line. Scale: smallest label 1x, description
+      1.45x, row title 2x, headline 6x.
     text_placement: >-
       Margins 7%, flush left on ONE axis; only the footer line is centred. Headline from the top
       margin to 30% of frame height; the ledger stacks downward from 34%, cards at content width,
-      2.5% apart; the footer strip welded to the bottom edge at 7% of frame height. Chip top-right on
-      the headline's first baseline. No card touches the outer margin and no row runs under the
-      strip: a full ledger drops the headline a tier instead.
+      2.5% apart; the footer strip welded to the bottom edge at 7% of frame height. No card touches
+      the outer margin and no row runs under the strip: a full ledger drops the headline a tier
+      instead.
     image_treatment: >-
       Flat vector with one depth cue: cards at a 20px radius under one warm diffuse shadow, nothing
       else lifted. Pictograms are flat clay glyphs - rounded, single weight, no outline, no gradient
       - one a row, white inside its filled teal circle. The COVER carries ONE matte clay hero object
       and a body slide none: one soft key from upper left, its subject from that frame's own content,
-      a soft contact shadow. Per frame: max 6 rows, 1 hero, no photograph, no neon, no glass. A circle
+      a soft contact shadow. Per frame: a row exists once per quoted line and a card with no quoted
+      words is not drawn; max 6 rows, 1 hero, no photograph, no neon, no glass. A circle
       carries the REAL mark at glyph size in its own colours when the TOOL MARKS line sanctions it.
     visual_pacing: >-
       A ledger read top to bottom: one headline, three to six rows, one footer strip. FIXED: ground,
@@ -1069,23 +1088,24 @@ styles:
       reflow_over_chars: 140
       max_rows: 6
       layout: >-
-        A list panel IS this style's ledger: one source line per row, each row a white rounded card
-        carrying its own source numeral inside the teal circle where the line is numbered and a clay
-        pictogram where it is not, the row's opening clause as the semibold title and the rest as the
-        grey description beneath it. A label and its value never separate, swap or merge. Rows share
-        one left edge, one card height and one rhythm, and they shrink together rather than one being
-        cut or dropped; an over-long row wraps under its own title, clear of the circle. Beyond six
-        rows the ledger splits into two equal columns of cards, the left filled first.
+        A list panel IS this style's ledger: one source line per row, each row a white card with its
+        own source numeral in the teal circle where the line is numbered and a clay pictogram where
+        it is not, the row's opening clause as the semibold title and the rest as the grey
+        description beneath it. A line with no second part sets as the title alone and draws no
+        description line — the title is never repeated under itself. A label and its value
+        never separate, swap or merge. Rows share one left edge, one card height and one rhythm, and
+        they shrink together rather than one being cut or dropped; an over-long row wraps under its
+        own title, clear of the circle. Beyond six rows the ledger splits into two equal columns of
+        cards, the left filled first.
       overflow: two_column
     per_format_guidance:
-      carousel_cover: "Cover: the headline at full scale with its teal phrase, at most two ledger rows under it, and ONE matte clay hero object — its subject taken from the cover's own content — sitting on the ecru with a soft contact shadow. The teal footer strip closes the frame; the position chip sets top-right only where a counter string is quoted in the TEXT block."
-      carousel_slide: "Body slide: no hero object at all. Drop the headline by roughly a third and give the freed middle band to the ledger, where a longer quoted panel sets as numbered icon-card rows at reading size. Ground, margins, card radius, circle size, type scale and footer strip are identical to the cover; only the headline, the rows and their pictograms change."
+      carousel_cover: "Cover: the headline at full scale with its teal phrase, then one ledger row per quoted line to a maximum of two; a cover that quotes only a headline draws no rows at all and never an empty card. ONE matte clay hero object — its subject taken from the cover's own content — sits on the ecru with a soft contact shadow. The teal footer strip closes the frame; the position chip sets top-right only where a counter string is quoted in the TEXT block."
+      carousel_slide: "Body slide: no hero object at all. Drop the headline by roughly a third and give the freed middle band to the ledger, where a longer quoted panel sets as numbered icon-card rows at reading size — one row per quoted line and never an empty card. Ground, margins, card radius, circle size, type scale and footer strip are identical to the cover; only the headline, the rows and their pictograms change."
     exclusions:
-      - "platform UI and overlays: player chrome, progress bars, play triangles, pagination dots, search fields, tab bars"
-      - "watermarks, app badges, usernames, @handles, follower, like or view counters — the footer strip letters only the signature string quoted in the TEXT block"
-      - "competitor, creator and platform marks, and any invented brand name in their place; a pictogram is an abstract clay glyph, the one exception being a mark the request's TOOL MARKS line sanctions, which is drawn as the real logo in its true brand colours at glyph size"
-      - "photography, gradient meshes, neon glow, glassmorphism and lens flares — the ground is flat ecru and the only lifted things are the row cards and the cover's clay hero"
-      - "legible text inside a pictogram, an ornament or the hero object, and charts, graphs, dashboards and progress bars as decoration — the ledger is rows of words, never a data visualisation"
+      - "watermarks, usernames and @handles — the footer strip letters only the signature string quoted in the TEXT block"
+      - "a pictogram is an abstract clay glyph, never a competitor, creator or platform mark"
+      - "photography, gradient meshes, neon glow, glassmorphism and lens flares — the ecru ground stays flat"
+      - "legible text inside a pictogram, an ornament or the hero object, and charts, graphs or dashboards as decoration — the ledger is rows of words, never a data visualisation"
 
   - key: circuit-atlas-dark
     match_profile: >-
@@ -1115,8 +1135,8 @@ styles:
          text_treatment: "one teal-ringed hub with hairline traces out to AT MOST SIX labelled icon chips; a chip letters only a short string the TEXT block quotes for it, in mono uppercase at 1.6% cap height, and every chip without one carries a greeked grey bar in place of lettering"}
       - {position: "lower band, full content width, two cards stacked from 66 percent of frame height", content: body,
          text_treatment: "a pair of charcoal cards, the upper one holding the definition line and the lower one its consequence, each lettered only with the strings the TEXT block quotes for it: regular grotesque in off-white at 2.4% cap height, leading 1.4, up to three lines a card"}
-      - {position: "top-right corner", content: "slide-position badge", role: counter_slot,
-         text_treatment: "small teal-ringed rounded chip in mono uppercase teal at 1.5% of frame height, carrying the counter string quoted in the TEXT block and nothing else"}
+      - {position: "top-right corner, on the headline's first baseline", content: "slide-position badge", role: counter_slot,
+         text_treatment: "small teal-ringed rounded chip in mono uppercase teal at 1.5% of frame height, tracking +14%, carrying the counter string quoted in the TEXT block and nothing else"}
     format_affinity: [image, carousel]
     brand_affinity: []
     brand_slot: false
@@ -1137,13 +1157,13 @@ styles:
       One tight bold grotesque plus one mono; no serif, script or display face. Headline: bold, -2%,
       leading 0.98, sentence case, cap 7-9% in 2 lines, exactly one teal phrase; over 45 chars 3 at
       6%, over 75 chars 4 at 5%, floor 4.5%. Card rows: regular, cap 2.4%, leading 1.4, max 3 lines a
-      card. Chip labels and counter: mono uppercase, +14%, cap 1.5-1.6%. Scale: chip 1x, card row
-      1.55x, headline 5x. Type never glows.
+      card. Node labels: mono uppercase, +14%, cap 1.6%. Scale: node label 1x, card row 1.55x,
+      headline 5x. Type never glows.
     text_placement: >-
       Margins 7%. Headline flush left from the top margin to 26% of frame height; the diagram centred
       on the vertical axis in the 30-62% band; the card pair from 66% to the bottom margin, cards at
-      content width, 2% apart. Counter chip top-right on the headline's first baseline. The lattice
-      runs BEHIND the headline and the cards - no trace crosses type.
+      content width, 2% apart. The lattice runs BEHIND the headline and the cards - no trace crosses
+      type.
     image_treatment: >-
       Flat dark vector, light the only depth: hairline teal traces, nodes with a soft bloom, cards on
       a low ambient shadow. NODE CAP, binding: one diagram a frame, one hub, AT MOST SIX labelled
@@ -1155,7 +1175,7 @@ styles:
       no neon tubing.
     visual_pacing: >-
       One headline, one diagram, one card pair - an atlas page, never a dashboard. FIXED: ground,
-      vignette, margins, lattice weight and opacity, node and chip form, card form, type scale. MAY
+      vignette, margins, lattice weight and opacity, node and label form, card form, type scale. MAY
       CHANGE: headline line count, what the hub connects, the cards' lines.
     list_mode:
       reflow_over_chars: 150
@@ -1173,9 +1193,8 @@ styles:
       carousel_cover: "Cover: the headline at full scale with its teal phrase, the lattice at its brightest, and ONE diagram at its largest — a single hub with at most six labelled chips. The card pair may drop to one card to give the diagram the room; the position chip sets top-right only where a counter string is quoted in the TEXT block."
       carousel_slide: "Body slide: the SAME near-black field, the same lattice weight and the same vignette as the cover. Drop the headline by roughly a third; the diagram may be replaced by the card pair, or by list rows where the quoted panel is a list. The node cap and the greeking rule hold on every slide — a slide never gains a second diagram to fit more items in."
     exclusions:
-      - "platform UI and overlays: player chrome, progress bars, play triangles, pagination dots, search fields, tab bars"
-      - "watermarks, app badges, usernames, @handles, follower, like or view counters"
-      - "competitor, creator and platform marks, and any invented brand name in their place; a chip glyph is an abstract geometric symbol, the one exception being a mark the request's TOOL MARKS line sanctions, which renders as the real logo in its true brand colours at chip size"
+      - "platform UI and overlays: player chrome, pagination dots, search fields, tab bars"
+      - "a chip glyph is an abstract geometric symbol, never a competitor, creator or platform mark; a mark the TOOL MARKS line sanctions renders at chip size"
       - "legible text anywhere the TEXT block did not quote it — chip labels, ornaments and node numbers stand in as greeked grey bars"
       - "photography, faces, 3D renders, neon tubing, glassmorphism and lens flares; the vignette is the only gradient here"
       - "a second diagram, a chart, a graph, a dashboard, a map or a progress bar — this style draws one hub with its chips and nothing else that pretends to be data"
@@ -1209,7 +1228,7 @@ styles:
       - {position: "the foot of the card, a single evenly spaced row", content: "engagement glyphs",
          text_treatment: "three simple outline glyphs in the muted grey — a heart, a speech bubble, a reply arrow — at 2% of frame height, carrying no numbers, no labels and no counters beside them"}
       - {position: "top-right of the ground, clear of the card", content: "slide-position badge", role: counter_slot,
-         text_treatment: "small grey mono uppercase at 1.4% of frame height, carrying the counter string quoted in the TEXT block and nothing else"}
+         text_treatment: "small grey mono uppercase at 1.4% of frame height, tracking +12%, carrying the counter string quoted in the TEXT block and nothing else"}
     format_affinity: [image, carousel]
     brand_affinity: []
     brand_slot: false
@@ -1229,14 +1248,13 @@ styles:
     typography: >-
       One neutral grotesque, two weights; no serif, script, mono or display. Body: medium, sentence
       case, tracking 0, leading 1.30, 28-40 chars a line, cap 4.5-5.5% at 2-4 lines, 3.8% at 5-6,
-      floor 3.5%. Handle: bold, cap 2.4%, one line. Counter: mono caps, cap 1.4%, +12%. Scale:
-      counter 1x, glyph 1.4x, handle 1.7x, body 3.5x. Never all-caps, outlined or drop-shadowed.
+      floor 3.5%. Handle: bold, cap 2.4%, one line. Scale: smallest label 1x, glyph 1.4x, handle
+      1.7x, body 3.5x. Never all-caps, outlined or drop-shadowed.
     text_placement: >-
       One card, centred both ways, 84% of width, top at 18% of frame height, foot clear of the
       bottom 14%. Inside: padding 6% of card width all round; head row at the top, hairline under
-      it, body 2 cap heights below, glyph row on the bottom padding line. Ground margins 8%.
-      Counter top-right on the ground, never on the card. A longer quote grows the card DOWNWARD,
-      still centred.
+      it, body 2 cap heights below, glyph row on the bottom padding line. Ground margins 8%. A
+      longer quote grows the card DOWNWARD, still centred.
     image_treatment: >-
       Flat vector: one card, one shadow, one hairline, three glyphs a frame; no texture beyond the
       ground's faint wash, no gradient, no photograph, no 3D. The avatar is an ABSTRACT geometric
@@ -1264,11 +1282,11 @@ styles:
       carousel_cover: "Cover: the card at its largest with the quoted text at full body scale, the avatar circle and handle head at the top, the glyph row closing the foot. The counter sets top-right on the ground only where a counter string is quoted in the TEXT block."
       carousel_slide: "Body slide: the SAME card on the SAME ground — same width, radius, shadow, padding, head row and glyph row as the cover, only the quoted text changing. A longer quoted panel grows the card downward and drops the body one tier rather than shrinking the card, and a list-shaped panel sets as rows inside it."
     exclusions:
-      - "real platform and app marks, named or drawn: X, Twitter, Reddit, Discord, Instagram, Threads, TikTok, LinkedIn, Facebook, YouTube and every other social platform or channel — their logos, wordmarks, verified badges, icon sets and colour schemes; this card is generic, an invented substitute mark is banned on the same terms, and only a mark the TOOL MARKS line sanctions renders for real, in its true brand colours"
+      - "real platform and app marks, named or drawn: X, Twitter, Reddit, Discord, Instagram, Threads, TikTok, LinkedIn, Facebook, YouTube and every other social platform or channel — their logos, wordmarks, verified badges, icon sets and colour schemes; this card is generic"
       - "platform chrome: app bars, nav bars, tab bars, search fields, share sheets, three-dot menus, follow buttons, repost bars, link previews"
       - "engagement counters: no numbers, no 'k' abbreviations, no labels beside the heart, the bubble or the arrow; the glyphs carry nothing"
       - "a real face, a photographic avatar, a real account name and any @handle other than the signature string quoted in the TEXT block"
-      - "timestamps, dates, locations and 'via' credits invented for the meta row — that row is a greeked filler bar and nothing else"
+      - "timestamps, dates, locations and 'via' credits invented for the meta row"
       - "photography, gradient meshes, neon glow, glassmorphism, stickers, badges and drawn arrows; one white card under one soft shadow is all the depth here"
 
   - key: terminal-mockup-deck
@@ -1301,7 +1319,7 @@ styles:
       - {position: "under the window, two stacked boxes at content width", content: body,
          text_treatment: "a rejected example above and a preferred one below, marked by a grey cross glyph and a teal check glyph and by nothing lettered; each box sets the string the TEXT block quotes for it in monospace at 2.2% cap height, up to three lines, and greeks to filler bars where nothing is quoted"}
       - {position: "top-right corner, on the headline's first baseline", content: "slide-position badge", role: counter_slot,
-         text_treatment: "small teal mono uppercase at 1.4% of frame height, carrying the counter string quoted in the TEXT block and nothing else"}
+         text_treatment: "small teal mono uppercase at 1.4% of frame height, tracking +12%, carrying the counter string quoted in the TEXT block and nothing else"}
     format_affinity: [image, carousel]
     brand_affinity: []
     brand_slot: false
@@ -1322,13 +1340,11 @@ styles:
       One monospace plus one tight grotesque; no serif, script or display face. Headline: semibold,
       -1%, leading 1.05, sentence case, cap 5.5-7% in 2 lines, one teal phrase; over 45 chars 3 at
       4.5%, over 75 chars 4 at 4%, floor 3.8%. Window, box and bubble copy: mono regular, cap 2.2%,
-      leading 1.5, 34-52 chars. Counter: mono uppercase, +12%, cap 1.4%. Scale: counter 1x, mono line
-      1.6x, headline 4x.
+      leading 1.5, 34-52 chars. Scale: smallest label 1x, mono line 1.6x, headline 4x.
     text_placement: >-
       Margins 7%, flush left on ONE axis. Headline from the top margin to 22% of frame height; the
       window from 26% spanning 86% of width, centred, its title bar 6% of the window's height; boxes
-      and bubbles stack below at content width, 2% apart, clear of the bottom margin. Counter
-      top-right on the headline's first baseline.
+      and bubbles stack below at content width, 2% apart, clear of the bottom margin.
     image_treatment: >-
       Flat dark UI: one window, one soft shadow, 12px radii, three flat traffic dots in the muted
       grey with NO lettering and no OS furniture around them. GREEKING is the positive rule: every
@@ -1356,10 +1372,10 @@ styles:
       carousel_cover: "Cover: the headline at full scale over ONE editor window at its largest, its lines carrying the quoted string with the teal cursor block closing them. Boxes and bubbles stay off the cover. The position chip sets top-right only where a counter string is quoted in the TEXT block."
       carousel_slide: "Body slide: the SAME dark desk, the SAME window geometry, title bar and gutter as the cover. Drop the headline by roughly a third; the freed room goes to the window's lines, the box pair, or one chat-bubble pair. A longer quoted panel sets as numbered mono rows inside the window at reading size."
     exclusions:
-      - "real product, platform and app marks, named or drawn: operating-system furniture, editor and IDE logos, terminal and shell brands, chat apps, cloud consoles and model vendors — their wordmarks, icons, colour themes and window decorations; the window is generic, an invented substitute product name is banned on the same terms, and only a mark the TOOL MARKS line sanctions renders for real, in its true brand colours"
-      - "platform UI outside the mock-up itself: player chrome, pagination dots, search overlay, share sheet, tab bar, notification toast"
-      - "watermarks, app badges, usernames, @handles, follower, like or view counters; a bubble's avatar is an abstract mark, never a face"
-      - "legible text beyond what image_treatment sanctions — file names, tab titles, status bars and breadcrumbs are greeked grey bars unless the TEXT block quotes them"
+      - "real product, platform and app marks, named or drawn: operating-system furniture, editor and IDE logos, terminal and shell brands, chat apps, cloud consoles and model vendors — their wordmarks, icons, colour themes and window decorations; the window is generic"
+      - "platform UI outside the mock-up itself: pagination dots, search overlay, share sheet, notification toast"
+      - "a bubble's avatar is an abstract mark, never a face"
+      - "legible text beyond what image_treatment sanctions — file names, tab titles, status bars and breadcrumbs are greeked grey bars"
       - "lettered labels on the two example boxes: the rejected box carries a grey cross and the preferred one a teal check, neither captioned with an invented word"
       - "photography, faces, 3D renders, neon glow, glassmorphism and gradient meshes; one window under one soft shadow is all the depth here"
 
@@ -1400,7 +1416,7 @@ styles:
     subject_mode: scene_open
     layout_zones:
       - {position: "top-left corner", content: "slide-position badge", role: counter_slot,
-         text_treatment: "outlined rounded-rectangle chip in the accent ink, small tracked caps at 1.6-2% of frame height; the counter string quoted in the TEXT block only"}
+         text_treatment: "outlined rounded-rectangle chip in the accent ink, small mono or tracked caps at 1.6-2% of frame height; the counter string quoted in the TEXT block only"}
       - {position: "top two-thirds on the cover, upper-left third with a generous margin on a body slide",
          content: headline,
          text_treatment: "towering display type set tight, one ink for the setup lines and the second ink (or a reversed solid black bar) for the payoff phrase; cover cap height 14-20% of frame height stepping down one tier per extra line, body-slide cap height 8-11%"}
@@ -1424,21 +1440,21 @@ styles:
       tier per extra line: 40 chars = 2 lines at 14-20%; 41-65 = 3 at 11%; 66-90 = 4 at 8.5%; floor
       8%. Body headline: ultra-heavy geometric lowercase sans 8-11%, 2 lines, one phrase reversed in
       a black bar. Paragraph: lighter weight 3-4%, leading 1.35, 30-46 chars, one heavy phrase.
-      Chips: mono or tracked caps 1.6-2%. Marker for annotations. Display:paragraph 5:1 to 8:1.
+      Marker for annotations. Display:paragraph 5:1 to 8:1.
     text_placement: >-
       Margins 8% left/right, 6% top, 8% bottom. Cover: headline in the top two thirds; deck line
-      under a hand-drawn underline lower-left; drawn cue lower-right; counter chip top-left. Body:
-      headline upper-left third, paragraph across the middle band ragged right, inset card lower
-      half, chip top-left. One axis: flush left, never centred.
+      under a hand-drawn underline lower-left; drawn cue lower-right. Body: headline upper-left
+      third, paragraph across the middle band ragged right, inset card lower half. One axis: flush
+      left, never centred.
     image_treatment: >-
       Flat inks on textured paper; misregistration never on body-size type. A pixel-art mascot is
       the only illustration, max once a slide; max one underline and one circled mark a frame. Inset
       mock-ups are DESIGNED, not blank: unquoted copy greeks to grey bars sized as that text would
       be (filler, no meaning); a string the TEXT block quotes renders in full, never greeked.
     visual_pacing: >-
-      One typographic statement a slide, one paragraph, one drawn mark. FIXED: margins, chip form,
-      ink pair per ground, rule weight, type scale, mascot style. MAY CHANGE: words, inset, mascot
-      pose, mark position.
+      One typographic statement a slide, one paragraph, one drawn mark. FIXED: margins, ink pair
+      per ground, rule weight, type scale, mascot style. MAY CHANGE: words, inset, mascot pose,
+      mark position.
     list_mode:
       reflow_over_chars: 200
       max_rows: 7
@@ -1581,9 +1597,9 @@ styles:
       2.6-3%; floor 2.6%.
     text_placement: >-
       One caption block, centred on the vertical axis inside the 40-55% band, its column at most 60%
-      of width. Outer 8% and bottom 12% clear (4:5 crop). It sits over the darkest part of the
-      picture; where the skyline behind it runs lighter than mid-grey the CAMERA reframes rather
-      than the text gaining a plate. Axis, band, size and treatment identical every slide.
+      of width. All text inside the central 80% of the 1:1 frame. It sits over the darkest part
+      of the picture; where the skyline behind it runs lighter than mid-grey the CAMERA reframes
+      rather than the text gaining a plate. Axis, band, size and treatment identical every slide.
     image_treatment: >-
       Available light only: the city through the glass, plus at most one teal practical deep in the
       room. Photoreal handheld capture - high-ISO grain, honest lens softness, real depth of field,
@@ -1608,11 +1624,10 @@ styles:
       overflow: reflow
     per_format_guidance:
       carousel_cover: "Cover: the widest view of the room — the whole window wall, the skyline behind it and the desk beneath it. The caption sits in its band at its ONE standard size and is never scaled up for the cover: here the cover is established by the picture, never by bigger type."
-      carousel_slide: "Body slide: the SAME room, the SAME window wall and the SAME night skyline as the cover — one step closer at most. Never a new location, never a new camera height, never a second desk, never a lit room. Palette, grain, darkness and the caption's band, axis, size and treatment are identical; only the words and the small things on the desk change. THIS SCENE OUTRANKS THE SLIDE'S VISUAL BRIEF: where the brief describes another room, another angle, another background or another composition, it is describing the source deck and not this one — keep this desk under this window and put the brief's content into it as real objects on the desk. A longer panel adds centred lines inside the band rather than setting larger; a list-shaped one sets as the centred column in that band."
+      carousel_slide: "Body slide: the SAME room, the SAME window wall and the SAME night skyline as the cover — one step closer at most, never a second desk and never a lit room. Palette, grain, darkness and the caption's band, axis, size and treatment are identical; only the words and the small things on the desk change. THIS SCENE OUTRANKS THE SLIDE'S VISUAL BRIEF: a brief describing another room, angle, background or composition is describing the source deck, not this one — put its content into this one as real objects on the desk. A longer panel adds centred lines inside the band rather than setting larger; a list-shaped one sets as the centred column in that band."
     exclusions:
-      - "platform UI of any kind: player chrome, progress bars, play buttons, pagination dots, tab bars, share and like icons"
-      - "watermarks, app badges, usernames, @handles, profile pictures, follower, like, view or comment counters"
-      - "competitor, creator and platform marks on the laptop, the notebooks, the chair, the glass and every other surface — props are unbranded unless the request's TOOL MARKS line sanctions the mark, which then renders as the real logo in its own brand colours"
+      - "platform UI of any kind: player chrome, pagination dots, tab bars, share and like icons"
+      - "props are unbranded — the laptop, the notebooks, the chair, the glass and every other surface carry no competitor, creator or platform mark"
       - "identifiable faces: anyone in frame is seen from behind, silhouetted against the window, or cropped at the edge"
       - "legible text outside the caption block — screens, notebook pages, book spines, signage and the city's own advertising stay dark and unreadable"
       - "graphic furniture: stickers, badges, chips, drawn arrows, frames, borders, gradient scrims, lens flares and light streaks as decoration"
@@ -1667,9 +1682,10 @@ styles:
       tracking, no outline. A longer string adds lines downward and the plate grows; never below
       4%.
     text_placement: >-
-      One caption block, upper-left third: left edge 8% of width, top 10% of height. Outer 8% and
-      bottom 12% clear (4:5 crop). Over low-detail negative space, never on the subject or a hard
-      edge. Under 60 chars: floats, faint drop shadow. 60+ chars, or ground lighter than mid-grey:
+      One caption block, upper-left third: left edge 8% of width, top 10% of height. All text
+      inside the central 80% of the 1:1 frame. Over low-detail negative space, never on the
+      subject or a hard edge. Under 60 chars: floats, faint drop shadow. 60+ chars, or ground
+      lighter than mid-grey:
       soft charcoal plate, ~25% opacity, rounded, padding ~1 cap height. Same x, size and
       treatment every slide.
     image_treatment: >-
@@ -1747,8 +1763,9 @@ styles:
     text_placement: >-
       One statement block, upper third, flush left on an 8% margin, first baseline ~20% of frame,
       clear of props and edges. It MUST sit over a region two stops darker than the type - the
-      defocused band; with none, the camera moves rather than the text gaining a plate. Bottom 12%
-      clear for a 4:5 crop. Position, size and treatment identical on every slide.
+      defocused band; with none, the camera moves rather than the text gaining a plate. All text
+      inside the central 80% of the 1:1 frame. Position, size and treatment identical on every
+      slide.
     image_treatment: >-
       Photoreal phone capture: golden-hour side light, shallow depth of field, honest lens softness,
       warm white balance, camera ~30 degrees above the surface every slide. Three to five lived-in

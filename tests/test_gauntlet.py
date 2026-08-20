@@ -1446,14 +1446,16 @@ def test_an_absent_or_unparseable_sheet_falls_back_to_the_built_ins_and_never_ra
 
 
 def test_the_shipped_sheet_is_the_one_the_module_actually_assembles_from() -> None:
-    """End-to-end against `prompts/gauntlet_fix.md` itself: all 20 codes ordered, all 39 rows
-    parsed, and the two verbatim blocks byte-identical to the module's stand-in constants."""
+    """End-to-end against `prompts/gauntlet_fix.md` itself: all 20 codes ordered, all 40 rows
+    parsed (39 + the D59 `style_consistency | chip` row that refuses to propagate an unmandated
+    chip from slide 1), and the two verbatim blocks byte-identical to the module's stand-in
+    constants."""
     from hypesocials.prompts_engine import PromptEngine
 
     sheet = gauntlet._sheet(PromptEngine())
     assert sheet.origin.endswith("gauntlet_fix.md")
     assert set(sheet.order) == gauntlet.ALL_CODES and len(sheet.order) == 20
-    assert len(sheet.remedies) == 39
+    assert len(sheet.remedies) == 40
     assert all((code, "") in sheet.remedies for code in gauntlet.ALL_CODES)  # every code has a `*`
     assert sheet.precedence == gauntlet.PRECEDENCE_BLOCK
     assert sheet.closing == gauntlet.FENCE_LINE
@@ -1477,11 +1479,17 @@ def test_the_shipped_sheets_precedence_forbids_the_collateral_loss_of_a_sanction
 
     Matched against the flattened text: the sheet is hand-wrapped prose, and a re-wrap must not be
     able to break a pin on a sentence that did not change.
+
+    D59 (SESSION J) narrowed the guard by one word: "a QUOTED position badge". The unnarrowed
+    sentence preserved an INVENTED chip across every re-render that did not name `counter_value`
+    (run `20260820_145809_4a0q`), which is the opposite of F7-C's intent — the badge this guard
+    protects is the one the TEXT block quotes; a chip the TEXT block never quoted is "not quoted in
+    the TEXT block" under precedence item 1 and goes.
     """
     from hypesocials.prompts_engine import PromptEngine
 
-    guard = ("Fix only the named defects; everything else stays as rendered, the position badge "
-             "and every sanctioned mark included.")
+    guard = ("Fix only the named defects; everything else stays as rendered, a quoted position "
+             "badge and every sanctioned mark included.")
     sheet = gauntlet._sheet(PromptEngine())
 
     assert guard in " ".join(sheet.precedence.split()), \

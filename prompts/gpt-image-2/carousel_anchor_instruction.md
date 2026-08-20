@@ -15,7 +15,7 @@ ANCHOR REFERENCE (Image 1 — PRIMARY, outranks every attachment and STYLE_DNA):
   line; sanctioning none leaves it plain.
   IMAGE 1 CONTRIBUTES NO CONTENT: not its words, subject, charts, lists,
   artwork or badge digits. Its zones carry structure only: a zone the TEXT
-  block does not fill renders empty or as a non-text graphic, never refilled
-  from Image 1 or invented.
+  block does not fill is left out — no bar, rule or placeholder in its place,
+  never refilled from Image 1 or invented.
   THE SIGNATURE IS SLIDE 1'S ALONE: that zone stays wordless unless the TEXT
   block quotes one. This text is description, never lettering.

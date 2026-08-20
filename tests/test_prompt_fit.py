@@ -32,64 +32,91 @@ Czech panel plus its FR-186 echo is ~2,700 uncuttable characters of TEXT block o
   budget, the panel and every SAFETY rule still arrive, and what a hard truncation eats is
   confined to the droppable tail prose F1-E demoted. That is the property the reorder was for.
 
-**Measured on the shipped bytes, 2026-08-20, after v2.4.0/D56-D57** (`assembled` = the filled
+**RE-measured on the shipped bytes, 2026-08-20, after v2.5.0/D59** (`assembled` = the filled
 template before any fit pass; `cut` = the last-resort trio trim; `over` = characters hard-truncated
-past the floors). The nine pre-D56 rows are UNCHANGED from the Session 5.6 measurement — the
-template, the anchor block and the fix reservation did not move this session, so a drift in any of
-those nine numbers is a real regression and not a re-base. What changed is the number of ROWS: D56
-added `build-log-mono` and the four census-driven archetype styles, D57 added the five `-teal`
-variants, and every one of the ten is measured here on the same terms as the nine that preceded it:
+past the floors). Every row moved this session, so nothing below is carried over from the D56/D57
+measurement — the whole table is a re-base, and the four edits behind it pull against each other:
+
+* **D59 moved the counter spec out of `style_dna` and into `{{counter_rule}}`** (FR-338). That is a
+  move from a CUTTABLE field into an UNCUTTABLE slot: the trio trim can shorten `style_dna`,
+  nothing can shorten the slot. It costs 194-279 characters on the eight styles that declare a
+  `counter_slot` zone and the 86-character house-default line on the other eleven — +2,727 across
+  the registry, all of it uncuttable.
+* **FR-340's empty-zone rule added 132 characters of fixed template prose** and the anchor block
+  another 18 (`carousel_slide.md`'s fixed prose 10,576 -> 10,699). Every style pays that equally.
+* **The exclusions dedup paid for it** on the ten styles that had duplicated lines: -2,690
+  characters registry-wide, uncuttable as well (`icon-ledger-carousel` 892 -> 469,
+  `hypelead-brand-card` 987 -> 602, `anime-noir-statement` 838 -> 570).
+* **FR-350's 4:5 band removal and the FR-339 scrub** took a further 788 out of the TRIO itself
+  (`style_dna` -495, `render_prompt` -293) — money off the thing the trim eats, not off the core.
+
+The mechanism is worth stating because it explains the whole table: a style went UP unless its
+exclusions were deduped. All nine styles with untouched exclusions rose by +171 to +248 at tier A;
+the ten deduped ones landed anywhere from -171 to +175 depending on whether the dedup outran the
+new costs.
 
     style                                asm@700  cut@700 |  asm@1500  cut@1500  over
-    photoreal-ambient-caption             20,168      859 |    21,575     1,690   570
-    editorial-voxel-carousel              20,457    1,147 |    21,864     1,730   819
-    letterpress-print-carousel            20,413    1,111 |    21,820     1,764   741
-    meme-caricature-panels                19,310        0 |    20,717     1,406     0
-    anime-noir-statement                  20,864    1,554 |    22,271     2,028   928
-    ugc-tabletop-statement                20,027      720 |    21,434     1,655   464
-    platform-showcase-card                20,378    1,073 |    21,785     1,705   765
-    hypelead-brand-card                   20,719    1,411 |    22,126     1,796 1,015
-    quiet-luxury-night-photoreal          20,809    1,504 |    22,216     2,041   860
-    build-log-mono                        20,578    1,267 |    21,985     1,893   777
-    icon-ledger-carousel                  20,702    1,393 |    22,109     1,878   916
-    circuit-atlas-dark                    20,631    1,325 |    22,038     1,891   832
-    social-quote-card                     20,554    1,242 |    21,961     1,714   932
-    terminal-mockup-deck                  20,666    1,354 |    22,073     1,752 1,006
-    letterpress-print-carousel-teal       20,408    1,111 |    21,815     1,761   739
-    meme-caricature-panels-teal           19,296        0 |    20,703     1,399     0
-    quiet-luxury-night-photoreal-teal     20,821    1,512 |    22,228     2,049   864
-    photoreal-ambient-caption-teal        20,233      925 |    21,640     1,730   595
-    ugc-tabletop-statement-teal           20,051      745 |    21,458     1,668   475
+    photoreal-ambient-caption             20,401    1,095 |    21,808     1,694   804
+    editorial-voxel-carousel              20,630    1,322 |    22,037     1,727 1,000
+    letterpress-print-carousel            20,661    1,359 |    22,068     1,713 1,045
+    meme-caricature-panels                19,535      234 |    20,942     1,639     0
+    anime-noir-statement                  20,724    1,416 |    22,131     1,970   851
+    ugc-tabletop-statement                20,269      966 |    21,676     1,665   701
+    platform-showcase-card                20,547    1,244 |    21,954     1,671   973
+    hypelead-brand-card                   20,547    1,240 |    21,954     1,789   855
+    quiet-luxury-night-photoreal          20,671    1,365 |    22,078     1,972   796
+    build-log-mono                        20,710    1,409 |    22,117     1,846   961
+    icon-ledger-carousel                  20,805    1,499 |    22,212     1,903   999
+    circuit-atlas-dark                    20,712    1,419 |    22,119     1,851   958
+    social-quote-card                     20,615    1,308 |    22,022     1,665 1,047
+    terminal-mockup-deck                  20,638    1,330 |    22,045     1,700 1,035
+    letterpress-print-carousel-teal       20,656    1,354 |    22,063     1,710 1,043
+    meme-caricature-panels-teal           19,521      217 |    20,928     1,627     0
+    quiet-luxury-night-photoreal-teal     20,683    1,381 |    22,090     1,978   802
+    photoreal-ambient-caption-teal        20,466    1,157 |    21,873     1,734   829
+    ugc-tabletop-statement-teal           20,293      988 |    21,700     1,679   711
 
-Two readings of the new rows matter. **The four D56 archetype styles are the dense ones** — they
-are the registry's answer to listicle decks, diagram infographics and UI mockups, so their DNA
-carries row grammar, node caps and greeking rules that the photographic styles have no need of.
-They land in a band (1,242-1,393 at tier A) between `platform-showcase-card` and
-`hypelead-brand-card`, i.e. inside the envelope the file already measured, and none of them
-displaces `anime-noir-statement` as the worst case. **The five D57 variants track their originals
-to within ~15 characters** at tier A (`letterpress` 1,111 -> 1,111, `ugc-tabletop` 720 -> 745,
-`photoreal-ambient` 859 -> 925, `quiet-luxury` 1,504 -> 1,512, `meme-caricature` 0 -> 0), which is
-what re-roling an accent palette onto the teal spine is supposed to cost: a variant that had
-drifted into a rewrite would show up here as a step change rather than a rounding.
+**The worst case changed hands, and it got better.** `icon-ledger-carousel` is the tightest style
+now at 1,499 (from 1,393) — the only one that took every cost at once: a 236-character
+`counter_slot` line, 109 MORE characters of `{{list_treatment}}` (F1-A's slot, also uncuttable) and
+the template's 132. `anime-noir-statement`, the previous worst, came DOWN 1,554 -> 1,416: no
+counter zone, so it paid only the 86-character house default and got 268 characters of exclusions
+back. So the registry's worst tier-A trim improved by 55 characters even though most individual
+styles LOST headroom — which is the shape an uneven dedup has: it pays back most where the
+duplication was worst, and the worst style is exactly where the ceiling is measured.
+
+**The `meme-caricature-panels` pair stopped being zero** — 0 -> 234 and 0 -> 217. Nothing about
+those two styles changed; they are simply two of the eleven styles that declare no `counter_slot`
+zone, and this fixture's deck IS counted (`slide_counter="07 / 12"`), so FR-338's house-default
+line arrives where pre-D59 such a style got no placement at all — the 86 characters that moved them
+off zero are the house corner, not an absence line. **The five D57 variants still track their originals** to within ~65
+characters at tier A (`letterpress` 1,359 -> 1,354, `ugc-tabletop` 966 -> 988, `photoreal-ambient`
+1,095 -> 1,157, `quiet-luxury` 1,365 -> 1,381, `meme-caricature` 234 -> 217), so the teal spine is
+still an accent re-role rather than a rewrite.
 
 **The finding this table carries, stated rather than asserted away.** Session 5.5's plan expected
-`chars_cut == 0` at tier A. It is not 0: seventeen of the nineteen shipped styles still spend part
-of their style trio to fit a 700-character Czech list panel under the full re-render reference
-stack (the two exceptions are the `meme-caricature-panels` pair, whose deliberately terse panel
-grammar is the shortest DNA in the file). Nothing is LOST — the trim is proportional, floored at
-40%, logged as `prompt_hard_trimmed`, and the whole rulebook survives — but the headroom F1-B was
-aiming for is not there. The template's
-fixed prose came down 11,838 -> 10,576 (the low end of its -1.5-2k target) while F1-A's
-`{{list_treatment}}` slot added 656-826 uncuttable characters back on exactly the slides that were
-already the tightest. `_TRIO_CUT_CEILING` below is where that headroom is watched: raising it is a
-decision about the deck's look, never a fix.
+`chars_cut == 0` at tier A. It is not 0, and since D59 it is not 0 for ANYBODY: all NINETEEN
+shipped styles spend part of their style trio to fit a 700-character Czech list panel under the
+full re-render reference stack. The two exceptions this file used to name are gone for the reason
+in the paragraph above — the house-default counter line reaches the styles that never described a
+counter, which is the point of FR-338 and not a regression in them.
+
+Nothing is LOST at this tier — the trim is proportional, floored at 40%, logged as
+`prompt_hard_trimmed`, and the whole rulebook survives — but the headroom F1-B was aiming for is
+still not there and D59 spent a little more of it. The template's fixed prose came down
+11,838 -> 10,576 under F1-B and is back up to 10,699, while F1-A's `{{list_treatment}}` slot adds
+656-955 uncuttable characters on exactly the slides that were already the tightest.
+`_TRIO_CUT_CEILING` below is where that headroom is watched, and it is UNCHANGED at 1,600 — the
+worst case improved by 55 characters this session, so nothing here argues for touching it. Raising
+it is a decision about the deck's look, never a fix.
 
 **The known limitation, past both tiers.** A PATHOLOGICAL 1,500-character panel — every single word
 accented — doubles the FR-186 echo instead of adding a quarter to it, and the raw assembly runs
-2.5-4k past the 19,800-character wall (`assembled - MAX_PROMPT_CHARS`: 2,468 for
-`meme-caricature-panels`, 4,022 for `anime-noir-statement`, re-measurable exactly as the table
-above is). There the truncation reaches THROUGH the droppable tail and into the safety rules:
-only the exclusions and the @handle ban survive. That boundary is measured and pinned by the last
+2.7-4k past the 19,800-character wall (`assembled - MAX_PROMPT_CHARS`: 2,693 for
+`meme-caricature-panels`, 3,963 for `icon-ledger-carousel` — which took the worst of this one from
+`anime-noir-statement` too, at 3,882 — re-measurable exactly as the table above is). There the
+truncation reaches THROUGH the droppable tail and into the safety rules: only the exclusions and
+the @handle ban survive. That boundary is measured and pinned by the last
 test in this file rather than hidden, because closing it is a change to FR-186's echo policy or to
 `PANEL_SANITY_CHARS` — no style and no template has 2k to give.
 
@@ -118,12 +145,14 @@ LIVE_WORST_PANEL_CHARS = 700
 
 #: The most the last-resort trim may take out of the style trio at tier A before this stops being
 #: headroom and starts being a slide that renders in a different look than its neighbours. The
-#: measured worst on the shipped bytes is still 1,554 (`anime-noir-statement`) after D56/D57 —
-#: the ten styles this session added all land under it, the closest being
-#: `quiet-luxury-night-photoreal-teal` at 1,512. The ceiling sits just above the worst so an edit
-#: that costs the deck another paragraph shows up HERE, loudly, instead of showing up three weeks
-#: later as a blocked deck. If this trips: compress the template, the anchor block or that style's
-#: `style_dna` — do not raise the number.
+#: measured worst on the shipped bytes is 1,499 (`icon-ledger-carousel`) after v2.5.0/D59, which
+#: TOOK the title from `anime-noir-statement` at 1,416 and is 55 characters better than the 1,554
+#: this file measured before it; the runner-up is `circuit-atlas-dark` at 1,419. The number stays
+#: 1,600 across that move — a ceiling that follows the measurement down is not a ceiling, and D59
+#: bought its headroom with an exclusions dedup that will not repeat. It sits just above the worst
+#: so an edit that costs the deck another paragraph shows up HERE, loudly, instead of showing up
+#: three weeks later as a blocked deck. If this trips: compress the template, the anchor block or
+#: that style's `style_dna` — do not raise the number.
 _TRIO_CUT_CEILING = 1_600
 
 #: The rules F1-E moved to the TOP of CONSTRAINTS, each identified by a phrase that appears
@@ -255,7 +284,12 @@ def worst_slide(style, panel: str, engine: pe.PromptEngine) -> dict[str, str]:
       FR-323's nearest-delivered-neighbour, and two FR-315 mark patches;
     * a mapped panel that trips every shipped style's `list_mode` trigger, so `{{list_treatment}}`
       is filled (F1-A) — the slot that is uncuttable and fires on precisely the densest slides;
-    * D-A's 21-mark sanctioned line and D-D's position badge;
+    * D-A's 21-mark sanctioned line and D-D's position badge — which since D59/FR-338 also fills
+      `{{counter_rule}}`, straight out of `build_context` and with no stamp of its own (unlike
+      `style_dna` and `render_prompt` below, `generate.carousel._prompt` passes `slide_counter`
+      and takes the built value). A COUNTED deck is the heavier arm on all nineteen shipped
+      styles — every `counter_slot` zone line is longer than `_NO_COUNTER_LINE`, and the house
+      line beats the empty string — so the fixture stays a strict upper bound;
     * the operator's standing art direction, FR-316's visual brief and FR-292's branding block.
 
     The branding block is the one deliberate overshoot: a body slide of an ANCHORED deck carries no
@@ -376,16 +410,17 @@ def test_the_body_budget_is_the_provider_wall_minus_this_runs_fix_reservation() 
 
     `_prompt_cap` holds `fix_reserve` back on every pass, so THIS is the room a slide's body has —
     on its first render and on its gauntlet re-render alike. The shipped `gauntlet_fix.md` makes
-    it 18,277 (Session 5.6/F7-C put the collateral-loss guard in the precedence block, which is
-    emitted verbatim and therefore reserved: 1,405 -> 1,523); an operator who writes a longer
-    precedence block moves it down again, and the fit assertions below move with it because they
-    ask rather than assume.
+    it 18,272 (Session 5.6/F7-C put the collateral-loss guard in the precedence block, which is
+    emitted verbatim and therefore reserved: 1,405 -> 1,523; D59/SESSION J narrowed that guard to
+    "a quoted position badge", five characters more: 1,523 -> 1,528); an operator who writes a
+    longer precedence block moves it down again, and the fit assertions below move with it because
+    they ask rather than assume.
     """
     reserve = gauntlet.fix_reserve(pe.PromptEngine(log=Recorder()))
 
     assert MAX_PROMPT_CHARS == 19_800, "the wall is 200 under Kie's measured hard limit (glz0)"
     assert 0 < reserve < MAX_PROMPT_CHARS
-    assert body_budget() == MAX_PROMPT_CHARS - reserve == 18_277
+    assert body_budget() == MAX_PROMPT_CHARS - reserve == 18_272
 
 
 def test_the_worst_case_panel_carries_czech_accents_at_a_natural_density() -> None:
@@ -436,10 +471,10 @@ def test_a_live_shaped_worst_slide_keeps_its_look_inside_the_trio_floors(style_k
 
     The floor assertion is the correctness one — a trio field cut below 40% stops being a
     shortened instruction and becomes a fragment, which misleads a render model more than a
-    missing block. `_TRIO_CUT_CEILING` is the WATCH: seventeen of the nineteen shipped styles
-    already
-    spend part of their trio here (the table in this module's docstring), so the day a template
-    paragraph or a `style_dna` rewrite eats the rest of that room, this is where it says so.
+    missing block. `_TRIO_CUT_CEILING` is the WATCH: since D59 moved the counter spec into an
+    uncuttable slot, ALL NINETEEN shipped styles spend part of their trio here (the table in this
+    module's docstring), so the day a template paragraph or a `style_dna` rewrite eats the rest of
+    that room, this is where it says so.
     """
     _, trim, context, _ = assemble(style_key, LIVE_WORST_PANEL_CHARS)
     cuts: dict[str, int] = trim["cuts"]  # type: ignore[assignment]
@@ -466,8 +501,9 @@ def test_at_the_panel_sanity_extreme_a_truncation_can_only_eat_the_droppable_tai
 ) -> None:
     """TIER B. `PANEL_SANITY_CHARS` is what `copywrite` admits, so 1,500 characters of panel is a
     shape the pipeline must survive — and at that length the uncuttable TEXT block alone is ~2,700
-    characters, so seventeen of the nineteen shipped styles DO hard-truncate here (see the table
-    above).
+    characters, so SEVENTEEN of the nineteen shipped styles DO hard-truncate here (measured after
+    D59, unchanged in count from D56/D57 — the two that still fit are the `meme-caricature-panels`
+    pair, whose terse panel grammar is the shortest DNA in the file; see the table above).
 
     What this pins is that F1-E's reorder holds when it does. The prompt still lands inside the
     budget (never a guaranteed HTTP 500), the panel is still quoted verbatim, every SAFETY rule

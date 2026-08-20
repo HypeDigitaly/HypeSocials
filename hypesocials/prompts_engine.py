@@ -70,6 +70,7 @@ from hypesocials.models import (
     PROFILE_TEMPLATES,
     Brief,
     CopySet,
+    LayoutZone,
     MetaStyle,
     TrendItem,
 )
@@ -227,7 +228,14 @@ _ALLOWLIST: dict[str, frozenset[str]] = {
         # role does not name — so the rule reached the image, reel and critic paths and never the
         # slide renderer it was written for, while the `system` critic judged slides against it.
         # Its own placeholder is what lets the SLIDE CONTENT region carry it (empty = ignore).
-        "list_treatment"}),
+        "list_treatment",
+        # v2.5.0 (D59, FR-338) — the counter's own channel, carousel slides ONLY and for the
+        # same reason `list_treatment` above is: the badge is placed by a `counter_slot` LAYOUT
+        # ZONE, this role names no `{{layout_zones}}` slot, and so the one role that renders a
+        # mapped deck's slides was the one role never told where the deck's position badge goes
+        # — or that this deck has none. No other role needs it: the image and reel roles resolve
+        # `{{layout_zones}}` themselves and carry no counter, and the critics read the zone list.
+        "counter_rule"}),
     "carousel_anchor_instruction.md": frozenset(),
     # FR-306's slide-intelligence question is a GLOBAL template like the vision check: zero
     # placeholders — the images ARE the variable input, and the question must read identically
@@ -707,6 +715,11 @@ def build_context(
             empty drops that zone and states the absence instead (`_NO_COUNTER_LINE`), for exactly
             the reason M11 gives for the signature zone. It is NEVER derived from `slide_index`,
             which is orientation metadata the templates now forbid drawing.
+            D59/FR-338 adds the THIRD channel, and the only one a slide renderer can read:
+            `{{counter_rule}}`, built by `_counter_rule` from this same string plus the style's
+            own zone declaration. The three have to agree — the TEXT block carries the badge's
+            WORDS, `{{layout_zones}}` reaches the gauntlet's critic, and `{{counter_rule}}`
+            reaches `carousel_slide.md`, which names no `{{layout_zones}}` slot at all.
         reel_beats: `beats_for(duration_s)`'s real-second shot schedule, passed by `generate.reel`
             because it owns the configured duration. F24a deliberately gives it no placeholder of
             its own (`prompts/README.md` §"computed per call"): it rides in front of the motion
@@ -739,6 +752,13 @@ def build_context(
         # an override brief's directives replaced the style's layout entirely (FR-144), so there is
         # no treatment to describe. Empty on every non-list frame, which is most of them.
         "list_treatment": "" if override else _list_treatment(style, slide_text),
+        # D59/FR-338 — the counter's third channel, and the only one `carousel_slide.md` can
+        # read: this role names no `{{layout_zones}}`, so the `counter_slot` zone that PLACES the
+        # badge reached the critic and never the renderer, which inferred a badge from whatever
+        # chip STYLE_DNA described — on uncounted decks too. Same override gate as the zones and
+        # the treatment above: a brief that replaced the style's layout (FR-144) declares no zone
+        # to quote and no house spine to fall back on. Never cuttable (`_TRUNCATION_ORDER`).
+        "counter_rule": "" if override else _counter_rule(style, slide_counter),
         "style_dna": style_dna(style),
         "exclusions": _join(style.exclusions if style else (), "; "),
         # Conductor decision (W2 wire-in): an override brief has no style, but the reel director's
@@ -837,6 +857,14 @@ def style_zones(style: MetaStyle | None, *, wordmark: str = "", slide_counter: s
     the critic would drift from the one the render prompt carried — which reads, from a critic's
     seat, as a `style_layout` defect in every frame. One implementation, two readers.
 
+    **On a CAROUSEL SLIDE there is no render prompt carrying this value** (D59/FR-338, and the
+    caveat belongs here rather than in a plan file): `carousel_slide.md` names no
+    `{{layout_zones}}` slot, so for a deck's slides this function feeds the critic ALONE. Since
+    D59 exactly one line of it reaches the renderer too — the `counter_slot` zone, through
+    `counter_rule()` below and `_zone_line`'s shared formatter, so the two read the badge in
+    identical words. Every OTHER zone still reaches a slide only as `{{style_dna}}` prose. The
+    image and reel roles are unaffected: both name `{{layout_zones}}` and get the whole list.
+
     The gating arguments are the render side's own: pass this frame's wordmark and counter so the
     absence lines match what the model was told. A frame's TEXT is no longer an argument (Session
     5.5/F1-A): the list treatment left this value for `{{list_treatment}}`, and the drift this
@@ -845,6 +873,24 @@ def style_zones(style: MetaStyle | None, *, wordmark: str = "", slide_counter: s
     gauntlet reads the treatment through `list_mode_text` instead (`contracts.DeckContract`).
     """
     return _style_zones(style, wordmark, slide_counter)
+
+
+def counter_rule(style: MetaStyle | None, *, slide_counter: str = "") -> str:
+    """The `{{counter_rule}}` VALUE for one carousel slide — the public face of `_counter_rule`.
+
+    ONE line telling the SLIDE RENDERER what to do about this deck's position badge: where the
+    style's own `counter_slot` zone puts it, or the house corner when the style declares no such
+    zone, or that this deck carries no counter at all. `""` when there is nothing to say — an
+    unstyled context, or an uncounted deck whose style never asked for a badge — and the
+    template region reads "(ignore if empty)" for exactly that case.
+
+    Public for the same reason `style_zones` above is: the value has two readers who must not
+    disagree. The gauntlet judges a frame against `{{layout_zones}}`, this is the ONE line of that
+    list a slide renderer ever sees, and both come out of `_zone_line`. `slide_counter` is
+    keyword-only on the `style_zones` precedent — a positional second argument is a wordmark
+    everywhere else in this module, and the two gates must never be confusable.
+    """
+    return _counter_rule(style, slide_counter)
 
 
 def list_mode_text(style: MetaStyle | None) -> str:
@@ -1192,6 +1238,17 @@ _NO_SIGNATURE_LINE = "This frame carries no signature zone: the lower margin is 
 _NO_COUNTER_LINE = ('This deck carries no slide counter: no position badge, no "N of M", '
                     "no page number anywhere in the frame.")
 
+#: FR-338 (D59) — what a COUNTED deck is told when its style declares no `counter_slot` zone at
+#: all. The badge is the SOURCE deck's own convention, not the style's, which is why the counter is
+#: gated on `detect_counter` and never on the registry (see `build_context`'s `slide_counter`): a
+#: style that never asked for a badge still renders one on a numbered deck. Before D59 the slide
+#: renderer heard nothing about WHERE it went and put it wherever the nearest chip in STYLE_DNA
+#: happened to sit. This is the house spine Session K's FR-350 will make the registry's own
+#: default, stated here first so renderer and critic agree today: `generate.contracts` already
+#: lists a `counter:` row to the critic on these styles, and only this line answers it.
+_HOUSE_COUNTER_LINE = ("counter {value}: small, body family, top-right inside the safe area; "
+                       "no chip, no badge")
+
 
 #: FR-304b — the two ways a `list_mode` may lay MORE ROWS out, as one executable sentence each.
 #: Both end on the same clause on purpose: the overflow rule is the sentence most likely to be read
@@ -1209,6 +1266,58 @@ _OVERFLOW_LINES: dict[str, str] = {
 #: carries the slot on its own — an "(ignore if empty)" region has no surrounding sentence to lean
 #: on, so the value must read as a complete order the moment it is non-empty.
 _LIST_MODE_LEAD = "This frame's text is a LIST and is set as one:"
+
+
+def _zone_line(zone: LayoutZone) -> str:
+    """ONE layout zone as the one sentence every reader of it gets (D59/FR-338).
+
+    Factored out of `_style_zones` when the counter zone gained a second reader. `{{counter_rule}}`
+    hands the `counter_slot` zone straight to the slide renderer while the gauntlet's `system`
+    critic reads that same zone inside `{{layout_zones}}`, and a second hand-written rendering of
+    the same three fields would drift from the numbered list the critic is shown — which reads,
+    from the critic's seat, as a `style_layout` defect on every frame of the deck.
+
+    NO ordinal here, deliberately. The number `_style_zones` prefixes is a position in ITS list,
+    and a position is meaningless on a slot that carries one zone alone with nothing to count it
+    against. `_style_zones` prefixes the ordinal and re-applies the same `rstrip(" —")` over the
+    whole numbered line, so a zone with an empty `content` or `text_treatment` still yields
+    byte-identical output to the single f-string this replaced.
+    """
+    return f"{zone.position} — {zone.content} — {zone.text_treatment}".rstrip(" —")
+
+
+def _counter_rule(style: MetaStyle | None, slide_counter: str) -> str:
+    """The `{{counter_rule}}` VALUE — where THIS deck's position badge goes, or that it has none.
+
+    Five arms, and the last two are the ones that were silent before D59:
+
+    | style | counter string | value |
+    |---|---|---|
+    | `None` | anything | `""` — nothing declared a layout, so nothing places a badge |
+    | declares `counter_slot` | non-empty | that zone's line, in `_style_zones`' own words |
+    | declares `counter_slot` | empty | `_NO_COUNTER_LINE` — the absence, stated out loud |
+    | declares no such zone | non-empty | `_HOUSE_COUNTER_LINE` — the house corner, top-right |
+    | declares no such zone | empty | `""` — nothing to say, so nothing said |
+
+    The counted-and-declared arm goes through `_zone_line`, which is the whole point of the slot:
+    the `system` critic judges a frame against `{{layout_zones}}` (`generate.contracts`),
+    `carousel_slide.md` names no such slot, and a renderer told about the badge in words of its own
+    would then be failed for obeying them. One input, one formatter, one sentence.
+
+    The house arm exists for the mirror-image reason. The counter is the SOURCE deck's convention
+    and reaches the TEXT block whatever the style declares, so `contracts.py` lists a `counter:`
+    row to the critic on a style with no `counter_slot` zone too — and before D59 the renderer
+    got no placement for it at all. `_NO_COUNTER_LINE` is reused rather than re-worded: M11's
+    argument (a described-but-unfilled slot is the biggest hallucination site these models have)
+    is about the zone, and this is the same sentence the critic reads at the foot of its list.
+    """
+    if style is None:
+        return ""
+    zone = next((z for z in style.layout_zones if z.role == "counter_slot"), None)
+    counted = bool(slide_counter.strip())
+    if zone is not None:
+        return _zone_line(zone) if counted else _NO_COUNTER_LINE
+    return _HOUSE_COUNTER_LINE.format(value=slide_counter.strip()) if counted else ""
 
 
 def _style_zones(style: MetaStyle | None, wordmark: str, slide_counter: str = "") -> str:
@@ -1239,7 +1348,7 @@ def _style_zones(style: MetaStyle | None, wordmark: str, slide_counter: str = ""
     counted = bool(slide_counter.strip())
     gated = {"brand_slot": signed, "counter_slot": counted}
     kept = [zone for zone in style.layout_zones if gated.get(zone.role, True)]
-    lines = [f"{i}. {zone.position} — {zone.content} — {zone.text_treatment}".rstrip(" —")
+    lines = [f"{i}. {_zone_line(zone)}".rstrip(" —")
              for i, zone in enumerate(kept, start=1)]
     declared = {zone.role for zone in style.layout_zones}
     if not signed and "brand_slot" in declared:
@@ -1591,8 +1700,8 @@ _EXCL = """  - Never reproduce platform UI, watermarks, app logos, usernames, ha
     like or view counters, progress bars, play buttons, or any text visible in the references —
     brand wordmarks, logotypes, product names, category, button, chip and pill labels and kicker
     lines included. A word set in the reference's own typeface is still that reference's word.
-  - If a reference template has a text zone with no string quoted above, leave it empty or fill
-    it with a non-text graphic element; never carry the reference's words into it.
+  - If a reference template has a text zone with no string quoted above, leave that zone out —
+    no bar, rule or placeholder in its place; never carry the reference's words into it.
   - Never render navigation or sticker prompts carried from a reference — "SWIPE LEFT",
     "SWIPE RIGHT", "READ MORE", "TAP", worded arrows — unless quoted in the TEXT block.
   - All rendered text sits inside the central 80% of the frame, clear of every edge.
@@ -2758,11 +2867,12 @@ CONSTRAINTS:
     product name, category or section label, button, chip or pill label or
     kicker line. Where the design calls for a mark, draw an unlettered generic
     shape of that kind; a made-up brand name in its place is equally forbidden.
-  - If the style has a text zone for which no string is quoted above, leave
-    that zone empty or fill it with a non-text graphic element (a rule, a bar,
-    a shape, negative space) — never invent replacement words for it. A kicker
-    slot with nothing quoted for it stays wordless. An interface, chart or
-    label group drawn for this frame is greeked into bars and unlettered
+  - A text zone with no string quoted above is left out of the frame — never
+    filled with invented words, and never with a bar, rule, block or
+    placeholder standing in for words. A repeating device (a row, a card, a
+    chip) exists once per quoted line and not at all when none is quoted. A
+    kicker slot with nothing quoted for it stays wordless. An interface, chart
+    or label group drawn for this frame is greeked into bars and unlettered
     shapes.
   - This is one standalone image: no navigation or swipe prompt of any kind
     ("SWIPE LEFT", "SWIPE RIGHT", "READ MORE", "TAP", an arrow or a hand
@@ -2891,11 +3001,11 @@ TEXT (locked asset — this slide's exact content):
   invented body copy, label, caption or signature.
   A letter-by-letter echo of an accented word ("V-ě-t-š-i-n-a") is a spelling
   aid for you alone; never draw the hyphenated form onto the image.
-  A line labelled counter is this deck's own position badge: render that string
-  exactly as quoted, once, in the chip or badge treatment STYLE_DNA describes,
-  and nowhere else in the frame. With no counter line quoted above,
-  this deck carries no slide counter: no position badge, no "N of M", no page
-  number anywhere in the frame.
+  COUNTER RULE (ignore if empty): {{counter_rule}}
+  That line rules this deck's position badge and outranks every chip, badge
+  or page-number device STYLE_DNA describes: a zone line means the quoted
+  counter renders there once and nowhere else; an absence line means no chip,
+  badge, page number or "N of M" on ANY slide, slide 1 included.
   Fit a long string by giving it room — more lines, tighter leading, a wider
   block, the plate or card STYLE_DNA describes; a quoted string is never
   shortened, re-worded, hyphenated, ellipsed or set below legible size.
@@ -2956,8 +3066,10 @@ CONSTRAINTS:
     logo, in its true brand colours, in the fixed position that block sets.
   - Every legible character in this frame comes from the TEXT block, the
     lettering inside a sanctioned TOOL MARK excepted: a text zone with no string
-    quoted above renders empty or as a non-text graphic element (a rule, a bar,
-    a shape, negative space), never with invented words.
+    quoted above is left out of the frame — never filled with invented words,
+    and never with a bar, rule, block or placeholder standing in for words. A
+    repeating device (a row, a card, a chip) exists once per quoted line and not
+    at all when none is quoted.
   - A swipe prompt ("SWIPE LEFT", "TAP", a worded arrow) appears only if quoted
     in the TEXT block. No brand wordmark, logotype or signature
     line other than one quoted there; with none quoted, this slide is unsigned —
@@ -2989,8 +3101,8 @@ CONSTRAINTS:
   line; sanctioning none leaves it plain.
   IMAGE 1 CONTRIBUTES NO CONTENT: not its words, subject, charts, lists,
   artwork or badge digits. Its zones carry structure only: a zone the TEXT
-  block does not fill renders empty or as a non-text graphic, never refilled
-  from Image 1 or invented.
+  block does not fill is left out — no bar, rule or placeholder in its place,
+  never refilled from Image 1 or invented.
   THE SIGNATURE IS SLIDE 1'S ALONE: that zone stays wordless unless the TEXT
   block quotes one. This text is description, never lettering.
 """,
@@ -3512,13 +3624,21 @@ YOUR DEFECT CODES
 - `style_layout` — the frame ignores the layout the style ordered: text or the
   focal element in the wrong zone, the described plate/card/rule absent or
   replaced by something else, alignment or margins plainly outside the described
-  grid, a list frame not set the way the list treatment describes.
+  grid, a list frame not set the way the list treatment describes. You are shown
+  every layout zone above; the renderer of a carousel frame was shown only the
+  counter zone's line, so a zone that reached no render channel is never that
+  frame's defect. An absence line among the zones — "This deck carries no
+  slide counter…", "This frame carries no signature zone…" — is an ORDER, not
+  a gap: a frame that draws a badge against it is the defect, and a frame that
+  leaves the zone out is obeying.
 - `style_consistency` — this frame departs from FRAME 1 rather than from the
   words: a different typeface, weight, scale or leading for the same role, a
   different background scene or surface, a different grid, a different graphic
   language — and the fixed-placement rule for required marks, which must sit
   where FRAME 1 puts them, at the same relative size, on every frame that
-  carries one. Frame 1 is exempt.
+  carries one. Frame 1 is exempt. A chip, badge or signature that no frame's
+  contract row calls for is never a reason to fail the frames that omit it;
+  frame 1 carrying one it was not ordered is frame 1's own defect.
 - `counter_placement` — the position badge sits somewhere else, or is styled
   differently, than on the FIRST frame that carries one, or is not in the
   chip/badge treatment the style describes. Whether the badge shows the right
@@ -3784,8 +3904,8 @@ Resolve these in order, and never by changing words:
 3. Fix legibility and fit by changing the LAYOUT — more lines, tighter leading,
    a wider block, the plate or card STYLE_DNA describes, a simpler ground.
 4. Keep STYLE_DNA, the anchor's scene and the deck's palette unchanged.
-Fix only the named defects; everything else stays as rendered, the position
-badge and every sanctioned mark included.
+Fix only the named defects; everything else stays as rendered, a quoted
+position badge and every sanctioned mark included.
 The quoted strings are locked. Shortening, re-wording, translating, ellipsing or
 dropping any of them is a worse failure than the defect being fixed.
 
@@ -3806,9 +3926,9 @@ invented_text | full_frame | This frame carried lettering the TEXT block does no
 invented_text | card | The card in this frame carried lettering that the TEXT block does not quote[ — about {chars} characters]; label its contents with greeked bars and unlettered shapes instead.
 signature | * | Render the wordmark exactly as the TEXT block quotes it, once, in the {zone} area, and no other signature or logotype anywhere in the frame.
 signature | full_frame | When the TEXT block quotes a wordmark, render it once, exactly as quoted; when it quotes none, this frame is unsigned and carries no signature line or logotype.
-counter_value | * | Render the position badge exactly as the TEXT block's counter line quotes it, once, in the {zone} chip, and no other page number, "N of M" or pip trail anywhere.
-counter_value | chip | Render the position badge exactly as the TEXT block's counter line quotes it, once, in the chip treatment STYLE_DNA describes.
-counter_value | full_frame | When the TEXT block quotes no counter line, this deck has no position badge: no page number, no "N of M", no pip trail anywhere in the frame.
+counter_value | * | When the TEXT block quotes a counter line, render it exactly as quoted, once, in the {zone} area the COUNTER RULE names, and no other page number or pip trail; when it quotes none, draw no badge.
+counter_value | chip | When the TEXT block quotes a counter line, render that string once in the counter zone the COUNTER RULE names and nowhere else; when it quotes none, draw no chip, badge or page number at all.
+counter_value | full_frame | When the TEXT block quotes a counter line, that string is this frame's only position mark; when it quotes none, this deck has no badge: no chip, no page number, no "N of M", no pip trail anywhere.
 translated | * | Render every quoted string in its own original language, character for character; translate nothing.
 missing_text | * | Render every string the TEXT block quotes, in full, in the {zone} area, whole and legible; give a long one more lines, tighter leading or a wider block.
 missing_text | full_frame | Render every string the TEXT block quotes, in full, whole and legible; give a long one more lines, tighter leading, a wider block or the plate STYLE_DNA describes.
@@ -3822,8 +3942,9 @@ style_layout | * | Place the {zone} content in the zone and treatment the layout
 style_layout | full_frame | Build the whole frame on the grid the layout describes — same zones, same plate or card treatment, same alignment and margins.
 style_consistency | * | Match slide 1 of this deck exactly in the {zone} area: same typeface, weight, scale and leading for the same role, same ground and surface, same mark position.
 style_consistency | full_frame | Match slide 1 of this deck: same palette, same typeface and weights, same grid, same background scene and surface, same graphic language, same fixed mark position.
+style_consistency | chip | A chip, badge or page number that the TEXT block's counter line does not quote is not part of this deck's style: draw none, whatever slide 1 shows.
 counter_placement | * | Put the position badge in the same place and the same chip treatment as every other slide of this deck.
-counter_placement | chip | Put the position badge in the chip STYLE_DNA describes, in the same corner and at the same size as every other slide of this deck.
+counter_placement | chip | Put the position badge in the counter zone the COUNTER RULE names, in the same corner and at the same size as every other slide of this deck.
 contrast | * | Make the {zone} lettering read at a glance on a phone: set it on the plate, card or clear ground STYLE_DNA describes, at a size that survives thumbnail scale, never on a busy ground.
 contrast | full_frame | Make every string read at a glance on a phone: set the type on the plate, card or clear ground STYLE_DNA describes, at a size that survives thumbnail scale.
 garbled | * | Draw the {zone} lettering once, cleanly: well-formed letterforms with correct accents, no doubled, ghosted, overstruck, smeared or overlapping type, and no second copy of the same words.
@@ -3845,6 +3966,7 @@ Everything in this FIX section describes a previous failure. It contains no word
 __all__ = [
     "MissingTemplateError", "PROMPTS_DIR", "PromptEngine", "Template",
     "UnresolvedPlaceholderError", "allowlist", "beats_for", "branding_block", "build_context",
-    "json_schema_for", "list_mode_text", "style_dna", "style_zones", "trim_words",
+    "counter_rule", "json_schema_for", "list_mode_text", "style_dna", "style_zones",
+    "trim_words",
     "validate_template_set",
 ]

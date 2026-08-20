@@ -11,6 +11,8 @@ Public API:
     SlideIntel · SourceSlide · MarkBox · SLIDE_INTEL_ROLE · QUESTION_TEMPLATE
     MARK_KINDS · MARK_KIND_TOOL
     detect_counter(chrome_lines, panel_texts, panel_count) -> CounterSpec | None  ·  CounterSpec
+    RULE_DENOMINATOR / RULE_POSITIONAL / RULE_LEADING_OFFSET / RULE_CONSTANT_OFFSET — the four
+        accept-rule names `CounterSpec.rule` carries into `meta.yaml.counter` (FR-313, D59)
     counter_line(text) -> bool — is that line ONLY a page counter (chrome, not copy)?
     STATUS_OK / STATUS_UNAVAILABLE / STATUS_DISABLED
     TEXT_SOURCE_VIRLO / TEXT_SOURCE_VISION / TEXT_SOURCE_NONE
@@ -89,7 +91,7 @@ import asyncio
 import logging
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -405,6 +407,22 @@ _PREFIX_TOKEN = re.compile(r"^\s*(//+\s*)(\d{1,3})(?!\d)")
 #: bigger number in a chrome line is a price, a year, a view count or a statistic.
 _MAX_COUNT = 99
 
+# FR-313 (v2.5.0, D59) — the four accept rules, named. These strings are the vocabulary
+# `meta.yaml.counter.rule` speaks, so they are constants rather than literals typed at four return
+# sites: a reader comparing a rule name against a stored one must be comparing the same bytes.
+# Ordered strongest to weakest, which is the order `detect_counter` tries them in.
+#: Rule 1 — some slide's denominator IS the deck's length (`3/6` on a six-panel deck).
+RULE_DENOMINATOR = "denominator"
+#: Rule 2 — at least two slides carry their own position as the numerator (`01`, `02`, …).
+RULE_POSITIONAL = "positional"
+#: Rule 3 (D48) — unnumbered leading slides: a constant offset `k >= 1` AND a denominator that
+#: equals `panel_count - k`. The badges corroborate each other and the deck's own length.
+RULE_LEADING_OFFSET = "leading_offset"
+#: Rule 4 (D48) — the constant offset alone, with no denominator to check it against. The weakest
+#: evidence that still ships a badge, and the one an operator reading `meta.yaml` should doubt
+#: first when a rendered badge looks wrong.
+RULE_CONSTANT_OFFSET = "constant_offset"
+
 
 def counter_line(text: str) -> bool:
     """Is this line NOTHING BUT a page counter — the source deck's chrome rather than its words?
@@ -457,6 +475,10 @@ class CounterSpec:
     re-based onto our own deck by `format()`, because our deck may be shorter than theirs (the
     platform ceiling truncates, §0.4′) and a badge reading "4/9" on a five-slide deck is a lie the
     operator sees before anything else.
+
+    One field is not a fact about the source at all: `rule` (D59) records which accept rule
+    believed the evidence, so `meta.yaml` can say HOW confident the detection was and not merely
+    that one happened. It is carried, never rendered.
     """
 
     #: Digits the numerator was padded to — 2 for `01`, 1 for a bare `3`.
@@ -469,6 +491,16 @@ class CounterSpec:
     prefix: str = ""
     #: True for `// 01`: the source showed a position and no total, so neither do we.
     numerator_only: bool = False
+    #: FR-313 (v2.5.0, D59) — WHICH of `detect_counter`'s four accept rules said yes:
+    #: `denominator` (rule 1: some slide's denominator is the deck's own length), `positional`
+    #: (rule 2: ≥2 slides carry their own position), `leading_offset` (rule 3, D48: a constant
+    #: offset `k ≥ 1` with the denominator at `panel_count − k`) or `constant_offset` (rule 4,
+    #: D48: the offset alone, uncorroborated). Evidence, not shape: it changes no badge and is
+    #: never read by `format()`. It is written to `meta.yaml.counter.rule` so an operator looking
+    #: at a wrong badge can tell a strong detection from a weak one without re-running the deck.
+    #: `""` on a hand-built spec — the field is DEFAULTED because every caller outside
+    #: `detect_counter` builds a convention, not a detection, and has no rule to name.
+    rule: str = ""
 
     def format(self, n: int, total: int) -> str:
         """This deck's badge for slide `n` of `total`, in the source's own hand.
@@ -531,13 +563,14 @@ def detect_counter(
     if panel_count > 0:
         for candidate in found:
             if candidate.total == panel_count:
-                return candidate.spec  # the strongest evidence: the deck's length, written on it
+                # The strongest evidence there is: the deck's length, written on it.
+                return replace(candidate.spec, rule=RULE_DENOMINATOR)
     # Second rule: the same badge on ≥2 slides, each stating the place it actually sits in. One
     # slide alone proves nothing — `1/2` in a caption, `5 of 7` inside a statistic — so a single
     # positional hit is dropped rather than believed.
     positional = [item for item in found if item.number == item.position]
     if len({item.position for item in positional}) >= 2:
-        return positional[0].spec
+        return replace(positional[0].spec, rule=RULE_POSITIONAL)
     # Third rule (D48): the badges agree with each other but start late. `numbered` only, because
     # the test is on the DENOMINATOR — a prefix counter names none and can never corroborate a
     # cover count, though it is still allowed to contradict the offset under rule 4.
@@ -546,12 +579,14 @@ def detect_counter(
     totals = {item.total for item in numbered}
     if (offset is not None and offset >= 1 and panel_count > 0 and len(totals) == 1
             and totals.pop() == panel_count - offset):
-        return numbered[0].spec
+        return replace(numbered[0].spec, rule=RULE_LEADING_OFFSET)
     # Fourth rule (D48): the offset alone, and only when the WHOLE deck agrees with it. Computed
     # over every candidate, prefix ones included, so a single stray token that counts something
     # else refuses the badge rather than being outvoted.
     offset = _constant_offset(found)
-    return found[0].spec if offset is not None and offset >= 1 else None
+    if offset is None or offset < 1:
+        return None
+    return replace(found[0].spec, rule=RULE_CONSTANT_OFFSET)
 
 
 def _constant_offset(candidates: Sequence[_Candidate]) -> int | None:
@@ -1144,8 +1179,9 @@ def _event(log: Any, event_type: str, message: str, **data: Any) -> None:
 
 
 __all__ = [
-    "MARK_KINDS", "MARK_KIND_TOOL", "QUESTION_TEMPLATE", "SLIDE_INTEL_ROLE", "STATUS_DISABLED",
-    "STATUS_OK", "STATUS_UNAVAILABLE", "TEXT_SOURCE_NONE", "TEXT_SOURCE_VIRLO",
+    "MARK_KINDS", "MARK_KIND_TOOL", "QUESTION_TEMPLATE", "RULE_CONSTANT_OFFSET",
+    "RULE_DENOMINATOR", "RULE_LEADING_OFFSET", "RULE_POSITIONAL", "SLIDE_INTEL_ROLE",
+    "STATUS_DISABLED", "STATUS_OK", "STATUS_UNAVAILABLE", "TEXT_SOURCE_NONE", "TEXT_SOURCE_VIRLO",
     "TEXT_SOURCE_VISION", "CounterSpec", "MarkBox", "SlideIntel", "SourceSlide", "counter_line",
     "detect_counter", "enrich",
 ]

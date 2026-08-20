@@ -313,7 +313,12 @@ def test_the_allowlist_table_is_the_pinned_final_one() -> None:
         "tool_marks", "slide_counter",  # v2.1.2: the sanctioned marks line and the badge string
         # Session 5.5/F1-A: FR-304b's list treatment, in its own slot instead of appended onto a
         # `{{layout_zones}}` value this role never named. Slides only — no other role maps a panel.
-        "list_treatment"})
+        "list_treatment",
+        # D59/FR-338: the counter's own channel, on exactly the same terms and against exactly
+        # the same hole — the badge is placed by a `counter_slot` zone inside the
+        # `{{layout_zones}}` value this role does not name, so the deck renderer was never told
+        # where the badge goes, or that this deck has none. Truth table: tests/test_counter_rule.py
+        "counter_rule"})
     assert pe.allowlist("slide_intel_question.md") == frozenset()
     assert pe.allowlist("reel_seed_frame.md") == frozenset({
         "render_prompt", "layout_zones", "onimage_text", "reference_roles", "exclusions",

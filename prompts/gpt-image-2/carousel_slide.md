@@ -93,11 +93,11 @@ TEXT (locked asset — this slide's exact content):
   invented body copy, label, caption or signature.
   A letter-by-letter echo of an accented word ("V-ě-t-š-i-n-a") is a spelling
   aid for you alone; never draw the hyphenated form onto the image.
-  A line labelled counter is this deck's own position badge: render that string
-  exactly as quoted, once, in the chip or badge treatment STYLE_DNA describes,
-  and nowhere else in the frame. With no counter line quoted above,
-  this deck carries no slide counter: no position badge, no "N of M", no page
-  number anywhere in the frame.
+  COUNTER RULE (ignore if empty): {{counter_rule}}
+  That line rules this deck's position badge and outranks every chip, badge
+  or page-number device STYLE_DNA describes: a zone line means the quoted
+  counter renders there once and nowhere else; an absence line means no chip,
+  badge, page number or "N of M" on ANY slide, slide 1 included.
   Fit a long string by giving it room — more lines, tighter leading, a wider
   block, the plate or card STYLE_DNA describes; a quoted string is never
   shortened, re-worded, hyphenated, ellipsed or set below legible size.
@@ -158,8 +158,10 @@ CONSTRAINTS:
     logo, in its true brand colours, in the fixed position that block sets.
   - Every legible character in this frame comes from the TEXT block, the
     lettering inside a sanctioned TOOL MARK excepted: a text zone with no string
-    quoted above renders empty or as a non-text graphic element (a rule, a bar,
-    a shape, negative space), never with invented words.
+    quoted above is left out of the frame — never filled with invented words,
+    and never with a bar, rule, block or placeholder standing in for words. A
+    repeating device (a row, a card, a chip) exists once per quoted line and not
+    at all when none is quoted.
   - A swipe prompt ("SWIPE LEFT", "TAP", a worded arrow) appears only if quoted
     in the TEXT block. No brand wordmark, logotype or signature
     line other than one quoted there; with none quoted, this slide is unsigned —

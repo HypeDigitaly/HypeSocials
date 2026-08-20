@@ -635,6 +635,25 @@ class AssetRecord:
     source_post: dict | None = None
     source_panel_count: int = 0
     panel_map: list = field(default_factory=list)
+    # FR-313 (v2.5.0, D59) — did the SOURCE deck number its slides, and how did we decide it did?
+    # `{detected: bool, rule: str, pattern: str, sample: str}` on EVERY bound carousel, `None` on
+    # images, reels and override briefs (they bind no source deck, so the question does not apply
+    # and a `False` there would read as "their deck had no counter" about a deck that never
+    # existed).
+    #
+    # `rule` names which of `slide_intel.detect_counter`'s four accept rules fired
+    # (`denominator` | `positional` | `leading_offset` | `constant_offset`) — the last two are
+    # weaker evidence, so a badge that came out wrong can be traced to a rule that guessed rather
+    # than to the renderer. `pattern` is the source's own hand described structurally (padding,
+    # separator with its exact spacing, prefix, whether a total was shown); `sample` is OUR slide
+    # 1's badge, re-based onto OUR deck length — never the source's numbers, because a five-slide
+    # deck cut from nine panels must never file "01 / 09". All three are `""` when nothing was
+    # detected, so a reader branches on `detected` alone and never on emptiness.
+    #
+    # A PLAIN DICT for the same reason `gauntlet` above is one: `models` is the bottom of the
+    # import graph and `sources.slide_intel` imports it, so a typed `CounterSpec` field here would
+    # be a cycle.
+    counter: dict | None = None
     degradations: list[DegradationTag] = field(default_factory=list)
     brief_name: str | None = None  # --- brief overrides (D26) ---
     brief_influence_mode: InfluenceMode | None = None
@@ -972,11 +991,16 @@ PLACEHOLDERS: frozenset[str] = frozenset(
         #   creator and platform mark, and it never sanctions platform chrome, watermarks,
         #   usernames or engagement counters.
         "slide_counter",  # D-D: the deck's own position badge STRING ("3/7"), never derived from
-        #   `slide_index` (which is orientation metadata the templates forbid drawing). It reaches
-        #   the model as a locked `counter` entry inside `{{onimage_text}}` plus the `counter_slot`
-        #   layout zone, so the shipped template names no slot of its own for it; the name lives
-        #   here because `build_context` carries the value (FR-261 condition 2) and an override
-        #   template may name it.
+        #   `slide_index` (which is orientation metadata the templates forbid drawing). Since D59
+        #   the string reaches the model down THREE channels, and they have to agree: the locked
+        #   `counter` entry inside `{{onimage_text}}`, which is the WORDS themselves; the
+        #   `counter_slot` zone inside `{{layout_zones}}`, which on a carousel only the gauntlet's
+        #   critic ever reads (`generate/contracts.py` builds it there; `carousel_slide.md` names
+        #   no `{{layout_zones}}` slot at all); and `{{counter_rule}}` (FR-338, at the bottom of
+        #   this set), which is the SLIDE RENDERER's own channel for where the badge goes — or
+        #   for the fact that this deck carries none. The shipped template still names no slot for this
+        #   raw value; the name lives here because `build_context` carries it (FR-261 condition 2)
+        #   and an override template may name it.
         # Session 5.5/F1-A — carousel slides ONLY, and empty on every frame that is not a list:
         "list_treatment",  # FR-304b's list layout as one executable sentence — the lead label, the
         #   style author's own `layout` prose and the `overflow` rule — gated on THIS frame's mapped
@@ -994,8 +1018,11 @@ PLACEHOLDERS: frozenset[str] = frozenset(
         #   which also carries `audience`: copy-side context must not leak into a render prompt,
         #   and the per-role allowlist exists to enforce exactly that (FR-261/109). Allowlisted for
         #   the four gpt-image-2 roles, so `direct` mode finally sees the art direction too.
-        # Topic-first pivot (v2.0.0, contracts item 2 — final 25-name vocabulary; the six
-        # pre-pivot orphans left with the W3.5 excision):
+        # Topic-first pivot (v2.0.0, contracts item 2 — the names the pivot added, after the six
+        # pre-pivot orphans left with the W3.5 excision). This line used to promise a "final
+        # 25-name vocabulary" and it was neither final nor 25 for long: every round since has added
+        # slots, and the set stands at 41 names — 40 of them before D59 added `counter_rule` at
+        # the bottom. Read the number off `len(models.PLACEHOLDERS)`, never off a comment:
         "branding_block",  # FR-292's second channel: accent colours, font letterforms, placement
         #   hint and the profile's `never:` lines, pre-rendered by prompts_engine._branding_block();
         #   empty when unbranded. The wordmark NEVER travels here — it is a TEXT-block entry (B1).
@@ -1068,5 +1095,19 @@ PLACEHOLDERS: frozenset[str] = frozenset(
         #   deck length) — all $0, all already in memory at ASSIGN. The asset_id key is load-bearing:
         #   an ordinal join is what caused the W5 renumbering bug, and a trimmed or reordered plan
         #   must never be able to hand one creative another creative's verdict.
+        # --- v2.5.0 (D59, FR-338): the counter's own channel to the slide renderer. ---
+        "counter_rule",  # CAROUSEL SLIDES ONLY. The single line that tells the SLIDE RENDERER what
+        #   to do about this deck's position badge: the `counter_slot` zone's own words when the
+        #   style declares one and the deck is counted (rendered by the same formatter the critic's
+        #   `{{layout_zones}}` uses, so renderer and critic read the badge in identical words), the
+        #   house-default corner when the style declares no such zone, or the flat statement that
+        #   this deck carries NO counter at all. It exists for the same reason `list_treatment`
+        #   above does, in the same role, against the same hole: `carousel_slide.md` names no
+        #   `{{layout_zones}}` slot, so the zone that places the badge reached the image, reel and
+        #   critic paths and never the deck renderer — which was left to infer a badge from
+        #   whatever chip STYLE_DNA happened to describe, on counted and uncounted decks alike.
+        #   Deliberately absent from `_TRUNCATION_ORDER` and `_STYLE_TRIO`: uncuttable, like the
+        #   TEXT block whose badge it places. Empty under an override brief and on a style-less
+        #   context, exactly as `list_treatment` and `layout_zones` are.
     }
 )

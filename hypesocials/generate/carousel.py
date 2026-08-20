@@ -1325,6 +1325,10 @@ class _Deck:
             # machine-readable fact the spend table and the gallery header then state.
             "slides_ordered": len(self.texts),
             "missing_slide_numbers": missing,
+            # FR-313 (v2.5.0, D59): the counter receipt — whether this deck renders a position
+            # badge, which accept rule believed it, and what slide 1's badge reads. Detected once
+            # in `__post_init__`, so this only reports it.
+            "counter": self._counter_meta(),
             # FR-328 (spec §6): the gate's own receipt, on EVERY terminal path it touched — pass,
             # blocked, degraded, budget stop, deadline stop. `None` when the gate never ran.
             "gauntlet": contracts.report_meta(self.report),
@@ -1569,6 +1573,38 @@ class _Deck:
             [str(getattr(slide, "chrome_text", "") or "").splitlines() for slide in slides],
             [str(getattr(slide, "text", "") or "") for slide in slides],
             len(slides))
+
+    def _counter_meta(self) -> dict[str, Any] | None:
+        """FR-313's `meta.yaml.counter` for this deck — or `None`, because the question is moot.
+
+        `None` on an override brief: it binds no source post (§0.14d/FR-144), so "did their deck
+        number its slides" is a question about a deck that does not exist, and a `False` there
+        would read as an answer. The gate is `entry.source_post_id` — the PLAN's binding, the same
+        field `generate.__init__._record` treats as the bound fact — so a bound deck whose trend
+        join or vision pass came up empty still files a row saying no badge is being rendered.
+
+        `detected: False` is exactly that operational claim — this deck ships no badge — and not
+        the archaeological one that the source certainly had none: a deck with no slide
+        intelligence never got to look. `rule` separates the two strong accept rules from the two
+        offset ones, which is what an operator staring at a wrong badge needs; `sample` is slide
+        1's badge re-based onto OUR length (`_counter` does the same for every slide), never the
+        source's own numbers.
+        """
+        if not str(self.entry.source_post_id or "").strip():
+            return None
+        spec = self.counter
+        if spec is None:
+            return {"detected": False, "rule": "", "pattern": "", "sample": ""}
+        return {
+            "detected": True,
+            "rule": spec.rule,
+            # The convention structurally, not an example of it: `sample` beside it is the example,
+            # and a second example would say nothing the first did not. Padding and separator carry
+            # their exact spacing because that spacing IS the source's hand (`01 / 06` vs `1/6`).
+            "pattern": (f"pad={spec.pad} sep={spec.separator!r} total_pad={spec.total_pad} "
+                        f"prefix={spec.prefix!r} numerator_only={spec.numerator_only}"),
+            "sample": spec.format(1, len(self.texts)),
+        }
 
     def _counter(self, number: int) -> str:
         """This slide's badge, re-based onto OUR deck: `"3/5"`, `"03 / 05"`, `"// 03"`, or `""`.

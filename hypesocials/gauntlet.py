@@ -206,8 +206,8 @@ PRECEDENCE_BLOCK = """Resolve these in order, and never by changing words:
 3. Fix legibility and fit by changing the LAYOUT — more lines, tighter leading,
    a wider block, the plate or card STYLE_DNA describes, a simpler ground.
 4. Keep STYLE_DNA, the anchor's scene and the deck's palette unchanged.
-Fix only the named defects; everything else stays as rendered, the position
-badge and every sanctioned mark included.
+Fix only the named defects; everything else stays as rendered, a quoted
+position badge and every sanctioned mark included.
 The quoted strings are locked. Shortening, re-wording, translating, ellipsing or
 dropping any of them is a worse failure than the defect being fixed."""
 
@@ -259,9 +259,9 @@ _REMEDIES: dict[str, str] = {
                         "counter, play button or progress bar."),
     "identity_leak": ("No person's name, @handle, profile picture, face or personal identity "
                       "appears anywhere in this frame; the {zone} area carries none."),
-    "counter_value": ("Render the position badge exactly as the TEXT block's counter line quotes "
-                      "it, once, in the {zone} chip, and no other page number or pip trail "
-                      "anywhere."),
+    "counter_value": ("When the TEXT block quotes a counter line, render it exactly as quoted, "
+                      "once, in the {zone} area the COUNTER RULE names, and no other page number "
+                      "or pip trail; when it quotes none, draw no badge."),
     "signature": ("Render the wordmark exactly as the TEXT block quotes it, once, in the {zone} "
                   "area, and no other signature or logotype anywhere in the frame."),
     "style_palette": ("Use only STYLE_DNA's own palette, ink, surface and light in the {zone} "

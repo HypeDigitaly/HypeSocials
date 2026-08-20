@@ -221,6 +221,15 @@ def deck_contract(
     fill. Passing the deck's values rather than a frame's is deliberate: `layout_zones` is
     deck-level in the frozen contract, and slide 1's signature is the deck's signature.
 
+    **The honest caveat, for a CAROUSEL (D59/FR-338):** "exactly as the render prompt gated it" was
+    never quite true for a deck's slides, because `carousel_slide.md` names no `{{layout_zones}}`
+    slot — the frames were judged against a zone list no slide renderer was ever shown. Since D59
+    one line of it does reach them, the `counter_slot` zone, through `prompts_engine.counter_rule`
+    and the `_zone_line` formatter this value shares — so the badge, at least, is judged in the
+    words it was ordered in. The rest of the list still reaches a slide only as `style_dna` prose,
+    which is why `critic_system.md` may not fail a carousel frame for a zone that reached no render
+    channel. On an image or a reel every zone here was in the prompt verbatim.
+
     `required_marks` is the union of what the D-A sanction gate allowed across the frames being
     judged (FR-315/FR-330's REQUIRED side); `forbidden` comes from `forbidden_terms()` above.
     """

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>HypeSocials PRD — Lean Viral Content Engine (v2.4.0)</title>
+<title>HypeSocials PRD — Lean Viral Content Engine (v2.5.0)</title>
 <style>
   :root{
     --paper:#FBFAF7; --surface:#FFFFFF; --ink:#1D1F26; --muted:#6B6E78;
@@ -148,7 +148,7 @@
     <h1>HypeSocials — Lean Viral Content Engine</h1>
     <p class="sub">One command in, a folder of trend-derived social creatives out. Topic-first architecture with local style registry and verbatim copy selection. Every finished frame now passes a three-critic quality gate before it can ship.</p>
     <div class="metaline">
-      <span class="chip">PRD <b>v2.4.0</b></span>
+      <span class="chip">PRD <b>v2.5.0</b></span>
       <span class="chip">2026-08-20</span>
       <span class="chip">19-Style Registry + LLM-Matched Assignment (FR-334-337) + Teal Spine (D56-D57)</span>
       <span class="chip"><b>34,745 lines</b> Python · <b>32,238</b> tests (measured 2026-08-20)</span>
@@ -462,6 +462,12 @@
         <h4>Teal-Spine Unification (v2.4.0)</h4>
         <p>Standing decision D-G ("colour is curated by choosing styles, never by editing a style") is preserved. Teal spine achieved through -teal variant styles and a 12-key <code>styles.enabled</code> pool shipped in all three brand configs. Operator curates feed's unifying color by selecting from the spine-aligned pool, not by editing any style's palette. Grounds, surfaces, and type remain native to each style; accent placement stays under 5% in photographic styles.</p>
       </div>
+
+      <div class="dcard">
+        <div class="id">D59</div>
+        <h4>Contracts &amp; Render Correctness (v2.5.0, SESSION J)</h4>
+        <p>Paid run <code>20260820_145809_4a0q</code> shipped three render defects: (1) invented page-number chip because style DNA describes it unconditionally while the carousel renderer never receives <code>{{layout_zones}}</code>; (2) empty-zone graphics because a zone with no quoted text could render "as a non-text graphic element"; (3) duplicated row text because row rules never stated the one-part case. Four new FRs + one amendment fix these. <strong>FR-338:</strong> <code>{{counter_rule}}</code> render slot (text-only, never truncated, five-arm truth table). <strong>FR-339:</strong> Gated-zone DNA rule — <code>typography</code>/<code>text_placement</code>/<code>visual_pacing</code> MUST NOT describe chips/badges/counters (those live in zone-gated <code>layout_zones</code> only); 8 styles scrubbed. <strong>FR-340:</strong> Empty-zone rule — text zones with no quoted string are LEFT OUT of frame, never invented; repeating devices exist per quoted line. <strong>FR-313 amendment:</strong> Counter detection IMPLEMENTED: <code>CounterSpec</code> gains <code>rule: str</code> naming which accept rule fired; <code>AssetRecord.counter</code> shaped <code>{detected, rule, pattern, sample}</code> in meta.yaml. Scope: prompts, critic templates, registry scrub, gauntlet contract.</p>
+      </div>
     </div>
   </section>
 
@@ -607,8 +613,8 @@
   </section>
 
   <div class="foot">
-    <p><strong>Source of truth:</strong> <code>prds/*.md</code> files. This HTML is current as of 2026-08-20 (v2.4.0, the Style Intelligence amendment cycle: registry 9→19, LLM-matched assignment FR-334–337, teal spine, D54–D57). For the latest changes, see the amendment log in 00-overview.md or the individual PRD files.</p>
-    <p><strong>Built by:</strong> Technical Writer (T0.1), Style Intelligence amendment cycle (D54–D57, v2.4.0), plans <code>plans/xmasterplan-compress-mode-and-style-doubledown.md</code> (v2.3.0) and <code>plans/xmasterplan-style-intelligence.md</code> (v2.4.0).</p>
+    <p><strong>Source of truth:</strong> <code>prds/*.md</code> files. This HTML is current as of 2026-08-20 (v2.5.0, the Contracts & Render Correctness amendment cycle: FR-338/339/340 + FR-313 amendment, D59, SESSION J). For the latest changes, see the amendment log in 00-overview.md or the individual PRD files.</p>
+    <p><strong>Built by:</strong> Technical Writer (T0.1), Contracts & Render Correctness amendment cycle (D59, v2.5.0, SESSION J), preceded by Style Intelligence amendment cycle (D54–D57, v2.4.0), plans <code>plans/xmasterplan-render-quality-and-language.md</code> (v2.5.0).</p>
   </div>
 
 </main>

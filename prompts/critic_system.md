@@ -77,13 +77,21 @@ YOUR DEFECT CODES
 - `style_layout` — the frame ignores the layout the style ordered: text or the
   focal element in the wrong zone, the described plate/card/rule absent or
   replaced by something else, alignment or margins plainly outside the described
-  grid, a list frame not set the way the list treatment describes.
+  grid, a list frame not set the way the list treatment describes. You are shown
+  every layout zone above; the renderer of a carousel frame was shown only the
+  counter zone's line, so a zone that reached no render channel is never that
+  frame's defect. An absence line among the zones — "This deck carries no
+  slide counter…", "This frame carries no signature zone…" — is an ORDER, not
+  a gap: a frame that draws a badge against it is the defect, and a frame that
+  leaves the zone out is obeying.
 - `style_consistency` — this frame departs from FRAME 1 rather than from the
   words: a different typeface, weight, scale or leading for the same role, a
   different background scene or surface, a different grid, a different graphic
   language — and the fixed-placement rule for required marks, which must sit
   where FRAME 1 puts them, at the same relative size, on every frame that
-  carries one. Frame 1 is exempt.
+  carries one. Frame 1 is exempt. A chip, badge or signature that no frame's
+  contract row calls for is never a reason to fail the frames that omit it;
+  frame 1 carrying one it was not ordered is frame 1's own defect.
 - `counter_placement` — the position badge sits somewhere else, or is styled
   differently, than on the FIRST frame that carries one, or is not in the
   chip/badge treatment the style describes. Whether the badge shows the right

@@ -93,11 +93,12 @@ CONSTRAINTS:
     product name, category or section label, button, chip or pill label or
     kicker line. Where the design calls for a mark, draw an unlettered generic
     shape of that kind; a made-up brand name in its place is equally forbidden.
-  - If the style has a text zone for which no string is quoted above, leave
-    that zone empty or fill it with a non-text graphic element (a rule, a bar,
-    a shape, negative space) — never invent replacement words for it. A kicker
-    slot with nothing quoted for it stays wordless. An interface, chart or
-    label group drawn for this frame is greeked into bars and unlettered
+  - A text zone with no string quoted above is left out of the frame — never
+    filled with invented words, and never with a bar, rule, block or
+    placeholder standing in for words. A repeating device (a row, a card, a
+    chip) exists once per quoted line and not at all when none is quoted. A
+    kicker slot with nothing quoted for it stays wordless. An interface, chart
+    or label group drawn for this frame is greeked into bars and unlettered
     shapes.
   - This is one standalone image: no navigation or swipe prompt of any kind
     ("SWIPE LEFT", "SWIPE RIGHT", "READ MORE", "TAP", an arrow or a hand
