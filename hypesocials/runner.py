@@ -1183,16 +1183,32 @@ async def _write(session: _Session, live: Sequence[PlanEntry], trends: dict[str,
                       trimmed=sorted(result.trimmed),
                       tags={asset_id: [tag.value for tag in tags]
                             for asset_id, tags in sorted(result.tags.items())})
-    # FR-296 + D54: the closing line names the contract the words actually shipped under, counted
-    # off the per-asset receipt rather than off `config.run.carousel_copy_mode`. The two differ
-    # exactly where it matters — a compress-mode run whose call failed shipped the verbatim mapped
-    # deck, and a line claiming "compressed" over it would hide the degradation.
-    compressed = sum(1 for prov in result.provenance.values()
-                     if prov.copy_mode == copywrite.MODE_COMPRESS)
-    _stage(session, "COPY",
-           f"{groups} call(s) -> {len(result.copy)} creative(s) quoted verbatim" if not compressed
-           else f"{groups} call(s) -> {len(result.copy)} creative(s), {compressed} compressed",
-           elapsed_s=watch.elapsed_s)
+    # FR-296 + D54 + D62: the closing line names the contract the words actually shipped under,
+    # counted off the per-asset receipt rather than off `config.run.carousel_copy_mode`. The two
+    # differ exactly where it matters — a compress-mode run whose call failed shipped the verbatim
+    # mapped deck, and a line claiming "compressed" over it would hide the degradation. An `auto`
+    # deck counts here too (FR-353): it did not ship pure quotes either.
+    #
+    # THREE shapes rather than a parenthesis on one, because `_stage` gives this body 54 columns
+    # and `… 2 compressed (auto or compress)` does not fit inside them at realistic counts. Split
+    # by which contracts actually fired, it does: a pure-compress run keeps the D54 sentence byte
+    # for byte, a pure-auto run says `auto-compressed` (a different word for a different contract,
+    # not a qualifier bolted onto the old one), and only a genuinely mixed run pays the extra
+    # `(N auto)` clause — which is the only run where the split is not already implied.
+    autos = sum(1 for prov in result.provenance.values()
+                if prov.copy_mode == copywrite.MODE_AUTO)
+    compressed = autos + sum(1 for prov in result.provenance.values()
+                             if prov.copy_mode == copywrite.MODE_COMPRESS)
+    head = f"{groups} call(s) -> {len(result.copy)} creative(s)"
+    if not compressed:
+        body = f"{head} quoted verbatim"
+    elif autos == compressed:
+        body = f"{head}, {autos} auto-compressed"
+    elif autos:
+        body = f"{head}, {compressed} compressed ({autos} auto)"
+    else:
+        body = f"{head}, {compressed} compressed"
+    _stage(session, "COPY", body, elapsed_s=watch.elapsed_s)
     return result
 
 
@@ -1320,6 +1336,13 @@ async def _create(session: _Session, entries: Sequence[PlanEntry], live: Sequenc
                 entry.status = PlanEntryStatus.ABANDONED
                 entry.skip_reason = "run deadline elapsed or interrupted before submission"
     gated = bool(session.config.run.gauntlet.enabled) and session.llm is not None
+    # FR-351 (v2.6.0, D62): the cover pick is the SECOND consumer of `Env.llm_call`. It needs the
+    # metered seam whenever more than one cover is ordered, gauntlet on or off — `contracts.gate_on`
+    # still ANDs `run.gauntlet.enabled` in, so handing the seam over for the pick never turns the
+    # gate on by itself. A `cover_candidates: 1` run with the gauntlet off passes None exactly as
+    # before (no call will ever be made, so no seam is wired).
+    picking = (int(session.config.run.cover_candidates) > 1
+               and bool(session.config.run.carousel_anchor) and session.llm is not None)
     wave1, wave2 = _job_forecast(live)
     _stage(session, "RENDER",
            f"{wave1 + wave2} job(s) submitted ({wave1} wave-1, {wave2} wave-2)", opening=True)
@@ -1337,7 +1360,7 @@ async def _create(session: _Session, entries: Sequence[PlanEntry], live: Sequenc
         styles=session.registry, branding=session.config.branding,  # FR-290/292
         strip_brands=dict(session.strip_brands),  # M6: LLM-discovered brands reach every prompt
         slide_intel=dict(session.slide_intel),  # FR-306/308: per-slide briefs for the deck
-        llm_call=_metered(session) if gated else None,
+        llm_call=_metered(session) if (gated or picking) else None,
         stop=session.control.stop, deadline=session.deadline,
         say=session.say, pulse=session.pulse, heartbeat_s=session.pulse.interval_s,
         jobs_expected=wave1 + wave2)
@@ -1858,6 +1881,13 @@ def _provenance_block(entries: Sequence[PlanEntry], records: Mapping[str, AssetR
     names", which is the opposite of what happened. The compress line names the same post — the
     provenance claim is unchanged, only the transform is — and points at `meta.yaml`'s `panel_map`,
     where every row carries the source panel beside what shipped.
+
+    **An AUTO deck (D62/FR-353) gets its own line 2, naming the mode.** It quoted the panels that
+    fitted its style's budget and compressed only the ones that did not, so neither of the two
+    lines above is true of the whole deck: `quoted "…"` would present one row as the receipt for a
+    deck that is mixed, and `compressed` would deny the rows that really are byte-quotes. The line
+    says `auto` and points at the same `panel_map`, which is the only place the split is recorded
+    row by row.
     """
     rows = [(entry, records[entry.asset_id]) for entry in entries
             if entry.asset_id in records]
@@ -1883,12 +1913,15 @@ def _provenance_block(entries: Sequence[PlanEntry], records: Mapping[str, AssetR
             ordinal = f"P{index + 1}" if index is not None else (label.split(".", 1)[0] or "P?")
             handle = f"@{post.author}" if post is not None and post.author else "-"
             views = _compact(post.views) if post is not None else "-"
-            lines.append(
-                f'       compressed {ordinal} {fit(handle, 13)} {views} '
-                f'{fit(record.copy_source_post_id, 14)} -> panel_map'
-                if record.copy_mode == copywrite.MODE_COMPRESS else
-                f'       quoted {ordinal} {fit(handle, 15)} {views} '
-                f'{fit(record.copy_source_post_id, 16)} "{fit(text, 24)}"')
+            if record.copy_mode == copywrite.MODE_COMPRESS:
+                lines.append(f'       compressed {ordinal} {fit(handle, 13)} {views} '
+                             f'{fit(record.copy_source_post_id, 14)} -> panel_map')
+            elif record.copy_mode == copywrite.MODE_AUTO:
+                lines.append(f'       auto {ordinal} {fit(handle, 13)} {views} '
+                             f'{fit(record.copy_source_post_id, 14)} -> panel_map')
+            else:
+                lines.append(f'       quoted {ordinal} {fit(handle, 15)} {views} '
+                             f'{fit(record.copy_source_post_id, 16)} "{fit(text, 24)}"')
         if ok == "no":
             lines.append(f"       {fit(str(entry.skip_reason or 'no cause recorded'), 68)}")
     return "\n".join(lines)
@@ -2163,6 +2196,14 @@ def _launch_summary(session: _Session, overrides: Sequence[str]) -> str:
            if config.run.gauntlet.enabled else "off"),
         f"  spend cap   {format_usd(config.run.spend_cap_usd)} · deadline "
         f"{config.run.run_deadline_min} min",
+        # FR-333 (D54) + FR-351 (D62): the two carousel-only dials, printed ONLY when the plan
+        # has carousels — a line about decks on a run that makes none is noise. FR-333's
+        # pre-flight display obligation ("Carousel copy mode: <mode>") is met here and nowhere
+        # else on a `--yes` run; the menu's confirm notice is the interactive twin.
+        *([f"  carousels   copy mode: {config.run.carousel_copy_mode} · cover candidates: "
+           f"{config.run.cover_candidates} · "
+           + ("anchor chained" if config.run.carousel_anchor else "unchained")]
+          if config.run.formats.get("carousel", 0) else []),
         f"  output      {fit(str(session.run_dir), 64)}",
         # FR-286: an override list grows without bound, so it wraps onto its own indented lines.
         "\n".join(f"  {'overrides' if first else '         '}   {part}"

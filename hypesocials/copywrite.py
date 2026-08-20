@@ -65,6 +65,28 @@ prompt-level:
    every other run stay on the selection contract above, and `verbatim` remains the engine-wide
    default. A failed compress call costs the deck nothing — it falls back to point 4's verbatim
    mapping, tagged `copy_degraded`, with no second call and no extra spend.
+6. **Auto mode compresses ONLY the panels that overflow (D62/FR-353, operator decision
+   2026-08-21).** `carousel_copy_mode: "auto"` is point 5's contract applied per PANEL instead of
+   per DECK, and it is what the three shipped brand configs pin. The engine measures every
+   ADMITTED panel of a bound deck against that deck's own slide budget (`min(text_budgets.slide,
+   the assigned style's max_onimage_chars.slide)`); the positions over it — and only those — are
+   listed to the compress call, and their answers are spliced back into the verbatim mapped deck
+   by position. Every panel that already fits ships byte-verbatim under its own `P<n>.panel.<i>`
+   label, exactly as point 4 shipped it.
+
+   What that buys is the thing point 5 could not: compress mode is all-or-nothing per deck, so a
+   deck with one 1,000-character panel and eight 90-character panels paid a model to rewrite all
+   nine and lost the byte-substring claim on all nine. Auto pays for the one and keeps the eight.
+   **A deck with NOTHING over budget makes no compress call at all** and is byte-identical to a
+   verbatim run of the same inputs, receipts included (`copy_mode: verbatim`) — that is FR-353's
+   acceptance criterion and `_compress_wanted`'s third arm is where it is enforced.
+
+   Auto is therefore the one mode whose receipts are MIXED, per row, on purpose: a compressed row
+   carries `compressed: True`, an empty `ref_label` and the source panel in `source_text_original`,
+   while a quoted row carries its real label and its bytes. `CopyProvenance.copy_mode` says
+   `"auto"` for the creative and `CopyProvenance.refs` holds the QUOTED rows' labels — real
+   labels, kept — so `_verify`'s byte-substring half still audits the verbatim rows for real
+   rather than being skipped wholesale the way it is for a fully compressed deck.
 
 Public API:
     await write_copy(entries, trends=..., styles=..., call=..., engine=...,
@@ -73,7 +95,7 @@ Public API:
     CopyProvenance(post_id, refs, copy_mode) — FR-298's `copy_source_post_id` /
         `copy_source_refs`, plus FR-73's per-asset `copy_mode`
     NoSafeCaptionError — pre-spend refusal: an offer path had no caption it was allowed to ship
-    COPY_ROLE, PANEL_SANITY_CHARS
+    COPY_ROLE, PANEL_SANITY_CHARS, MODE_VERBATIM / MODE_AUTO / MODE_COMPRESS
 
 Invariants:
 - **Selection is structural, never a promise.** No path exists from a model's free text to
@@ -472,12 +494,18 @@ _DROP_EMPTY = "empty"
 _DROP_MARKS = "contains_handle_or_url"
 _DROP_OVER_BUDGET = "over_budget"
 
-#: The two copy contracts an operator may choose between for a BOUND carousel deck (D54/FR-331,
-#: config key `run.carousel_copy_mode`). `verbatim` is the engine-wide default and is what every
-#: other creative in the run uses whatever this says — the mode reaches exactly one predicate,
-#: `_compress_wanted`, and that predicate additionally requires `_panel_mapped`.
+#: The three copy contracts an operator may choose between for a BOUND carousel deck (D54/FR-331
+#: and D62/FR-353, config key `run.carousel_copy_mode`). `verbatim` is the engine-wide default and
+#: is what every other creative in the run uses whatever this says — the mode reaches exactly one
+#: predicate, `_compress_wanted`, and that predicate additionally requires `_panel_mapped`.
 MODE_VERBATIM = "verbatim"
 MODE_COMPRESS = "compress"
+#: D62/FR-353 — compress the OVERFLOWING panels of a bound deck and quote the rest. The three
+#: shipped brand configs pin it, because it pays a model only for the panels that could not fit
+#: the style's own slide budget and leaves every panel that already fitted byte-verbatim. A deck
+#: with nothing over budget takes the ordinary verbatim path and issues no compress call at all,
+#: which is why this mode can be the shipped default in a way `compress` never should have been.
+MODE_AUTO = "auto"
 #: The compress call's own template (FR-332). Rendered exactly the way the verbatim call renders
 #: `copywriter_system.md`, through the same engine and the same allowlist mechanism; a missing or
 #: unresolvable template warns `copy_prompt_failed` and the group falls to `_mapped_fallback`,
@@ -528,12 +556,19 @@ class CopyProvenance:
     because the slide is usually still full of words.
 
     `copy_mode` (FR-73/FR-331, v2.3.0) says WHICH copy contract produced this creative —
-    `"verbatim"` or `"compress"` — and it is per ASSET rather than per run on purpose: compress
-    mode reaches only the bound panel-mapped carousels of a run, so an image, a reel, an override
-    brief and a deck that fell back to `_mapped_fallback` all still report `verbatim`, which is
-    exactly what each of them shipped. It is the receipt that replaces the byte-substring audit on
-    a compressed creative (`_verify` skips half 1 when nothing was quoted), together with each
-    panel-map row's `compressed` flag and its `source_text_original`.
+    `"verbatim"`, `"compress"` or, since D62/FR-353, `"auto"` — and it is per ASSET rather than
+    per run on purpose: compress and auto reach only the bound panel-mapped carousels of a run, so
+    an image, a reel, an override brief and a deck that fell back to `_mapped_fallback` all still
+    report `verbatim`, which is exactly what each of them shipped. It is the receipt that replaces
+    the byte-substring audit on a compressed creative (`_verify` skips half 1 when nothing was
+    quoted), together with each panel-map row's `compressed` flag and its `source_text_original`.
+
+    `"auto"` is the MIXED receipt and the one a reader must not treat as mode equality (D62): that
+    deck quoted the panels that fitted its style's slide budget and compressed only the ones that
+    did not, so the rows disagree with each other BY DESIGN and each row's own `compressed` flag —
+    never this field — says which half a given slide belongs to. `refs` on an auto creative holds
+    the quoted rows' real labels, which is why `_verify` audits those rows for real instead of
+    self-skipping.
     """
 
     post_id: str = ""
@@ -654,12 +689,16 @@ async def write_copy(
             `reason="no_fresh_post_available"` in the log) rather than re-pointed at a neighbour,
             because the alternative is a creative whose provenance, history record and panel map
             all name different posts.
-        carousel_copy_mode: `"verbatim"` (default) or `"compress"` — `config.run.carousel_copy_mode`,
-            D54/FR-331. It is an OPERATOR TOGGLE and never a heuristic: nothing in this module may
-            switch it on by measuring a panel. It reaches exactly one predicate
-            (`_compress_wanted`), which additionally requires `_panel_mapped`, so an unrecognised
-            value simply behaves as `verbatim` here — the refusal for a bad value belongs to config
-            load, where `Literal` validation catches it before the run costs anything.
+        carousel_copy_mode: `"verbatim"` (default), `"auto"` or `"compress"` —
+            `config.run.carousel_copy_mode`, D54/FR-331 and D62/FR-353. It is an OPERATOR TOGGLE
+            and never a heuristic: nothing in this module may switch compression on for a run the
+            operator did not put in one of the two compressing modes. (`auto` DOES measure a panel,
+            and that is not a contradiction — the operator chose the rule "compress what overflows"
+            and the engine applies it; what it may never do is apply that rule to a `verbatim`
+            run.) It reaches exactly one predicate (`_compress_wanted`), which additionally
+            requires `_panel_mapped`, so an unrecognised value simply behaves as `verbatim` here —
+            the refusal for a bad value belongs to config load, where `Literal` validation catches
+            it before the run costs anything.
         progress: OPTIONAL live tally for FR-299's COPY heartbeat — this function keeps
             `{"total", "done", "in_flight"}` current while the group calls run and never reads
             it back. The runner's silence-breaker prints from it; `None` costs nothing.
@@ -726,8 +765,9 @@ class _Run:
     chrome_lines: Mapping[str, Sequence[str]] = field(default_factory=dict)  # post_id -> that
     #   deck's `chrome_text` strings — layer 3's chrome identifiers (FR-312)
     burnt_posts: frozenset[str] = frozenset()  # post ids an earlier run already quoted (FR-307)
-    #: D54/FR-331 — `verbatim` (default) or `compress`. Run-scoped because the operator sets it
-    #: once per run; consumed per CREATIVE by `_compress_wanted`, which is the only reader.
+    #: D54/FR-331 and D62/FR-353 — `verbatim` (default), `auto` or `compress`. Run-scoped because
+    #: the operator sets it once per run; consumed per CREATIVE by `_compress_wanted`, which is the
+    #: only reader, and per ROW after that on the `auto` path.
     carousel_copy_mode: str = MODE_VERBATIM
     log: Any = None
 
@@ -1750,6 +1790,12 @@ async def _write_group(
       exactly these two cases on the configured language; everything else follows its source.
     - **Compress** (D54/FR-331, opt-in): the bound panel-mapped decks of a `compress`-mode run.
       Source panel strings in, compressed strings out, resolved by `_compressed` here.
+    - **Auto** (D62/FR-353, and what the shipped brand configs pin): the same call and the same
+      template, carrying ONLY the panels that overflowed their deck's slide budget, resolved by
+      `_auto` here — which builds the verbatim mapped deck first and splices the answers into the
+      overflowing positions alone. A deck with nothing over budget never reaches this partition:
+      `_compress_wanted`'s auto arm is false for it, so it sits in `selecting` and takes the plain
+      verbatim path, byte for byte.
 
     A creative whose bound post was refused (burnt or absent, FR-307) is in neither shape: it is
     left OUT of the call entirely — there are no candidates to offer and no words to ask for, so
@@ -1773,12 +1819,24 @@ async def _write_group(
     compressing = {entry.asset_id for entry in askable
                    if _compress_wanted(entry, offers[entry.asset_id], run)}
     selecting = [entry for entry in askable if entry.asset_id not in compressing]
+    # D62/FR-353: `{asset_id: the 1-based positions whose ADMITTED panel overflows this deck's own
+    # slide budget}`, computed ONCE here for the auto partition and threaded into the call (which
+    # lists those positions alone) and, separately, recomputed by `_auto` from the same pure pair
+    # of functions when the answer comes back. `None` outside auto mode is what keeps the compress
+    # path byte-identical: `only=None` means "every admitted position", which is what it always
+    # listed.
+    auto_rows = ({entry.asset_id: _rows_over_budget(
+        _admitted_texts(entry, offers[entry.asset_id]),
+        offers[entry.asset_id].budgets.get("slide", 0))
+        for entry in askable if entry.asset_id in compressing}
+        if run.carousel_copy_mode == MODE_AUTO else None)
     calls = []
     if selecting:
         calls.append(_call_copy(group, selecting, run, offers, verbatim))
     if compressing:
         calls.append(_call_compress(
-            group, [entry for entry in askable if entry.asset_id in compressing], run, offers))
+            group, [entry for entry in askable if entry.asset_id in compressing], run, offers,
+            only=auto_rows))
     payloads: dict[str, dict[str, Any]] = {}
     for answered in await asyncio.gather(*calls):
         payloads.update(answered)
@@ -1793,7 +1851,7 @@ async def _write_group(
         # slides are already assigned from, and the deck would silently ship verbatim under a
         # `copy_mode: compress` receipt.
         for split in await asyncio.gather(*(
-                _call_compress(group, [entry], run, offers)
+                _call_compress(group, [entry], run, offers, only=auto_rows)
                 if entry.asset_id in compressing
                 else _call_copy(group, [entry], run, offers, verbatim)
                 for entry in missing)):
@@ -1813,11 +1871,16 @@ async def _write_group(
             # D54 rides this branch unchanged and deliberately: a failed COMPRESS call falls back
             # to the same verbatim mapped deck, tagged `copy_degraded`, with no second call and no
             # extra spend — long slides are the outcome the operator opted out of, not a loss of
-            # the deck.
+            # the deck. D62's AUTO mode rides the identical branch for the identical reason, and
+            # this IS auto's whole-call failure path: every row ships verbatim (the rows that
+            # already fitted were going to anyway), the overflowing ones ship long, and
+            # `copy_degraded` is the only receipt that changes.
             written = (_mapped_fallback(entry, offer, group, run)
                        if _panel_mapped(entry, offer) else _fallback(entry, group.trend, run))
         elif entry.asset_id in compressing:
-            written = _compressed(entry, payload, offer, group, run)
+            written = (_auto(entry, payload, offer, group, run)
+                       if run.carousel_copy_mode == MODE_AUTO
+                       else _compressed(entry, payload, offer, group, run))
         elif verbatim and offer.post is not None:
             written = _resolve(entry, payload, offer, group, run)
         else:
@@ -1871,26 +1934,91 @@ async def _call_copy(
 
 
 def _compress_wanted(entry: PlanEntry, offer: _Offer, run: _Run) -> bool:
-    """D54/FR-331 — does THIS creative take the compress contract instead of selection?
+    """D54/FR-331 + D62/FR-353 — does THIS creative take the compress call instead of selection?
 
-    Two conditions and no third. The run must be in compress mode (an operator toggle, never a
-    measurement — nothing here may look at how long a panel is and decide to compress it), and the
-    creative must already be a panel-mapped deck by `_panel_mapped`'s three structural tests: a
-    carousel, BOUND at ASSIGN, not an override brief. Everything else in a compress-mode run —
-    images, reels, override briefs, unbound carousels, a topic that arrived with no posts — is
-    untouched, because compression is a rule about a bound deck's own slides and those creatives
-    have none.
+    Three arms, one per mode, and the mode is always the FIRST condition:
+
+    - **`verbatim`** — never. D50's "reflow, never shorten" governs the whole run.
+    - **`compress`** (D54) — every panel-mapped deck, whatever its panels measure. The run is in
+      compress mode (an operator toggle, never a measurement — nothing here may look at how long a
+      panel is and decide to compress a `compress`-mode deck differently), and the creative is
+      already a panel-mapped deck by `_panel_mapped`'s three structural tests: a carousel, BOUND at
+      ASSIGN, not an override brief.
+    - **`auto`** (D62) — a panel-mapped deck that has AT LEAST ONE admitted panel over its own
+      slide budget. This arm measures, and the measurement is not the engine deciding to compress:
+      the operator chose the rule "compress what overflows" and this is where that rule is
+      evaluated. A deck with nothing over budget answers False, lands in `_write_group`'s
+      `selecting` partition, and takes the ordinary verbatim path (`_call_copy` → `_resolve` →
+      `_mapped_deck`) — the same call, the same template, the same schema, the same bytes and
+      `copy_mode: verbatim` on its provenance. **That byte-identity is FR-353's acceptance
+      criterion**, which is why the arm is written as "is anything over budget" here rather than
+      as a filter inside `_auto`: a deck that would compress nothing must not pay for, or be
+      shaped by, a call it does not need.
+
+    Everything else in a compressing run — images, reels, override briefs, unbound carousels, a
+    topic that arrived with no posts — is untouched under both modes, because compression is a rule
+    about a bound deck's own slides and those creatives have none.
 
     Riding `_panel_mapped` rather than restating its conditions is the point: the compress walk
     produces the same `panel_map` the verbatim walk does, so the two must agree exactly on WHICH
     decks are mapped or a run would ship a deck with a panel map under one contract and no rows
     under the other.
     """
-    return run.carousel_copy_mode == MODE_COMPRESS and _panel_mapped(entry, offer)
+    if run.carousel_copy_mode == MODE_COMPRESS:
+        return _panel_mapped(entry, offer)
+    if run.carousel_copy_mode == MODE_AUTO:
+        return _panel_mapped(entry, offer) and bool(_rows_over_budget(
+            _admitted_texts(entry, offer), offer.budgets.get("slide", 0)))
+    return False
+
+
+def _rows_over_budget(texts: Sequence[str], budget: int) -> list[int]:
+    """1-based positions whose text is longer than `budget` characters (pure; budget ≤ 0 → []).
+
+    D62/FR-353's whole measurement, and it is deliberately a PURE function of a list of strings
+    and a number: no `_Run`, no config, no offer, no logging, no I/O. Two callers today —
+    `_compress_wanted`, which asks "is there anything to compress at all", and `_auto`, which asks
+    "which positions" — and they must never disagree, because one decides whether the call happens
+    and the other decides what the answer is allowed to touch.
+
+    Purity is also forward-looking: SESSION N calls this on a TRANSLATED deck, where the strings
+    are not `offer.panels` at all, so anything this function reached for beyond its two arguments
+    would have to be faked or duplicated there.
+
+    `budget <= 0` means "this creative renders no such slot", which `_slot_budgets` never produces
+    for a carousel's `slide`. It answers "nothing is over budget" rather than "everything is": a
+    missing ceiling may not be read as a ceiling of zero, which would send an entire deck to the
+    compress call on the strength of a slot that does not exist.
+    """
+    if budget <= 0:
+        return []
+    return [position for position, text in enumerate(texts, start=1) if len(text) > budget]
+
+
+def _admitted_texts(entry: PlanEntry, offer: _Offer) -> list[str]:
+    """This deck's panel text per POSITION, dropped panels blanked — pure, and silent.
+
+    The input `_rows_over_budget` measures. Position-indexed over `_deck_length` exactly as
+    `_mapped_deck` walks it, and each position carries `text` when `_panel_verdict` admits it and
+    `""` when it does not — the SAME verdict, on the same string, in the same order, so a panel
+    that will render wordless can never be counted as over budget and sent to the compress call.
+
+    What it deliberately does NOT do is warn. `_mapped_deck` logs `panel_over_budget`,
+    `panel_handle_or_url` and `panel_emptied_by_strip` once per creative when it runs, and it runs
+    on the auto path too (`_auto_deck` calls it first, unchanged). A measuring pass that repeated
+    those three warnings would double every one of them on every auto deck, and the operator would
+    read the duplicate as two decks' worth of dropped panels.
+    """
+    out: list[str] = []
+    for position in range(1, _deck_length(entry, offer) + 1):
+        text = offer.panels[position - 1] if position <= len(offer.panels) else ""
+        out.append("" if _panel_verdict(text) else text)
+    return out
 
 
 async def _call_compress(
     group: _Group, entries: Sequence[PlanEntry], run: _Run, offers: Mapping[str, _Offer],
+    *, only: Mapping[str, Sequence[int]] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """The D54 call: source panel strings in, compressed strings out (FR-331/FR-332).
 
@@ -1907,6 +2035,13 @@ async def _call_compress(
       compress-mode group still passes the default, so `{{text_budgets}}`'s carousel line says
       "no per-slide ceiling" for the deck that is quoting and states the real ceiling for the deck
       that is compressing to it.
+
+    `only` (D62/FR-353) is the auto mode's whole difference at the wire: `{asset_id: the positions
+    that overflowed}`, so `_compress_block` prints those panels alone and `_sibling_list` writes
+    the auto clause naming them. `None` — every compress-mode call, and every pre-D62 caller — is
+    "list every admitted position", which is byte-identical to what this function always sent. The
+    template needs no branch for it: it already says a position it did not print takes `""`, and
+    under auto the unprinted positions are precisely the ones already shipping verbatim.
     """
     style = _single_style(entries, run)
     context = build_context(
@@ -1919,10 +2054,10 @@ async def _call_compress(
         competitor_strings=_strip_terms(entries[0], run),  # M6: one strip pass over the fenced
         platform_conventions=_relevant(run.conventions, entries),  # trend texts as well
         text_budgets=run.budgets,
-        sibling_list=_sibling_list(entries, run, offers, True, compress=True),
+        sibling_list=_sibling_list(entries, run, offers, True, compress=True, auto_rows=only),
         carousel_copy_mode=MODE_COMPRESS,
     )
-    context["compress_panels"] = _compress_block(entries, offers)
+    context["compress_panels"] = _compress_block(entries, offers, only=only)
     try:
         system = run.engine.render(_COMPRESS_TEMPLATE, context)
     except (ValueError, LookupError) as exc:  # unresolved placeholder / missing template
@@ -1956,7 +2091,8 @@ def _answers(result: Any, entries: Sequence[PlanEntry]) -> dict[str, dict[str, A
     return payloads
 
 
-def _compress_block(entries: Sequence[PlanEntry], offers: Mapping[str, _Offer]) -> str:
+def _compress_block(entries: Sequence[PlanEntry], offers: Mapping[str, _Offer], *,
+                    only: Mapping[str, Sequence[int]] | None = None) -> str:
     """The `{{compress_panels}}` block: one section per creative, its own deck's panels, in order.
 
     This is the compress contract's whole input, and every line of it is load-bearing:
@@ -1992,12 +2128,21 @@ def _compress_block(entries: Sequence[PlanEntry], offers: Mapping[str, _Offer]) 
     the material being compressed, and a truncated panel would be compressed into a lie. A panel's
     own line breaks survive as indented continuation lines, so the numbering stays readable without
     reflowing the source's typography.
+
+    **`only` narrows the listing to AUTO mode's overflowing positions (D62/FR-353)** and changes
+    nothing else — same numbering by source position, same per-line budget, same header, same
+    caption line. It works precisely because "an unlisted number ships wordless" was never the
+    engine's reading of an unlisted number: the engine's reading is "the model was not asked about
+    this position, so its answer for it is discarded", and under auto that position is already
+    shipping its source panel verbatim. `None` lists every admitted position, which is what every
+    compress-mode call sends and what this function did before D62, byte for byte.
     """
     blocks: list[str] = []
     for entry in entries:
         offer = offers.get(entry.asset_id)
         if offer is None or offer.post is None:
             continue
+        wanted = None if only is None else {int(n) for n in only.get(entry.asset_id, ())}
         budget = offer.budgets.get("slide", 0)
         lines = [f"CREATIVE {entry.asset_id} — language: the one these panels are written in; "
                  "mirror it exactly and never translate",
@@ -2008,6 +2153,8 @@ def _compress_block(entries: Sequence[PlanEntry], offers: Mapping[str, _Offer]) 
             text = offer.panels[position - 1] if position <= len(offer.panels) else ""
             if _panel_verdict(text):
                 continue  # unlisted IS the instruction: that slide ships wordless (FR-304)
+            if wanted is not None and position not in wanted:
+                continue  # auto mode: this panel already fits, so it ships verbatim (FR-353)
             lines.append(f"{position}. (at most {budget} characters) {_folded(text)}")
         blocks.append("\n".join(lines))
     if not blocks:
@@ -2154,7 +2301,8 @@ def _display(text: str) -> str:
 
 
 def _sibling_list(entries: Sequence[PlanEntry], run: _Run, offers: Mapping[str, _Offer],
-                  verbatim: bool, *, compress: bool = False) -> str:
+                  verbatim: bool, *, compress: bool = False,
+                  auto_rows: Mapping[str, Sequence[int]] | None = None) -> str:
     """One line per creative — asset id, platform, format, and the LANGUAGE RULE in force.
 
     §1.7.5, F22: a verbatim creative's language is a property of the string it quotes, so the line
@@ -2179,6 +2327,14 @@ def _sibling_list(entries: Sequence[PlanEntry], run: _Run, offers: Mapping[str, 
     `{{compress_panels}}` is this creative's — and it replaces the "as-selected" language clause
     with the mirror rule and the slide budget, which are the two things the compress contract adds.
     Every caller that does not ask for it gets byte-identical output to the pre-D54 function.
+
+    `auto_rows` (D62/FR-353) makes it four answers rather than three, and it is a FOURTH branch
+    rather than an edit to the compress one on purpose: the compress wording is what three shipped
+    tests pin and what every `--copy-mode compress` run still sends, so it stays untouched. The
+    auto line names the positions being asked for, says out loud that every other panel of that
+    deck ships verbatim and is not printed, and repeats the template's own rule that an unprinted
+    position takes `""` — because under auto the unprinted positions are the majority of the deck,
+    and a model that "helpfully" rewrote them would have its work discarded row by row.
     """
     lines = []
     for entry in entries:
@@ -2186,7 +2342,16 @@ def _sibling_list(entries: Sequence[PlanEntry], run: _Run, offers: Mapping[str, 
         line = f"- {entry.asset_id} · {entry.platform} · {entry.creative_format}"
         if entry.creative_format == "carousel" and entry.slide_count:
             line += f" · {entry.slide_count} slides"
-        if compress and offer is not None and offer.post is not None:
+        if compress and auto_rows is not None and offer is not None and offer.post is not None:
+            budget = offer.budgets.get("slide", 0)
+            rows = ", ".join(str(int(position))
+                             for position in auto_rows.get(entry.asset_id, ()))
+            line += (f" · compress post P{offer.post_ordinal}'s panels {rows} (the ones over "
+                     f"{budget} characters) to {budget} characters per slide; every other panel "
+                     "of this deck ships verbatim and is not printed, so answer \"\" for every "
+                     "position not printed"
+                     " · language: the panels' own, mirrored exactly, never translated")
+        elif compress and offer is not None and offer.post is not None:
             line += (f" · compress post P{offer.post_ordinal}'s panels to "
                      f"{offer.budgets.get('slide', 0)} characters per slide"
                      " · language: the panels' own, mirrored exactly, never translated")
@@ -2575,7 +2740,7 @@ def _panel_verdict(text: str) -> str:
 
 
 # --------------------------------------------------------------------------------------------
-# Compress mode — the third contract (D54/FR-331)
+# Compress mode — the third contract (D54/FR-331), and auto mode on top of it (D62/FR-353)
 # --------------------------------------------------------------------------------------------
 
 
@@ -2909,6 +3074,202 @@ def _compressed_caption(payload: Mapping[str, Any], offer: _Offer, entry: PlanEn
                 "identity-bearing tag is removed whole (§1.5, FR-319)",
               asset_id=entry.asset_id, hashtags=dropped)
     return caption, hashtags, stripped
+
+
+# --------------------------------------------------------------------------------------------
+# Auto mode — compress ONLY the panels that overflow (D62/FR-353)
+# --------------------------------------------------------------------------------------------
+
+
+def _auto(entry: PlanEntry, payload: Mapping[str, Any], offer: _Offer, group: _Group,
+          run: _Run) -> _Written:
+    """FR-353 — a MIXED deck: the panels that fitted are quoted, the ones that overflowed are not.
+
+    The sibling of `_compressed`, and everything above the deck is identical to it: the same call
+    wrote this creative's caption, headline and hashtags, so the same three backstops run on them
+    through `_compress_field` and `_compressed_caption`, and the same three tags
+    (`no_onimage_text`, `text_trimmed`, `competitor_stripped`) are earned on the same terms.
+
+    The deck is where it differs, and the difference is delegated whole to `_auto_deck`: the
+    verbatim FR-304 mapping is built FIRST and unchanged, and only the overflowing positions are
+    spliced. So `refs` here is not empty the way `_compressed`'s is — it holds the quoted rows'
+    real `P<n>.panel.<i>` labels, because those rows really are byte-quotes of those panels and
+    saying otherwise would throw away provenance the deck actually has.
+
+    `quoted` is the pool `_verify` audits against, and on this path it is built as "the source's
+    strings PLUS every string this call authored that ships". That is what lets half 1 of the
+    audit keep working row by row: a quoted slide must still be a byte-substring of the post (a
+    real check, and the only place a splicing bug would surface), while a compressed slide, the
+    compressed caption, the compressed headline and the model's hashtags pass by construction
+    because they are in the pool themselves. Half 2 — the blocklist — reads the `CopySet` rather
+    than this tuple and is unaffected either way.
+
+    The positions are recomputed here from `_rows_over_budget(_admitted_texts(...))` rather than
+    threaded down from `_write_group`: both are pure functions of the same entry and offer, so the
+    two computations cannot disagree, and passing the list through three frames just to avoid a
+    list comprehension would put an invariant on a parameter instead of on a function.
+    """
+    brands = _strip_terms(entry, run)
+    tags: list[DegradationTag] = []
+    own_words: list[str] = []
+    over = _rows_over_budget(_admitted_texts(entry, offer), offer.budgets.get("slide", 0))
+    deck = _auto_deck(entry, payload, offer, run, brands, over)
+    headline, headline_trimmed, headline_stripped = _compress_field(
+        str(payload.get("headline") or ""), offer.budgets.get("headline", 0), brands,
+        entry, run, where="headline")
+    caption, hashtags, caption_stripped = _compressed_caption(payload, offer, entry, run, brands,
+                                                              own_words)
+    copyset = CopySet(
+        asset_id=entry.asset_id,
+        language=entry.language,
+        trend_key=entry.trend_key,
+        caption=caption,
+        hashtags=hashtags,
+        headline=headline,
+        slide_texts=deck.texts,
+        narrative_arc=str(payload.get("narrative_arc") or ""),
+        through_line=str(payload.get("through_line") or "") or _subject_name(entry, group),
+    )
+    if not (headline or any(text.strip() for text in deck.texts)):
+        # Under auto this can only mean the SOURCE deck is wordless: a panel that was admitted and
+        # under budget ships its own bytes without the model's help, and an over-budget panel that
+        # came back empty keeps its bytes too (see `_auto_deck`). So the honest message is about
+        # FR-304's admission gate, not about the compress call.
+        tags.append(DegradationTag.NO_ONIMAGE_TEXT)
+        _warn(run.log, "no_onimage_text",
+              f"{entry.asset_id}: no slide of this deck carries text and the call returned no "
+              f"cover headline; shipping a caption-only creative (FR-353). Every one of its "
+              f"{len(offer.panels)} source panel(s) was dropped by FR-304's admission gate — auto "
+              "mode compresses only what overflows, so it can neither rescue a dropped panel nor "
+              "blank an admitted one", asset_id=entry.asset_id, budgets=dict(offer.budgets),
+              source_panels=len(offer.panels))
+    if deck.trimmed or headline_trimmed:
+        tags.append(DegradationTag.TEXT_TRIMMED)
+    if deck.stripped or caption_stripped or headline_stripped:
+        tags.append(DegradationTag.COMPETITOR_STRIPPED)
+        _warn(run.log, "competitor_stripped",
+              f"{entry.asset_id}: a blocklisted competitor name, or the source creator's own name "
+              "(FR-312), was removed from this creative's text (§1.5). On the auto path the strip "
+              "runs on both sides — the panels the model was shown and the lines it sent back — "
+              "because a compressed line is the model's bytes, not the source's, while the rows "
+              "that shipped verbatim were stripped at offer time as they always are",
+              asset_id=entry.asset_id, refs=dict(deck.refs), copy_mode=MODE_AUTO,
+              creator_lines=sorted(offer.creator_stripped_panels))
+    # Everything this call AUTHORED that becomes pixels or prose. It joins the verifier's pool for
+    # the same reason `own_words` does on the verbatim paths: a string we wrote is not a quote gone
+    # missing, and reporting it as one would bury the rows where the check still has teeth.
+    authored = [row["source_text"] for row in deck.panel_map if row["compressed"]]
+    return _Written(
+        copyset=copyset,
+        source=CopyProvenance(post_id=offer.post.post_id if offer.post else "",
+                              refs=deck.refs,  # the QUOTED rows' labels — real, and kept
+                              panel_map=deck.panel_map,
+                              source_panel_count=len(offer.panels),
+                              copy_mode=MODE_AUTO),
+        tags=tags,
+        quoted=(*offer.haystack, *own_words, *authored, caption, headline, *hashtags))
+
+
+def _auto_deck(entry: PlanEntry, payload: Mapping[str, Any], offer: _Offer, run: _Run,
+               brands: Sequence[str], over: Sequence[int]) -> _PanelDeck:
+    """FR-353 — the verbatim mapped deck with the overflowing positions SPLICED, nothing else.
+
+    **The verbatim walk runs first and unchanged.** `_mapped_deck` produces the texts, the refs and
+    the full FR-304 panel map exactly as it does on a verbatim run, warnings included — one
+    `panel_over_budget`, one `panel_handle_or_url`, one `panel_emptied_by_strip` per creative, in
+    their own honest wording. Building the deck this way rather than writing a third walk is what
+    guarantees an auto deck with nothing spliced is byte-identical to a verbatim one, and it is
+    also why the three drop reasons, the position preservation, `creator_stripped`,
+    `chrome_counter_stripped`, `truncation_suspect` and `source_text_original` all behave here
+    without a line of code restating them.
+
+    Then, per position in `over` and only those:
+
+    1. The model's line for that position goes through `_compress_field` — blocklist (fail-closed,
+       layers 1 and 2), the FR-319 social-mark gate (which BLANKS rather than edits), then the
+       word-boundary trim to the same budget the prompt asked for. The same function, in the same
+       order, as the compress path: a compressed line is the model's bytes whichever mode produced
+       it.
+    2. A line that survives is SPLICED: `texts[i - 1]` becomes it, that slide's `P<n>.panel.<i>`
+       ref is removed (this row no longer quotes a label, FR-302 as amended), and the row's
+       `source_text` / `ref_label` / `compressed` are rewritten to match. `source_text_original`
+       is left exactly as `_mapped_deck` wrote it — the pre-layer-3 source panel — which is the
+       same string `_compressed_deck` records, so the gallery's "compressed from N chars" measures
+       off one shape in both modes.
+    3. **A line that comes back EMPTY keeps the verbatim bytes.** Blank answer or a scrub that
+       blanked it, the row is left alone: its panel, its label, `compressed: False`. Long beats
+       wordless — the panel is over a design budget, not over `PANEL_SANITY_CHARS`, so it is a real
+       slide with real words and rendering it long is strictly better than rendering it empty. That
+       is the one place auto deliberately diverges from `_compressed_deck`, which has no verbatim
+       row to fall back to and therefore ships the blank.
+    4. **A line written for a position NOT in `over` is DISCARDED.** The model was not asked about
+       it; the panel already fits and is already quoted verbatim on that slide. Overwriting it
+       would be an unrequested rewrite of a string we are entitled to quote — the same finding
+       `_compressed_deck` calls `invented`, with a different cause and its own event.
+    """
+    deck = _mapped_deck(entry, offer, run)
+    answered = _positional(payload.get("slide_texts"))
+    wanted = {int(position) for position in over}
+    budget = offer.budgets.get("slide", 0)
+    kept_verbatim: list[str] = []  # asked for, came back with nothing — the source bytes stand
+    discarded: list[str] = []      # written for a position that was never asked about
+    scrubbed: list[str] = []       # a compressed line carried a social mark and was blanked
+    for position in range(1, len(deck.texts) + 1):
+        model_text = answered[position - 1] if position <= len(answered) else ""
+        row = deck.panel_map[position - 1]
+        if position not in wanted:
+            if model_text.strip():
+                discarded.append(f"slide {position} ({_display(model_text)})")
+            continue
+        if row["drop_reason"]:  # unreachable: `_admitted_texts` blanks every dropped position
+            continue
+        text, trimmed, cut_name = _compress_field(
+            model_text, budget, brands, entry, run, where=f"slide {position}",
+            blanked_into=scrubbed)
+        if not text.strip():
+            kept_verbatim.append(f"slide {position} ({len(row['source_text'])} characters)")
+            continue
+        deck.texts[position - 1] = text
+        deck.refs.pop(f"slide_{position}", None)
+        row["source_text"] = text
+        row["ref_label"] = ""
+        row["compressed"] = True
+        deck.trimmed = deck.trimmed or trimmed
+        deck.stripped = deck.stripped or cut_name
+    if len(answered) > len(deck.texts):
+        _warn(run.log, "compress_list_truncated",
+              f"{entry.asset_id}: the compress call returned {len(answered)} slide texts for a "
+              f"{len(deck.texts)}-slide deck; the extra {len(answered) - len(deck.texts)} are "
+              "discarded. The deck's length is the plan's (fixed at ASSIGN and priced at the "
+              "Confirm gate), never the model's — a longer answer cannot buy a slide nobody paid "
+              "for (FR-353/FR-95)",
+              asset_id=entry.asset_id, answered=len(answered), slides=len(deck.texts))
+    if scrubbed:
+        _warn(run.log, "compress_scrub",
+              f"{entry.asset_id}: {len(scrubbed)} compressed line(s) carried an @handle or a URL "
+              f"outside the technical allowlist and were BLANKED — {'; '.join(scrubbed)}. The "
+              "line is removed whole rather than edited: a compressed sentence with its mark cut "
+              "out is a sentence nobody wrote (FR-319/FR-353). Under auto those slides keep their "
+              "SOURCE panel instead of going wordless — see auto_row_kept_verbatim below",
+              asset_id=entry.asset_id, slides=scrubbed)
+    if kept_verbatim:
+        _warn(run.log, "auto_row_kept_verbatim",
+              f"{entry.asset_id}: {len(kept_verbatim)} over-budget panel(s) came back empty from "
+              f"the compress call and ship verbatim — {'; '.join(kept_verbatim)}. Long beats "
+              f"wordless: the panel is over this style's {budget}-character design budget, not "
+              "over the sanity ceiling, so it is a real slide with real words and rendering it at "
+              "full length is strictly better than rendering it blank (FR-353). The creative is "
+              "NOT tagged for it — nothing was lost, only left uncompressed",
+              asset_id=entry.asset_id, budget=budget, slides=kept_verbatim)
+    if discarded:
+        _warn(run.log, "auto_row_discarded",
+              f"{entry.asset_id}: the compress call wrote text for {len(discarded)} position(s) "
+              f"it was not asked about — {'; '.join(discarded)}. Discarded: those panels already "
+              "fit the style's budget and are quoted verbatim on their slides, so a line for one "
+              "of them is either an invention or an unrequested rewrite of a string we are "
+              "entitled to quote (FR-353). Only the positions listed in that creative's section "
+              "of the panel block are read", asset_id=entry.asset_id, slides=discarded)
+    return deck
 
 
 def _positional(value: Any) -> list[str]:
@@ -3509,6 +3870,15 @@ def _verify(written: _Written, entry: PlanEntry, run: _Run) -> list[DegradationT
        for compress mode. A compressed slide makes no byte-substring claim to audit; its receipts
        are `CopyProvenance.copy_mode`, the panel map's `compressed` rows and their
        `source_text_original`. Half 2 below is unaffected and still reads every string that ships.
+
+       **An AUTO creative (D62/FR-353) is the case where half 1 is neither run wholesale nor
+       skipped wholesale — it is satisfied ROW BY ROW.** `_auto` returns a pool that is the post's
+       own strings PLUS every string that call authored and shipped (the spliced slide texts, the
+       caption, the headline, the hashtags). So a slide that shipped verbatim is checked for real
+       — it must be a byte-substring of the post, and a splicing bug that overwrote a quoted row
+       would surface here as `copy_not_verbatim` — while a compressed slide is in the pool itself
+       and passes by construction, which is the same outcome the empty pool buys a fully
+       compressed deck, arrived at without blinding the check on the rows that still make a claim.
     2. **Is it clean?** No blocklisted competitor may appear in ANY shipped string, on any path,
        verbatim or free text. This half is the fail-closed one and it re-checks §1.5 layer 1 at
        the very last moment before the bytes leave this module — the same asymmetry `_strip_terms`
@@ -3570,5 +3940,5 @@ def _warn(log: Any, event_type: str, message: str, **data: Any) -> None:
         log.warn(event_type, message, **data)
 
 
-__all__ = ["COPY_ROLE", "MODE_COMPRESS", "MODE_VERBATIM", "PANEL_SANITY_CHARS", "CopyProvenance",
-           "CopyResult", "NoSafeCaptionError", "write_copy"]
+__all__ = ["COPY_ROLE", "MODE_AUTO", "MODE_COMPRESS", "MODE_VERBATIM", "PANEL_SANITY_CHARS",
+           "CopyProvenance", "CopyResult", "NoSafeCaptionError", "write_copy"]

@@ -24,9 +24,9 @@ retired templates from every surface and left 8 shipped roles (3 global + 4 gpt-
 1 seedance); every name in `models.PLACEHOLDERS` has had to be reachable from some role ever
 since — the W2 transitional carve-outs are gone. The count has since moved with the pipeline, not
 with the rules: +4 for the v2.2.0 gauntlet artifacts, -1 for the retired `vision_check_question.md`
-(D49), +1 for v2.3.0's `copy_compress_system.md` (D54) and +1 for v2.4.0's `style_match_system.md`
-(D56), which is **14** today. `SHIPPED_COUNT` below is that number, and raising it is how a new
-role is ADMITTED to every check in this module.
+(D49), +1 for v2.3.0's `copy_compress_system.md` (D54), +1 for v2.4.0's `style_match_system.md`
+(D56) and +1 for v2.6.0's `cover_pick_system.md` (D62), which is **15** today. `SHIPPED_COUNT`
+below is that number, and raising it is how a new role is ADMITTED to every check in this module.
 """
 
 from __future__ import annotations
@@ -56,14 +56,14 @@ SHIPPED: list[tuple[str, str]] = (
     [("", role) for role in GLOBAL_TEMPLATES if role not in PENDING_TEMPLATES]
     + [(profile, role) for profile, names in PROFILE_TEMPLATES.items() for role in names])
 
-#: The count of roles that ship BYTES today: 9 global — `copywriter_system.md`,
+#: The count of roles that ship BYTES today: 10 global — `copywriter_system.md`,
 #: `copy_compress_system.md` (v2.3.0/D54), `topic_filter_system.md`, `style_match_system.md`
-#: (v2.4.0/D56), `slide_intel_question.md` and the gauntlet's four (`critic_brief.md`,
-#: `critic_system.md`, `critic_craft.md`, `gauntlet_fix.md`) — plus 4 gpt-image-2 (the merged
-#: `image_post.md` and its three siblings) plus 1 seedance. `vision_check_question.md` is gone with
-#: the FR-105 machinery it asked for (v2.2.0/D49), and `PENDING_TEMPLATES` is now empty, so this
-#: number is every shipped role there is.
-SHIPPED_COUNT = 14
+#: (v2.4.0/D56), `cover_pick_system.md` (v2.6.0/D62), `slide_intel_question.md` and the gauntlet's
+#: four (`critic_brief.md`, `critic_system.md`, `critic_craft.md`, `gauntlet_fix.md`) — plus 4
+#: gpt-image-2 (the merged `image_post.md` and its three siblings) plus 1 seedance.
+#: `vision_check_question.md` is gone with the FR-105 machinery it asked for (v2.2.0/D49), and
+#: `PENDING_TEMPLATES` is now empty, so this number is every shipped role there is.
+SHIPPED_COUNT = 15
 
 #: `prompts/humanizer_skill.md` ships in the same folder and is NOT a role: it is the vendored MIT
 #: `SKILL.md` from github.com/blader/humanizer, kept as the reference the compress template's ~14
@@ -117,14 +117,17 @@ def test_every_shipped_role_ships_both_a_file_and_a_built_in_default() -> None:
     is a SCREEN like `topic_filter_system.md`, never a render prompt, and it earns its place here
     for the ordinary FR-183 reason: a matcher whose built-in twin went missing would raise on the
     one day its file is already broken, and FR-334's fail-open would then be answering for a defect
-    it was never meant to cover.
+    it was never meant to cover. `cover_pick_system.md` is the TENTH, added v2.6.0 (D62/FR-352),
+    and the same sentence applies to it word for word with `cover_pick`'s FR-351 fail-open in the
+    place of FR-334's.
     """
     assert len(SHIPPED) == SHIPPED_COUNT, \
         "the shipped role set changed — the parity checks below need it"
     assert set(GLOBAL_TEMPLATES) == {"copywriter_system.md", "copy_compress_system.md",
                                      "topic_filter_system.md", "style_match_system.md",
-                                     "slide_intel_question.md", "critic_brief.md",
-                                     "critic_system.md", "critic_craft.md", "gauntlet_fix.md"}
+                                     "cover_pick_system.md", "slide_intel_question.md",
+                                     "critic_brief.md", "critic_system.md", "critic_craft.md",
+                                     "gauntlet_fix.md"}
     assert PENDING_TEMPLATES <= set(GLOBAL_TEMPLATES), \
         "a pending name that is not even declared is a typo, not a sequencing carve-out"
     assert "image_post.md" in PROFILE_TEMPLATES["gpt-image-2"]
@@ -190,6 +193,33 @@ def test_the_slide_intel_built_in_is_byte_identical_to_its_file() -> None:
 
     assert pe._BUILT_INS["slide_intel_question.md"] == on_disk
     assert "chrome_text" in on_disk, "the strict schema requires it; the prompt must ask for it"
+
+
+def test_the_cover_pick_built_in_is_byte_identical_to_its_file() -> None:
+    """v2.6.0 (D62, FR-352): the cover judge, held to FULL parity from its first commit.
+
+    The placeholder-set check above already covers it — both copies name `cover_contract` and
+    `cover_candidates` — and that is exactly the cover a drift would hide behind. What decides
+    this call is not which slots it resolves but the JUDGING ORDER inside the prose: style
+    contract first, thumbnail legibility second, stopping power only on a tie. A twin that lost
+    that order would still name the right two slots while quietly picking the prettiest frame —
+    on the one day the file it stands in for is already broken, and for the one frame every other
+    slide of the deck is then built from.
+
+    The two spot checks are the contract `cover_pick` parses rather than prose: the answer is a
+    candidate ID (`_chosen` refuses anything else and the deck falls back to candidate 1), and
+    `counter: none` has to mean "no badge at all" or an uncounted deck is judged by a rule D59
+    deleted.
+    """
+    on_disk = _on_disk("", "cover_pick_system.md").read_text(encoding="utf-8")
+
+    assert pe._BUILT_INS["cover_pick_system.md"] == on_disk, \
+        "cover_pick_system.md: the built-in drifted from its file — re-sync it"
+    flat = " ".join(on_disk.split())
+    assert "`chosen` is one of the candidate ids listed in the block above, as an integer" in flat, \
+        "the answer contract `cover_pick._chosen` polices is not in the prompt"
+    assert "NO counter, page number, chip or badge anywhere at all when `counter:` says none" in \
+        flat, "an uncounted deck's candidates are judged against nothing (D59/FR-338)"
 
 
 def test_the_four_gauntlet_built_ins_are_byte_identical_to_their_files() -> None:

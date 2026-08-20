@@ -45,7 +45,7 @@ import pytest
 import yaml
 from PIL import Image
 
-from hypesocials import gauntlet, prompts_engine as pe, render, styles
+from hypesocials import cover_pick, gauntlet, prompts_engine as pe, render, styles
 from hypesocials.config import BrandingConfig, Config, PlatformConfig
 from hypesocials.generate import carousel as carousel_module
 from hypesocials.generate import refs as refs_module
@@ -280,17 +280,76 @@ class Env:
 # ------------------------------------------------------------------------------------ fixtures
 
 
+def blob_for(url: str) -> bytes:
+    """The bytes BOTH fakes hand back for one render URL — the download and the frame loader.
+
+    One function on purpose (D62/FR-351): `covers/cover_candidate_2.jpg` is written from the frame
+    loader's bytes and `slide_01.jpg` from the packager's download of the same URL, so a test can
+    only assert "the chosen candidate is the slide that shipped" if the two fakes agree about what
+    that URL contains. Real JPEG magic in front, because `generate.pixels` sniffs the header.
+    """
+    return b"\xff\xd8" + url.encode("utf-8")
+
+
+@pytest.fixture
+def frames(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+    """`vision_check.load_images`, faked at the door `carousel.py` imports it through (FR-351).
+
+    Answers with `blob_for(url)` and the 1-based position each blob came from, which is the real
+    loader's contract. `drop` is the half that matters: a URL listed there is left out of BOTH
+    returns, exactly as an unreadable source is dropped rather than shifted — the case that would
+    otherwise re-label every candidate behind it and anchor the deck to the wrong render.
+    """
+    control = SimpleNamespace(asked=[], drop=set())
+
+    async def _load(sources, log=None):
+        urls = [str(source) for source in sources]
+        control.asked.append(urls)
+        kept = [(position, url) for position, url in enumerate(urls, start=1)
+                if url not in control.drop]
+        return [blob_for(url) for _, url in kept], [position for position, _ in kept]
+
+    monkeypatch.setattr(carousel_module, "load_images", _load)
+    return control
+
+
+class PickStub:
+    """`cover_pick.pick`, faked — records the brief it was handed and answers from a fixed verdict.
+
+    Wave 6a owns the real call; until it lands every genuine `pick()` reports itself unavailable,
+    so a test that wants to exercise the CHOSEN path has to stand in for it. The recorded
+    `candidates` and `brief` are what pin the contract this module is responsible for: the ids it
+    numbers the candidates with, the native bytes it attaches, and the strings the cover was
+    ordered to carry.
+    """
+
+    def __init__(self, chosen: int = 1, reason: str = "the cleanest type hierarchy",
+                 degraded: bool = False) -> None:
+        self.chosen, self.reason, self.degraded = chosen, reason, degraded
+        self.candidates: list[list[cover_pick.CoverCandidate]] = []
+        self.briefs: list[cover_pick.CoverBrief] = []
+
+    async def __call__(self, candidates, brief, cfg, llm) -> cover_pick.Pick:
+        self.candidates.append(list(candidates))
+        self.briefs.append(brief)
+        return cover_pick.Pick(chosen=self.chosen, reason=self.reason, degraded=self.degraded)
+
+
 @pytest.fixture(autouse=True)
 def downloads(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     """Every `store_render` writes real bytes to a real folder; nothing touches the network."""
-    control = SimpleNamespace(fetched=[], fail_contains="", fail_reason="download_failed")
+    #: `per_url` (D62/FR-351) makes the stored bytes name their own URL, which is the only way to
+    #: assert WHICH of three identical-looking cover candidates became `slide_01`. Off by default
+    #: so every test written before the cover pick keeps the exact bytes it always got.
+    control = SimpleNamespace(fetched=[], fail_contains="", fail_reason="download_failed",
+                              per_url=False)
 
     async def _download(url: str) -> bytes:
         control.fetched.append(url)
         if control.fail_contains and control.fail_contains in url:
             raise PackagingError(f"download failed: {control.fail_reason}",
                                  reason=control.fail_reason)
-        return b"\xff\xd8fake-jpeg-bytes"
+        return blob_for(url) if control.per_url else b"\xff\xd8fake-jpeg-bytes"
 
     monkeypatch.setattr(packager, "_download", _download)
     return control
@@ -2841,3 +2900,424 @@ async def test_fr342_a_deck_on_an_unpinned_platform_still_renders_at_the_engine_
     await render_carousel(entry, env, make_folder(tmp_path, entry), submit=submit)
 
     assert [call.resolution for call in submit.calls] == ["1k", "1k"]
+
+
+# ---- D62 -------------------- FR-351: cover best-of-N — buy three covers, ship the best of them
+#
+# The cover is the one frame every other slide copies (FR-95), so it is the cheapest frame in the
+# deck to get right and the most expensive one to get wrong. D62 buys `run.cover_candidates` of
+# them concurrently, at an IDENTICAL prompt, and one metered vision call picks which anchors the
+# deck. Five properties are pinned here and each is a decision rather than an implementation
+# detail:
+#
+# * `cover_candidates: 1` is the pre-D62 path BYTE FOR BYTE — one submission, no fan-out, no pick
+#   call, no receipt. A default that quietly tripled render spend would re-price every config that
+#   never opted in (the D58 rule);
+# * the candidates carry the SAME prompt. A perturbed prompt would make them incomparable: the
+#   judge would be choosing between two briefs rather than between two readings of one;
+# * the WINNER is what slides 2..N chain to. Committing one cover and referencing another would
+#   drift the deck exactly as an unchained deck does, having paid three times for the privilege;
+# * a candidate that never landed is a WARNING, never a missing slide and never D51 doom. D51 is
+#   about a slide that can never come, and slide 1 came;
+# * every failure of the JUDGE ships the deck anyway (FR-351's fail-open shape, borrowed whole
+#   from the style matcher): a degraded verdict commits candidate 1 and says so on the artifact.
+
+
+def cover_env(tmp_path: Path, entry: PlanEntry, candidates: int, **overrides: Any) -> Env:
+    """An `Env` wired the way `runner._create` wires one for a cover-pick run (FR-351).
+
+    The gauntlet is switched OFF and `llm_call` is still handed over, which is the exact shape D62
+    added: `contracts.gate_on` ANDs `run.gauntlet.enabled` in, so the pick's seam can be present
+    without the post-render gate running. It also keeps these tests about the cover pick — a live
+    critic panel would put its own re-renders in `submit.calls`.
+    """
+    env = make_env(tmp_path, entry, **overrides)
+    env.config.run.cover_candidates = candidates
+    env.config.run.gauntlet.enabled = False
+    env.llm_call = object()  # never called directly: `cover_pick.pick` is the seam, and it is faked
+    return env
+
+
+def cover_file(tmp_path: Path, entry: PlanEntry, number: int) -> Path:
+    """One kept cover candidate's path on disk — `<asset>/covers/cover_candidate_<n>.jpg`."""
+    return (tmp_path / entry.asset_id / carousel_module.COVERS_DIR
+            / f"{carousel_module.COVER_CANDIDATE_STEM}_{number}.jpg")
+
+
+def count(log: Log, event_type: str) -> int:
+    """How many lines of one type this deck logged — a warning per loser has to be countable."""
+    return len([name for name in log.types() if name == event_type])
+
+
+async def test_fr351_one_cover_candidate_is_the_pre_d62_deck_byte_for_byte(
+    tmp_path: Path, frames: SimpleNamespace,
+) -> None:
+    """The engine default buys ONE cover and writes NO receipt (FR-351, D58's default rule).
+
+    `cover_candidates: 1` must not merely produce a deck that looks the same — it must take the
+    same code path, submit the same single slide-1 job, and leave `meta.yaml.cover_pick` at `None`,
+    because a receipt describing a choice nobody made is a receipt that misleads. The frame loader
+    is asserted UNTOUCHED for the same reason: a single-cover run fetches no candidate bytes, so a
+    config that never opted in pays neither the extra renders nor the extra downloads.
+    """
+    entry = make_entry(slides=3)
+    env = cover_env(tmp_path, entry, 1, texts=["one", "two", "three"])
+    submit = FakeSubmit()
+
+    record = await render_carousel(entry, env, make_folder(tmp_path, entry), submit=submit)
+
+    assert [call.slide for call in submit.calls] == [1, 2, 3], "one cover, then the body pages"
+    assert submit.calls[0].kind == "projected", "the anchor's own reservation kind, unchanged"
+    assert record.cover_pick is None
+    assert record.status is AssetStatus.SUCCESS and record.slide_count == 3
+    assert frames.asked == [], "no candidate bytes are fetched when there is nothing to choose"
+    assert not (tmp_path / entry.asset_id / carousel_module.COVERS_DIR).exists()
+    assert "cover_candidates" not in env.log.types()
+
+
+async def test_fr351_three_covers_are_submitted_identically_and_the_chosen_one_anchors_the_deck(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, downloads: SimpleNamespace,
+    frames: SimpleNamespace,
+) -> None:
+    """The whole feature in one deck: three identical orders, one verdict, one anchor.
+
+    The prompt equality is the load-bearing half. These are not three variations on a cover — they
+    are the same request three times, and the only thing allowed to differ is the provider's own
+    sampling. If the prompt moved per candidate the pick would be comparing briefs, and "the model
+    liked candidate 2" would say nothing at all about which cover is better.
+
+    The other half is that the WINNER is what the deck then copies: `slide_01` carries candidate
+    2's bytes AND slides 2–3 reference candidate 2's URL. A deck that committed one cover and
+    chained to another would drift exactly as an unchained deck does.
+    """
+    entry = make_entry(slides=3)
+    env = cover_env(tmp_path, entry, 3, texts=["Wired backwards", "two", "three"])
+    picker = PickStub(chosen=2, reason="the cleanest type hierarchy")
+    monkeypatch.setattr(cover_pick, "pick", picker)
+    downloads.per_url = True
+    submit = FakeSubmit()
+
+    record = await render_carousel(entry, env, make_folder(tmp_path, entry), submit=submit)
+
+    covers = submit.calls[:3]
+    assert [call.slide for call in covers] == [1, 1, 1]
+    assert len({call.prompt for call in covers}) == 1, "one request, submitted three times"
+    assert {call.kind for call in covers} == {"projected"}
+    assert {call.priority for call in covers} == {RenderPriority.WAVE1}
+    # The candidate ids ARE submission order, which is what lets a log line, a file name and
+    # `chosen` all name the same render. Pinned rather than assumed.
+    assert frames.asked == [[call.url for call in covers]]
+
+    chosen_url = covers[1].url
+    assert (tmp_path / entry.asset_id / "slide_01.jpg").read_bytes() == blob_for(chosen_url)
+    assert [call.image_urls for call in submit.calls[3:]] == [[chosen_url]] * 2, \
+        "slides 2-3 chain to the cover that WON, not to the one that happened to be first"
+    for number in (1, 2, 3):
+        assert cover_file(tmp_path, entry, number).read_bytes() == blob_for(covers[number - 1].url)
+
+    assert record.cover_pick == {
+        "candidates": ["covers/cover_candidate_1.jpg", "covers/cover_candidate_2.jpg",
+                       "covers/cover_candidate_3.jpg"],
+        "chosen": 2, "reason": "the cleanest type hierarchy", "degraded": False}
+    stored = yaml.safe_load(
+        (tmp_path / entry.asset_id / packager.META_FILE).read_text(encoding="utf-8"))
+    assert stored["cover_pick"] == record.cover_pick, "the receipt reaches meta.yaml intact"
+    assert DegradationTag.COVER_PICK_DEGRADED not in record.degradations
+    assert record.status is AssetStatus.SUCCESS and record.slide_count == 3
+    assert env.log.fields("cover_candidates") == {
+        "asset_id": entry.asset_id, "submitted": 3, "landed": 3, "candidates": [1, 2, 3]}
+    assert env.log.fields("cover_pick")["chosen"] == 2
+    assert "cover_candidate_lost" not in env.log.types(), \
+        "a cover that lost a comparison did not FAIL — it is simply not the one that anchors"
+
+
+async def test_fr351_the_judge_is_handed_native_bytes_and_the_contract_the_cover_was_ordered_from(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, frames: SimpleNamespace,
+) -> None:
+    """What the pick call actually sees (FR-351/FR-352) — ids, bytes, DNA and the legible strings.
+
+    Every piece of this is a contract another module depends on. The ids are 1-based submission
+    order, so `chosen` can be matched back to a file. The bytes are NATIVE (`load_images`, the same
+    loader the gauntlet's critics use) — a downscaled cover is a cover whose type cannot be judged.
+    The DNA is the exact `{{style_dna}}` bytes every slide of this deck was rendered under
+    (FR-189), because a judge holding candidates against a paraphrase of the contract is grading a
+    prompt nobody sent. And `expected_text` is what has to be LEGIBLE on the frame: slide 1's own
+    line and the wordmark when the deck is signed, with empty strings dropped — "is '' legible" is
+    not a question.
+    """
+    entry = make_entry(slides=3, branded=True)
+    style = make_style(tmp_path)
+    env = cover_env(tmp_path, entry, 2, texts=["Wired backwards", "two", "three"], style=style)
+    env.branding = BrandingConfig(brand="hypelead")
+    picker = PickStub(chosen=1)
+    monkeypatch.setattr(cover_pick, "pick", picker)
+    submit = FakeSubmit()
+
+    await render_carousel(entry, env, make_folder(tmp_path, entry), submit=submit)
+
+    assert len(picker.candidates) == 1, "ONE call per deck, whatever the candidate count"
+    candidates = picker.candidates[0]
+    assert [candidate.index for candidate in candidates] == [1, 2]
+    assert [candidate.image for candidate in candidates] == [
+        blob_for(call.url) for call in submit.calls[:2]], "native bytes, in candidate order"
+
+    brief = picker.briefs[0]
+    assert brief.asset_id == entry.asset_id and brief.style_key == STYLE_KEY
+    assert brief.style_dna == style_dna(style), "the exact bytes the render prompts carried"
+    assert brief.style_dna and brief.style_dna in submit.calls[0].prompt
+    assert "Wired backwards" in brief.expected_text
+    assert "HypeLead" in brief.expected_text, \
+        "a signed deck must be judged on whether its signature is legible (B1/FR-292)"
+    assert all(text.strip() for text in brief.expected_text), "empty strings are not questions"
+    assert brief.counter == "", "no source counter was detected, so this deck carries no badge"
+
+
+async def test_fr351_a_degraded_pick_commits_candidate_one_tags_the_deck_and_ships_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, downloads: SimpleNamespace,
+    frames: SimpleNamespace,
+) -> None:
+    """§0.14c's fail-open shape, applied to the cover: a judge we could not run never costs a deck.
+
+    The pick is a judgement about renders that ALREADY EXIST and are already paid for. So every
+    way it can fail — no metered answer, a raised call, an unparseable verdict — commits candidate
+    1, which is precisely the deck a `cover_candidates: 1` run would have made, and the artifact
+    says so: `cover_pick_degraded` on `degradations`, `degraded: true` on the receipt, and the
+    model's own account of what went wrong kept in `reason` for the operator to read.
+    """
+    entry = make_entry(slides=2)
+    env = cover_env(tmp_path, entry, 3, texts=["one", "two"])
+    monkeypatch.setattr(cover_pick, "pick", PickStub(
+        chosen=1, reason=f"{cover_pick.DEGRADED_MARKER}: the pick call raised TimeoutError",
+        degraded=True))
+    downloads.per_url = True
+    submit = FakeSubmit()
+
+    record = await render_carousel(entry, env, make_folder(tmp_path, entry), submit=submit)
+
+    assert (tmp_path / entry.asset_id / "slide_01.jpg").read_bytes() == \
+        blob_for(submit.calls[0].url), "candidate 1 anchors by default"
+    assert record.cover_pick is not None and record.cover_pick["degraded"] is True
+    assert record.cover_pick["chosen"] == 1
+    assert cover_pick.DEGRADED_MARKER in record.cover_pick["reason"]
+    assert DegradationTag.COVER_PICK_DEGRADED in record.degradations
+    assert "cover_pick_degraded" in env.log.types() and "cover_pick" not in env.log.types()
+    assert record.status is AssetStatus.SUCCESS and record.slide_count == 2, \
+        "a broken judge never blocks delivery (D3)"
+    assert len(record.cover_pick["candidates"]) == 3, "all three are still kept for the operator"
+
+
+async def test_fr351_a_candidate_that_never_landed_is_a_warning_and_never_a_missing_slide(
+    tmp_path: Path, frames: SimpleNamespace,
+) -> None:
+    """Two of three covers die; the deck is whole, unmarked and NOT unsalvageable (FR-351 vs D51).
+
+    D51 stops a deck when a slide is permanently lost to a render defect, because our slide *i* IS
+    their panel *i* and a hole in the middle is a broken deck rather than a shorter one. A cover
+    candidate is not that: it was competing for a slot the deck filled anyway. Filing it as a loss
+    would put "slide 1: provider_fail" in `missing_slide_numbers`' explanation for a slide that is
+    on disk, and — far worse — would latch `doomed` and stop the deck buying its remaining pages.
+
+    The REAL `cover_pick.pick` runs here rather than a stub, on purpose: one landed candidate is a
+    question with no content, and the module answers it without a model call at all.
+
+    A SECOND failure is final, per candidate: candidates 1 and 2 each burn their own FR-317
+    resubmit here and neither is attempted a third time (the ledger is `(1, candidate_id)`, so a
+    used one-shot stops that candidate and only that candidate).
+    """
+    entry = make_entry(slides=3)
+    env = cover_env(tmp_path, entry, 3, texts=["one", "two", "three"])
+    submit = FakeSubmit(rule=lambda call: failed() if call.index in (0, 1, 2, 3) else ok(call))
+
+    record = await render_carousel(entry, env, make_folder(tmp_path, entry), submit=submit)
+
+    assert [call.slide for call in submit.calls[:5]] == [1, 1, 1, 1, 1]
+    assert [call.kind for call in submit.calls[:5]] == [
+        "projected", "discretionary", "projected", "discretionary", "projected"], \
+        "candidates 1 and 2 each spend their OWN resubmit; candidate 3 lands first time (FR-351)"
+    assert len(submit.calls) == 7, "five cover attempts, then slides 2 and 3 — never a third try"
+    survivor = submit.calls[4]
+    assert [call.image_urls for call in submit.calls[5:]] == [[survivor.url]] * 2
+
+    assert record.status is AssetStatus.SUCCESS and record.slide_count == 3
+    assert record.missing_slide_numbers == [] and not record.skip_reason
+    assert DegradationTag.INCOMPLETE not in record.degradations
+    assert "carousel_slide_lost" not in env.log.types(), "nothing was lost — slide 1 arrived"
+    assert "carousel_anchor_retry" not in env.log.types(), "a landed cover needs no replacement"
+    assert count(env.log, "cover_candidate_lost") == 2
+    assert record.cover_pick == {"candidates": ["covers/cover_candidate_3.jpg"], "chosen": 3,
+                                 "reason": "only one candidate landed — nothing to choose",
+                                 "degraded": False}
+    assert cover_file(tmp_path, entry, 3).is_file()
+    assert not cover_file(tmp_path, entry, 1).exists(), "a cover that never came has no bytes"
+
+
+async def test_fr351_when_no_candidate_lands_the_deck_takes_the_old_single_anchor_failure_path(
+    tmp_path: Path, frames: SimpleNamespace,
+) -> None:
+    """Zero landed is one dead anchor, not three — FR-95's ladder is unchanged underneath D62.
+
+    A fan-out that comes back empty is the same situation a lone failed cover always was, so it
+    gets the same treatment: ONE loss line, ONE replacement anchor (`_reanchor`, pre-committed
+    because the cap may not decide whether a deck chains), and the unchained burst only if that
+    replacement dies too. Three candidates dying of one provider fault is one setback with three
+    receipts; three lines in `missing_slide_numbers`' explanation would read as three lost slides.
+
+    No receipt is written either: nothing landed, so there was never a choice to report.
+    """
+    entry = make_entry(slides=4)
+    env = cover_env(tmp_path, entry, 3)
+    submit = FakeSubmit(rule=lambda call: failed() if call.index <= 7 else ok(call))
+
+    record = await render_carousel(entry, env, make_folder(tmp_path, entry), submit=submit)
+
+    assert [call.kind for call in submit.calls[:8]] == [
+        "projected", "discretionary", "projected", "discretionary", "projected", "discretionary",
+        "precommitted", "discretionary"], \
+        "each candidate spends its own FR-317 resubmit, then FR-95's replacement anchor spends its"
+    assert [call.slide for call in submit.calls[:8]] == [1] * 8
+    assert len(submit.calls) == 12, "... and then the unchained burst of all four slides"
+    assert {call.priority for call in submit.calls[8:]} == {RenderPriority.WAVE2}
+    assert all(call.image_urls == [] for call in submit.calls[8:]), "nothing to chain to"
+
+    assert env.log.fields("cover_candidates") == {
+        "asset_id": entry.asset_id, "submitted": 3, "landed": 0, "candidates": []}
+    assert count(env.log, "carousel_slide_lost") == 2, \
+        "one line for the dead fan-out and one for the dead replacement — never one per candidate"
+    assert "carousel_anchor_retry" in env.log.types()
+    assert "carousel_anchor_fallback_unchained" in env.log.types()
+    assert "cover_candidate_lost" not in env.log.types(), \
+        "nothing landed, so nothing 'lost a comparison' — this is the ordinary dead-anchor path"
+    assert record.cover_pick is None
+    assert record.status is AssetStatus.SUCCESS and record.slide_count == 4, \
+        "a dead fan-out is not a dead deck: the unchained burst is slide 1's last path (FR-95)"
+
+
+async def test_fr351_extra_covers_are_not_ordered_when_nothing_can_judge_them(
+    tmp_path: Path, frames: SimpleNamespace,
+) -> None:
+    """No metered call means no fan-out — buying renders nobody can rank is waste, not a hedge.
+
+    Without `Env.llm_call` the pick can never run, so three covers would be bought, candidate 1
+    committed, and the operator handed exactly the deck a `cover_candidates: 1` run makes, for
+    three times the render spend. The extras are therefore never ordered at all, and the reason is
+    stated ONCE on the deck rather than left to be found in the ledger afterwards.
+    """
+    entry = make_entry(slides=2)
+    env = cover_env(tmp_path, entry, 3, texts=["one", "two"])
+    env.llm_call = None
+    submit = FakeSubmit()
+
+    record = await render_carousel(entry, env, make_folder(tmp_path, entry), submit=submit)
+
+    assert [call.slide for call in submit.calls] == [1, 2], "one cover, exactly as at 1"
+    assert record.cover_pick is None
+    assert count(env.log, "cover_candidates_unjudged") == 1
+    assert env.log.fields("cover_candidates_unjudged")["cover_candidates"] == 3
+    assert frames.asked == []
+    assert record.status is AssetStatus.SUCCESS and record.slide_count == 2
+
+
+async def test_fr351_a_candidate_whose_bytes_will_not_download_is_dropped_never_shifted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, frames: SimpleNamespace,
+) -> None:
+    """`load_images` drops an unreadable source, and the candidate ids must survive the hole.
+
+    This is the bug the loader's `positions` return exists to prevent, seen from the cover pick: if
+    candidate 2's bytes fail and the remaining blobs are read positionally, candidate 3 is handed
+    to the judge AS candidate 2 — and `chosen: 2` then anchors the deck to a render nobody looked
+    at. So the ids the judge sees are asserted to be the SUBMISSION ids, gap included, and the
+    candidate with no bytes is simply absent from the strip rather than shifting the rest along.
+    """
+    entry = make_entry(slides=2)
+    env = cover_env(tmp_path, entry, 3, texts=["one", "two"])
+    picker = PickStub(chosen=3, reason="the widest margins")
+    monkeypatch.setattr(cover_pick, "pick", picker)
+    submit = FakeSubmit()
+    frames.drop.add("https://kie.test/slide-1-1.jpg")  # candidate 2 lands, then will not download
+
+    record = await render_carousel(entry, env, make_folder(tmp_path, entry), submit=submit)
+
+    assert len(submit.calls) == 4, "three candidates landed; only their BYTES went missing"
+    assert [candidate.index for candidate in picker.candidates[0]] == [1, 3], \
+        "candidate 3 is offered as 3 — never renumbered into the hole candidate 2 left"
+    assert record.cover_pick is not None
+    assert record.cover_pick["chosen"] == 3
+    assert record.cover_pick["candidates"] == ["covers/cover_candidate_1.jpg",
+                                               "covers/cover_candidate_3.jpg"]
+    assert not cover_file(tmp_path, entry, 2).exists()
+    assert [call.image_urls for call in submit.calls[3:]] == [[submit.calls[2].url]], \
+        "the body page chains to candidate 3 — the render the pick actually named"
+    assert record.status is AssetStatus.SUCCESS and record.slide_count == 2
+
+
+async def test_fr351_each_cover_candidate_carries_its_own_fr317_resubmit_ledger(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, frames: SimpleNamespace,
+) -> None:
+    """FR-351 x FR-317: three concurrent covers are three JOBS, and each gets its own one retry.
+
+    The ledger used to be keyed by slide number, and every candidate IS slide 1 — so under
+    `asyncio.gather` the first candidate to time out took the only retry and the other two silently
+    lost theirs. Which one won was a scheduling accident: re-order the tasks and a different deck
+    comes out. `run.cover_candidates: 3` with a flaky provider would then buy three covers and
+    salvage one, having been entitled to salvage all three.
+
+    So the key is `(1, candidate_id)`. Every candidate that times out is resubmitted once, exactly
+    once, and the operator-facing lines still say `slide 1` — the candidate id rides the structured
+    fields, because slide 1 is the slide being bought and the fan-out is ours, not theirs.
+    """
+    entry = make_entry(slides=2)
+    env = cover_env(tmp_path, entry, 3, texts=["one", "two"])
+    monkeypatch.setattr(cover_pick, "pick", PickStub(chosen=3, reason="the widest margins"))
+    # Every candidate times out on its FIRST attempt and lands on its own resubmit.
+    submit = FakeSubmit(rule=lambda call: failed(RenderFailCause.TIMEOUT)
+                        if call.index in (0, 2, 4) else ok(call))
+
+    deck = carousel_module._Deck(entry, env, make_folder(tmp_path, entry), submit)
+    await deck.build()
+    record = deck.package()
+
+    assert deck.resubmitted == {(1, 1), (1, 2), (1, 3)}, \
+        "one ledger PER CANDIDATE — not one shared bucket the fastest timeout empties"
+    assert [call.kind for call in submit.calls[:6]] == [
+        "projected", "discretionary"] * 3, "attempt, retry, attempt, retry, attempt, retry"
+    assert [call.slide for call in submit.calls[:6]] == [1] * 6
+    for first, retry in ((0, 1), (2, 3), (4, 5)):
+        assert submit.calls[retry].prompt == submit.calls[first].prompt, \
+            "the SAME job again, not a different request (FR-317)"
+
+    resubmits = [data for name, data in env.log.data if name == "image_job_resubmit"]
+    assert [data["candidate"] for data in resubmits] == [1, 2, 3]
+    assert all(data["slide"] == 1 and data["attempt"] == 2 for data in resubmits)
+    assert all("slide 1" in message for name, message in env.log.records
+               if name == "image_job_resubmit"), "the SENTENCE names the slide, never a candidate"
+
+    assert record.cover_pick is not None and record.cover_pick["chosen"] == 3
+    assert len(record.cover_pick["candidates"]) == 3, "all three were salvaged and all three kept"
+    assert record.status is AssetStatus.SUCCESS and record.slide_count == 2
+
+
+async def test_fr317_a_single_cover_deck_keeps_the_one_shot_it_always_shared_with_its_reanchor(
+    tmp_path: Path, frames: SimpleNamespace,
+) -> None:
+    """The other half of the ledger change: at `cover_candidates: 1` NOTHING moved (D58's rule).
+
+    `_render`'s `ledger` defaults to the slide number, so a single-cover deck and FR-95's
+    replacement anchor share bucket `1` exactly as they did before D62 — the anchor's resubmit is
+    the deck's only one, and the replacement gets none. Pinned as its own test because the default
+    is what keeps every pre-D62 config byte-identical, and a default is the easiest thing in a
+    signature to change by accident.
+    """
+    entry = make_entry(slides=3)
+    env = cover_env(tmp_path, entry, 1, texts=["one", "two", "three"])
+    submit = FakeSubmit(rule=lambda call: failed(RenderFailCause.TIMEOUT)
+                        if call.index in (0, 1, 2) else ok(call))
+
+    deck = carousel_module._Deck(entry, env, make_folder(tmp_path, entry), submit)
+    await deck.build()
+
+    assert deck.resubmitted == {1}, "the slide number, plain — no candidate tuple anywhere"
+    assert [call.kind for call in submit.calls[:3]] == [
+        "projected", "discretionary", "precommitted"], \
+        "anchor, its one resubmit, then the replacement — which gets no resubmit of its own"
+    assert not [data for name, data in env.log.data
+                if name == "image_job_resubmit" and "candidate" in data]

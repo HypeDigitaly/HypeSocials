@@ -102,6 +102,29 @@ emotional_tones: aspiration
 topic: AI tool stacks
 why_it_works: concrete numbers in the first line"""
 
+#: D62/FR-352's `{{cover_contract}}`, in the shape `cover_pick._contract_block` writes it — what
+#: ONE deck's cover was ordered to be: the asset it belongs to, the style it was assigned, the
+#: counter it carries (or the sentence saying it carries none, which turns a badge on any candidate
+#: into invented chrome), every string that has to be legible, and then the `style_dna` bytes the
+#: render prompt itself carried. Written onto a built context by the caller, exactly as the two
+#: match slots above are, and for the same reason: `cover_pick` owns the contract and a second copy
+#: of it in the engine would be two answers to "what was this cover ordered to be".
+COVER_CONTRACT = """asset_id: a1
+style_key: editorial-voxel-carousel
+counter: 1/7
+expected_text:
+  Seven tools, one bill.
+  HypeDigitaly
+  1/7
+style_dna:
+GROUND near-white paper #F6F5F2, the whole frame.
+ACCENT one teal #0E9AA7, under 1/8 of the frame."""
+
+#: D62/FR-352's `{{cover_candidates}}` — the roll-call that ties each answerable candidate id to an
+#: attached image. Two lines, because two or three renders of slide 1 is the whole feature.
+COVER_CANDIDATES = """candidate 1 — attachment 1
+candidate 2 — attachment 2"""
+
 
 class Recorder:
     """Stands in for `outputs.LogWriter` — only `.warn()` is used by the engine."""
@@ -369,19 +392,25 @@ def test_the_allowlist_table_is_the_pinned_final_one() -> None:
     # filter. Its two slots are locked to it and to nothing else, for the same §1.5 B4 reason
     # `topic_items` is — see the dedicated test below.
     assert pe.allowlist("style_match_system.md") == frozenset({"style_candidates", "match_entries"})
-    # And the table holds exactly the fourteen shipped roles: eight after the W3.5 excision and
+    # v2.6.0 (D62/FR-351/352): the cover judge, the THIRD screening role and the first that is
+    # handed pixels. Its two slots are locked to it on the same terms: `cover_contract` carries one
+    # style's whole DNA plus every string that must be legible on the cover, so a render role able
+    # to resolve it would read a second copy of its own art direction and a list of words no TEXT
+    # block sanctioned.
+    assert pe.allowlist("cover_pick_system.md") == frozenset({"cover_contract", "cover_candidates"})
+    # And the table holds exactly the fifteen shipped roles: eight after the W3.5 excision and
     # D46's slide-intelligence question, plus the four v2.2.0 gauntlet artifacts, MINUS the retired
-    # `vision_check_question.md`, PLUS v2.3.0's `copy_compress_system.md` and v2.4.0's
-    # `style_match_system.md`. No transitional rows are left behind. Pinned as a roster and not
-    # only as a count, because a count alone passes for a row deleted and a different one added in
-    # the same edit.
+    # `vision_check_question.md`, PLUS v2.3.0's `copy_compress_system.md`, v2.4.0's
+    # `style_match_system.md` and v2.6.0's `cover_pick_system.md`. No transitional rows are left
+    # behind. Pinned as a roster and not only as a count, because a count alone passes for a row
+    # deleted and a different one added in the same edit.
     assert set(pe._ALLOWLIST) == {
-        "topic_filter_system.md", "style_match_system.md", "slide_intel_question.md",
-        "copywriter_system.md", "copy_compress_system.md",
+        "topic_filter_system.md", "style_match_system.md", "cover_pick_system.md",
+        "slide_intel_question.md", "copywriter_system.md", "copy_compress_system.md",
         "image_post.md", "carousel_slide.md", "carousel_anchor_instruction.md",
         "reel_seed_frame.md", "reel_director.md",
         "critic_brief.md", "critic_system.md", "critic_craft.md", "gauntlet_fix.md"}
-    assert len(pe._ALLOWLIST) == 14
+    assert len(pe._ALLOWLIST) == 15
 
 
 def test_the_competitor_screens_two_slots_are_allowlisted_for_that_role_and_nowhere_else() -> None:
@@ -429,6 +458,8 @@ def test_every_shipped_live_template_stays_inside_its_role_allowlist_and_renders
     context["compress_panels"] = COMPRESS_PANELS  # copy-only, see copywrite._call_compress
     context["style_candidates"] = STYLE_CANDIDATES  # match-only, see style_match._candidate_block
     context["match_entries"] = MATCH_ENTRIES        # match-only, see style_match._entry_block
+    context["cover_contract"] = COVER_CONTRACT      # cover-only, see cover_pick._contract_block
+    context["cover_candidates"] = COVER_CANDIDATES  # cover-only, see cover_pick._candidate_block
     context.update(critic_values())  # gauntlet-only, see gauntlet._context
     for profile, role in live_roles():
         template = engine.template(role, profile=profile)
@@ -451,6 +482,8 @@ def test_every_live_built_in_default_renders_from_a_normal_context(tmp_path) -> 
     context["compress_panels"] = COMPRESS_PANELS  # copy-only, see copywrite._call_compress
     context["style_candidates"] = STYLE_CANDIDATES  # match-only, see style_match._candidate_block
     context["match_entries"] = MATCH_ENTRIES        # match-only, see style_match._entry_block
+    context["cover_contract"] = COVER_CONTRACT      # cover-only, see cover_pick._contract_block
+    context["cover_candidates"] = COVER_CANDIDATES  # cover-only, see cover_pick._candidate_block
     context.update(critic_values())  # gauntlet-only, see gauntlet._context
     for key, text in pe._BUILT_INS.items():
         profile, _, role = key.rpartition("/")

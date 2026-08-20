@@ -809,6 +809,33 @@ def test_fr333_a_compress_mode_run_says_so_at_the_screen_before_the_money_moves(
     assert verdict.ok, "a mode is never a refusal — it is a fact about what the run will render"
 
 
+def test_fr353_an_auto_mode_run_says_auto_and_says_which_panels_it_touches(
+    tmp_path: Path,
+) -> None:
+    """D62's arm of the same hint. `auto` is what the three brand configs pin, so this is the line
+    almost every real run prints at the last screen before the money moves — and it has to say two
+    things `compress` did not: that the mode is `auto`, and that only the panels over the assigned
+    style's budget are compressed while the rest ship verbatim. An operator who read "compressed"
+    with no qualifier would think the whole deck was rewritten, which is the fear D58 withdrew the
+    compress pin over."""
+    config = _styled_config(tmp_path, registry=_TWO_STYLES)
+    config.run.formats = {"image": 0, "carousel": 2, "reel": 0}
+    config.run.gauntlet.enabled = False
+    config.run.carousel_copy_mode = "auto"
+
+    verdict = check(config, action="run", entries=[_deck(0)])
+
+    hints = [hint for hint in verdict.hints if "compressed from the source post" in hint]
+    assert len(hints) == 1, verdict.report
+    assert "carousel_copy_mode: auto" in hints[0], "the KEY and the mode in force are named"
+    assert "only the panels over the style's budget are compressed" in hints[0]
+    assert "the rest ship verbatim" in hints[0]
+    assert "FR-353" in hints[0] and "consider --gauntlet" in hints[0]
+    assert "carousel_copy_mode: compress" not in hints[0], "the mode named is the one in force"
+    assert [hint for hint in verdict.hints if "quoted verbatim" in hint] == []
+    assert verdict.ok, "a mode is never a refusal — it is a fact about what the run will render"
+
+
 def test_fr333_the_same_plan_in_verbatim_mode_prints_the_pre_d54_hint_unchanged(
     tmp_path: Path,
 ) -> None:

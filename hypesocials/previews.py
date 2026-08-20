@@ -51,7 +51,7 @@ from contextlib import suppress
 from hypesocials import cli, plan, preflight, runner, style_match, styles, topic_filter
 from hypesocials.budget import format_usd
 from hypesocials.config import Config, ConfigError, load_config
-from hypesocials.copywrite import MODE_COMPRESS, CopyResult
+from hypesocials.copywrite import MODE_AUTO, MODE_COMPRESS, CopyResult
 from hypesocials.models import PlanEntry, PlanEntryStatus, TrendItem
 from hypesocials.outputs import read_history
 from hypesocials.prompts_engine import PROMPTS_DIR
@@ -533,15 +533,22 @@ def _copy_block(copy_result: CopyResult, live: Sequence[PlanEntry]) -> str:
     this is the mode's cheapest possible review — `--preview-analysis` costs the copy call and
     nothing else, and reading the compressed slides here is what tells the operator whether a paid
     run is worth submitting.
+
+    D62's `auto` mode (FR-353) is counted in the SAME number and labelled differently in the row:
+    an auto deck compressed only the panels that overflowed its style's budget and quoted the rest,
+    so it belongs in "how many decks did not ship pure quotes" (the question the header answers)
+    while its own row says `auto` rather than `compressed`, because "compressed" over a deck whose
+    slides are mostly verbatim would be exactly as wrong as "quoted" over one whose slides are not.
     """
     compressed = sum(1 for prov in copy_result.provenance.values()
-                     if prov.copy_mode == MODE_COMPRESS)
+                     if prov.copy_mode in (MODE_COMPRESS, MODE_AUTO))
     lines = ([f"Copy — {len(copy_result.copy)} creative(s), quoted verbatim in the language",
               "  of the post each string came from; nothing was rendered (FR-140)"]
              if not compressed else
              [f"Copy — {len(copy_result.copy)} creative(s), {compressed} deck(s) compressed",
               "  from the source post's panels to the style's budget, in the post's own",
-              "  language; the rest quoted verbatim, nothing rendered (FR-140/FR-331)"])
+              "  language (under copy mode auto, only the panels that overflowed it);",
+              "  the rest quoted verbatim, nothing rendered (FR-140/FR-331/FR-353)"])
     for entry in live:
         copy = copy_result.copy.get(entry.asset_id)
         if copy is None:
@@ -575,13 +582,19 @@ def _source_rows(copy_result: CopyResult, asset_id: str) -> list[str]:
     resolved no labels, so there are none to print (FR-302 as amended). The post is named either
     way: the provenance claim is the same, only the transform between that post and our slides is.
 
+    A D62 `auto` deck says `auto` and DOES print a refs row (FR-353): it resolved a real label for
+    every panel that fitted its budget and shipped that panel's bytes, so those labels exist and
+    are worth reading — the refs row is the list of slides the operator can check against the post
+    roster above, and the slides missing from it are the ones that were compressed.
+
     `compressed` is the FIRST label in this module wider than `_ROW_LABEL`'s column, which is why
-    `_rows` below now guarantees a separator instead of trusting the padding to supply one.
+    `_rows` below now guarantees a separator instead of trusting the padding to supply one. `auto`
+    (4) is well inside it and pads like every other short label.
     """
     provenance = copy_result.provenance.get(asset_id)
     if provenance is None:
         return []
-    kind = "compressed" if provenance.copy_mode == MODE_COMPRESS else "quoted"
+    kind = {MODE_COMPRESS: "compressed", MODE_AUTO: "auto"}.get(provenance.copy_mode, "quoted")
     rows = _rows(kind, provenance.post_id or "(free text — no post quoted)")
     if provenance.refs:
         rows += _rows("refs", " ".join(f"{slot}={label}"

@@ -202,6 +202,19 @@ class RunConfig:
     # configs actually run at — `configs/default.yaml` alone would not have changed them.
     max_trend_reuses_per_run: int = 6
     carousel_anchor: bool = True
+    # v2.6.0 (D62/FR-351): how many slide-1 renders a chained carousel orders before one is chosen
+    # as the anchor. `1` (the ENGINE default) is the pre-D62 behaviour byte for byte: one cover,
+    # no pick call. `2`–`3` fan out that many IDENTICAL slide-1 jobs concurrently (sampling is the
+    # only variation — a perturbed prompt would make the candidates incomparable), one vision
+    # `analysis` call picks the winner (`cover_pick.py`, fail-open: any failure commits candidate 1
+    # and tags `cover_pick_degraded`), the winner becomes `slide_01` and the anchor, and every
+    # candidate's bytes are kept under `<asset>/covers/`. The three brand configs pin `3`; the
+    # engine default stays 1 for the D58 reason — a default that buys extra renders silently
+    # re-prices every config that never opted in. Bounded 1–3 in `_BOUNDS`: the pick reads every
+    # candidate in ONE vision call and the estimator prices N−1 extra covers per deck, so the
+    # ceiling is a cost ceiling, not a taste. Only read when `carousel_anchor` is on — an unchained
+    # deck has no anchor to choose.
+    cover_candidates: int = 1
     # v2.3.0 (D54/FR-333): how a BOUND carousel deck's panel text reaches its slides. `verbatim`
     # renders each mapped source panel exactly as FR-304 admitted it; `compress` sends the same
     # admitted panels back to the copy model to come out shortened to min(text_budgets.slide, the
@@ -214,7 +227,14 @@ class RunConfig:
     # unknown word is refused by `_coerce`'s Literal check at load, before a run id exists and
     # before a cent moves; there is no clamp and no nearest-match, because a misspelled mode is a
     # different run than the one the operator asked for.
-    carousel_copy_mode: Literal["verbatim", "compress"] = "verbatim"
+    #
+    # v2.6.0 (D62/FR-353) adds `auto`: the FR-304 verbatim mapped deck is built first and
+    # unchanged, then ONLY the panels whose admitted text overflows min(text_budgets.slide, style
+    # max_onimage_chars.slide) go through the compress call and are spliced back by position; a
+    # deck with nothing over budget makes no call at all and is byte-identical to `verbatim`. The
+    # three brand configs pin `auto` (it pays only for the panels that need it); the engine default
+    # is still `verbatim`.
+    carousel_copy_mode: Literal["verbatim", "compress", "auto"] = "verbatim"
     reel_overlay_text: Literal["seed_frame", "in_model", "none"] = "seed_frame"
     reel_audio: bool = True
     reel_duration_s: int = 5  # 4–30; out of range is CLAMPED at pre-flight, never rejected here
@@ -981,6 +1001,9 @@ _BOUNDS: dict[str, tuple[float, float, str]] = {
     "run.trend_history_days": (0, 365, "a whole number of days, 0–365 (0 disables the window)"),
     "run.max_trend_reuses_per_run": (1, 50, "a whole number of creatives per trend, 1–50"),
     "run.run_deadline_min": (1, 720, "a whole number of minutes, 1–720"),
+    # v2.6.0 (D62/FR-351). 1 is the single-cover pre-D62 path; 3 is the ceiling because every
+    # extra candidate is a paid 2K render AND another image in the one vision pick call.
+    "run.cover_candidates": (1, 3, "a whole number of cover candidates per carousel, 1–3"),
     # v2.2.0 (D49). `rounds_max` starts at 1 — a gate that never judges is `enabled: false`, not a
     # zero here — while `rounds_max_image` legitimately allows 0: judge a standalone image and
     # report, without ever paying for a second render of it.

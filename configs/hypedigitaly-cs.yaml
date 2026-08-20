@@ -75,7 +75,21 @@ run:
   # NOTHING about compress is removed - FR-331/332/333, prompts/copy_compress_system.md and menu
   # step 3 all stand. `--copy-mode compress` turns it on for one run when a deck should be
   # shortened and nothing else.
-  carousel_copy_mode: verbatim
+  # D62 (2026-08-21, FR-353): `auto` replaces the D58 `verbatim` pin. It is the verbatim deck
+  # above with ONE difference: a panel that overflows min(text_budgets.slide, the style's own
+  # slide budget) is sent through the compress call and spliced back by position; every panel
+  # that fits keeps its bytes and its ref label, and a deck with nothing over budget makes no
+  # call at all (byte-identical to verbatim). So the D58 preference for the source's own words
+  # stands wherever the words fit, and the overfull-frame cost it accepted is paid only where a
+  # frame would actually overflow. `--copy-mode verbatim` / `--copy-mode compress` still override
+  # it for one run.
+  carousel_copy_mode: auto
+  # D62 (2026-08-21, FR-351): three identical cover renders per chained deck, one vision pick
+  # (style contract -> legibility at thumbnail size -> stopping power); the winner is the anchor,
+  # all three are kept under <asset>/covers/. About +$0.10 renders and +$0.08 vision per deck at
+  # 2K. The engine default is 1 (single cover); pinned here because the cover is the frame every
+  # body slide copies, so it is the one frame worth three tries.
+  cover_candidates: 3
   # 45 min (operator decision 2026-08-10, default is 25). This is a REEL-CAPABLE config, so the
   # deadline MUST exceed models.video_job_timeout_s (1800 s = 30 min) plus the topic-filter, copy
   # and image stages that run ahead of it - otherwise the run is abandoned before a slow reel can

@@ -1071,6 +1071,15 @@ def test_the_header_and_the_tile_measure_read_the_same_originals(tmp_path: Path)
     shows, and no tile can show one the header did not consider. That is the whole reason the
     per-row reading was extracted: two independent length rules over the same rows is how a card
     ends up saying "compressed from 1,048 chars" over three tiles that each say 259.
+
+    **RE-BASED at D62/FR-354: the ROWS are the authority, not `copy_mode`.** This test used to arm
+    the measure by flipping the document's mode to `verbatim` and expecting 0. That was correct
+    while a deck was compressed all the way or not at all — and `copy_mode: auto` ends it. Under
+    `auto` a deck compresses only the panels that overflowed their budget, so one document holds
+    both kinds of row by design; a card that read the MODE would print "Compressed from post" over
+    quoted rows and nothing over compressed ones, which is wrong in both directions on the same
+    card. So the flip below now asserts the opposite property — the mode moves nothing — and the
+    rows' own `compressed` flags are what the header answers from.
     """
     compressed_deck(tmp_path)
     document = yaml.safe_load(
@@ -1080,9 +1089,17 @@ def test_the_header_and_the_tile_measure_read_the_same_originals(tmp_path: Path)
 
     assert per_row == COMPRESSED_ORIGINALS
     assert gallery._compressed_from(document) == max(per_row)
-    # …and the deck-level mode is what arms it: the same rows under `verbatim` measure nothing.
-    document["copy_mode"] = "verbatim"
+    # The deck-level mode is NOT what arms it: an `auto` deck is mixed by design (FR-354), so a
+    # document whose rows still claim compression measures exactly the same under any mode string.
+    for mode in ("verbatim", "auto", "compress"):
+        document["copy_mode"] = mode
+        assert gallery._compressed_from(document) == max(per_row), \
+            f"the mode moved the measure at copy_mode: {mode}"
+    # …and clearing the ROWS' own claims is what silences it, whatever the mode says.
+    for row_ in document["panel_map"]:
+        row_["compressed"] = False
     assert gallery._compressed_from(document) == 0
+    assert gallery._any_compressed(document) is False
 
 # ------------------------------------- FR-337 (v2.4.0/D56): which ALGORITHM chose this style
 #
@@ -1312,3 +1329,178 @@ def test_fr75_the_match_provenance_lines_add_no_remote_byte_to_the_page(tmp_path
     # The URLs ARE on the page — as inert escaped text inside the two provenance paragraphs, which
     # is the honest rendering of what the matcher said and loads nothing.
     assert "Style match: see https://evil.test/track.gif for why" in html_text
+
+
+# ------------------------------------------- FR-351 (v2.6.0/D62): the cover-candidate strip
+#
+# The cover is the frame every other slide copies, and D62 buys two or three of them and keeps the
+# ones it turned down. The strip is where the operator gets to disagree with the pick — a choice
+# they cannot see is a choice they cannot audit, and "the model always takes the darkest cover" is
+# a habit that only shows up across a batch.
+#
+# Four properties, and each is a decision rather than a formatting preference:
+#
+# * it is SILENT on everything that never fanned out — a `cover_candidates: 1` run, an image, a
+#   reel, and every `meta.yaml` written before v2.6.0, which carry no `cover_pick` key at all. A
+#   strip of one thumbnail shows a comparison that never happened;
+# * the CHOSEN tile is marked by the candidate's own id, parsed off its file name, not by its
+#   position in the list — a deck whose candidate 2 never landed keeps files `1` and `3`, and
+#   counting positions would outline the wrong picture on exactly the runs worth looking at;
+# * the reason line is MODEL-AUTHORED text landing in HTML, so it is escaped and collapsed like
+#   every other string this module reads off disk;
+# * NFR-22 tolerance: a malformed receipt, a remote URL, a traversal or a file that is not on disk
+#   each drop out silently. One bad thumbnail may never cost the page.
+
+
+def cover_files(run: Path, asset_id: str = "0001_carousel_linkedin", *numbers: int) -> None:
+    """Write the kept cover candidates a fanned-out deck leaves under `<asset>/covers/`."""
+    folder = run / asset_id / "covers"
+    folder.mkdir(parents=True, exist_ok=True)
+    for number in numbers:
+        (folder / f"cover_candidate_{number}.jpg").write_bytes(JPEG)
+
+
+def cover_pick(chosen: int = 2, *numbers: int, reason: str = "the cleanest type hierarchy",
+               degraded: bool = False) -> dict[str, Any]:
+    """One `meta.yaml.cover_pick` receipt in the shape `carousel.package()` writes it (FR-351)."""
+    return {"candidates": [f"covers/cover_candidate_{number}.jpg" for number in numbers],
+            "chosen": chosen, "reason": reason, "degraded": degraded}
+
+
+def figures(html_text: str) -> list[str]:
+    """Every `<figure …>` opening tag on the page — the strip's tiles, chosen class included."""
+    return re.findall(r"<figure[^>]*>", html_text)
+
+
+def test_fr351_the_strip_draws_every_candidate_and_outlines_the_one_that_anchored(
+    tmp_path: Path,
+) -> None:
+    """Three thumbnails, one of them marked, plus the pick's own words underneath.
+
+    The chosen tile has to be legible as chosen without reading the reason line — an outline and a
+    caption, not colour alone — because the operator is scanning a batch of cards and the question
+    "which of these shipped" must not need a second look.
+    """
+    cover_files(tmp_path, "0001_carousel_linkedin", 1, 2, 3)
+    document = meta(cover_pick=cover_pick(2, 1, 2, 3))
+    asset(tmp_path, document, media=("slide_01.jpg",))
+
+    html_text = page(tmp_path)
+
+    assert html_text.count("<figcaption>") == 3
+    assert figures(html_text) == ["<figure>", '<figure class="chosen">', "<figure>"]
+    assert "cover 2 · chosen" in html_text
+    assert "cover 1</figcaption>" in html_text and "cover 3</figcaption>" in html_text
+    assert "Cover pick: the cleanest type hierarchy" in html_text
+    assert "./0001_carousel_linkedin/covers/cover_candidate_2.jpg" in media_srcs(html_text)
+    assert "cover_pick_degraded" not in html_text
+
+
+def test_fr351_the_chosen_tile_is_found_by_candidate_id_and_not_by_list_position(
+    tmp_path: Path,
+) -> None:
+    """The gap case, which is the whole reason the id is parsed off the file name.
+
+    A deck whose candidate 2 never landed keeps `cover_candidate_1` and `cover_candidate_3`, and
+    the pick names 3. Reading `chosen` as a 1-based index into the surviving list would outline
+    candidate 1's thumbnail and caption it "chosen" — a page that says the wrong render anchored
+    the deck, on precisely the runs where knowing that matters.
+    """
+    cover_files(tmp_path, "0001_carousel_linkedin", 1, 3)
+    asset(tmp_path, meta(cover_pick=cover_pick(3, 1, 3)), media=("slide_01.jpg",))
+
+    html_text = page(tmp_path)
+
+    assert figures(html_text) == ["<figure>", '<figure class="chosen">']
+    assert "cover 3 · chosen" in html_text
+    assert "cover 1 · chosen" not in html_text
+
+
+def test_fr351_a_degraded_pick_says_so_under_the_strip(tmp_path: Path) -> None:
+    """The fail-open path, stated on the page: candidate 1 anchored because nobody could judge.
+
+    The note carries the tag's own spelling, so it and the `cover_pick_degraded` badge above it
+    read as one fact rather than two — and it names the candidate the receipt actually recorded,
+    because a deck that lost candidate 1 outright defaults to the first that landed.
+    """
+    cover_files(tmp_path, "0001_carousel_linkedin", 1, 2)
+    document = meta(cover_pick=cover_pick(1, 1, 2, reason="cover_pick_degraded: the call raised",
+                                          degraded=True),
+                    degradations=[DegradationTag.COVER_PICK_DEGRADED.value])
+    asset(tmp_path, document, media=("slide_01.jpg",))
+
+    html_text = page(tmp_path)
+
+    assert "cover_pick_degraded — candidate 1 anchored by default" in html_text
+    assert 'class="prov degraded"' in html_text
+    assert "Cover pick: cover_pick_degraded: the call raised" in html_text
+    assert figures(html_text) == ['<figure class="chosen">', "<figure>"]
+
+
+def test_fr351_no_strip_without_a_real_comparison_to_show(tmp_path: Path) -> None:
+    """Silent on every deck that did not fan out — including a fan-out where one cover landed.
+
+    Three documents, three different ways of meaning "there was no choice here", and all three
+    must render exactly as they did before this strip existed: no `cover_pick` key at all (the
+    whole pre-v2.6.0 world and every `cover_candidates: 1` run), a receipt with a single candidate
+    (two were bought, one came back), and a malformed receipt (NFR-22 — a page that raises costs
+    the operator every card, not one thumbnail).
+    """
+    for asset_id, pick in (("0001_carousel_linkedin", None),
+                           ("0002_carousel_linkedin", cover_pick(1, 1)),
+                           ("0003_carousel_linkedin", ["not", "a", "mapping"])):
+        cover_files(tmp_path, asset_id, 1)
+        document = meta(asset_id=asset_id, media=())
+        if pick is not None:
+            document["cover_pick"] = pick
+        asset(tmp_path, document, media=("slide_01.jpg",))
+
+    html_text = page(tmp_path)
+
+    assert "<figcaption>" not in html_text and "Cover pick:" not in html_text
+    assert 'class="covers"' not in html_text
+    assert html_text.count('class="card') == 3, "all three cards still render"
+
+
+def test_fr351_a_candidate_path_that_is_not_a_local_file_is_dropped(tmp_path: Path) -> None:
+    """FR-75 again, at the last step: nothing on this page may fetch a remote byte.
+
+    A receipt is written by this engine, so these shapes should be impossible — but the page is
+    also read on runs produced by other builds, and one absolute URL turns the offline artifact
+    into a page that phones out. A traversal, a drive letter and a path with no file behind it are
+    dropped for the same reason a missing panel image is: the tile is simply not drawn.
+    """
+    cover_files(tmp_path, "0001_carousel_linkedin", 1, 2)
+    document = meta(cover_pick={
+        "candidates": ["https://cdn.example.test/cover.jpg", "covers/cover_candidate_1.jpg",
+                       "../../etc/passwd", "C:/Windows/cover.jpg", "covers/never_written.jpg",
+                       "covers/cover_candidate_2.jpg"],
+        "chosen": 2, "reason": "the widest margins", "degraded": False})
+    asset(tmp_path, document, media=("slide_01.jpg",))
+
+    html_text = page(tmp_path)
+
+    assert figures(html_text) == ["<figure>", '<figure class="chosen">'], \
+        "only the two real local files survive, and the chosen id still finds its tile"
+    assert "cdn.example.test" not in html_text and "passwd" not in html_text
+    assert all(src.startswith("./") for src in media_srcs(html_text))
+
+
+def test_fr351_the_pick_reason_is_escaped_like_every_other_model_authored_string(
+    tmp_path: Path,
+) -> None:
+    """`reason` is written by a model and lands in HTML, so it is collapsed and escaped.
+
+    The same rule `_style_html` applies to the matcher's reason, for the same two failures: a
+    newline would open a hole in a one-line slot, and a `<script>` would stop being text.
+    """
+    cover_files(tmp_path, "0001_carousel_linkedin", 1, 2)
+    asset(tmp_path, meta(cover_pick=cover_pick(
+        1, 1, 2, reason="best\n contrast <script>alert('x')</script> & the widest margins")),
+        media=("slide_01.jpg",))
+
+    html_text = page(tmp_path)
+
+    assert "<script>" not in html_text
+    assert "Cover pick: best contrast &lt;script&gt;" in html_text
+    assert "&amp; the widest margins" in html_text

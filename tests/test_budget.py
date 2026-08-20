@@ -1355,3 +1355,168 @@ def test_fr342_a_four_k_platform_is_priced_at_the_ceiling_the_renderer_will_actu
 
     assert (render.unit_price, render.price_key) == (0.05, "models.price_per_unit.image.2k")
     assert not render.unpriced, "the folded tier IS priced; only an unknown tier is not"
+
+
+# ------------------------------------------------- FR-351 cover best-of-N (v2.6.0/D62)
+#
+# Two lines, on two different sides of the estimate, and the split is the whole point:
+#
+# * `cover_candidates` is a RENDER line and it is EXPECTED spend, not an allowance. Three covers
+#   per chained deck are bought on the happy path of every single run — before anything is judged
+#   — so quoting them as a contingency would hide two thirds of a deck's cover cost from the
+#   number the operator approves at the Confirm gate (rule 7, D11);
+# * `cover_pick_call` is an LLM line and it is ONE call PER DECK, not one per run. Unlike the
+#   style matcher this question cannot be batched: each deck ships its own style contract and its
+#   own two or three frames, and a judge cannot rank one deck's covers against another's.
+
+
+def test_fr351_the_extra_covers_are_expected_render_spend_and_vanish_at_one(cfg: Config) -> None:
+    """`cover_candidates − 1` extra renders per chained deck, at the deck's own image tier.
+
+    ONE unit is already inside `carousel_slides`, which prices the deck at its full length
+    including slide 1. This line is the N−1 EXTRA covers, so the two rows sum to what Kie bills —
+    quoting all three here would charge the cover twice.
+
+    It disappears in both of the two ways a run can decline the feature: the engine default
+    (`cover_candidates: 1`, which is not a choice) and `carousel_anchor: false` (an unchained deck
+    has no anchor to choose). A $0 line for renders that will not happen reads like a rate that
+    failed to load.
+    """
+    cfg.run.carousel_anchor = True
+    plan = [entry(0, "carousel")]
+
+    assert cfg.run.cover_candidates == 1, "the engine default, unchanged by D62"
+    assert lines(estimate(cfg, plan), "cover_candidates") == []
+
+    cfg.run.cover_candidates = 3
+    est = estimate(cfg, plan)
+    extra, slides = one(est, "cover_candidates"), one(est, "carousel_slides")
+
+    assert extra.quantity == 2, "three covers ordered, one of them already priced as slide 1"
+    assert extra.category is SpendCategory.RENDER and extra.unit == "render"
+    assert not extra.allowance, "bought on the happy path of every run — never a contingency"
+    assert extra.unit_price == slides.unit_price, "the same tier the rest of the deck renders at"
+    assert extra.entry_orders == (0,)
+
+    cfg.run.carousel_anchor = False
+    assert lines(estimate(cfg, plan), "cover_candidates") == []
+
+
+def test_fr351_only_carousels_buy_extra_covers(cfg: Config) -> None:
+    """An image and a reel have no anchor and no deck to chain — neither line may touch them."""
+    cfg.run.cover_candidates = 3
+    priced_reels(cfg)
+    est = estimate(cfg, [entry(0, "image"), entry(1, "reel", platform="tiktok")])
+
+    assert lines(est, "cover_candidates") == []
+    assert lines(est, "cover_pick_call") == []
+    assert lines(est, "cover_pick_retry_allowance") == []
+
+
+def test_fr351_the_pick_is_one_analysis_call_per_deck_with_the_usual_two_retries_beside_it(
+    cfg: Config,
+) -> None:
+    """One call per CHAINED carousel — the quantity grows with the decks, never with the plan size
+    of one deck.
+
+    The allowance beside it is FR-107's per-call bound, identical to every other LLM role: FR-127's
+    widened truncation retry and FR-41's parse retry are independent, each capped at one, and one
+    call can spend BOTH (`llm._run_attempts`) — hence 2, priced at the widened cap. An allowance
+    only, because the stage is fail-open: a failed pick commits candidate 1 and tags
+    `cover_pick_degraded`, so there is never a re-pick to pay for.
+    """
+    cfg.run.cover_candidates = 3
+    cfg.run.carousel_anchor = True
+    plan = [entry(0, "carousel"), entry(1, "carousel"), entry(2, "image")]
+
+    est = estimate(cfg, plan)
+    picks = lines(est, "cover_pick_call")
+    retry = one(est, "cover_pick_retry_allowance")
+
+    assert len(picks) == 2, "one call per chained deck; the image is not one"
+    assert all(pick.quantity == 1 and not pick.allowance for pick in picks)
+    assert all(pick.category is SpendCategory.LLM and pick.unit == "call" for pick in picks)
+    assert all(pick.assumed_model == cfg.models.analysis for pick in picks)
+    assert all(pick.price_key == "models.price_per_unit.llm.sonnet" for pick in picks)
+    assert [pick.entry_orders for pick in picks] == [(0,), (1,)]
+    assert all("3 candidates" in pick.label for pick in picks)
+
+    assert retry.allowance and retry.quantity == 2 and retry.unit == "retry"
+    assert retry.category is SpendCategory.LLM and retry.entry_orders == (0, 1)
+    assert retry.unit_price is not None and picks[0].unit_price is not None
+    assert retry.unit_price > picks[0].unit_price, "each at FR-127's widened token cap"
+    assert est.worst_case_usd - est.expected_usd >= retry.amount_usd
+
+
+def test_fr351_an_override_brief_deck_still_pays_for_its_cover_pick(cfg: Config) -> None:
+    """The one place the cover pick's gate deliberately differs from the style matcher's.
+
+    An override brief replaces the STYLE channel, not the anchor (M14): its deck is still chained,
+    still orders `cover_candidates` covers and still has to be told which of them anchors it. So
+    unlike `style_match_call`, which an override brief never enters, this line covers it — and a
+    plan of nothing but override briefs still quotes both halves.
+    """
+    cfg.run.cover_candidates = 2
+    cfg.styles.assignment = "matched"
+    briefs_only = [entry(0, "carousel", brief_name="ai-audit-cta", brief_influence="override")]
+
+    est = estimate(cfg, briefs_only)
+
+    assert lines(est, "style_match_call") == [], "the control: the matcher really does skip it"
+    assert one(est, "cover_pick_call").entry_orders == (0,)
+    assert one(est, "cover_candidates").quantity == 1
+
+
+def test_fr351_the_pick_prices_its_frames_at_the_platforms_native_render_tier(cfg: Config) -> None:
+    """The judge reads the covers we just paid to render, at the size we paid for them (FR-342).
+
+    So the render tier moves this price and must — a `2k` deck's pick attaches 2K frames and costs
+    materially more than a `1k` deck's. Asserted at 1:1 for the reason the FR-326 critic test is:
+    4:5 is one of 20 §8c's 1K-only ratios, so both tiers would price identically there and the
+    test would be measuring the clamp instead of the key. The candidate COUNT moves it too, for
+    the same reason: three frames in one call cost more image tokens than two.
+    """
+    cfg.run.cover_candidates = 2
+
+    def at_tier(tier: str) -> float:
+        cfg.platforms["linkedin"] = SimpleNamespace(  # type: ignore[assignment]
+            carousel_slides=5, image_resolution=tier)
+        price = one(estimate(cfg, [entry(0, "carousel", aspect_ratio="1:1")]),
+                    "cover_pick_call").unit_price
+        assert price is not None
+        return price
+
+    assert at_tier("2k") > at_tier("1k")
+
+    cfg.platforms["linkedin"] = SimpleNamespace(  # type: ignore[assignment]
+        carousel_slides=5, image_resolution="2k")
+    two = one(estimate(cfg, [entry(0, "carousel", aspect_ratio="1:1")]), "cover_pick_call")
+    cfg.run.cover_candidates = 3
+    three = one(estimate(cfg, [entry(0, "carousel", aspect_ratio="1:1")]), "cover_pick_call")
+    assert two.unit_price is not None and three.unit_price is not None
+    assert three.unit_price > two.unit_price, "one more candidate is one more attached frame"
+
+
+def test_fr351_the_two_new_lines_are_exactly_what_the_expected_total_grows_by(cfg: Config) -> None:
+    """The arithmetic the operator approves, checked end to end rather than line by line.
+
+    Turning the feature on may move `expected_usd` by the extra covers plus the pick calls and by
+    nothing else — no hidden allowance leaking into the expected side, no per-entry share drifting.
+    Both lines are attributed to their own decks, so the per-entry shares have to move by the same
+    amounts (that attribution is what every FR-28 trim decision is computed from).
+    """
+    cfg.run.carousel_anchor = True
+    plan = [entry(0, "carousel", trend_key="t1"), entry(1, "carousel", trend_key="t1")]
+
+    off = estimate(cfg, plan)
+    cfg.run.cover_candidates = 3
+    on = estimate(cfg, plan)
+
+    covers = sum(line.amount_usd for line in lines(on, "cover_candidates"))
+    picks = sum(line.amount_usd for line in lines(on, "cover_pick_call"))
+    assert covers > 0 and picks > 0
+    assert on.expected_usd == pytest.approx(off.expected_usd + covers + picks)
+
+    for order in (0, 1):
+        grew = on.per_entry_usd[order] - off.per_entry_usd[order]
+        assert grew == pytest.approx(covers / 2 + picks / 2, rel=1e-6)

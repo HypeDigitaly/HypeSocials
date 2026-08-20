@@ -34,6 +34,10 @@
 # `match_profile`s are mutually exclusive by archetype (FR-341's handoff table) — the 2026-08-20
 # run put six of nine decks on `icon-ledger-carousel` because it was the only enabled style whose
 # profile claimed numbered decks at all, which is a supply fault, not a matcher fault.
+# Two of them shipped a GROUND keyed to the slide number and it never rendered: under anchor
+# chaining slides 2-N take the cover as their primary reference and copy its field, so a
+# carousel-affine style declares ONE ground for the whole deck (SESSION M, 2026-08-21 —
+# `big-number-editorial` and `contrast-verdict-deck` amended to near-white and near-black).
 #
 # Editing rules
 #   - `render_prompt` stays at or under 120 words and carries NO unresolved variant ("either
@@ -1878,19 +1882,27 @@ styles:
       "how I built it" voice to `build-log-mono`, and before-and-after comparisons to
       `contrast-verdict-deck`.
     render_prompt: >-
-      Editorial number poster on a flat field keyed to the slide number: near-white on odd slides,
-      near-black on even ones, each with one soft teal-black wash bleeding in from the right edge.
-      The panel's own leading numeral sets enormous in a grotesque at black weight, under a head
-      hairline and filling the upper half, deep teal on the light field and bright teal on the dark.
-      Below it the headline sets in the same grotesque, regular with one bold phrase, and one
-      keyword carries a thick teal underline. Flat ink, no photograph, no icon, no card, no
-      ornament. Mood: confident, sequential, plainly spoken.
-    # DELIBERATE, do not "fix" back: (1) the two fields are keyed to the SLIDE NUMBER rather than
-    # left open — a model handed "light and dark, alternating" resolves it differently on every
-    # slide of one deck (M9). The anchor is slide 1, so odd slides are near-white and every cover
-    # is the light one. (2) The big numeral LETTERS only the number its mapped panel opens with; a
-    # panel that opens on no number draws no numeral and the headline takes that space (FR-340).
-    # An invented "01" would be text becoming pixels, which the verbatim contract exists to stop.
+      Editorial number poster on one flat near-white field, the same on every slide of the deck,
+      with one soft teal-black wash bleeding in from the right edge. The numeral IS the first token
+      of this panel's quoted text and exists only where that token is a number: it sets enormous in
+      a grotesque at black weight, deep teal, under a head hairline, filling the upper half. Quoted
+      text opening on a word draws no numeral and sets as a statement. The headline sets in the same
+      grotesque, regular with one bold phrase, and one keyword carries a thick teal underline. Flat
+      ink, no photograph, no icon, no card, no ornament. Mood: confident, sequential, plainly spoken.
+    # DELIBERATE, do not "fix" back: (1) ONE ground for the whole deck, cover and body alike, and
+    # that is not a taste call — ANCHOR CHAINING makes it the only renderable rule. Slide 1 renders
+    # first and becomes the primary reference for slides 2-N, whose template tells the model to
+    # match STYLE_DNA exactly, so a body slide COPIES THE COVER'S FIELD whatever this file says
+    # about its own slide number. This style used to key the field to the slide number and the
+    # 2026-08-20 checkpoint deck proved what that renders as: slide 2 came back near-white against
+    # a DNA that gave every even slide near-black (SESSION L defect 1). A second GROUND line here
+    # is a rule the renderer cannot obey, so it stays retired.
+    # (2) The big numeral IS the first token of a panel's quoted text and is drawn only where that
+    # token is a number — it is never a position the frame counts for itself. Written as a
+    # condition instead ("the number its panel opens with"), the model read it as permission and
+    # lettered a 40%-tall "1" and "2" onto a Before/After deck whose panels open on no number at
+    # all (SESSION L defect 2). An invented "01" is text becoming pixels, which the verbatim
+    # contract exists to stop (FR-340).
     # (3) The kicker and the foot line letter only what the TEXT block quotes for them, so a body
     # slide that quotes neither is simply a hairline, a numeral and a headline.
     subject_mode: scene_open
@@ -1898,7 +1910,7 @@ styles:
       - {position: "head of the frame, flush left, on the hairline at 11 percent of frame height", content: "kicker",
          text_treatment: "the grotesque at medium weight in support grey, uppercase, cap 1.5% of frame height, tracking +12%; letters the kicker string quoted in the TEXT block and is not drawn at all when nothing is quoted for it"}
       - {position: "upper half, flush left, from the hairline down to 55 percent of frame height", content: "leading numeral",
-         text_treatment: "the grotesque at black weight in the accent teal, cap height 40% of frame, leading 0.85, one to three digits; letters only the number its mapped panel opens with, and is not drawn when the panel opens on none"}
+         text_treatment: "the grotesque at black weight in the accent teal, cap height 40% of frame, leading 0.85, one to three digits; it letters the FIRST TOKEN of this panel's quoted text and is drawn only where that token is a number, so quoted text opening on a word leaves this zone out of the frame entirely"}
       - {position: "middle band, flush left, first baseline at 58 percent of frame height", content: headline,
          text_treatment: "the grotesque, regular weight with one phrase in bold, sentence case, tracking -1%, leading 1.05, cap 6% of frame in two lines, stepping to 5% at three; one keyword carries a thick accent underline"}
       - {position: "lower band, flush left, from 74 percent of frame height", content: body,
@@ -1918,12 +1930,11 @@ styles:
     max_onimage_chars: {headline: 90, subline: 160, slide: 260}
     motion_profile: graphic
     palette:
-      - "GROUND near-white #FAFAF7: odd slides and every cover, edge to edge"
-      - "GROUND near-black #0B0D11: even slides, edge to edge"
+      - "GROUND near-white #FAFAF7: flat edge to edge, cover and body alike"
       - "DEPTH teal-black #0A1F1E: the right-edge wash, no hard step"
-      - "TEXT near-black #0B0D11 on the light field, near-white #FAFAF7 on the dark"
+      - "TEXT near-black #0B0D11: the headline and the bold phrase in it"
       - "SUPPORT grey #6E7275: body, kicker, the head hairline"
-      - "ACCENT teal #0A7F78 on the light field, #0FCFC4 on the dark: numerals, the keyword underline; under 1/8"
+      - "ACCENT deep teal #0A7F78: the numeral, the keyword underline; under 1/8"
     typography: >-
       One grotesque, four weights; no serif, script or display face. Numeral: black, cap 40%,
       leading 0.85, 1-3 digits. Headline: regular with one bold phrase, -1%, leading 1.05, cap 6% in
@@ -1936,32 +1947,33 @@ styles:
       hangs from it to 55%, the headline from 58%, the body from 74%. Nothing sets over the numeral
       and nothing passes the foot margin; a third headline line drops the block a tier.
     image_treatment: >-
-      Flat ink on a solid field: no photograph, no texture, no glass, no gradient and no glow behind
-      type. One tonal move only, a soft teal-black wash bleeding in from the right edge, gone before
+      Flat ink on one solid near-white field, the same on every slide of the deck: no photograph,
+      no texture, no glass, no gradient and no glow behind type. One tonal move only, a soft
+      teal-black wash bleeding in from the right edge, gone before
       the axis. Per frame: one hairline, one numeral, one underline. Every device is drawn ONCE PER
       QUOTED LINE, never as a grid of empties; a zone with nothing quoted is LEFT OUT — no bar, no
       rule, no block, no placeholder.
     visual_pacing: >-
       A countdown: the cover states what is counted, each body slide carries one numbered item of
-      it. FIXED: margins, axis, hairline height, type and numeral scale, palette roles, the wash
-      edge. MAY CHANGE: the field (near-white odd, near-black even), the numeral, headline line
-      count, the body block. One keyword a frame takes the underline.
+      it. FIXED: the near-white field on every slide, margins, axis, hairline height, type and
+      numeral scale, palette roles, the wash edge. MAY CHANGE: the numeral, headline line count,
+      the body block. One keyword a frame takes the underline.
     list_mode:
       reflow_over_chars: 150
       max_rows: 6
       layout: >-
-        A list panel becomes numbered rows and drops the big numeral to body size on the axis: one
-        source line per row, each row opening on a small accent numeral block — the line's own
-        number where it is numbered, its position in the panel where it is not. The opening clause
-        sets as the bold title, the rest as a regular line beneath it; a line with no second part
-        sets as the title alone, draws no second line and is never repeated under itself. A number
-        and its text never separate, a label and its value never swap rows. Rows share one left edge
-        and one size and shrink TOGETHER rather than one being cut or dropped. A row exists only
-        where a line is quoted.
+        A list panel becomes rows on the axis and drops the big numeral to body size: one source
+        line per row, a row taking a small accent numeral block only where its own quoted line opens
+        on a number and lettering that number; a row whose line opens on a word sets as text alone,
+        no block, no bullet, no placeholder. The opening clause sets as the bold title, the rest as
+        a regular line beneath it; a line with no second part sets as the title alone, draws no
+        second line and is never repeated under itself. A number and its text never separate, a
+        label and its value never swap rows. Rows share one left edge and one size and shrink
+        TOGETHER rather than one being cut or dropped. A row exists only where a line is quoted.
       overflow: reflow
     per_format_guidance:
-      carousel_cover: "Cover: the near-white field with near-black type and the deep teal. The deck's own opening number sets as the big numeral at full 40% scale under the hairline where the source gives one; where it gives none, no numeral is drawn and the headline takes that space at cap 9%. One keyword of the headline carries the teal underline. The body block is drawn only where a second line is quoted for it; a zone with nothing quoted stays out of the frame — no bar, no empty band."
-      carousel_slide: "Body slide: the field follows the slide number — odd slides near-white with near-black type and deep teal, even slides near-black with near-white type and bright teal. The panel's own leading number sets as the big numeral; a panel opening on no number draws none and gives that space to the headline at cap 9%. Margins, axis, hairline, type scale and wash edge match the cover. Each device is drawn once per quoted line; a zone with nothing quoted is left out — no empty band, no placeholder."
+      carousel_cover: "Cover: the near-white field with near-black type and the deep teal — the same field every slide of this deck carries. The big numeral is the FIRST TOKEN of the cover's quoted text, at full 40% scale under the hairline, and it is drawn only where that token is a number; quoted text opening on a word draws no numeral at all and sets as a statement in the headline at cap 9%. One keyword of the headline carries the teal underline. The body block is drawn only where a second line is quoted for it; a zone with nothing quoted stays out of the frame — no bar, no empty band."
+      carousel_slide: "Body slide: the SAME near-white field, near-black type and deep teal as the cover — one ground for the whole deck, never keyed to the slide number. The big numeral is the FIRST TOKEN of this panel's quoted text and is drawn only where that token is a number; quoted text opening on a word draws no numeral at all and sets as a statement in the headline at cap 9%. Margins, axis, hairline, type scale and wash edge match the cover. Each device is drawn once per quoted line; a zone with nothing quoted is left out — no empty band, no placeholder."
     exclusions:
       - "watermarks, usernames, @handles and real account names — the head and foot lines letter only quoted strings"
       - "competitor, creator and platform marks and any invented substitute for one; a mark the TOOL MARKS line sanctions renders as the real logo in its own colours"
@@ -1975,18 +1987,26 @@ styles:
       `big-number-editorial`, benchmark and diagram infographics to `circuit-atlas-dark` and
       comparison gags to `meme-caricature-panels`; wrong for single-statement photo sources.
     render_prompt: >-
-      Split-screen verdict slide: a flat field edge to edge, near-black on odd-numbered slides and
-      near-white on even ones. A heavy grotesque headline sits flush left across the top, two tight
-      lines, one phrase in teal. Beneath it the frame splits into two columns of stacked cards — the
-      left column plain, its small label and type in grey; the right column the verdict, its label
-      and cards carrying the teal. A grey-scale photographic mineral crust, raked by a low light,
+      Split-screen verdict slide: one flat near-black field edge to edge, the same on every slide
+      of the deck. A heavy grotesque headline sits flush left across the top, two tight lines, one
+      phrase in teal. Beneath it the frame splits into two columns of stacked cards — the left
+      column plain, its small label and type in grey; the right column the verdict, its label and
+      cards carrying the teal. A grey-scale photographic mineral crust, raked by a low light,
       bleeds up from the bottom edge behind the columns. Flat vector work above it: no gradient
       mesh, no glass, no neon, no 3D. Mood: decisive, engineered, the argument settled.
-    # DELIBERATE, do not "fix" back: the crust is GREY-SCALE and height-capped. It is the deck's
-    # only photographic surface, and the moment it takes a colour cast it stops being a texture and
-    # becomes a second saturated field at the bottom of every slide — the one thing these models
-    # cannot hit twice running (FR-347). Height cap and grey-scale go together; softening either
-    # turns a verdict page into a coloured band with words on it.
+    # DELIBERATE, do not "fix" back: (1) ONE ground for the whole deck, cover and body alike, and
+    # that is not a taste call — ANCHOR CHAINING makes it the only renderable rule. Slide 1 renders
+    # first and becomes the primary reference for slides 2-N, whose template tells the model to
+    # match STYLE_DNA exactly, so a body slide COPIES THE COVER'S FIELD whatever this file says
+    # about its own slide number. The sibling `big-number-editorial` carried the same alternating
+    # rule into the 2026-08-20 checkpoint and its slide 2 came back on the cover's ground (SESSION
+    # L defect 1); this style is retired to near-black everywhere before it can repeat it. A second
+    # GROUND line here is a rule the renderer cannot obey.
+    # (2) The crust is GREY-SCALE and height-capped. It is the deck's only photographic surface,
+    # and the moment it takes a colour cast it stops being a texture and becomes a second saturated
+    # field at the bottom of every slide — the one thing these models cannot hit twice running
+    # (FR-347). Height cap and grey-scale go together; softening either turns a verdict page into a
+    # coloured band with words on it.
     subject_mode: scene_open
     layout_zones:
       - {position: "top band, flush left, from the top margin to 26 percent of frame height", content: headline,
@@ -2008,11 +2028,10 @@ styles:
     max_onimage_chars: {headline: 90, subline: 160, slide: 300}
     motion_profile: graphic
     palette:
-      - "GROUND near-black #0A0A0A: flat edge to edge, odd slides"
-      - "GROUND near-white #F7F7F7: flat edge to edge, even slides"
-      - "SURFACE plates #17181A on dark, #E4E4E2 on light: left column"
-      - "ACCENT teal #0FCFC4 on dark, deep #0A7F78 on light: verdict cards; under 1/8"
-      - "TEXT #FFFFFF on dark, #0A0A0A on light; grey #8A8D91 left column"
+      - "GROUND near-black #0A0A0A: flat edge to edge, cover and body alike"
+      - "SURFACE plates #17181A: the left column's cards"
+      - "ACCENT teal #0FCFC4: the verdict cards and one headline phrase; under 1/8"
+      - "TEXT #FFFFFF; grey #8A8D91 on the left column"
       - "DEPTH mineral grey #6E7176: the grey-scale crust, max 20% height"
     typography: >-
       One heavy grotesque in black and regular weights; no serif, script nor display face. Headline:
@@ -2026,16 +2045,16 @@ styles:
       a 4% gutter, labels on one baseline, cards 2% apart. No type crosses the crust; a full band
       drops the headline a tier rather than reaching the bottom margin.
     image_treatment: >-
-      Flat vector, one texture: a grey-scale mineral crust, low raking light, no colour cast, rising
-      from the bottom edge no higher than 20%. Cards are flat plates at a 12px radius, one per
+      Flat vector on the one near-black field the whole deck shares, one texture: a grey-scale
+      mineral crust, low raking light, no colour cast, rising from the bottom edge no higher than
+      20%. Cards are flat plates at a 12px radius, one per
       QUOTED line and nothing else — a column with nothing quoted is left out of the frame, never
       replaced by an empty card, an empty pill, a rule, a bar nor a placeholder. One quoted line,
       one card. Per frame: 1 crust, max 3 cards a column, 1 wordless circle-arrow at the foot.
     visual_pacing: >-
-      A verdict read left to right: one headline, two columns, the crust. The ground alternates by
-      position, near-black on odd slides and near-white on even; the card inks follow. FIXED:
-      margins, gutter, column split, card form, crust height, type scale, accent hue. MAY CHANGE:
-      headline line count, cards a column.
+      A verdict read left to right: one headline, two columns, the crust. FIXED: the near-black
+      ground and the card inks it carries, margins, gutter, column split, card form, crust height,
+      type scale, accent hue. MAY CHANGE: headline line count, cards a column.
     list_mode:
       reflow_over_chars: 150
       max_rows: 6
@@ -2050,8 +2069,8 @@ styles:
         rather than one being cut or dropped; an over-long card wraps under its label.
       overflow: two_column
     per_format_guidance:
-      carousel_cover: "Cover: near-black edge to edge. The headline at full scale with one phrase in teal, and beneath it the two columns at their largest — at most two cards a column, one card per quoted line. A column with nothing quoted for it is left out entirely, never replaced by an empty card, a rule, a bar nor a block. The crust runs the full width at the bottom edge. The position pill sets top-right only where a counter string is quoted in the TEXT block."
-      carousel_slide: "Body slide: the SAME grotesque, margins, gutter, card form, type scale and crust as the cover; only the ground flips — near-black on odd-numbered slides, near-white on even — and the card inks follow it. Drop the headline by roughly a third and give the freed band to the columns: one card per quoted line, at most three a column, and a column with nothing quoted for it is left out — no empty card, no rule, no bar, no placeholder."
+      carousel_cover: "Cover: near-black edge to edge — the one field every slide of this deck carries. The headline at full scale with one phrase in teal, and beneath it the two columns at their largest — at most two cards a column, one card per quoted line. A column with nothing quoted for it is left out entirely, never replaced by an empty card, a rule, a bar nor a block. The crust runs the full width at the bottom edge. The position pill sets top-right only where a counter string is quoted in the TEXT block."
+      carousel_slide: "Body slide: the SAME near-black ground, card inks, grotesque, margins, gutter, card form, type scale and crust as the cover — one ground for the whole deck, never keyed to the slide number. Drop the headline by roughly a third and give the freed band to the columns: one card per quoted line, at most three a column, and a column with nothing quoted for it is left out — no empty card, no rule, no bar, no placeholder."
     exclusions:
       - "platform UI and overlays: player chrome, pagination dots, progress bars, tab bars"
       - "watermarks, usernames, @handles, save-for-later prompts and engagement pills"

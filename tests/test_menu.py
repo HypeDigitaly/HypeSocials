@@ -78,8 +78,8 @@ _PROMPT = {
 #: mode, which is a `pick a copy mode` prompt — the two never shared a wording.
 _DEAD_PROMPTS = ("pick one or more", "edit the line [mode", "generation mode", "sources")
 #: One answer per step that must be accepted. `copy_mode` takes a bare Enter (FR-57: the pre-fill
-#: is the word in effect, so Enter hands the config's own value back unchanged); `1`, `2`,
-#: `verbatim` and `compress` are accepted too and are pinned by their own test below.
+#: is the word in effect, so Enter hands the config's own value back unchanged); `1`, `2`, `3`,
+#: `verbatim`, `auto` and `compress` are accepted too and are pinned by their own test below.
 _VALID = {
     "action": "1",
     "config": "1",
@@ -89,13 +89,14 @@ _VALID = {
     "briefs": "1:2",
 }
 #: One answer per step that must be re-asked. `0.01` is the cap that killed the tool's first ever
-#: run (`20260810_123057_g0pg`); the floor is $0.03, the cheapest priced image tier. `3` is not a
-#: copy mode: there are exactly two, and a third key is a typo the step must not resolve.
+#: run (`20260810_123057_g0pg`); the floor is $0.03, the cheapest priced image tier. `4` is not a
+#: copy mode: there are exactly three since D62 (`verbatim`, `auto`, `compress`), and a fourth key
+#: is a typo the step must not resolve.
 _INVALID = {
     "action": "9",
     "config": "9",
     "counts": "images=lots",
-    "copy_mode": "3",
+    "copy_mode": "4",
     "cap": "0.01",
     "briefs": "9:1",
 }
@@ -993,15 +994,22 @@ def test_fr57_a_bare_enter_at_the_copy_mode_step_keeps_the_configs_own_value(
 
 
 @pytest.mark.parametrize(("answer", "expected"),
-                         [("1", "verbatim"), ("2", "compress"),
-                          ("verbatim", "verbatim"), ("compress", "compress"),
-                          ("COMPRESS", "compress"), (" 2 ", "compress")])
+                         [("1", "verbatim"), ("2", "auto"), ("3", "compress"),
+                          ("verbatim", "verbatim"), ("auto", "auto"),
+                          ("compress", "compress"), ("COMPRESS", "compress"),
+                          ("AUTO", "auto"), (" 3 ", "compress"), (" 2 ", "auto")])
 def test_fr333_the_copy_mode_step_takes_either_the_number_or_the_word(
     answer: str, expected: str, tmp_path: Path,
 ) -> None:
-    """30 §4 promises `1`/`2`; FR-57 forces the words to work too (see above). Case and stray
+    """30 §4 promises `1`/`2`/`3`; FR-57 forces the words to work too (see above). Case and stray
     spaces are forgiven for the same reason every other picker forgives them — an operator
-    retyping what the prompt just printed must not be told they are wrong."""
+    retyping what the prompt just printed must not be told they are wrong.
+
+    D62 inserted `auto` at `2` and pushed `compress` to `3`. That is a deliberate re-lettering of
+    an existing prompt: the list is ordered least to most lossy, `auto` genuinely sits between the
+    other two, and an operator typing an old muscle-memory `2` gets the mode the shipped configs
+    now pin rather than the one D58 withdrew — a safer miss than the reverse.
+    """
     configs = _configs(tmp_path, ready=_READY.replace(
         "run:\n", "run:\n  carousel_copy_mode: compress\n"))
     wizard = _wizard(counts=_CAROUSEL_COUNTS, copy_mode=answer)
@@ -1016,23 +1024,27 @@ def test_fr333_the_copy_mode_step_takes_either_the_number_or_the_word(
 def test_fr333_an_unknown_copy_mode_answer_is_refused_by_name_and_the_step_re_asks(
     tmp_path: Path,
 ) -> None:
-    """A third key is a typo, and the refusal names both real options rather than saying 'invalid'
-    — the same one-line, say-what-IS-accepted shape the config loader uses for the same key."""
+    """A fourth key is a typo, and the refusal names all three real options rather than saying
+    'invalid' — the same one-line, say-what-IS-accepted shape the config loader uses for the same
+    key."""
     configs = _configs(tmp_path, ready=_READY)
-    wizard = _wizard(counts=_CAROUSEL_COUNTS, copy_mode=["3", "2"])
+    wizard = _wizard(counts=_CAROUSEL_COUNTS, copy_mode=["4", "3"])
 
     result = run_menu(cli.Options(), console=wizard.console, configs_dir=configs)
 
     assert result is not None and result.config is not None
     assert result.config.run.carousel_copy_mode == "compress", "the second answer landed"
     assert wizard.count("copy_mode") == 2, "the bad answer re-asked rather than advancing"
-    refusals = [line for line in wizard.printed if "is not 1 (verbatim) or 2 (compress)" in line]
-    assert len(refusals) == 1 and "'3'" in refusals[0]
+    refusals = [line for line in wizard.printed
+                if "is not 1 (verbatim), 2 (auto) or 3 (compress)" in line]
+    assert len(refusals) == 1 and "'4'" in refusals[0]
+    assert all(len(line) <= WIDTH for line in refusals), "FR-286 survives the third option"
 
 
-def test_fr284_the_copy_mode_step_prints_both_options_before_it_asks(tmp_path: Path) -> None:
-    """FR-284's purpose line, plus the two options as facts — because "compress" alone tells an
-    operator nothing about whether the words on the frames will still be the post's own."""
+def test_fr284_the_copy_mode_step_prints_all_three_options_before_it_asks(tmp_path: Path) -> None:
+    """FR-284's purpose line, plus the three options as facts — because "compress" alone tells an
+    operator nothing about whether the words on the frames will still be the post's own, and
+    "auto" alone tells them even less."""
     configs = _configs(tmp_path, ready=_READY)
     wizard = _wizard(counts=_CAROUSEL_COUNTS)
 
@@ -1041,8 +1053,14 @@ def test_fr284_the_copy_mode_step_prints_both_options_before_it_asks(tmp_path: P
     printed = "\n".join(wizard.printed)
     assert "Carousel copy mode" in printed, "the purpose heading (FR-284)"
     assert "[1] verbatim - each source panel's own words, rendered as they stand" in printed
-    assert "[2] compress - the same panel, shortened to the style's budget and" in printed
+    assert "[2] auto - only the panels too long for the style's budget are" in printed
+    assert "shortened; every panel that already fits ships verbatim" in printed
+    assert "[3] compress - the same panel, shortened to the style's budget and" in printed
     assert "in effect: verbatim" in printed, "the value being kept is stated, not only pre-filled"
+    # FR-286 over the step's own lines, continuations included — a fact may carry its own newline
+    # and the wrapped half of an option line is exactly where a third option would push past 78.
+    for line in printed.splitlines():
+        assert len(line) <= WIDTH, line
 
 
 def test_fr284_the_copy_mode_step_has_both_of_its_wizard_help_sections() -> None:
@@ -1057,7 +1075,9 @@ def test_fr284_the_copy_mode_step_has_both_of_its_wizard_help_sections() -> None
     assert menu._explain("copy_mode") != "  no help text for 'copy_mode' — see README.md"
     assert menu._explain("purpose.copy_mode").strip().startswith("Carousel copy mode")
     body = menu._explain("copy_mode")
-    assert "[1] verbatim" in body and "[2] compress" in body
+    assert "[1] verbatim" in body and "[2] auto" in body and "[3] compress" in body
+    assert "Auto is what the shipped configs pin" in body, \
+        "D62: the paragraph that names the shipped pin must name the mode actually pinned"
     assert "A good value:" in body and "If you get it wrong:" in body, "the house shape (FR-284)"
 
 
@@ -1069,13 +1089,22 @@ def test_fr333_the_confirm_notice_states_the_mode_whenever_carousels_are_planned
     reaches this notice having asked nothing, which makes it the only place the mode is stated
     before the price on that path."""
     configs = _configs(tmp_path, ready=_READY)
-    wizard = _wizard(counts=_CAROUSEL_COUNTS, copy_mode="2")
+    wizard = _wizard(counts=_CAROUSEL_COUNTS, copy_mode="3")
 
     assert run_menu(cli.Options(), console=wizard.console, configs_dir=configs) is not None
 
     line = next(line for line in wizard.printed if "carousel copy mode:" in line)
     assert "compress" in line and "panels shortened to the style budget" in line
     assert len(line) <= WIDTH
+
+    # D62's third mode gets the same treatment, and its clause is the one that had to be shortened
+    # to survive `_fit`: `_FACTS_WIDTH` is 71 and the label costs 27, so the note has 44 columns.
+    auto = _wizard(counts=_CAROUSEL_COUNTS, copy_mode="2")
+    assert run_menu(cli.Options(), console=auto.console, configs_dir=configs) is not None
+    auto_line = next(line for line in auto.printed if "carousel copy mode:" in line)
+    assert "auto" in auto_line and "only panels over the style budget shortened" in auto_line, \
+        "the clause survives `_fit` whole — a truncated one loses the word that carries it"
+    assert len(auto_line) <= WIDTH
 
     # And on a carousel-free run there is nothing true to say, so the line is absent entirely.
     quiet = _wizard(counts="images=1 carousels=0 reels=0")

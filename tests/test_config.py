@@ -32,6 +32,7 @@ from hypesocials.config import (
     CONFIGS_DIR,
     Config,
     ConfigError,
+    RunConfig,
     list_configs,
     load_config,
 )
@@ -994,20 +995,31 @@ def test_fr333_the_copy_mode_flag_refuses_a_typo_at_the_flag_boundary(
     assert "--copy-mode" in capsys.readouterr().err
 
 
-def test_fr333_every_shipped_config_is_verbatim_since_d58_withdrew_the_compress_pin() -> None:
-    """D58's shipped posture, read off the files that actually ship.
+def test_fr353_the_three_brand_configs_ship_auto_and_the_engine_default_stays_verbatim() -> None:
+    """D62's shipped posture, read off the files that actually ship.
 
-    D54 had the three brand configs opt IN to compress. D58 (operator decision, 2026-08-20)
-    withdrew that pin: the shipped selection and the engine default now agree, on the reasoning
-    that D56's text-dense archetypes plus FR-334 matched assignment put a 1,000-character source
-    panel on a frame built to hold it, so it no longer has to be compressed to fit one.
+    Three dated positions on one key, and this test states where they landed:
 
-    This pins the shipped VALUES only. The companion assertion below is the one that matters more:
-    D58 withdrew a pin, it did not remove a feature, so compress must still be selectable.
+    - **D54** had the three brand configs opt IN to `compress`.
+    - **D58** (2026-08-20) withdrew that pin: `compress` rewrites EVERY panel of a deck, including
+      the ones that already fitted, and D56's text-dense archetypes plus FR-334 matched assignment
+      had made most panels fit. Paying a model to rewrite a panel that fits, and losing the
+      byte-substring claim on it, is a cost with no matching benefit.
+    - **D62** (2026-08-21) pins `auto` instead. It answers the same defect D54 was written against
+      — a 1,000-character panel on a frame whose style declares a 180-character slide budget — and
+      answers it per PANEL: only the positions over that budget go to the model, everything else
+      stays byte-verbatim, and a deck with nothing over budget makes no call at all. That is why it
+      can be the shipped pin where `compress` could not.
+
+    `configs/default.yaml` stays on `verbatim`, which is also the ENGINE default: a default that
+    silently pays for LLM rewrites would re-price every config that never opted in, which is the
+    same reasoning D58 used and the same reasoning `run.cover_candidates` ships 1 under.
     """
-    for name in ("hypedigitaly", "hypedigitaly-cs", "hypedigitaly-fresh", "default"):
+    for name in ("hypedigitaly", "hypedigitaly-cs", "hypedigitaly-fresh"):
         cfg = load_config(name, configs_dir=CONFIGS_DIR)
-        assert cfg.run.carousel_copy_mode == "verbatim", f"{name} should ship D58's verbatim mode"
+        assert cfg.run.carousel_copy_mode == "auto", f"{name} should ship D62's auto mode"
+    assert load_config("default", configs_dir=CONFIGS_DIR).run.carousel_copy_mode == "verbatim", \
+        "the engine default is what default.yaml documents; auto is a brand-config choice"
 
 
 def test_fr333_d58_withdrew_a_pin_not_the_feature_compress_is_still_reachable(
@@ -1016,7 +1028,8 @@ def test_fr333_d58_withdrew_a_pin_not_the_feature_compress_is_still_reachable(
     """The half of D58 that a value assertion cannot state: compress still works.
 
     A withdrawn default that quietly became an unreachable code path would be a far worse
-    regression than the pin ever was, and it would not show up in the test above.
+    regression than the pin ever was, and it would not show up in the test above. D62 did not
+    change that either — `auto` took the shipped pin, it did not retire the mode it was built on.
     """
     shipped = load_config("hypedigitaly", configs_dir=CONFIGS_DIR)
     applied = cli.apply_overrides(shipped, cli.parse_args(["--copy-mode", "compress"]))
@@ -1027,6 +1040,70 @@ def test_fr333_d58_withdrew_a_pin_not_the_feature_compress_is_still_reachable(
     # And a config may still pin it directly — D58 changed three files, not the key's vocabulary.
     assert load(tmp_path, "run:\n  carousel_copy_mode: compress\n").run.carousel_copy_mode == (
         "compress")
+
+
+def test_fr353_every_mode_is_reachable_from_the_file_and_from_the_flag(tmp_path: Path) -> None:
+    """The key's vocabulary is three words wide, at both boundaries, and nothing else parses.
+
+    `--copy-mode` and the config file are two doors onto one field, and D62 widened both: the flag
+    takes `verbatim | auto | compress` through argparse's own `choices` (`cli._COPY_MODES`) and the
+    file takes the same three through the `Literal` on `RunConfig`. A word neither door accepts is
+    refused where it costs nothing — argparse exits at the boundary, the loader refuses at load,
+    and neither ever guesses at a nearest match, because a misspelled mode is a different run than
+    the one the operator asked for.
+    """
+    for mode in ("verbatim", "auto", "compress"):
+        assert load(tmp_path, f"run:\n  carousel_copy_mode: {mode}\n").run.carousel_copy_mode == (
+            mode)
+        shipped = load_config("default", configs_dir=CONFIGS_DIR)
+        cli.apply_overrides(shipped, cli.parse_args(["--copy-mode", mode]))
+        assert shipped.run.carousel_copy_mode == mode
+
+    assert cli._COPY_MODES == ("verbatim", "auto", "compress"), \
+        "least to most lossy, engine default first — the order --help prints them in"
+    with pytest.raises(SystemExit):  # argparse rejects at the boundary, before a run id exists
+        cli.parse_args(["--copy-mode", "shorten"])
+    with pytest.raises(ConfigError):
+        load(tmp_path, "run:\n  carousel_copy_mode: shorten\n")
+
+
+# ---- D62 ------------------------------------- FR-351: `run.cover_candidates` (the cover fan-out)
+
+
+def test_fr351_cover_candidates_defaults_to_one_and_the_brand_configs_pin_three() -> None:
+    """The shipped posture for the cover fan-out, and why the two halves differ.
+
+    `1` is the ENGINE default and is the pre-D62 behaviour byte for byte: one slide-1 render, no
+    pick call, no extra spend. The three brand configs pin `3`, because a carousel's cover is the
+    one frame that decides whether the deck is opened at all and two more attempts at it are the
+    cheapest quality buy in the run. The default stays at 1 for the D58 reason: a default that
+    silently orders extra renders re-prices every config that never opted in.
+    """
+    for name in ("hypedigitaly", "hypedigitaly-cs", "hypedigitaly-fresh"):
+        assert load_config(name, configs_dir=CONFIGS_DIR).run.cover_candidates == 3, name
+    assert load_config("default", configs_dir=CONFIGS_DIR).run.cover_candidates == 1
+    assert RunConfig().cover_candidates == 1, "the dataclass default, not only the shipped file"
+
+
+def test_fr351_cover_candidates_is_bounded_one_to_three_and_says_so_when_refused(
+    tmp_path: Path,
+) -> None:
+    """`_BOUNDS` is the ONE bound table and this key is in it, so the refusal is the house one-liner
+    naming what IS accepted rather than "invalid value".
+
+    The ceiling is a COST ceiling, not a taste: the pick reads every candidate in one vision call
+    and the estimator prices N−1 extra covers per deck, so 4 is refused at load — before a run id
+    exists and before a cent moves — rather than clamped into range. `2` is accepted because the
+    range is real and not a two-value switch.
+    """
+    assert load(tmp_path, "run:\n  cover_candidates: 2\n").run.cover_candidates == 2
+
+    for bad in ("0", "4"):
+        with pytest.raises(ConfigError) as caught:
+            load(tmp_path, f"run:\n  cover_candidates: {bad}\n")
+        message = str(caught.value)
+        assert "run.cover_candidates" in message
+        assert "a whole number of cover candidates per carousel, 1–3" in message, message
 
 
 # ---- D60 ----------------------------- FR-342: `platforms.<name>.image_resolution` (the 2K pin)

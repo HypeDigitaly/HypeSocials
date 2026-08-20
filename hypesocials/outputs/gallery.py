@@ -111,6 +111,21 @@ _ORIGIN_LABELS = {"matched": "matched", "rotation": "rotation", "rotation_fallba
 _COMPRESS_MODE = "compress"
 
 
+def _any_compressed(meta: _Meta) -> bool:
+    """Did ANY row of this deck ship the copy model's compression instead of a quote?
+
+    The per-ROW reading replaces mode equality (D62/FR-354, v2.6.0). Under `copy_mode: auto` a
+    deck compresses only the panels that overflowed their budget, so the document is mixed by
+    design: some rows `compressed: true`, the rest quoted under their own `ref_label`. Asking the
+    mode would mislabel both halves — "Compressed from post" over rows that were quoted, nothing
+    over rows that were not — while the rows themselves already say which is which. A
+    `copy_mode: compress` deck answers True through the same rows it always carried, and a
+    verbatim or pre-D54 document (no `compressed` keys at all) answers False, so every older
+    `meta.yaml` renders exactly as it did before (NFR-22).
+    """
+    return any(bool(row.get("compressed")) for row in _panel_rows(meta))
+
+
 class _Log(Protocol):
     """The slice of `LogWriter` this module uses — passing one is optional."""
 
@@ -221,6 +236,11 @@ def _card_html(folder: Path, meta: _Meta) -> str:
     # branches — so an image, a reel and a panel-mapped deck all carry them in the same place,
     # directly under the badge they explain, and neither layout has to remember to print them.
     parts.extend(_style_html(meta))
+    # FR-351 (v2.6.0/D62): the covers this deck bought and the one it kept. It sits directly under
+    # the style lines and above BOTH layouts for the same reason they do — the strip is a statement
+    # about the assigned style ("of these three readings of the DNA, this is the one that anchors
+    # the deck"), and an operator judging style adherence should meet it before the slides.
+    parts.extend(_cover_pick_html(folder, meta))
     parts.extend(_deck_html(folder, meta, rows) if rows else _single_html(folder, meta))
     # The topic's own winning hook line, verbatim (`models.AssetRecord.source_hook`) — context for
     # the copy above it: this is what the trend sounded like, whether or not this creative quoted
@@ -346,8 +366,12 @@ def _compressed_from(meta: _Meta) -> int:
     mean "there is no compression to label here", and all three must render exactly as they did
     before this function existed. `_row_original` does the per-row reading, so the header measure
     and the per-tile measure can never disagree about what counts as an original.
+
+    Since D62 (v2.6.0, FR-354) the gate is `_any_compressed` rather than `copy_mode == "compress"`:
+    an `auto` deck that compressed two of seven rows earns the header for those two, and an `auto`
+    deck that compressed nothing reads as the verbatim deck it is.
     """
-    if str(meta.get("copy_mode") or "").strip() != _COMPRESS_MODE:
+    if not _any_compressed(meta):
         return 0
     return max((_row_original(row) for row in _panel_rows(meta)), default=0)
 
@@ -512,8 +536,27 @@ def _receipt_html(meta: _Meta) -> list[str]:
     if str(meta.get("copy_mode") or "").strip() == _COMPRESS_MODE:
         return [f'<p class="prov">Compressed from post: {html.escape(post_id)} — see the panel '
                 "map below for what each slide was compressed from</p>"] if post_id else []
+    if _any_compressed(meta):
+        # D62/FR-354: an `auto` deck is BOTH — it quoted the rows that fit and compressed the rows
+        # that did not — so it keeps the verbatim receipt below (its `ref_label`s are real) and
+        # says so in one line first, the way the compress branch above does for an all-compressed
+        # deck. The panel map under it marks each row with the half it belongs to.
+        note = [f'<p class="prov">Quoted from post {html.escape(post_id)}; the panels over the '
+                "style's budget were compressed (copy mode auto) — the panel map below marks "
+                "which</p>"] if post_id else []
+        return note + (_quoted_lines(refs, post_id) if refs else [])
     if not refs:
         return [f'<p class="prov">Quoted post: {html.escape(post_id)}</p>'] if post_id else []
+    return _quoted_lines(refs, post_id)
+
+
+def _quoted_lines(refs: dict[str, str], post_id: str) -> list[str]:
+    """The verbatim receipt proper: the lead slot's label and post, then every other slot quoted.
+
+    Split out of `_receipt_html` (D62, v2.6.0) so the mixed `auto` branch and the plain verbatim
+    branch print the SAME lines from the same refs — one receipt, two callers, never two spellings
+    of "Quotes P1.panel.1 verbatim as the slide 1".
+    """
     order = [slot for slot in _RECEIPT_SLOTS if slot in refs]
     order += [slot for slot in refs if slot not in order]  # slides 2..N and anything newer
     lead = order[0]
@@ -590,6 +633,93 @@ def _style_html(meta: _Meta) -> list[str]:
                    "covers this source, so the rotation baseline rendered it; author one to close "
                    "the gap (FR-337).</p>")
     return out
+
+
+def _cover_pick_html(folder: Path, meta: _Meta) -> list[str]:
+    """FR-351's cover strip: every slide-1 candidate this deck bought, the chosen one outlined.
+
+    Silent on everything that never fanned out — a `cover_candidates: 1` run, an unchained deck, an
+    image, a reel, and every `meta.yaml` written before v2.6.0, which all carry no `cover_pick` key
+    at all. Silent too on a fan-out that landed only ONE candidate: a strip of one thumbnail shows
+    a comparison that never happened, and the deck's own slide 1 is already on the card below.
+
+    The point of drawing the losers is that the operator is the one judging style adherence
+    (FR-150). A pick they cannot see is a pick they cannot disagree with — and the reason line
+    beneath the strip is the model's own account of why it chose, in its own words, so a bad habit
+    ("it always takes the darkest one") is visible in a batch rather than inferred from a run log.
+
+    Tolerant by contract (NFR-22): a malformed `cover_pick`, a candidate path that is absolute, a
+    traversal, a remote URL or simply a file that is not on disk each drop out silently. A template
+    error here costs the whole page, not one card, and no thumbnail is worth that.
+    """
+    pick = meta.get("cover_pick")
+    if not isinstance(pick, dict):
+        return []
+    raw = pick.get("candidates")
+    paths = [str(path) for path in raw if str(path or "").strip()] if isinstance(raw, list) else []
+    if len(paths) < 2:
+        return []
+    chosen = _int(pick.get("chosen"))
+    figures = []
+    for position, path in enumerate(paths, start=1):
+        src, name = _asset_media(folder, path)
+        if not src:
+            continue
+        number = _candidate_id(name) or position
+        won = number == chosen
+        caption = html.escape(f"cover {number} · chosen" if won else f"cover {number}")
+        opening = '<figure class="chosen">' if won else "<figure>"
+        figures.append(f'{opening}<a href="{src}">'
+                       f'<img loading="lazy" src="{src}" alt="{caption}"></a>'
+                       f"<figcaption>{caption}</figcaption></figure>")
+    if not figures:
+        return []
+    out = [f'<div class="covers"><span>cover candidates</span>{"".join(figures)}</div>']
+    # A MODEL-AUTHORED string reaching an HTML page, so it is whitespace-collapsed and escaped like
+    # every other one this module reads off disk (the `_style_html` rule, for the same reasons).
+    if reason := " ".join(str(pick.get("reason") or "").split()):
+        out.append(f'<p class="prov">Cover pick: {html.escape(reason)}</p>')
+    if pick.get("degraded"):
+        # The tag's own spelling, so the note and the degradation badge above it are one fact. The
+        # id is read off the document rather than hard-coded to 1: `cover_pick`'s fail-open default
+        # IS candidate 1, but a deck that lost candidate 1 outright defaults to the first that
+        # landed, and a note that named 1 anyway would point at a picture nobody kept.
+        out.append(f'<p class="prov degraded">{DegradationTag.COVER_PICK_DEGRADED.value} — '
+                   f'candidate {chosen or 1} anchored by default</p>')
+    return out
+
+
+def _asset_media(folder: Path, value: Any) -> tuple[str, str]:
+    """`(href, file name)` for one ASSET-relative media path, or `("", "")` — FR-75's rules again.
+
+    The sibling of `_relative`, which resolves RUN-relative paths (`panel_map.source_image`). This
+    one resolves paths written relative to the asset folder itself (`cover_pick.candidates`), so it
+    prefixes the folder name and — unlike `_relative`, whose tiles degrade to a labelled gap — it
+    also checks the file exists, because a missing candidate is simply not drawn.
+
+    Everything that could reach outside the run is dropped rather than rendered: a remote URL, an
+    absolute path, a drive letter, a `..` segment. One remote byte and the page stops being the
+    offline artifact FR-75 promises.
+    """
+    text = str(value or "").strip().replace("\\", "/")
+    parts = [part for part in text.split("/") if part]
+    if (not parts or "://" in text or text.startswith("/")
+            or ".." in parts or ":" in parts[0]):
+        return "", ""
+    if not (folder.joinpath(*parts)).is_file():
+        return "", ""
+    return _href(folder.name, *parts), parts[-1]
+
+
+def _candidate_id(name: str) -> int:
+    """`cover_candidate_2.jpg` -> 2 — the id the pick's `chosen` names, read off the file itself.
+
+    Parsed from the name rather than counted from the list, exactly as `_our_slides` parses a slide
+    number: a deck whose candidate 2 never landed keeps `1` and `3` on disk, so counting positions
+    would mark the wrong thumbnail as chosen on precisely the runs where the pick is interesting.
+    """
+    digits = "".join(char for char in Path(name).stem.rsplit("_", 1)[-1] if char.isdigit())
+    return int(digits) if digits else 0
 
 
 def _badges(folder: Path, meta: _Meta) -> str:
@@ -780,6 +910,19 @@ code {{ background:var(--card); border:1px solid var(--line); border-radius:4px;
 .ptext {{ font-size:12px; color:var(--fg); margin:5px 0 0; }}
 .ptext.none {{ color:var(--mut); font-style:italic; }}
 .brief {{ font-size:11px; color:var(--mut); margin:4px 0 0; max-height:7em; overflow:auto; }}
+/* FR-351: the cover candidates this deck bought, the chosen one outlined. Thumbnail-sized on
+   purpose — a cover that only reads at full size is a cover that does not work in a feed. */
+.covers {{ display:flex; flex-wrap:wrap; gap:8px; align-items:flex-end; margin:10px 0 0;
+  padding-top:8px; border-top:1px dashed var(--line); }}
+.covers > span {{ flex:0 0 100%; font-size:11px; color:var(--mut); text-transform:uppercase;
+  letter-spacing:.06em; }}
+.covers figure {{ margin:0; }}
+.covers img {{ max-height:120px; max-width:120px; border-radius:6px; display:block; }}
+.covers figcaption {{ font-size:10px; color:var(--mut); text-transform:uppercase;
+  letter-spacing:.06em; margin-top:4px; }}
+.covers .chosen img {{ outline:2px solid var(--fg); outline-offset:2px; }}
+.covers .chosen figcaption {{ color:var(--fg); }}
+.prov.degraded {{ color:var(--warn); }}
 .note {{ font-size:12px; color:var(--warn); background:var(--warnbg); border-radius:6px;
   padding:6px 8px; margin:10px 0 0; }}
 .skip {{ font-size:12px; color:var(--warn); margin:9px 0 0; }}

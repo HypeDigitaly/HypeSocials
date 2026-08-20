@@ -5,15 +5,18 @@ no build step and no restart of anything but the run. Spec: `prds/50-promptcraft
 
 **This file is documentation, not a template. The engine never loads it.**
 
-**Current state (D56/D57 style intelligence, v2.4.0).** Fourteen shipped roles:
-nine global templates flat in `prompts/`, four `gpt-image-2` render templates,
+**Current state (D62 cover best-of-N, v2.6.0).** Fifteen shipped roles:
+ten global templates flat in `prompts/`, four `gpt-image-2` render templates,
 one `seedance-2-5` director template — plus `styles.yaml`, which is not a
 template, and `humanizer_skill.md`, which is not a template either (see below).
-`style_match_system.md` is the ninth global and the newest (FR-334/335): the
+`style_match_system.md` is the ninth global (FR-334/335): the
 registry grew to 19 styles at D56/D57 and to 26 at D61, and one batched, fail-open analysis call
 per run now decides which of them fits each creative, instead of rotation
-deciding alone. (`prds/50-promptcraft.md` FR-181 counts *fifteen* roles rather
-than fourteen because it counts the registry itself among its ten globals; this
+deciding alone. `cover_pick_system.md` is the tenth and the newest (FR-351/352):
+a carousel may order two or three renders of slide 1, and one fail-open vision
+call picks the frame that becomes the cover AND the reference every body slide
+is built from. (`prds/50-promptcraft.md` FR-181 counts *sixteen* roles rather
+than fifteen because it counts the registry itself among its eleven globals; this
 file keeps `styles.yaml` outside the template count, because it plays by none of
 the template rules.)
 Two things changed under every file in this folder at v2.1.0 and are the reason
@@ -39,6 +42,7 @@ prompts/
   copy_compress_system.md        global — Luna compression system prompt (compress mode, D54)
   topic_filter_system.md         global — the batched competitor / language / audience screen
   style_match_system.md          global — the matched style-assignment screen (v2.4.0, FR-334/335): one batched `analysis` call per run, fail-open
+  cover_pick_system.md           global — the cover best-of-N judge (v2.6.0, FR-351/352): one `analysis` vision call per carousel, fail-open
   slide_intel_question.md        global — per-slide transcription + foreground visual brief + deck mark boxes (FR-306/315/316)
   critic_brief.md                global — the gauntlet's CONTRACT critic: presence + leakage (D49/FR-322)
   critic_system.md               global — the gauntlet's STYLE critic: style contract + cross-frame consistency
@@ -160,6 +164,8 @@ Two rules govern every row below, and the second is the one people forget:
 | `{{competitor_list}}` | `branding.competitors`, the deterministic blocklist, for the same call | topic_filter_system **only** |
 | `{{style_candidates}}` | **the run's candidate styles, as fenced data** (v2.4.0, FR-334/335) — one entry per style usable anywhere in this run, each described by its `key` (the engine's identifier, and the exact string an answer copies), its `match_profile` (that style's own one-or-two-sentence claim about what source material it suits — the field the match is actually made against) and the formats it is meant for. The vocabulary, not the ballot: the keys answerable for any one creative are the shorter per-entry list inside `{{match_entries}}`. Fenced on the `{{topic_items}}` precedent, because style text is prose written *at* a render model in imperatives — "use a cream ground", "never show platform chrome" — and the screen must read it as a description of a look, never as orders | style_match_system **only** |
 | `{{match_entries}}` | **the match work order** (v2.4.0, FR-334/335) — one section per planned creative, opened by its engine-assigned `asset_id`: the only identity a creative has in this call, and the only key its answer row is joined on. A section carries that creative's format; its source signals — topic `strength`, Virlo's own `hook_types` / `visual_hook_types` / `emotional_tones`, the bound post's caption / hook / overlay / panel-text **lengths**, `panel_count`, `views`, and the `deck_length` and `usable_panel_slots` we are building against; and that entry's OWN candidate pool, the only keys it may be answered with. Fenced for the second `{{topic_items}}` reason as well: every line in it is either a number the engine measured or text scraped from a third-party post | style_match_system **only** |
+| `{{cover_contract}}` | **what one carousel's cover was ORDERED to be, as fenced data** (v2.6.0, FR-351/352) — the deck's `asset_id`, the style key it was assigned, the counter badge slide 1 carries (or the sentence saying this deck is uncounted, which makes a page number or chip on any candidate invented chrome), every string that has to be legible on the cover one per line — slide 1's own text, the wordmark when the deck is branded, the counter when it is counted — and then the `style_dna` bytes the render prompt itself carried, verbatim. Nothing in it is cut: an expected string is the exact text a candidate has to show, and a trimmed one would fail every frame that spelled it correctly. Fenced on the `{{style_candidates}}` precedent, because style DNA is prose written *at* a render model in imperatives and the judge must read it as the description of a contract, never as orders | cover_pick_system **only** |
+| `{{cover_candidates}}` | **the candidate roll-call** (v2.6.0, FR-351/352) — one line per landed slide-1 render, `candidate <N> — attachment <N>`, in the order the image bytes are attached to the call. The answer names a candidate ID and never an ordinal of the model's own, so this block is the only thing tying a number to a picture; an id outside it is discarded and the deck anchors on candidate 1 with `cover_pick_degraded` | cover_pick_system **only** |
 
 ### Per-role allowlists, in full
 
@@ -172,6 +178,7 @@ actually enforces. A role's set is exact: not a minimum, not a suggestion.
 | `copy_compress_system.md` | `niche_descriptor`, `brand_context`, `trend_texts`, `compress_panels`, `sibling_list`, `text_budgets`, `platform_conventions`, `brief_directives` |
 | `topic_filter_system.md` | `topic_items`, `competitor_list`, `audience_profile` |
 | `style_match_system.md` | `style_candidates`, `match_entries` |
+| `cover_pick_system.md` | `cover_contract`, `cover_candidates` |
 | `critic_brief.md` | `expected_blocks`, `forbidden_terms`, `list_mode`, `required_marks`, `sanctioned_illegible`, `style_dna` |
 | `critic_system.md` | `expected_blocks`, `layout_zones`, `list_mode`, `required_marks`, `style_dna` |
 | `critic_craft.md` | `expected_blocks`, `platform`, `required_marks`, `sanctioned_illegible` |

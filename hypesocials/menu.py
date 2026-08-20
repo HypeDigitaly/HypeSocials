@@ -85,14 +85,21 @@ _COUNT_KEYS = {**{name: name for name in _FORMATS}, **{v: k for k, v in _PLURAL.
 _WIZARD_STEPS = ("config", "counts", "copy_mode", "cap", "briefs", "confirm")
 #: `--quick` / action [2] asks nothing before the price (FR-285), so one live step remains.
 _QUICK_STEPS = ("confirm",)
-#: What the copy-mode step accepts (FR-333): the two keys 30 §4 promises, plus the words they
-#: stand for, because the prompt's pre-fill IS the word currently in effect (FR-57) and a bare
-#: Enter therefore hands that word straight back.
-_COPY_MODES = {"1": "verbatim", "verbatim": "verbatim", "2": "compress", "compress": "compress"}
+#: What the copy-mode step accepts (FR-333, and `auto` since D62/FR-353): the three keys 30 §4
+#: promises, plus the words they stand for, because the prompt's pre-fill IS the word currently in
+#: effect (FR-57) and a bare Enter therefore hands that word straight back. Ordered least to most
+#: lossy, which is also the order the step prints them in.
+_COPY_MODES = {"1": "verbatim", "verbatim": "verbatim",
+               "2": "auto", "auto": "auto",
+               "3": "compress", "compress": "compress"}
 #: Each mode in one clause, for the confirm notice's copy-mode line (FR-333). What the mode DOES
 #: to the slides, not what it is called: "compress" alone tells an operator nothing about whether
 #: the words on the frames will still be the post's own.
+#: `auto`'s clause is two words shorter than the sentence it reads as ("only panels over the style
+#: budget ARE shortened") for one reason: `_FACTS_WIDTH` is 71, the label costs 27, and `_fit`
+#: TRUNCATES rather than wraps — the full sentence came to 74 and lost its last word on screen.
 _COPY_MODE_NOTES = {"verbatim": "panels render as the post wrote them",
+                    "auto": "only panels over the style budget shortened",
                     "compress": "panels shortened to the style budget"}
 _PREFERRED_CONFIGS = ("hypedigitaly", "default")  # shipped picker default (30 §2 §Niche packs)
 _BRIEF_SUFFIXES = (".yaml", ".yml", ".md", ".txt")
@@ -578,23 +585,30 @@ def _pick_copy_mode(io: Console, config: Config, steps: Sequence[str]) -> None:
     decides, the step obeys, and `run_menu` reads as the flat sequence 30 §4 describes.
 
     The pre-fill is the WORD in effect, not the key that selects it (FR-57: the value currently in
-    effect is what a prompt must show, and a bare Enter hands it straight back), while `1` and `2`
-    are accepted because 30 §4 promises them — the same number-or-name leniency the briefs step
+    effect is what a prompt must show, and a bare Enter hands it straight back), while `1`, `2` and
+    `3` are accepted because 30 §4 promises them — the same number-or-name leniency the briefs step
     already offers.
+
+    Three options since D62/FR-353, printed least to most lossy, and `auto` sits in the middle
+    because that is what it is: verbatim keeps every panel, auto keeps the panels that already fit,
+    compress keeps none of them. It is also what the shipped brand configs pin, so on those configs
+    it is the pre-fill a bare Enter hands back.
     """
     if "copy_mode" not in steps:
         return
     while True:
         _step(io, steps, "copy_mode",
               "[1] verbatim - each source panel's own words, rendered as they stand",
-              "[2] compress - the same panel, shortened to the style's budget and"
+              "[2] auto - only the panels too long for the style's budget are"
+              "\n         shortened; every panel that already fits ships verbatim",
+              "[3] compress - the same panel, shortened to the style's budget and"
               "\n         humanised, still in the source post's own language",
               f"in effect: {config.run.carousel_copy_mode}")
         answer = io.prompt("  pick a copy mode", config.run.carousel_copy_mode,
                            help_key="copy_mode")
         mode = _COPY_MODES.get(answer.strip().lower())
         if mode is None:
-            io.say(f"  '{_fit(answer, 20)}' is not 1 (verbatim) or 2 (compress)")
+            io.say(f"  '{_fit(answer, 20)}' is not 1 (verbatim), 2 (auto) or 3 (compress)")
             continue
         config.run.carousel_copy_mode = mode  # type: ignore[assignment]
         return

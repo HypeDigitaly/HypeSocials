@@ -615,13 +615,20 @@ def _check_language_hint(config: Config, entries: Sequence[PlanEntry], hints: li
     Compress makes the language question SHARPER, not softer: a compressed line is written by a
     model rather than copied byte for byte, so drifting out of the source's language is a failure
     mode verbatim mode simply does not have.
+
+    D62/FR-353 adds `auto` to the same arm, because it raises the same question for the same
+    reason: some of this run's slides will carry a model's line rather than the source's bytes. The
+    hint names the MODE IN FORCE rather than saying "compress" for both, and for `auto` it says
+    which panels are affected — only the ones over the assigned style's budget — because that is
+    the difference an operator reading this line before the Confirm gate is actually deciding on.
     """
     if config.run.gauntlet.enabled:
         return
     czech = sorted({p for p in config.run.platforms
                     if "cs" in (config.language_for(p), config.onimage_language_for(p))})
     verbatim = any(entry.brief_influence != "override" for entry in entries)
-    compressing = (config.run.carousel_copy_mode == "compress"
+    mode = str(config.run.carousel_copy_mode)
+    compressing = (mode in ("compress", "auto")
                    and any(str(entry.creative_format) == "carousel"
                            and entry.brief_influence != "override" for entry in entries))
     if czech:
@@ -629,9 +636,12 @@ def _check_language_hint(config: Config, entries: Sequence[PlanEntry], hints: li
                      "diacritics are where GPT Image 2 struggles most; consider --gauntlet "
                      "(30 §2; a hint, never a gate)")
     elif compressing:
+        contract = ("carousel_copy_mode: auto — only the panels over the style's budget are "
+                    "compressed and the rest ship verbatim, FR-353" if mode == "auto"
+                    else "carousel_copy_mode: compress, FR-331")
         hints.append("carousel on-image text is compressed from the source post's panels to the "
-                     "style's budget, in the post's own language (carousel_copy_mode: compress, "
-                     "FR-331), so this run may render accented glyphs whatever run.languages says "
+                     f"style's budget, in the post's own language ({contract}), so this run may "
+                     "render accented glyphs whatever run.languages says "
                      "— with the gauntlet off nothing will read them back; consider --gauntlet "
                      "(30 §2; a hint, never a gate)")
     elif verbatim:

@@ -74,6 +74,15 @@ class DegradationTag(str, Enum):
     # ships, with our own assembled caption and no on-image text. Famine over silent repeats: a
     # post an earlier run quoted is never quoted again, and no neighbour is substituted for it.
     NO_FRESH_POST_AVAILABLE = "no_fresh_post_available"
+    # --- D62 / v2.6.0 (FR-351): cover best-of-N ---
+    # FR-351 — `run.cover_candidates` ordered two or three slide-1 renders and the ONE vision pick
+    # call that chooses between them could not be trusted (no metered call, a raised call, an
+    # unparseable or out-of-range answer), so candidate 1 was committed as the anchor. Fail-open
+    # on the style-match shape (§0.14c): the deck is exactly the deck a `cover_candidates: 1` run
+    # would have made, plus the loser candidates kept under `covers/` for the operator to compare
+    # by eye. Never set when fewer than two candidates landed — there was nothing to choose, so
+    # nothing degraded.
+    COVER_PICK_DEGRADED = "cover_pick_degraded"
     # --- D56 / v2.4.0 (FR-334): matched style assignment ---
     # FR-334 — the ONE batched style-matcher call failed outright (transport error, unparseable
     # answer, degraded `ParsedResult`), so EVERY entry in the plan kept the FR-291 rotation pick it
@@ -657,6 +666,14 @@ class AssetRecord:
     degradations: list[DegradationTag] = field(default_factory=list)
     brief_name: str | None = None  # --- brief overrides (D26) ---
     brief_influence_mode: InfluenceMode | None = None
+    # FR-351 (v2.6.0, D62) — the cover best-of-N receipt: `{candidates: [<asset-relative paths
+    # under covers/>], chosen: <1-based candidate id>, reason: <the pick's short prose>,
+    # degraded: <bool>}` on every chained carousel rendered with `run.cover_candidates > 1` and at
+    # least one landed candidate; `None` everywhere else (a single-cover run, an unchained deck,
+    # an image, a reel). `chosen` indexes `candidates` 1-based and names the candidate that became
+    # `slide_01`; the gallery draws the strip from `candidates` and marks `chosen`. A PLAIN DICT
+    # for the same reason `gauntlet` and `counter` are: `models` is the bottom of the import graph.
+    cover_pick: dict | None = None
     model_ids: list[str] = field(default_factory=list)  # --- model & generation (FR-270) ---
     render_not_reproducible: bool = True  # Kie exposes no seeds (FR-109/OQ-4): no seed field
     aspect_ratio_requested: str = ""  # FR-21
@@ -910,6 +927,13 @@ GLOBAL_TEMPLATES: tuple[str, ...] = (
     # question. It is the SECOND template on the analysis role beside `slide_intel_question.md`, the
     # same one-role-two-contracts shape `copy_compress_system.md` introduced for `copy`.
     "style_match_system.md",
+    # v2.6.0 (D62, FR-351/FR-352): the cover best-of-N judge. Global on the same grounds as the
+    # two screens above — it belongs to the `analysis` role rather than to any render profile, and
+    # every deck's candidates must be judged by the same question or "best cover" means a different
+    # thing per deck. It is the THIRD template on that role, beside `slide_intel_question.md` and
+    # `style_match_system.md`, and the first one that is handed pixels: the candidate frames ride
+    # as image attachments, so the words here are only the yardstick they are held against.
+    "cover_pick_system.md",
 )
 
 #: The subset of `GLOBAL_TEMPLATES` that is DECLARED here but whose file and FR-183 built-in twin
@@ -1021,8 +1045,8 @@ PLACEHOLDERS: frozenset[str] = frozenset(
         # Topic-first pivot (v2.0.0, contracts item 2 — the names the pivot added, after the six
         # pre-pivot orphans left with the W3.5 excision). This line used to promise a "final
         # 25-name vocabulary" and it was neither final nor 25 for long: every round since has added
-        # slots, and the set stands at 41 names — 40 of them before D59 added `counter_rule` at
-        # the bottom. Read the number off `len(models.PLACEHOLDERS)`, never off a comment:
+        # slots, and the set stands at 43 names — 41 of them before D62 added the cover judge's two
+        # at the bottom. Read the number off `len(models.PLACEHOLDERS)`, never off a comment:
         "branding_block",  # FR-292's second channel: accent colours, font letterforms, placement
         #   hint and the profile's `never:` lines, pre-rendered by prompts_engine._branding_block();
         #   empty when unbranded. The wordmark NEVER travels here — it is a TEXT-block entry (B1).
@@ -1109,5 +1133,20 @@ PLACEHOLDERS: frozenset[str] = frozenset(
         #   Deliberately absent from `_TRUNCATION_ORDER` and `_STYLE_TRIO`: uncuttable, like the
         #   TEXT block whose badge it places. Empty under an override brief and on a style-less
         #   context, exactly as `list_treatment` and `layout_zones` are.
+        # --- v2.6.0 (D62, FR-351/FR-352): the cover judge's two slots. ---
+        # Both are allowlisted for `cover_pick_system.md` ALONE, on the `style_candidates` terms
+        # and for a sharper reason: `cover_contract` carries one style's whole DNA together with
+        # every string that has to be legible on the cover, so a render role able to resolve it
+        # would be handed a second copy of its own art direction plus a list of words no TEXT
+        # block sanctioned. Neither slot ever becomes pixels — this call reads finished frames and
+        # returns one candidate id and one sentence for a person to read.
+        "cover_contract",  # what the cover was ORDERED to be, as fenced DATA: the deck's asset_id,
+        #   its assigned style key, the counter it carries (or the statement that it carries none,
+        #   which makes a badge on any candidate invented chrome), every expected string one per
+        #   line, and the `style_dna` bytes the render prompt itself carried — verbatim, because a
+        #   paraphrase would judge the candidates against a look nothing was rendered from.
+        "cover_candidates",  # the roll-call mapping each answerable candidate id to its attached
+        #   image ("candidate 2 — attachment 2"). The answer names an ID and never an ordinal of
+        #   the model's own, so this block is the only thing tying a number to a picture.
     }
 )

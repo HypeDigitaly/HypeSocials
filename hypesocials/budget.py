@@ -93,6 +93,23 @@ _STYLE_MATCH_COMPLETION_PER_ENTRY = 70
 #: is not knowable here. The shipped registry holds 19 entries (v2.4.0/D56); quoting 24 leaves
 #: room for a registry that grew since this line was typed, rather than silently under-quoting it.
 _STYLE_MATCH_ASSUMED_POOL = 24
+#: FR-351's cover pick (D62 §2), role `analysis` and one call per chained carousel. The arithmetic
+#: is written down for the same reason the style matcher's is — a constant nobody can explain rots:
+#: - the FIXED side is `prompts/cover_pick_system.md`, which FR-352 bounds at 6,000 chars ->
+#:   1,500 tokens at `_CHARS_PER_TOKEN`. The answer schema and the chat scaffolding ride on top,
+#:   so the constant quotes 1,600.
+#: - the CONTRACT block is this deck's own `style_dna` (the same bytes every slide's render prompt
+#:   carried, measured at up to ~2,200 chars across the shipped registry -> ~550 tokens) plus the
+#:   style key, the strings that have to be legible on the cover and the counter badge. 700.
+#: - the IMAGE side is `cover_candidates` frames at the platform's NATIVE render tier, added by
+#:   `_cover_pick_lines` rather than folded in here: a `2k` deck costs materially more per call
+#:   than a `1k` one (FR-342) and the operator sees that in the line rather than in the invoice.
+#: - the ANSWER is one small object: the chosen id, a ~12-word `reason` and the JSON around them.
+#: Over-stating is the safe direction (D11); understating is the one unacceptable estimator error,
+#: so these three numbers only ever move against a measurement.
+_COVER_PICK_PROMPT_TOKENS = 1600
+_COVER_PICK_CONTRACT_TOKENS = 700
+_COVER_PICK_COMPLETION_TOKENS = 80
 _IMAGE_TOKEN_DIVISOR = 750  # provider px -> vision-token rule
 _IMAGE_TOKEN_MAX_PX = 1568  # providers resize above this, so token cost stops growing
 _TIER_LONG_EDGE: dict[str, int] = {"1k": 1024, "2k": 2048, "4k": 4096}
@@ -347,7 +364,10 @@ def estimate(config: Config, entries: Sequence[PlanEntry]) -> Estimate:
     moderation-retry allowance; **the gauntlet's critic panel and per-deck re-render budget**
     (FR-326/spec §5 — `allowance=True` lines, displayed and worst-case provisioned, never gating,
     and the ONLY post-render gate lines there are since D49 deleted the FR-105 `vision_check` row);
-    the carousel anchor-failure N+1 contingency; critic image tokens at
+    the carousel anchor-failure N+1 contingency; **FR-351's cover best-of-N — the `cover_candidates
+    − 1` EXTRA slide-1 renders on every chained deck (expected spend, not an allowance: they are
+    bought on the happy path of every run) and one `analysis` pick call per deck, quoted at its own
+    platform's native image tier**; critic image tokens at
     native render resolution; a reasoning allowance on every Luna call plus FR-99's split
     per-creative calls; the FR-127 + FR-41 retry allowance on every LLM call; per-platform
     resolution; **carousel slides at each entry's own ASSIGN-fixed deck length** (§0.4′: the bound
@@ -428,6 +448,18 @@ def _entry_lines(config: Config, entry: PlanEntry, lines: list[EstimateLine]) ->
         slides = _deck_slides(config, entry)
         lines.append(_line("carousel_slides", f"carousel slides ({slides}) · {entry.asset_id}",
                            SpendCategory.RENDER, "render", slides, image_priced, orders))
+        if run.carousel_anchor and run.cover_candidates > 1:
+            # FR-351 (v2.6.0/D62): EXPECTED spend, not an allowance. `cover_candidates: 3` orders
+            # three slide-1 renders on every chained deck as a matter of course — they are bought
+            # before anything is judged, on the happy path, every single run — so quoting them as
+            # a contingency would hide two thirds of a deck's cover cost from the number the
+            # operator approves (rule 7, D11). One unit is already inside `carousel_slides` above,
+            # which prices the deck at its full length including slide 1; this line is the N-1
+            # EXTRA covers, at the same tier, so the two rows sum to what Kie will bill.
+            extra = int(run.cover_candidates) - 1
+            lines.append(_line("cover_candidates",
+                               f"cover candidates (+{extra}) · {entry.asset_id}",
+                               SpendCategory.RENDER, "render", extra, image_priced, orders))
         if run.carousel_anchor:
             # TWO units, not one (v2.2.0). FR-95's anchor-failure shape gained a step: a dead
             # anchor now buys ONE fresh anchor attempt before the deck falls back to N independent
@@ -701,6 +733,69 @@ def _intel_completion(config: Config, slides: int) -> int:
     return min(config.max_tokens_for("analysis"), slides * _SLIDE_INTEL_COMPLETION_PER_SLIDE)
 
 
+def _cover_pick_lines(config: Config, planned: Sequence[PlanEntry],
+                      lines: list[EstimateLine]) -> None:
+    """FR-351's cover pick: ONE `analysis` call per CHAINED carousel, plus its retry allowance.
+
+    It runs inside CREATE, long after the Confirm gate, which is exactly why it is quoted before
+    the gate (rule 7): it is metered LLM spend on top of the extra covers `_entry_lines` already
+    priced. The quantity is one call PER DECK and not one per run — unlike the style matcher, this
+    question is about one deck's own candidates and cannot be batched across creatives, because
+    every deck ships its own style contract and its own two or three frames.
+
+    **Gated on the render shape, never on the brief.** Three conditions and all of them are about
+    whether a cover pick can happen at all: the creative is a carousel, `run.carousel_anchor` is on
+    (an unchained deck has no anchor to choose), and `run.cover_candidates > 1` (one cover is not a
+    choice). An OVERRIDE brief is deliberately NOT excluded here, unlike in `_style_match_lines`:
+    an override brief replaces the STYLE channel, not the anchor — its deck is still chained, still
+    orders `cover_candidates` covers and still asks which of them anchors it — so filtering it out
+    would under-quote the commonest thing an override brief does.
+
+    Basis: the fixed template plus this deck's own contract block (see the `_COVER_PICK_*`
+    constants) plus `cover_candidates` image blocks at the platform's NATIVE render tier, run
+    through the same `_image_price` clamp the renderer and the critics use, so a `2k` platform's
+    pick is quoted at 2K image tokens and a 1K-only ratio at 1K (FR-342/20 §8c). Reasoning is
+    priced at 0 for the same reason the slide-intelligence and style-match calls price none:
+    `analysis` is Sonnet, and the reasoning-effort knob (30 §2) is the COPY role's.
+
+    Nothing is quoted when no call will be made — a plan with no chained carousel in it, a
+    `carousel_anchor: false` run, or the engine-default `cover_candidates: 1` — because a $0 line
+    for work that will not happen reads like a rate that failed to load, which is the same argument
+    `_filter_lines`, `_style_match_lines` and `_slide_intel_lines` all make.
+    """
+    run = config.run
+    if not run.carousel_anchor or run.cover_candidates <= 1:
+        return
+    picking = [entry for entry in planned if entry.creative_format == "carousel"]
+    if not picking:
+        return
+    completion = min(config.max_tokens_for("analysis"), _COVER_PICK_COMPLETION_TOKENS)
+    widest, orders = 0, []
+    for entry in picking:
+        _priced, native_px = _image_price(config, entry.platform,
+                                          aspect_ratio=entry.aspect_ratio)
+        prompt = (_COVER_PICK_PROMPT_TOKENS + _COVER_PICK_CONTRACT_TOKENS
+                  + run.cover_candidates * _image_tokens(native_px, entry.aspect_ratio))
+        widest = max(widest, prompt)
+        orders.append(entry.order)
+        lines.append(_line("cover_pick_call",
+                           f"cover pick ({run.cover_candidates} candidates) · {entry.asset_id}",
+                           SpendCategory.LLM, "call", 1,
+                           _llm_call_price(config, "analysis", prompt, completion, 0),
+                           (entry.order,)))
+    # FR-107's per-call retry allowance applies to every role, and one call can spend BOTH:
+    # FR-127's widened truncation retry and FR-41's parse retry are independent and each capped at
+    # 1 (`llm._run_attempts`). An allowance only — never expected spend — because the stage is
+    # fail-open (FR-351: a failed pick commits candidate 1 and tags `cover_pick_degraded`, so
+    # there is never a re-pick to pay for). Priced at the dearest deck in the plan, which is the
+    # worst case this plan can produce.
+    wide_out = _widened_cap(completion)
+    wide = _llm_call_price(config, "analysis", widest, wide_out, 0)
+    lines.append(_line("cover_pick_retry_allowance",
+                       "cover pick truncation + parse retry allowance (2)",
+                       SpendCategory.LLM, "retry", 2, wide, orders, allowance=True))
+
+
 def _llm_lines(config: Config, entries: Sequence[PlanEntry], lines: list[EstimateLine]) -> None:
     """The topic-filter screen (one batched call) and the copy calls (one per FR-99 group).
 
@@ -737,6 +832,13 @@ def _llm_lines(config: Config, entries: Sequence[PlanEntry], lines: list[Estimat
     # between the screen and the reads; FR-306 between the reads and the copy).
     _style_match_lines(config, planned, lines)
     _slide_intel_lines(config, planned, lines)
+    # FR-351's cover pick, printed beside the other two `analysis`-role stages rather than at its
+    # real position in the run (it fires inside CREATE, after the copy). Grouping the role's three
+    # calls is what lets an operator read the analysis spend as one block; the calls themselves are
+    # independent, so nothing depends on the order of these three helpers. See `_cover_pick_lines`
+    # for why it is one call per deck rather than one per run, and why an override brief pays for
+    # it when it never pays for a style match.
+    _cover_pick_lines(config, planned, lines)
 
     groups: dict[tuple[str, str], list[PlanEntry]] = {}
     for entry in planned:  # FR-99: one call per (trend x language); briefs by (brief x language)

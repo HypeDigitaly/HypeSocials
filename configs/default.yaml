@@ -91,7 +91,21 @@ run:
                                    # source post of that topic (FR-99/FR-291), so six siblings
                                    # are six different-looking posts, not six near-duplicates.
   carousel_anchor: true            # slide 1 renders first and references slides 2-N
-  carousel_copy_mode: verbatim     # verbatim | compress (v2.3.0/D54/FR-333) - how a BOUND
+  cover_candidates: 1              # 1 | 2 | 3 (v2.6.0/D62/FR-351) - how many slide-1 renders a
+                                   # chained deck orders before one is chosen as the anchor. 1 is
+                                   # the single-cover path (engine default, pre-D62 behaviour).
+                                   # 2-3 submit that many IDENTICAL cover jobs at once, one vision
+                                   # `analysis` call picks the winner (style-contract adherence,
+                                   # then legibility at thumbnail size, then stopping power), the
+                                   # winner becomes slide_01 and the anchor, and every candidate
+                                   # is kept under <asset>/covers/. Fail-open: a pick that cannot
+                                   # run commits candidate 1 and tags `cover_pick_degraded`. The
+                                   # estimate carries N-1 extra covers per deck plus the pick call
+                                   # (~+$1.60 per 9-deck run at 3 and 2K). The three brand configs
+                                   # pin 3; this default stays 1 so a config that never opted in
+                                   # is never silently re-priced (the D58 shape).
+  carousel_copy_mode: verbatim     # verbatim | auto | compress (v2.3.0/D54/FR-333; `auto` added
+                                   # v2.6.0/D62/FR-353) - how a BOUND
                                    # carousel deck's source panels reach its slides. `verbatim`
                                    # renders each mapped panel exactly as FR-304 admitted it,
                                    # and D50's "reflow, never shorten" governs that mode.
@@ -124,6 +138,14 @@ run:
                                    # D58 is an operator PREFERENCE with that cost accepted.
                                    # Compress is unchanged and fully supported - pin it here
                                    # or use the per-run override: `run.bat --copy-mode compress`.
+                                   # `auto` (v2.6.0/D62/FR-353) is the middle road and what the
+                                   # three brand configs pin since D62: the verbatim mapped deck
+                                   # is built first, then ONLY the panels over
+                                   # min(text_budgets.slide, style max_onimage_chars.slide) go
+                                   # through the compress call and are spliced back by position;
+                                   # rows that fit keep their bytes and ref label, a deck with
+                                   # nothing over budget makes NO call and is byte-identical to
+                                   # verbatim. Per-run override: `run.bat --copy-mode auto`.
   reel_overlay_text: seed_frame    # seed_frame | in_model | none
   reel_audio: true                 # Seedance generate_audio; false ships a silent clip
   reel_duration_s: 5               # 4-30 (Seedance verified range); out-of-range is CLAMPED at pre-flight

@@ -213,7 +213,12 @@ class Env:
     campaign_briefs: Mapping[str, Brief] = field(default_factory=dict)  # FR-144/145, by name
     niche_descriptor: str = ""  # copy-side (audience included): the analyst and copywriter only
     niche_visual_world: str = ""  # A15: `niche.visual_world` alone — the render roles
-    llm_call: Any = None  # metered `StructuredCall` for the D49 gauntlet critics; None = off
+    #: The ONE metered `StructuredCall` the render stage may spend on, with TWO consumers since
+    #: D62: the D49 gauntlet critics, and FR-351's cover pick (`carousel._pick_cover`). `None`
+    #: means neither can run — `contracts.gate_on` still ANDs `run.gauntlet.enabled`, so wiring
+    #: this for the pick alone never turns the gate on, and a deck that wanted extra covers with
+    #: no seam here does not order them at all rather than buying renders nothing can judge.
+    llm_call: Any = None
     #: D49's two money-door SEAMS, wired by `create()` and read by the format modules' `RerenderFn`
     #: closures. They exist so `carousel.py` and `reel.py` can measure a per-deck gauntlet budget
     #: and D51's runway WITHOUT importing `budget` or touching `env.budget` — their module contracts

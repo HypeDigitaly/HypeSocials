@@ -1409,7 +1409,9 @@ def test_fr140_the_preview_copy_header_says_which_contract_wrote_the_words() -> 
     console_safe(verbatim)
     assert mixed.splitlines()[0] == "Copy — 2 creative(s), 1 deck(s) compressed"
     assert "from the source post's panels to the style's budget, in the post's own" in mixed
-    assert "the rest quoted verbatim, nothing rendered (FR-140/FR-331)" in mixed
+    assert "the rest quoted verbatim, nothing rendered (FR-140/FR-331/FR-353)" in mixed
+    assert "under copy mode auto, only the panels that overflowed it" in mixed, \
+        "D62: the header covers both compressing contracts, so it names the difference"
     # …and with nothing compressed the pre-D54 header returns, byte for byte.
     assert verbatim.splitlines()[0] == "Copy — 2 creative(s), quoted verbatim in the language"
     assert verbatim.splitlines()[1] == \
@@ -1438,6 +1440,123 @@ def test_fr140_a_compressed_creatives_preview_row_says_compressed_and_prints_no_
     assert "p1" in row, "the post is still named — the provenance claim is unchanged"
     assert "refs" not in block, "FR-302: a compressed slide resolved no label to print"
     assert "Ship it, then measure." in block, "the compressed slide is READ here — that is the job"
+
+
+# ------------------------------------ D62/FR-353: the same four surfaces, for the AUTO contract
+#
+# Auto is the mode the three shipped brand configs pin, so these are the lines almost every real
+# run now prints. What each has to avoid is the same trap in two directions: `quoted` over a deck
+# whose long panels were rewritten is false, and `compressed` over a deck whose short panels were
+# quoted word for word is equally false. Every surface below names the MODE instead of picking one
+# of the two halves and calling it the deck.
+
+
+async def test_fr353_the_copy_stage_line_counts_auto_decks_and_names_both_contracts(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The COPY closing line under D62, all three of its compressing shapes.
+
+    An `auto` deck did not ship pure quotes either, so it is counted in the same number. What it
+    does NOT get is a qualifier bolted onto the compress sentence: `_stage` gives this body 54
+    columns and `2 compressed (auto or compress)` does not fit at realistic counts. So a pure-auto
+    run says `auto-compressed`, and only a genuinely mixed run — the one shape where the split is
+    not already implied — pays the extra `(N auto)` clause.
+    """
+    await copy_stage(["auto", "auto"], monkeypatch)
+    auto = printed(capsys)
+
+    await copy_stage(["auto", "verbatim"], monkeypatch)
+    mixed = printed(capsys)
+
+    await copy_stage(["auto", "compress"], monkeypatch)
+    both = printed(capsys)
+
+    for lines in (auto, mixed, both):
+        console_safe("\n".join(lines))
+        assert lines[0].startswith("[1/1] COPY"), "the opening line is untouched by the mode"
+        assert all(len(line) <= WIDTH for line in lines), lines
+    assert "1 call(s) -> 2 creative(s), 2 auto-compressed" in auto[1]
+    assert "1 call(s) -> 2 creative(s), 1 auto-compressed" in mixed[1], \
+        "counted off the per-asset receipt, never assumed from the config's mode"
+    assert "1 call(s) -> 2 creative(s), 2 compressed (1 auto)" in both[1], \
+        "the mixed shape is the only one that has to name the split"
+    assert "quoted verbatim" not in auto[1] and "quoted verbatim" not in both[1]
+
+
+def test_fr353_an_auto_creatives_receipt_names_the_mode_rather_than_half_the_deck() -> None:
+    """FR-297c's line 2 for an auto deck. Neither of the two pre-D62 shapes is true of it: the
+    verbatim receipt would present ONE quoted slide as the receipt for a deck that also compressed
+    three, and the compress receipt would deny the rows that really are byte-quotes. So the line
+    says `auto` and points at the `panel_map`, which is the only place the split is recorded row
+    by row."""
+    item = topic("AI agents do the work", strength=1.0)
+    deck = entry(0, fmt="carousel", trend=item, style="anime-noir-statement")
+    deck.status = PlanEntryStatus.SUCCESS
+    records = {deck.asset_id: record(deck, item, cost=0.180, quoted=item.posts[0],
+                                     refs={"slide_1": "P1.panel.1"}, copy_mode="auto")}
+    copy = {deck.asset_id: CopySet(asset_id=deck.asset_id, language="en",
+                                   slide_texts=["A panel short enough to quote whole.",
+                                                "Ship it, then measure."])}
+
+    block = runner._provenance_block([deck], records, {item.history_key: item}, copy)
+
+    console_safe(block)
+    receipt = block.splitlines()[3].strip()
+    assert receipt.startswith("auto P1 @creator0 ")
+    assert item.posts[0].post_id in receipt, "the post is still named — the claim is unchanged"
+    assert receipt.endswith("-> panel_map"), "where the operator reads both sides of each row"
+    assert '"' not in receipt, "no single slide is promoted into being the deck's receipt"
+    assert "compressed" not in receipt and "quoted" not in receipt
+    assert all(len(line) <= WIDTH for line in block.splitlines()), block
+
+
+def test_fr353_an_auto_creatives_preview_row_says_auto_and_DOES_print_its_refs() -> None:
+    """The `--preview-analysis` row, and the one place auto differs from compress by ADDING rather
+    than removing: an auto deck resolved a real `P<n>.panel.<i>` label for every panel that fitted
+    its budget and shipped that panel's bytes, so those labels exist and are worth reading. The
+    refs row is the list of slides the operator can check against the post roster; the slides
+    missing from it are the ones that were compressed."""
+    item = topic("AI agents do the work")
+    deck = entry(0, fmt="carousel", trend=item)
+    result = copywrite.CopyResult()
+    result.copy[deck.asset_id] = CopySet(asset_id=deck.asset_id, language="en",
+                                         caption="A caption.",
+                                         slide_texts=["A panel short enough to quote whole.",
+                                                      "Ship it, then measure."])
+    result.provenance[deck.asset_id] = copywrite.CopyProvenance(
+        post_id="p1", refs={"slide_1": "P1.panel.1"}, copy_mode="auto")
+
+    block = previews._copy_block(result, [deck])
+
+    console_safe(block)
+    row = next(line for line in block.splitlines() if line.strip().startswith("auto"))
+    assert "p1" in row, "the post is named exactly as it is on every other contract"
+    assert "slide_1=P1.panel.1" in block, "FR-353: the QUOTED rows kept real labels — print them"
+    assert not any(line.strip().startswith("compressed") for line in block.splitlines()), \
+        "one deck, one row label, and it is the mode — the header's own count is a separate line"
+    assert "Ship it, then measure." in block, "the compressed slide is READ here — that is the job"
+    assert all(len(line) <= WIDTH for line in block.splitlines()), block
+
+
+def test_fr353_the_preflight_language_hint_names_auto_and_what_it_leaves_alone() -> None:
+    """The pre-flight arm, measured for width the way this file measures every hint: through
+    `Preflight.report`, which is the one place layout happens. Auto's clause is the longest of the
+    three and is the one that could push a wrapped line past FR-286's ceiling."""
+    config = Config()
+    config.run.gauntlet.enabled = False
+    config.run.carousel_copy_mode = "auto"
+    hints: list[str] = []
+
+    preflight._check_language_hint(config, [entry(0, fmt="carousel")], hints)
+
+    for line in preflight.Preflight(hints=tuple(hints)).report.splitlines():
+        assert len(line) <= WIDTH, f"{len(line)} chars (FR-286 allows {WIDTH}): {line!r}"
+        assert "→" not in line and "\x1b" not in line, line
+    assert len(hints) == 1
+    assert "carousel_copy_mode: auto" in hints[0] and "FR-353" in hints[0]
+    assert "only the panels over the style's budget are compressed" in hints[0]
+    assert "the rest ship verbatim" in hints[0]
+    assert "consider --gauntlet" in hints[0], "the hint's whole point survives the branch"
 
 
 def test_fr333_the_preflight_language_hint_states_the_compress_contract_when_it_applies() -> None:

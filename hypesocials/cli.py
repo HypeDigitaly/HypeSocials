@@ -46,10 +46,12 @@ from hypesocials.util import wrapped
 PROG = "run.bat"  # what the operator actually launches; `python -m hypesocials` is the inner call
 _WIDTH = 78  # FR-286: help wraps here, never at the console width, which legacy conhost mangles
 _NOTION = ("off", "copy", "full")
-#: FR-333's two carousel copy modes, in the order `--help` should read them: the engine default
-#: first. Typed once here and handed to argparse as `choices`, so a misspelled mode dies at the
-#: boundary with the same one-liner `config._coerce` would have printed for the file-side key.
-_COPY_MODES = ("verbatim", "compress")
+#: FR-333's carousel copy modes, in the order `--help` should read them: the engine default first,
+#: then the two compressing ones from least to most lossy (`auto` touches only the panels that
+#: overflow, `compress` touches every panel — D62/FR-353). Typed once here and handed to argparse
+#: as `choices`, so a misspelled mode dies at the boundary with the same one-liner `config._coerce`
+#: would have printed for the file-side key.
+_COPY_MODES = ("verbatim", "auto", "compress")
 
 
 class Action(str, Enum):
@@ -76,10 +78,10 @@ class Options:
     #   "every style", so only a real list may overwrite what the config file chose.
     budget_usd: float | None = None
     notion: str | None = None
-    #: `--copy-mode` (v2.3.0, D54/FR-333): `verbatim` | `compress` for BOUND carousel decks only.
-    #: `None` = the flag was not passed, so `run.carousel_copy_mode` from the file stands — the
-    #: three shipped brand configs pin `compress`, and a plain default of `"verbatim"` here would
-    #: quietly override them on every flagless run.
+    #: `--copy-mode` (v2.3.0, D54/FR-333; `auto` added in v2.6.0, D62/FR-353): `verbatim` | `auto`
+    #: | `compress` for BOUND carousel decks only. `None` = the flag was not passed, so
+    #: `run.carousel_copy_mode` from the file stands — the three shipped brand configs pin `auto`,
+    #: and a plain default of `"verbatim"` here would quietly override them on every flagless run.
     copy_mode: str | None = None
     #: `--gauntlet` / `--no-gauntlet` (v2.2.0, D49) — the post-render quality gate, replacing the
     #: removed `--vision-check`. THREE states, which is why it is not a plain bool: `None` = neither
@@ -163,9 +165,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--notion", choices=_NOTION, help="Notion influence level (D7)")
     parser.add_argument("--copy-mode", dest="copy_mode", choices=_COPY_MODES,
                         help="how a bound carousel deck's panel text reaches its slides "
-                             "(D54): verbatim keeps the source panel as it stands, compress "
-                             "shortens it to the style's budget in the post's own language; "
-                             "images, reels and override briefs are unaffected")
+                             "(D54/D62): verbatim keeps every source panel as it stands, auto "
+                             "shortens only the panels over the style's budget and quotes the "
+                             "rest, compress shortens every panel to it; both stay in the post's "
+                             "own language, and images, reels and override briefs are unaffected")
     # v2.2.0 (D49): the mirror of the removed `--vision-check`. Two flags into ONE dest so the
     # "not passed" state stays distinguishable from "passed false" — `--no-gauntlet` must be able
     # to turn off a gate the config file turned on, which `store_true` alone could never express.

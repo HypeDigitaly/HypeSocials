@@ -47,8 +47,9 @@ Formats & counts — how many finished creatives to build, as one line.
 
 ## purpose.copy_mode
 
-Carousel copy mode — the source panel's own words on our slides, or the
-     same panel compressed to the style's budget. Bound decks only.
+Carousel copy mode — the source panel's own words on our slides, only
+     the panels that overflow shortened, or every panel compressed to
+     the style's budget. Bound decks only.
 
 ## purpose.cap
 
@@ -160,15 +161,22 @@ Confirm — the cost estimate and the final yes/no come next. Nothing has
     [1] verbatim  the panel's own words, exactly as the post wrote
                   them. Nothing is shortened, so a 1,000-character
                   panel arrives as 1,000 characters on one frame
-    [2] compress  the same panel, sent back to the model to come out
+    [2] auto      the same shortening as [3], but only for the panels
+                  that are actually too long for the assigned style.
+                  Every panel that already fits is quoted word for
+                  word, and a deck where nothing is too long is not
+                  sent to the model at all
+    [3] compress  every panel, sent back to the model to come out
                   shorter: facts, numbers and tool names kept, padding
                   cut, still in the post's own language, and never
                   longer than the assigned style allows
 
-  Compress is what the shipped configs pin, because the house styles are
-  built for one bold statement per slide and a full panel buries it.
-  Verbatim is the engine default and the stricter answer: it quotes and
-  does nothing else.
+  Auto is what the shipped configs pin, because the house styles are
+  built for one bold statement per slide and a full panel buries it —
+  but most panels are not the problem, and auto pays for the ones that
+  are. Verbatim is the engine default and the stricter answer: it quotes
+  and does nothing else. Compress is the blunt version of auto: it
+  shortens every panel, including the ones that were already fine.
 
   Either way the deck keeps its shape — same number of slides, same
   panel in the same position, and a panel that could not be used still

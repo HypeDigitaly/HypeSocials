@@ -1623,3 +1623,336 @@ async def test_a_panel_is_shown_to_the_compress_call_IN_FULL_never_display_trunc
 
     assert long_panel in call.prompts[0]
     assert "…[truncated for display]" not in call.prompts[0]
+
+
+# ------------------------------------------ D62/FR-353: auto mode — compress ONLY what overflows
+#
+# Auto is compress's contract applied per PANEL instead of per DECK, and it is what the three
+# shipped brand configs pin. Two claims carry the whole mode and every test below serves one of
+# them:
+#
+# 1. **A deck with nothing over budget is a VERBATIM run, byte for byte** — no compress call, no
+#    compress template, no `compressed` row, `copy_mode: verbatim` on the receipt. That is FR-353's
+#    acceptance criterion, and it is why auto could take a shipped pin where `compress` could not.
+# 2. **A deck with something over budget is MIXED, and the mix is per row** — the overflowing
+#    positions carry the model's line, every other position carries the source's bytes and its own
+#    `P<n>.panel.<i>` label, and no row is ever moved.
+#
+# The budget under test is 40 characters (`auto_style`), small enough that an ordinary sentence
+# overflows it and a short one does not — which is the only distinction this mode turns on.
+
+
+def auto_style(**overrides: Any) -> MetaStyle:
+    """A deck style declaring a 40-character slide budget — the ceiling these tests measure against.
+
+    `deck_style`'s 300 is realistic for the registry and useless here: a panel long enough to beat
+    it is a wall of text nobody would read in a test, and the interesting cases are one short panel
+    beside one long one. 40 is the same rule at a readable scale, and `_slot_budgets` reduces it
+    exactly as it reduces 300 (`min(text_budgets.slide, max_onimage_chars.slide)`).
+    """
+    return make_style(max_onimage_chars={"headline": 90, "subline": 60, "slide": 40}, **overrides)
+
+
+#: One panel comfortably inside the 40-character budget, and one comfortably outside it. Named
+#: rather than inlined because half these tests assert on the exact bytes surviving a splice.
+SHORT = "Short one."
+LONG = "A panel that runs well past the forty character budget this style declares."
+
+
+async def auto(entries: Any, call: StubCall, *, log: Any = None, **over: Any) -> Any:
+    """`write_copy` in auto mode — the one line every test in this section shares."""
+    return await copywrite.write_copy(entries if isinstance(entries, list) else [entries],
+                                      call=call, log=log, carousel_copy_mode="auto", **over)
+
+
+def test_rows_over_budget_is_a_pure_measurement_and_nothing_else() -> None:
+    """The primitive FR-353 turns on, pinned on its own because two callers must never disagree.
+
+    `_compress_wanted` asks it "is there anything to compress at all" and `_auto` asks it "which
+    positions"; if those two answers ever came apart, a deck would pay for a call whose answer it
+    then refused to splice, or splice one it never asked for. It stays a pure function of a list
+    and a number — SESSION N calls it on a TRANSLATED deck, where the strings are not
+    `offer.panels` at all.
+    """
+    assert copywrite._rows_over_budget([], 40) == []
+    assert copywrite._rows_over_budget(["", "", ""], 40) == [], "an empty row is never over"
+    assert copywrite._rows_over_budget(["x" * 40], 40) == [], "AT the budget is not OVER it"
+    assert copywrite._rows_over_budget(["x" * 41], 40) == [1], "one character over is over"
+    assert copywrite._rows_over_budget([SHORT, LONG, SHORT, LONG, SHORT], 40) == [2, 4]
+    assert copywrite._rows_over_budget([LONG], 0) == [], (
+        "no budget means no ceiling: reading a missing slot as a ceiling of zero would send a "
+        "whole deck to the compress call on the strength of a slot that does not exist")
+
+
+def test_admitted_texts_blanks_every_dropped_position_and_says_nothing_about_it() -> None:
+    """The input `_rows_over_budget` measures: the deck by position, with FR-304's own verdict
+    applied and NOTHING logged.
+
+    Two things it must get right. A panel that will render wordless — empty, carrying a social
+    mark, past the sanity ceiling — measures as `""` and can never be counted as over budget, so
+    the compress call is never asked about a slide that ships blank. And the pass is silent:
+    `_mapped_deck` warns about those same three drops once per creative when it runs, and it runs
+    on the auto path too, so a measuring pass that warned as well would double every one of them.
+    """
+    log = Recorder()
+    runaway = "W" * (copywrite.PANEL_SANITY_CHARS + 1)
+    trend = compress_deck(LONG, "", "Follow @growthdaily for more", runaway)
+    plan_entry = deck_entry(slides=4)
+    offer = _offer(plan_entry, trend, auto_style(), log=log)
+
+    admitted = copywrite._admitted_texts(plan_entry, offer)
+
+    assert admitted == [LONG, "", "", ""], "the three drop reasons all blank their position"
+    assert copywrite._rows_over_budget(admitted, 40) == [1], \
+        "the runaway past the sanity ceiling is a DROPPED panel, not the longest one"
+    assert log.warnings == [], "measuring warns about nothing; `_mapped_deck` owns those three"
+
+
+async def test_an_auto_deck_with_nothing_over_budget_is_a_verbatim_run_byte_for_byte() -> None:
+    """FR-353's acceptance criterion, asserted as equality against the verbatim run itself.
+
+    Every panel of this deck already fits its style's budget, so there is nothing to compress and
+    auto must cost nothing and change nothing: the SELECTION schema on the wire, the copywriter
+    template in the prompt, no compress anything, and a `CopySet` and a `CopyProvenance` equal to
+    what the same inputs produce with no mode passed at all — `copy_mode: verbatim` included,
+    because that is what this creative actually shipped.
+
+    Comparing whole objects rather than a field at a time is the point. A future edit that added a
+    tag, dropped a ref, or wrote `compressed: False` rows through some new path would pass a
+    field-by-field test and fail this one.
+    """
+    trend = compress_deck(SHORT, "Short two.", "Short three.")
+    live = StubCall({"d1": selection(headline_ref="", caption_ref="P1.caption")})
+    control = StubCall({"d1": selection(headline_ref="", caption_ref="P1.caption")})
+    scene: dict[str, Any] = dict(trends={"t1": trend}, styles={STYLE_KEY: auto_style()})
+
+    automatic = await auto(deck_entry(slides=3), live, **context(**scene))
+    verbatim = await copywrite.write_copy([deck_entry(slides=3)], call=control,
+                                          **context(**scene))
+
+    assert [schema["name"] for schema in live.schemas] == ["copy_selection"], \
+        "no compress call: the partition was empty, so there was nothing to pay a model for"
+    assert "You compress words a deck already has." not in live.prompts[0]
+    assert "compress post P1's panels" not in live.prompts[0]
+    assert automatic.copy["d1"] == verbatim.copy["d1"]
+    assert automatic.provenance["d1"] == verbatim.provenance["d1"]
+    assert automatic.provenance["d1"].copy_mode == "verbatim", "what it shipped, not what it ran"
+    assert automatic.tags == verbatim.tags == {}
+
+
+async def test_only_the_over_budget_positions_are_asked_for_and_only_they_are_spliced() -> None:
+    """The mode's whole shape in one deck: five slides, two of them too long.
+
+    Three surfaces have to agree, and this asserts all three from one run. The PROMPT lists panels
+    2 and 4 alone, numbered by source position and each with its budget. The SIBLING line says
+    which positions those are, that everything else ships verbatim, and that unprinted positions
+    take `""`. And the RESULT is mixed per row: 2 and 4 carry the model's lines with no ref label
+    and `compressed: True`, while 1, 3 and 5 carry the source's own bytes under their own
+    `P1.panel.<i>` labels — every row in its own position, as FR-304 has always required.
+    """
+    trend = compress_deck(SHORT, LONG, "Short three.", LONG, "Short five.")
+    call = StubCall({"d1": compressed(slide_texts=["", "short two", "", "short four", ""])})
+
+    result = await auto(deck_entry(slides=5), call,
+                        **context(trends={"t1": trend}, styles={STYLE_KEY: auto_style()}))
+
+    prompt = call.prompts[0]
+    assert call.schemas[0]["name"] == "copy_compressed"
+    assert "\n2. (at most 40 characters) " + LONG in prompt
+    assert "\n4. (at most 40 characters) " + LONG in prompt
+    for skipped in ("\n1. (at most", "\n3. (at most", "\n5. (at most"):
+        assert skipped not in prompt, "a panel that already fits is not paid for a second time"
+    line = next(l for l in prompt.splitlines() if l.startswith("- d1"))
+    assert "compress post P1's panels 2, 4 (the ones over 40 characters) to 40 characters" in line
+    assert "every other panel of this deck ships verbatim and is not printed" in line
+    assert 'answer "" for every position not printed' in line
+    assert "language: the panels' own, mirrored exactly, never translated" in line
+
+    copy = result.copy["d1"]
+    rows = result.provenance["d1"].panel_map
+    assert copy.slide_texts == [SHORT, "short two", "Short three.", "short four", "Short five."]
+    assert [row["source_position"] for row in rows] == [1, 2, 3, 4, 5], "nothing moved"
+    assert [row["compressed"] for row in rows] == [False, True, False, True, False]
+    for position in (2, 4):
+        row = rows[position - 1]
+        assert row["ref_label"] == "", "FR-302 as amended: a compressed slide quotes no label"
+        assert row["source_text"] == copy.slide_texts[position - 1]
+        assert row["source_text_original"] == LONG, "the panel it was authored from, kept whole"
+    for position in (1, 3, 5):
+        row = rows[position - 1]
+        assert row["ref_label"] == f"P1.panel.{position}"
+        assert row["source_text"] == row["source_text_original"] == copy.slide_texts[position - 1]
+    assert result.provenance["d1"].refs == {"slide_1": "P1.panel.1", "slide_3": "P1.panel.3",
+                                            "slide_5": "P1.panel.5"}
+    assert result.provenance["d1"].copy_mode == "auto"
+    assert result.tags.get("d1", ()) == (), "nothing was lost, so nothing is tagged"
+
+
+async def test_an_over_budget_row_answered_empty_keeps_its_verbatim_bytes() -> None:
+    """Long beats wordless (FR-353), and it is the one place auto deliberately diverges from
+    `_compressed_deck`.
+
+    A compress-mode deck that gets nothing back for an admitted panel ships that slide blank — it
+    has no verbatim row to fall back to. An auto deck does: the panel is over a DESIGN budget, not
+    over `PANEL_SANITY_CHARS`, so it is a real slide with real words, and rendering it long is
+    strictly better than rendering it empty. The row stays a quote — its label, its bytes,
+    `compressed: False` — and the creative is not tagged, because nothing was lost.
+    """
+    log = Recorder()
+    trend = compress_deck(SHORT, LONG)
+    call = StubCall({"d1": compressed(slide_texts=["", ""])})
+
+    result = await auto(deck_entry(slides=2), call, log=log,
+                        **context(trends={"t1": trend}, styles={STYLE_KEY: auto_style()}))
+
+    rows = result.provenance["d1"].panel_map
+    assert result.copy["d1"].slide_texts == [SHORT, LONG]
+    assert rows[1]["compressed"] is False and rows[1]["ref_label"] == "P1.panel.2"
+    assert rows[1]["source_text"] == LONG
+    assert result.provenance["d1"].refs["slide_2"] == "P1.panel.2"
+    kept = log.warned("auto_row_kept_verbatim")
+    assert len(kept) == 1 and "slide 2" in kept[0]
+    assert "came back empty from the compress call and ship verbatim" in kept[0]
+    assert "NOT tagged" in kept[0], "the operator is told this cost the deck nothing"
+    assert result.tags.get("d1", ()) == ()
+    assert log.warned("compress_no_text") == [], "that is the OTHER mode's finding and its wording"
+
+
+async def test_a_line_written_for_a_position_that_already_fits_is_discarded_and_warned() -> None:
+    """The model was not asked about slide 1 — its panel fits and is already quoted verbatim there
+    — so a line for it is either an invention or an unrequested rewrite of a string we are entitled
+    to quote. Either way it is thrown away, the source bytes stand, and the operator is shown what
+    was discarded, exactly as `compress_invented_text` shows them on the other mode."""
+    log = Recorder()
+    trend = compress_deck(SHORT, LONG)
+    call = StubCall({"d1": compressed(
+        slide_texts=["I rewrote your short slide anyway", "short two"])})
+
+    result = await auto(deck_entry(slides=2), call, log=log,
+                        **context(trends={"t1": trend}, styles={STYLE_KEY: auto_style()}))
+
+    assert result.copy["d1"].slide_texts == [SHORT, "short two"]
+    rows = result.provenance["d1"].panel_map
+    assert rows[0]["compressed"] is False and rows[0]["ref_label"] == "P1.panel.1"
+    discarded = log.warned("auto_row_discarded")
+    assert len(discarded) == 1 and "slide 1" in discarded[0]
+    assert "I rewrote your short slide anyway" in discarded[0], "the operator sees what went"
+    assert "it was not asked about" in discarded[0]
+
+
+async def test_a_failed_auto_call_ships_the_whole_deck_verbatim_and_says_copy_degraded() -> None:
+    """Auto's whole-call failure path is `_mapped_fallback`, unchanged and shared with compress.
+
+    It is the cheapest possible failure: the rows that already fitted were shipping verbatim
+    anyway, and the ones that overflowed ship long — which is the pre-D62 outcome, not a loss of
+    the deck. `copy_degraded` still tags it because a failed LLM call is a loss FR-248 counts, and
+    the receipt says `verbatim` because that is what these slides are.
+    """
+    log = Recorder()
+    trend = compress_deck(SHORT, LONG)
+    call = StubCall({"d1": compressed(slide_texts=["", "short two"])}, fail_when=lambda ids: True)
+
+    result = await auto(deck_entry(slides=2), call, log=log,
+                        **context(trends={"t1": trend}, styles={STYLE_KEY: auto_style()}))
+
+    assert result.copy["d1"].slide_texts == [SHORT, LONG], "every row verbatim, none blank"
+    assert DegradationTag.COPY_DEGRADED in result.tags["d1"]
+    assert result.provenance["d1"].copy_mode == "verbatim", "what shipped, not what was asked for"
+    assert all(row["compressed"] is False for row in result.provenance["d1"].panel_map)
+    assert result.provenance["d1"].refs == {"slide_1": "P1.panel.1", "slide_2": "P1.panel.2",
+                                            "caption": "P1.caption"}, \
+        "`_mapped_fallback` picks the bound post's own caption too — that is the whole tier"
+    assert "copy call failed" in log.warned("copy_degraded")[0]
+
+
+async def test_a_spliced_line_faces_the_blocklist_and_the_backstop_trim_like_any_other() -> None:
+    """A spliced line is the MODEL's bytes, so `_compress_field` runs on it exactly as it does on
+    the compress path — same function, same order, same tags.
+
+    Two findings, one run each. A blocklisted competitor name is stripped fail-closed and the
+    creative is tagged `competitor_stripped`; a line that comes back over the budget the prompt
+    asked for is cut at the last word boundary and tagged `text_trimmed`. Neither is a rule being
+    applied late: the strip is §1.5 and the trim is a backstop behind a prompt that stated the
+    number.
+    """
+    log = Recorder()
+    trend = compress_deck(SHORT, LONG)
+    scene: dict[str, Any] = dict(trends={"t1": trend}, styles={STYLE_KEY: auto_style()})
+
+    stripped = await auto(deck_entry(slides=2),
+                          StubCall({"d1": compressed(slide_texts=["", "Nitro makes it quick"])}),
+                          log=log, competitors=["Nitro"], **context(**scene))
+    overshot = await auto(
+        deck_entry(slides=2),
+        StubCall({"d1": compressed(
+            slide_texts=["", "A compressed line that itself runs past the forty ceiling"])}),
+        log=log, **context(**scene))
+
+    assert "Nitro" not in stripped.copy["d1"].slide_texts[1]
+    assert DegradationTag.COMPETITOR_STRIPPED in stripped.tags["d1"]
+    assert "the strip runs on both sides" in log.warned("competitor_stripped")[0]
+
+    shipped = overshot.copy["d1"].slide_texts[1]
+    assert 0 < len(shipped) <= 40 and not shipped.endswith("fort"), "cut at a WORD boundary"
+    assert DegradationTag.TEXT_TRIMMED in overshot.tags["d1"]
+    assert "against a 40-character budget" in log.warned("text_trimmed")[0]
+
+
+async def test_the_verifier_still_audits_the_quoted_rows_of_an_auto_deck_for_real() -> None:
+    """Half 1 of `_verify` is neither run wholesale nor skipped wholesale on this path — it is
+    satisfied ROW BY ROW (FR-353).
+
+    A compressed slide is in the pool by construction and passes; a QUOTED slide is checked against
+    the post's own strings and would fail if anything between the panel map and the `CopySet` ever
+    rewrote it. The negative half is what proves the check still has teeth: hand the verifier the
+    same auto pool with one quoted slide replaced, and the audit names it.
+    """
+    log = Recorder()
+    trend = compress_deck(SHORT, LONG)
+    call = StubCall({"d1": compressed(slide_texts=["", "short two"])})
+    scene: dict[str, Any] = dict(trends={"t1": trend}, styles={STYLE_KEY: auto_style()})
+
+    clean = await auto(deck_entry(slides=2), call, log=log, **context(**scene))
+    assert DegradationTag.COPY_NOT_VERBATIM not in clean.tags.get("d1", ())
+
+    written = copywrite._Written(
+        copyset=CopySet(asset_id="d1", language="en",
+                        slide_texts=["A sentence this post never carried.", "short two"]),
+        source=copywrite.CopyProvenance(copy_mode="auto"),
+        quoted=(*clean.copy["d1"].slide_texts, clean.copy["d1"].caption))
+    run = copywrite._Run(call=None, engine=PromptEngine(),  # type: ignore[arg-type]
+                         budgets=TextBudgets(), styles={}, conventions={}, onimage_languages={},
+                         niche_descriptor="", brand_context="", competitors=(), strip_brands={},
+                         log=log)
+
+    assert copywrite._verify(written, deck_entry(slides=2), run) == [
+        DegradationTag.COPY_NOT_VERBATIM]
+    assert "slide_1: is not a byte-substring" in log.warned("copy_not_verbatim")[0]
+
+
+async def test_compress_mode_still_lists_every_admitted_panel_and_writes_the_pre_d62_line() -> None:
+    """The regression guard for D54's own path: `only=None` is what compress mode always sends.
+
+    D62 added a parameter to two functions that compress mode calls on every run, so the claim
+    worth pinning is that the parameter's absent value reproduces the old behaviour exactly — the
+    block lists every admitted position, and the sibling line carries the pre-D62 compress clause
+    with none of auto's wording anywhere near it.
+    """
+    trend = compress_deck(SHORT, LONG, "Short three.")
+    call = StubCall({"d1": compressed(slide_texts=["a", "b", "c"])})
+    plan_entry = deck_entry(slides=3)
+
+    await compress(plan_entry, call,
+                   **context(trends={"t1": trend}, styles={STYLE_KEY: auto_style()}))
+
+    prompt = call.prompts[0]
+    for position, text in ((1, SHORT), (2, LONG), (3, "Short three.")):
+        assert f"\n{position}. (at most 40 characters) {text}" in prompt
+    line = next(l for l in prompt.splitlines() if l.startswith("- d1"))
+    assert "compress post P1's panels to 40 characters per slide" in line
+    assert "the ones over" not in line and "ships verbatim" not in line
+    assert "not printed" not in line
+
+    offers = {plan_entry.asset_id: _offer(plan_entry, trend, auto_style())}
+    assert copywrite._compress_block([plan_entry], offers) == copywrite._compress_block(
+        [plan_entry], offers, only=None), "the default and the explicit `None` are one path"

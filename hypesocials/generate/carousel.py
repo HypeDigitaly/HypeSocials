@@ -33,6 +33,17 @@ Invariants:
   `per_format_guidance` instead: slide 1 renders under its `carousel_cover` prose and slides 2–N
   under `carousel_slide`, appended to `{{render_prompt}}` — the one block a deck is ALLOWED to
   vary, because the anchor is a cover and the rest are pages.
+- **The cover may be bought more than once, and exactly one of them is committed** (FR-351,
+  v2.6.0/D62). At `run.cover_candidates: 2..3` slide 1 is submitted that many times CONCURRENTLY
+  with a byte-identical prompt — the candidates differ only by the provider's sampling, because a
+  perturbed prompt would make them incomparable — and one metered `analysis` call ranks the landed
+  ones against the style contract the deck was ordered under. The winner becomes `slide_01` and
+  `anchor_url`; every landed candidate's bytes are kept under `covers/` and named in
+  `meta.yaml.cover_pick` so the operator can see what was turned down. It is fail-open end to end:
+  no metered call means the extras are never ordered at all (renders nobody can judge are waste), a
+  failed or unusable pick commits candidate 1 and tags `cover_pick_degraded`, and a candidate that
+  never landed is a WARNING rather than a missing slide — D51 is about a slide that can never come,
+  and slide 1 came. `cover_candidates: 1` is the pre-D62 path byte for byte.
 - **A dead anchor buys ONE more anchor before the deck is unchained** (FR-95, v2.2.0). An
   unchained deck is the defect the anchor exists to prevent, and one extra cover render against a
   deck of five to nine is the cheapest repair there is; the Confirm gate prices it (the anchor
@@ -111,12 +122,18 @@ from __future__ import annotations
 
 import asyncio
 import re
-from collections.abc import Sequence
+from collections.abc import Hashable, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from hypesocials import gauntlet, render
+# FR-351 (v2.6.0/D62): the cover best-of-N judge. Imported as a MODULE, never as `pick`, for two
+# reasons — the call site then reads `cover_pick.pick(...)`, which says which question is being
+# asked, and the seam stays patchable in one place. Mind the near-collision with `_Deck.cover_pick`
+# below: that attribute is this deck's RECEIPT (the dict that reaches `meta.yaml`), while the bare
+# name is always the module. They never appear in the same expression.
+from hypesocials import cover_pick
 from hypesocials.models import (
     AssetRecord, CopySet, DegradationTag, MetaStyle, PlanEntry, PlanEntryStatus, RenderFailCause,
     RenderOutcome, RenderOutcomeKind, RenderParams, RenderPriority, RenderRefs, SourcePost,
@@ -141,6 +158,12 @@ from hypesocials.sources.logo_crops import crop_marks
 # name while this module collapsed the PEELED one is how deck 06 lost a patch it had already paid
 # to upload. One definition, in the domain the strings come from.
 from hypesocials.sources.mark_names import collapse, mark_name
+# FR-351: the cover candidates' own bytes, at native resolution. The SAME loader the gauntlet's
+# critics use (`vision_check.load_images`) — one frame loader in the product, so "a frame is never
+# downscaled" and "an unreadable input is DROPPED, never shifted" hold for the cover pick without a
+# second implementation of either. Its `positions` return is what maps a fetched blob back onto the
+# candidate id it was submitted under when one of the downloads fails.
+from hypesocials.vision_check import load_images
 from hypesocials.generate.refs import (
     Reference, attach, branding_block, role_lines, style_of, upload_local, wordmark,
 )
@@ -180,6 +203,15 @@ _NEIGHBOUR_ROLE = (
     "exactly, so this slide sits inside the deck rather than beside it. Take NOTHING else from it: "
     "not its words, not its subject, not its imagery. The text for THIS slide is the one given "
     "below and no other.")
+
+#: FR-351: the sub-folder every fanned-out cover candidate is kept in, winner included. A folder
+#: rather than a name prefix so the deck's own `slide_*` glob — the one the gallery and the
+#: packager both walk — cannot pick a rejected cover up and show it as a delivered slide.
+COVERS_DIR = "covers"
+#: FR-351's file stem inside `COVERS_DIR`, formatted with the candidate's 1-based submission id.
+#: The id is preserved through a failure (a deck whose candidate 2 died keeps `1` and `3`), so a
+#: file name, a `cover_candidate_lost` log line and `meta.yaml`'s `chosen` all name the same render.
+COVER_CANDIDATE_STEM = "cover_candidate"
 
 ReserveKind = Literal["projected", "precommitted", "discretionary"]  # FR-106 a/b/c
 
@@ -310,6 +342,13 @@ class _Deck:
     patches: dict[str, str] = field(default_factory=dict)
     anchored: bool = False
     anchor_url: str = ""
+    #: FR-351 (v2.6.0/D62) — the cover best-of-N receipt that becomes `meta.yaml.cover_pick`:
+    #: `{"candidates": [<asset-relative paths under covers/>, …], "chosen": <1-based candidate id>,
+    #: "reason": <the pick's short prose>, "degraded": <bool>}`. `None` on every deck that never
+    #: fanned out — `run.cover_candidates: 1`, an unchained deck, a run with no metered call to
+    #: judge with — and on a fan-out where not one candidate landed, because there is then no
+    #: choice to report. A PLAIN DICT for the same reason `AssetRecord.cover_pick` is one.
+    cover_pick: dict[str, Any] | None = None
     outcomes: list[RenderOutcome] = field(default_factory=list)  # EVERY submission, failures too
     paths: dict[int, Path] = field(default_factory=dict)
     #: FR-95/FR-323 (v2.2.0): slide -> the Kie URL of its delivered render, kept for as long as the
@@ -324,11 +363,15 @@ class _Deck:
     #: an honest claim in `vision_check_result` (a deck that passed WITHOUT a re-render passed
     #: outright) and what the meta's rounds rows are cross-read against.
     rerendered: set[int] = field(default_factory=set)
-    #: FR-317's SEPARATE one-shot ledger: slides whose job has already been resubmitted once. Kept
-    #: apart from the gauntlet's re-renders on purpose — a gauntlet re-render is a FRESH submission
-    #: with its own ledger rows and is never itself resubmitted (spec §7), while a slide whose job
-    #: timed out is entitled to exactly one identical retry whatever the gate later says about it.
-    resubmitted: set[int] = field(default_factory=set)
+    #: FR-317's SEPARATE one-shot ledger: the JOBS that have already been resubmitted once. A key
+    #: is a slide number, or `(1, candidate_id)` for a cover candidate — each candidate is its own
+    #: FR-317 ledger (FR-351), because three covers submitted concurrently are three jobs and a
+    #: single shared key would hand the one retry to whichever of them happened to time out first,
+    #: which is a scheduling accident rather than a policy. Kept apart from the gauntlet's
+    #: re-renders on purpose — a gauntlet re-render is a FRESH submission with its own ledger rows
+    #: and is never itself resubmitted (spec §7), while a slide whose job timed out is entitled to
+    #: exactly one identical retry whatever the gate later says about it.
+    resubmitted: set[Hashable] = field(default_factory=set)
     #: D49: this deck's whole gauntlet — the verdict, the rounds, the money. `None` while the gate
     #: has not run (disabled, no metered call, nothing delivered, an unsalvageable deck).
     report: gauntlet.GauntletReport | None = None
@@ -405,7 +448,7 @@ class _Deck:
         self.anchored = bool(self.env.config.run.carousel_anchor)
         if self.anchored:
             losses = len(self.reasons)
-            await self._slide(1, anchor=False, kind="projected", priority=RenderPriority.WAVE1)
+            await self._anchor()
             if not self.anchor_url:
                 await self._reanchor(losses)
             if self.anchor_url:
@@ -598,11 +641,300 @@ class _Deck:
             asset_id=self.entry.asset_id, cause=self.doomed, not_ordered=skipped,
             delivered=sorted(self.delivered))
 
+    # ------------------------------------------------------- FR-351: the cover pick (v2.6.0/D62)
+
+    async def _anchor(self) -> None:
+        """Buy the deck's cover: ONE slide-1 render, or `cover_candidates` of them and choose.
+
+        FR-351 (D62). `run.cover_candidates: 1` is the pre-D62 path byte for byte — a single
+        `_slide(1, …)`, no fan-out, no pick call, `self.cover_pick` left `None` — because a cover
+        nobody chose between has no choice to write down.
+
+        Above 1 the SAME request is submitted that many times CONCURRENTLY. The prompt is a pure
+        function of this deck's own inputs, so every candidate is the identical order and the only
+        thing that varies is the provider's sampling; perturbing the prompt per candidate would
+        make them incomparable, because the judge would then be choosing between two briefs rather
+        than between two readings of one. Concurrency matters as much as sameness: these are
+        wave-1 jobs and the whole deck waits behind them, so three covers in sequence would put
+        two render round-trips on the run's critical path for nothing.
+
+        Each candidate rides `_call`, so FR-97's reference-free moderation retry and FR-317's one
+        resubmit apply PER CANDIDATE, and every submission joins `self.outcomes` for the billing
+        tally exactly as a lone anchor's does (FR-29/FR-203). Only ONE of them becomes `slide_01`
+        and `anchor_url`; the rest are kept as `covers/` files so the operator can see what was
+        turned down, and none of them is ever a missing slide.
+
+        The whole fan-out is invisible to everything downstream: `_reanchor` still orders ONE
+        replacement (FR-95 is about a cover that never came, not about a cover that lost), and
+        `_anchor_gate` still judges whatever `slide_01` turned out to be.
+        """
+        losses = len(self.reasons)
+        wanted = self._cover_wanted()
+        if wanted <= 1:
+            await self._slide(1, anchor=False, kind="projected", priority=RenderPriority.WAVE1)
+            return
+        outcomes = await asyncio.gather(*(
+            self._render(1, anchor=False, kind="projected", priority=RenderPriority.WAVE1,
+                         ledger=(1, candidate))
+            for candidate in range(1, wanted + 1)))
+        await self._choose_cover(list(outcomes), losses)
+
+    def _cover_wanted(self) -> int:
+        """How many slide-1 renders to order — and the one case where the answer is trimmed to 1.
+
+        `run.cover_candidates` is bounded 1–3 at config load (`config._BOUNDS`), so the only
+        judgement left here is whether there is anything to judge WITH. A run whose `Env` carries
+        no metered call — the gauntlet off and the pick seam unwired, a preview, a unit test —
+        would buy two or three covers, be unable to ask which of them is best, and commit the
+        first: the deck a `cover_candidates: 1` run makes, for three times the render spend. Renders
+        nobody can judge are waste, so the extras are never ordered and the operator is told once,
+        on this deck, rather than left to find the money in the ledger afterwards.
+        """
+        wanted = max(1, int(getattr(self.env.config.run, "cover_candidates", 1) or 1))
+        if wanted > 1 and self.env.llm_call is None:
+            self.env.log.warn(
+                "cover_candidates_unjudged",
+                f"{self.entry.asset_id}: {wanted} covers were ordered but no metered call is "
+                "wired to choose between them; one cover is rendered (FR-351)",
+                asset_id=self.entry.asset_id, cover_candidates=wanted)
+            return 1
+        return wanted
+
+    async def _choose_cover(self, outcomes: list[RenderOutcome | None], losses: int) -> None:
+        """Commit ONE fanned-out cover as slide 1 and file the receipt for every candidate.
+
+        Three shapes, and the difference between them is which question is still open:
+
+        * **nothing landed** — the deck has no cover, exactly as a lone failed anchor leaves it.
+          ONE of the outcomes goes through `_store` so the D51 defect bookkeeping, the `doomed`
+          latch and FR-95's `_reanchor` all run precisely as they did before this method existed.
+          One loss line, not `wanted` of them: three candidates dying of one provider fault is one
+          setback with three receipts, and three identical lines in `missing_slide_numbers`'
+          explanation would read as three separate slides.
+        * **one landed** — there is nothing to choose. `cover_pick.pick` says so itself on a
+          single candidate (a non-degraded verdict with a plain reason), so this path is not
+          special-cased here: one call site, one vocabulary, no second opinion about what "no
+          choice" means.
+        * **two or more landed** — the metered pick runs, and whatever it answers the deck gets a
+          cover. A degraded verdict commits candidate 1 and wears `cover_pick_degraded`; it never
+          costs the deck a slide, because the pick is a judgement about renders that already
+          exist (§0.14c's fail-open shape, borrowed whole from the style matcher).
+
+        Candidates that FAILED are logged as `cover_candidate_lost` and are deliberately kept OUT
+        of `self.reasons` and out of D51's doom: the slide they were competing for arrived. D51 is
+        about a slide that can never come, and this one came.
+        """
+        env = self.env
+        landed = [(number, outcome) for number, outcome in enumerate(outcomes, start=1)
+                  if outcome is not None and outcome.kind is RenderOutcomeKind.SUCCESS
+                  and outcome.result_urls]
+        env.log.event(
+            "cover_candidates",
+            f"{self.entry.asset_id}: {len(outcomes)} cover candidate(s) submitted for slide 1, "
+            f"{len(landed)} landed (FR-351)",
+            asset_id=self.entry.asset_id, submitted=len(outcomes), landed=len(landed),
+            candidates=[number for number, _ in landed])
+        # The fan-out's own notes are dropped and re-stated below at the right cardinality: every
+        # candidate that was declined, refused or 402'd has already appended a line through
+        # `_submit`, and `wanted` copies of one sentence is not a ledger of missing slides.
+        notes = self.reasons[losses:]
+        del self.reasons[losses:]
+        if not landed:
+            first = next((outcome for outcome in outcomes if outcome is not None), None)
+            if first is not None:
+                await self._store(1, first, lost=True)  # THE loss line, the defect, the doom
+            elif notes:
+                self.reasons.append(notes[0])  # nothing was ever ordered: one refusal, stated once
+            return
+        self._note_cover_losers(outcomes, landed)
+        fetched = await self._cover_bytes(landed)
+        stored = self._store_candidates(fetched)
+        verdict = await self._pick_cover(fetched, landed)
+        winner = next((outcome for number, outcome, _ in fetched if number == verdict.chosen),
+                      landed[0][1])
+        await self._store(1, winner, lost=True)
+        self.cover_pick = {"candidates": [stored[number] for number in sorted(stored)],
+                           "chosen": verdict.chosen, "reason": verdict.reason,
+                           "degraded": verdict.degraded}
+        if verdict.degraded:
+            self.folder.mark(DegradationTag.COVER_PICK_DEGRADED)
+            env.log.warn(
+                "cover_pick_degraded",
+                f"{self.entry.asset_id}: the cover pick could not be made ({verdict.reason}); "
+                f"candidate {verdict.chosen} anchors the deck by default and every candidate is "
+                f"kept under {COVERS_DIR}/ (FR-351)",
+                asset_id=self.entry.asset_id, chosen=verdict.chosen, landed=len(landed),
+                reason=verdict.reason)
+        else:
+            env.log.event(
+                "cover_pick",
+                f"{self.entry.asset_id}: cover {verdict.chosen} of {len(landed)} anchors the deck "
+                f"— {verdict.reason}",
+                asset_id=self.entry.asset_id, chosen=verdict.chosen, landed=len(landed),
+                reason=verdict.reason)
+
+    def _note_cover_losers(self, outcomes: list[RenderOutcome | None],
+                           landed: list[tuple[int, RenderOutcome]]) -> None:
+        """Say which candidates never came back — as WARNINGS, never as missing slides (FR-351).
+
+        A candidate that failed cost money and produced nothing, which is worth a line; it did not
+        cost the deck anything, which is why the line is not in `self.reasons`, does not carry
+        `defect=True` and cannot reach `doomed`. A landed candidate that simply was not chosen is
+        not mentioned here at all — losing a comparison is not a failure, and its bytes are on
+        disk under `covers/` for the operator to look at.
+        """
+        won = {number for number, _ in landed}
+        for number, outcome in enumerate(outcomes, start=1):
+            if number in won:
+                continue
+            cause = ("nothing was ordered — the cap, the runway or the credit balance refused it"
+                     if outcome is None else
+                     (outcome.fail_cause.value if outcome.fail_cause else outcome.kind.value))
+            self.env.log.warn(
+                "cover_candidate_lost",
+                f"{self.entry.asset_id}: cover candidate {number} of {len(outcomes)} did not land "
+                f"({cause}); {len(landed)} did, so slide 1 is not missing and the deck is not "
+                "unsalvageable (FR-351)",
+                asset_id=self.entry.asset_id, candidate=number, cause=cause, landed=len(landed),
+                detail=None if outcome is None else outcome.fail_message)
+
+    async def _cover_bytes(self, landed: list[tuple[int, RenderOutcome]]
+                           ) -> list[tuple[int, RenderOutcome, bytes]]:
+        """Fetch each landed candidate's NATIVE bytes, still tied to the id it was submitted under.
+
+        `load_images` returns `(blobs, positions)` where a position is the 1-based index in what it
+        was HANDED, so the candidate id is recovered through `landed` rather than by counting the
+        blobs: a cover whose download failed is dropped by that loader, and a list read positionally
+        after a drop would silently re-label every candidate behind it — the judge would then be
+        told candidate 3 is candidate 2, and the deck would anchor to the wrong render.
+        """
+        blobs, positions = await load_images(
+            [outcome.result_urls[0] for _, outcome in landed], self.env.log)
+        return [(landed[position - 1][0], landed[position - 1][1], blob)
+                for position, blob in zip(positions, blobs)]
+
+    def _store_candidates(self, fetched: list[tuple[int, RenderOutcome, bytes]]) -> dict[int, str]:
+        """Keep EVERY landed cover on disk under `covers/`, winner included. `{id: path}`.
+
+        The winner is written twice on purpose — here as `covers/cover_candidate_2.jpg` and again
+        as `slide_01.jpg` by `_store` — because a strip missing its chosen tile is a strip the
+        operator has to reconstruct against the deck beside it. Uniformity is the point of the
+        strip: three thumbnails, one of them outlined, and the comparison reads at a glance.
+
+        Fail-open in both directions (FR-351d's shape, and FR-315's before it): a candidate whose
+        bytes will not write is left out of `candidates` and warned about, and nothing here can
+        cost the deck a slide — the cover is committed from its provider URL by `_store`, not from
+        these files. `PackagingError` covers the packager's own two reasons (`disk_full`,
+        `write_failed`); `OSError` covers anything that escapes it.
+
+        A full disk is the one failure that outlives this creative (10 §10), so it is both read
+        BEFORE the loop — nothing is written when the run has already found the disk full — and
+        LATCHED when it is found here. The alternative is a deck writing three rejected covers on
+        a volume that has no room for the slide it is about to keep.
+        """
+        stored: dict[int, str] = {}
+        if self.env.disk_full:
+            return stored
+        for number, outcome, blob in fetched:
+            # `render_name` is the packager's OWN public answer to "what extension do bytes from
+            # this URL get", fallback included. Asking it keeps the single extension table in the
+            # module that owns it instead of re-deriving a URL suffix — and re-deriving is how a
+            # `.png` result would have landed in a file called `.jpg`.
+            suffix = Path(self.folder.render_name(outcome.result_urls[0])).suffix or ".jpg"
+            name = f"{COVERS_DIR}/{COVER_CANDIDATE_STEM}_{number}{suffix}"
+            try:
+                self.folder.store_bytes(blob, name)
+            except (PackagingError, OSError) as exc:
+                if getattr(exc, "reason", "") == "disk_full":
+                    self.env.disk_full = True  # run-wide from here on (10 §10)
+                self.env.log.warn(
+                    "cover_candidate_unsaved",
+                    f"{self.entry.asset_id}: cover candidate {number} could not be written to "
+                    f"{name} ({type(exc).__name__}: {exc}); it is left out of the gallery strip "
+                    "and the deck is unaffected (FR-351)",
+                    asset_id=self.entry.asset_id, candidate=number, name=name)
+                continue
+            stored[number] = name
+        return stored
+
+    async def _pick_cover(self, fetched: list[tuple[int, RenderOutcome, bytes]],
+                          landed: list[tuple[int, RenderOutcome]]) -> cover_pick.Pick:
+        """Ask which cover anchors the deck. Always answers; never raises; never blocks (FR-351).
+
+        A judge needs pixels, so `fetched` — not `landed` — is what can be asked about. When every
+        download failed there is nothing to show anyone: the first landed cover anchors the deck,
+        and that counts as a DEGRADE only when two or more landed, because only then was there a
+        real question that went unasked.
+
+        `env.halted` and `credits_exhausted` are re-read HERE, between the fan-out and the commit,
+        for the same reason every submission re-reads them: the candidates may have spent the whole
+        render timeout inside the window where Ctrl+C or the deadline landed. A stopped run does
+        not buy one more metered call to rank pictures it is about to stop shipping — it commits
+        the first landed candidate, says why, and wears NO degradation tag, because nothing was
+        degraded: the operator stopped the run.
+
+        The answer's `chosen` is policed against the ids actually handed over. `cover_pick`
+        guarantees a valid id and a caller that trusted the guarantee would still be one provider
+        surprise away from `StopIteration` on the commit — so an id this deck does not recognise
+        falls back to the first landed candidate and is reported as a degrade, which is exactly
+        what an unusable answer is.
+        """
+        env = self.env
+        first = fetched[0][0] if fetched else landed[0][0]
+        if not fetched:
+            degraded = len(landed) > 1
+            cause = "no candidate's bytes could be fetched, so none could be shown to a judge"
+            env.log.warn(
+                "cover_pick_unfetched",
+                f"{self.entry.asset_id}: {cause}; candidate {first} anchors the deck (FR-351)",
+                asset_id=self.entry.asset_id, chosen=first, landed=len(landed))
+            return cover_pick.Pick(
+                chosen=first, degraded=degraded,
+                reason=f"{cover_pick.DEGRADED_MARKER}: {cause}" if degraded else cause)
+        if env.halted or env.credits_exhausted:
+            env.log.warn(
+                "cover_pick_skipped",
+                f"{self.entry.asset_id}: the run stopped ordering work, so the cover pick is not "
+                f"made; candidate {first} anchors the deck and every landed candidate is kept "
+                f"under {COVERS_DIR}/ (FR-351/FR-201)",
+                asset_id=self.entry.asset_id, chosen=first, candidates=len(fetched))
+            return cover_pick.Pick(chosen=first,
+                                   reason="the run stopped before the covers could be judged")
+        verdict = await cover_pick.pick(
+            [cover_pick.CoverCandidate(index=number, image=blob) for number, _, blob in fetched],
+            cover_pick.CoverBrief(
+                asset_id=self.entry.asset_id,
+                style_key=self.style.key if self.style is not None else "",
+                # The EXACT bytes every slide of this deck was rendered under (FR-189/M9): the
+                # judge holds the candidates against the contract they were ordered from, not
+                # against a paraphrase of it.
+                style_dna=self.dna,
+                expected_text=tuple(
+                    text for text in (self.texts[0] if self.texts else "", self.wordmark,
+                                      self._counter(1)) if text.strip()),
+                counter=self._counter(1)),
+            env.config, env.llm_call)
+        if verdict.chosen in {number for number, _, _ in fetched}:
+            return verdict
+        env.log.warn(
+            "cover_pick_out_of_range",
+            f"{self.entry.asset_id}: the cover pick named candidate {verdict.chosen}, which this "
+            f"deck never submitted; candidate {first} anchors it instead (FR-351)",
+            asset_id=self.entry.asset_id, answered=verdict.chosen, chosen=first)
+        return replace(verdict, chosen=first, degraded=True,
+                       reason=f"{cover_pick.DEGRADED_MARKER}: the pick named a candidate "
+                              f"({verdict.chosen}) this deck never submitted")
+
     async def _slide(
         self, number: int, *, anchor: bool, kind: ReserveKind, priority: RenderPriority,
         fix: str = "",
     ) -> bool:
         """Render one slide and put its bytes on disk. True when that slide was delivered.
+
+        Submit then commit, and the two halves are separate methods because the COVER can be
+        bought more than once (FR-351/D62): `_anchor` fans `_render` out `cover_candidates` times
+        and commits exactly one of the outcomes through `_store`. Every other slide is this
+        one-in-one-out pairing, unchanged — a submission whose bytes go straight to disk.
 
         `fix` is the gauntlet's CANNED remedy suffix (FR-323) when this is a fix-loop re-render, and
         `""` on a first pass. It changes the request and never the words: the TEXT block is
@@ -611,6 +943,39 @@ class _Deck:
         defect the gate exists to catch. Compress mode changes WHO shortened the panel and WHEN
         (the copy model, before any render was submitted, to the style's declared budget); it does
         not license this stage to shorten anything.
+        """
+        outcome = await self._render(number, anchor=anchor, kind=kind, priority=priority, fix=fix)
+        if outcome is None:
+            return False
+        # A gauntlet RE-RENDER can fail without losing anything: the slide it was improving is
+        # already on disk and already shipping. Its failures are therefore logged but kept out of
+        # `self.reasons`, which is the deck's ledger of slides that are MISSING — a "slide 3:
+        # declined by the spend cap" line beside `missing_slide_numbers: [5]` told the operator
+        # slide 3 was lost when slide 3 was delivered (FR-73).
+        return await self._store(number, outcome, lost=not fix)
+
+    async def _render(
+        self, number: int, *, anchor: bool, kind: ReserveKind, priority: RenderPriority,
+        fix: str = "", ledger: Hashable | None = None,
+    ) -> RenderOutcome | None:
+        """Order one slide and hand back the finished job — the SUBMIT half of `_slide`.
+
+        Nothing here touches disk, `self.delivered`, `self.urls` or `self.anchor_url`: this is the
+        stage that decides whether a render is bought and what it is asked for, and `_store` is
+        the stage that decides what becomes of what came back. Splitting them is what lets FR-351
+        buy two or three covers concurrently and commit one of them, without a second copy of the
+        halt/credits/doom guards, the reference assembly, the prompt cap or the route bookkeeping.
+
+        `None` means nothing came back to commit, and it is the same `None` `_slide` has always
+        turned into `False`: a halted run, an exhausted balance, an unsalvageable deck, a prompt
+        that would not assemble, or a submission the cap, the runway or the 402 refused. Every one
+        of those has already been NOTED by the time it returns, so the caller adds no explanation.
+
+        `ledger` names FR-317's one-shot bucket for THIS submission and defaults to the slide
+        number, which is every caller but one: a slide gets one automatic resubmit, and the FR-95
+        replacement anchor deliberately shares slide 1's bucket exactly as it always has. FR-351's
+        fan-out is the exception and passes `(1, candidate_id)`, because its candidates are
+        concurrent, independent jobs — see `_resubmit`.
         """
         env = self.env
         # A gauntlet RE-RENDER can fail without losing anything: the slide it was improving is
@@ -621,36 +986,38 @@ class _Deck:
         lost = not fix
         if env.halted:  # re-read before EVERY submission (FR-201/108)
             self.abandoned = self.abandoned or not self.outcomes
-            return self._note(f"slide {number}: interrupted before submission", lost=lost)
+            self._note(f"slide {number}: interrupted before submission", lost=lost)
+            return None
         if env.credits_exhausted:
-            return self._note(f"slide {number}: {_CREDITS}", lost=lost)
+            self._note(f"slide {number}: {_CREDITS}", lost=lost)
+            return None
         if self.doomed:  # D51: nothing more is ordered for a deck that can no longer be whole
-            return self._note(f"slide {number}: {_UNSALVAGEABLE}", lost=lost)
+            self._note(f"slide {number}: {_UNSALVAGEABLE}", lost=lost)
+            return None
         refs = await self._refs(number, anchor, rerender=bool(fix))
         prompt = self._prompt(number, anchor=anchor, refs=refs, fix=fix)
         if prompt is None:
             # A defect of OUR making, and a deterministic one: the same context will not fill the
             # same template on a second ask, so this slide is permanently lost (D51).
-            return self._note(f"slide {number}: prompt_assembly_failed — unresolved placeholder "
-                              "(FR-260)", error=True, lost=lost, defect=True)
+            self._note(f"slide {number}: prompt_assembly_failed — unresolved placeholder "
+                       "(FR-260)", error=True, lost=lost, defect=True)
+            return None
         urls = [ref.url for ref in refs]
         # FR-241 decides the route by exactly this test inside `render/profiles.py`, so recording
         # it here is an observation of the same fact rather than a second opinion about it.
         self.edit_route = self.edit_route or bool(urls)
         self.text_route = self.text_route or not urls
-        outcome = await self._call(number, prompt, urls, kind=kind,
-                                   priority=priority, lost=lost)
-        if outcome is None:
-            return False
-        return await self._store(number, outcome, lost=lost)
+        return await self._call(number, prompt, urls, kind=kind, priority=priority, lost=lost,
+                                ledger=ledger)
 
     async def _store(self, number: int, outcome: RenderOutcome, *, lost: bool) -> bool:
         """One finished job -> one slide file on disk. True when that slide is deliverable.
 
-        Shared by the first pass and by the gauntlet's fix loop, which is the whole reason it is a
-        method: both have to hold the result URL for a neighbour reference, both have to re-point
-        the anchor when slide 1 moves, and both have to answer a full disk the same way. Two copies
-        of that would be two decks that disagree about which slide 1 the body pages copy.
+        Shared by the first pass, by FR-351's chosen cover and by the gauntlet's fix loop, which is
+        the whole reason it is a method: each has to hold the result URL for a neighbour reference,
+        each has to re-point the anchor when slide 1 moves, and each has to answer a full disk the
+        same way. Two copies of that would be two decks that disagree about which slide 1 the body
+        pages copy.
         """
         env = self.env
         url = outcome.result_urls[0] if outcome.result_urls else ""
@@ -689,7 +1056,7 @@ class _Deck:
 
     async def _call(
         self, number: int, prompt: str, urls: list[str], *, kind: ReserveKind,
-        priority: RenderPriority, lost: bool = True,
+        priority: RenderPriority, lost: bool = True, ledger: Hashable | None = None,
     ) -> RenderOutcome | None:
         """The one door to `submit`: tally every outcome, apply FR-97 and FR-317, swallow the 402.
 
@@ -699,6 +1066,10 @@ class _Deck:
         ordinary provider failure is the same request again, unchanged, because nothing about it
         was wrong (D48). They never stack on one attempt: a moderation refusal is excluded from
         FR-317 by name, and whichever attempt is standing when the retries are done is returned.
+
+        `ledger` is passed straight through to `_resubmit` and names FR-317's one-shot bucket;
+        `None` means "this slide's own number", which is what every caller outside FR-351's
+        cover fan-out wants and what this method did before the parameter existed.
         """
         outcome = await self._submit(prompt, urls, kind=kind, priority=priority, lost=lost,
                                      label=f"carousel slide {number}/{len(self.texts)}"
@@ -715,11 +1086,12 @@ class _Deck:
             if retry is not None:
                 self.folder.mark(DegradationTag.REFS_DROPPED_MODERATION)
                 outcome, urls = retry, []
-        return await self._resubmit(number, prompt, urls, outcome, priority=priority, lost=lost)
+        return await self._resubmit(number, prompt, urls, outcome, priority=priority,
+                                    lost=lost, ledger=ledger)
 
     async def _resubmit(
         self, number: int, prompt: str, urls: list[str], outcome: RenderOutcome | None, *,
-        priority: RenderPriority, lost: bool,
+        priority: RenderPriority, lost: bool, ledger: Hashable | None = None,
     ) -> RenderOutcome | None:
         """FR-317's ONE automatic resubmit of a timed-out or non-moderation-failed slide job.
 
@@ -727,6 +1099,17 @@ class _Deck:
         one happened and produced anything at all, otherwise the failure it was given. A second
         failure is FINAL — the slide flows into the ordinary lost-slide path with the second job's
         own cause, and `self.resubmitted` guarantees there is never a third.
+
+        **One ledger per JOB, not per slide number** (FR-351, v2.6.0/D62). `ledger` defaults to
+        `number`, which is the pre-D62 bucket and keeps every existing caller byte-identical —
+        including FR-95's replacement anchor, which shares slide 1's bucket exactly as it always
+        has. The cover fan-out passes `(1, candidate_id)` instead, because its two or three
+        candidates are submitted CONCURRENTLY and are separate jobs: sharing one key would have
+        given the single retry to whichever candidate's timeout landed first and silently denied
+        it to the others, and which one won would be a scheduling accident rather than a policy.
+        The operator-facing strings are untouched — every line still says `slide 1`, because that
+        is the slide being bought — and the candidate id rides the structured fields instead, for
+        whoever is reading `events.jsonl`.
 
         Deliberately NOT applied to:
         * a moderation refusal — FR-97 owns that failure and answering it with the identical
@@ -746,29 +1129,35 @@ class _Deck:
         came back.
         """
         env = self.env
+        key: Hashable = number if ledger is None else ledger
         if self.doomed:  # D51: a sibling slide is already permanently lost — buy nothing more
             return outcome
         if (outcome is None or outcome.kind is RenderOutcomeKind.SUCCESS
                 or outcome.fail_cause is RenderFailCause.MODERATION
                 or outcome.fail_cause is RenderFailCause.NO_RUNWAY
-                or number in self.resubmitted):
+                or key in self.resubmitted):
             return outcome
         cause = outcome.fail_cause.value if outcome.fail_cause else outcome.kind.value
+        # WHICH of three concurrent covers this line is about, in the STRUCTURED fields only: the
+        # sentence keeps saying "slide 1" because slide 1 is the slide being bought, and a console
+        # line that started naming candidates would be describing an internal fan-out to an
+        # operator who asked for a deck.
+        whose = {"candidate": key[1]} if isinstance(key, tuple) else {}
         if env.halted or env.credits_exhausted:
             env.log.warn(
                 "image_job_resubmit_skipped",
                 f"{self.entry.asset_id} slide {number}: {cause} — the run stopped ordering work, "
                 "so FR-317's one resubmit is not taken and the slide is lost",
-                asset_id=self.entry.asset_id, slide=number, cause=cause)
+                asset_id=self.entry.asset_id, slide=number, cause=cause, **whose)
             return outcome
-        self.resubmitted.add(number)  # one-shot, before the await: no path may take it twice
+        self.resubmitted.add(key)  # one-shot, before the await: no path may take it twice
         env.log.warn(
             "image_job_resubmit",
             f"{self.entry.asset_id} slide {number}: {cause} "
             f"({outcome.fail_message or 'no usable result'}) — resubmitting the SAME job once "
             "(FR-317, attempt 2 of 2); a second failure is final",
             asset_id=self.entry.asset_id, slide=number, cause=cause, attempt=2,
-            task_id=outcome.task_id, detail=outcome.fail_message)
+            task_id=outcome.task_id, detail=outcome.fail_message, **whose)
         again = await self._submit(prompt, urls, kind="discretionary", priority=priority,
                                    lost=lost, label=f"resubmit · slide {number}")
         return again if again is not None else outcome
@@ -1334,6 +1723,10 @@ class _Deck:
             # badge, which accept rule believed it, and what slide 1's badge reads. Detected once
             # in `__post_init__`, so this only reports it.
             "counter": self._counter_meta(),
+            # FR-351 (v2.6.0, D62): the cover best-of-N receipt — which candidates were bought,
+            # which one anchors the deck and in whose words. `None` on every deck that never fanned
+            # out, which is the whole pre-D62 world and every `cover_candidates: 1` run after it.
+            "cover_pick": self.cover_pick,
             # FR-328 (spec §6): the gate's own receipt, on EVERY terminal path it touched — pass,
             # blocked, degraded, budget stop, deadline stop. `None` when the gate never ran.
             "gauntlet": contracts.report_meta(self.report),
@@ -1773,6 +2166,6 @@ class _Deck:
         return False
 
 
-__all__ = ["DECK_VIABILITY_LOSS", "GAUNTLET_CRAFT", "GAUNTLET_DEGRADED", "GUIDANCE_COVER",
-           "GUIDANCE_SLIDE", "PANELS_TRUNCATED", "ROLE_ANCHOR", "ROLE_SLIDE", "ReserveKind",
-           "Submit", "render_carousel"]
+__all__ = ["COVERS_DIR", "COVER_CANDIDATE_STEM", "DECK_VIABILITY_LOSS", "GAUNTLET_CRAFT",
+           "GAUNTLET_DEGRADED", "GUIDANCE_COVER", "GUIDANCE_SLIDE", "PANELS_TRUNCATED",
+           "ROLE_ANCHOR", "ROLE_SLIDE", "ReserveKind", "Submit", "render_carousel"]
