@@ -14,7 +14,8 @@ Stage order is BINDING (00-overview §1, v2.0.0) and any reorder is a PRD confli
 
     Config → plan expansion → pre-flight → cost estimate → **Confirm** → Collect (Virlo MCP,
     text-only topics) → topic filter (`_screen_topics`, FR-294) → Select + assign → honesty
-    restatement → style + branding rotation (FR-291) → Write (verbatim copy) → Create → Package.
+    restatement → style + branding rotation (FR-291, optionally overlaid by FR-334's matched
+    assignment) → Write (verbatim copy) → Create → Package.
 
 Collect, the filter and Select all run *after* the confirmation, which is exactly why FR-8's
 one-line restatement exists: topic supply can shrink a plan the operator already approved, and
@@ -51,7 +52,8 @@ from pathlib import Path
 from typing import Any
 
 from hypesocials import (
-    cli, copywrite, generate, menu, plan, preflight, render, sources, styles, topic_filter)
+    cli, copywrite, generate, menu, plan, preflight, render, sources, style_match, styles,
+    topic_filter)
 from hypesocials.budget import Budget, Estimate, SpendCategory, SpendSummary, estimate, format_usd
 from hypesocials.config import LOGS_DIR, Config, ConfigError, load_config
 from hypesocials.llm import CREDITS_EXHAUSTED_REASON, LLMClient, RoleSettings
@@ -97,6 +99,14 @@ DegradationMap = Mapping[str, Sequence[DegradationTag]]
 #: the 2026-08-11 live run shipped `['text_trimmed', 'incomplete']` on one deck, and `text_trimmed`
 #: is a character budget being honoured (FR-101), not a creative that lost what it was asked for.
 _DELIVERED_LOSS_TAGS = frozenset({DegradationTag.INCOMPLETE})
+
+#: FR-334's whole-call failure marker. `style_match.match()` never raises and never returns a short
+#: mapping, so "the matcher never spoke" reaches this module only as a prefix it writes into EVERY
+#: answer's `reason` — the same shape `topic_filter` uses for `filter_degraded`, and read here the
+#: same way (`_screen_topics`). Spelled off the enum rather than typed a second time: the tag
+#: `generate/__init__.py` attaches to the asset and the prefix printed on the console are ONE word,
+#: and a run whose console says `style_match_degraded` must be greppable by that word in meta.yaml.
+_STYLE_MATCH_DEGRADED = DegradationTag.STYLE_MATCH_DEGRADED.value
 
 #: FR-286: the closing line spells its own exit code, so an operator never has to look one up.
 _EXIT_LEGEND = {
@@ -432,7 +442,10 @@ async def _pipeline(session: _Session, overrides: Sequence[str]) -> int:
     live = [entry for entry in live if entry.status is PlanEntryStatus.PENDING]
 
     by_key = {topic.history_key: topic for topic in kept}
-    _assign_visuals(session, live, by_key, brief_only=brief_only)  # ASSIGN: FR-291 rotation
+    # ASSIGN: FR-291's rotation, plus FR-334's matched overlay when the config asks for it. Async
+    # since v2.4.0 for that overlay's ONE metered LLM call — post-Confirm spend (the gate is at
+    # `_confirm` above, before Collect), quoted at the gate as a `style_match_call` line (rule 7).
+    await _assign_visuals(session, live, by_key, brief_only=brief_only)
     # FR-155's forecast end: after assign, before any spend — the last moment Ctrl+C is free.
     _record_style_forecast(session, live, session.registry, dropped=len(assignment.dropped))
     if kept and not brief_only:  # FR-297b: WHICH posts, and who quotes them — after assignment
@@ -477,9 +490,9 @@ def _load_registry(session: _Session) -> Any:
     return registry
 
 
-def _assign_visuals(session: _Session, live: Sequence[PlanEntry],
-                    topics: Mapping[str, TrendItem], *, brief_only: bool) -> None:
-    """ASSIGN (FR-291): deterministic style + branding rotation, narrated as receipts.
+async def _assign_visuals(session: _Session, live: Sequence[PlanEntry],
+                          topics: Mapping[str, TrendItem], *, brief_only: bool) -> None:
+    """ASSIGN (FR-291 + FR-334): the deterministic rotation, then the optional matched overlay.
 
     `assign_styles` sees only the entries that follow the registry — an `override` brief
     suppresses the style channel entirely (M14; its `style_key` stays "" and meta.yaml records
@@ -490,6 +503,19 @@ def _assign_visuals(session: _Session, live: Sequence[PlanEntry],
     `brand_slot` house cards and the rotation predicate never runs, so the receipt below prints
     `plain` on every line and the ASSIGN header prints `0 branded` — the switch is visible in the
     same place the rotation always was, rather than in a separate announcement.
+
+    **The FR-291 rotation is computed FIRST and unconditionally** (v2.4.0/D56). Matched assignment
+    is an OVERLAY on that baseline, never a replacement for it: `_match_styles` overwrites the key
+    only where the matcher answered with an accepted pick, so a `low` fit, an unusable key, a
+    missing row or a dead call all leave a creative wearing the style the deterministic scan
+    already gave it. The mode can improve an assignment and can never lose one, which is why it is
+    fail-open and why `assignment: rotation` restores pre-D56 behaviour byte-exactly — in that mode
+    nothing below awaits anything, no LLM call is made, and every printed line is the one v2.3.0
+    printed.
+
+    This function became a coroutine for that one call. It is post-Confirm spend by construction
+    (`_confirm` runs before Collect, and `_pipeline` reaches ASSIGN long after it), so rule 7 holds
+    without a second gate here; `budget._style_match_lines` is what quoted it at the gate.
     """
     branding = session.config.branding
     styled = [entry for entry in live if entry.brief_influence != "override"]
@@ -503,11 +529,36 @@ def _assign_visuals(session: _Session, live: Sequence[PlanEntry],
                              run_id=session.run_id,
                              rotation=session.config.styles.rotation)
     styles.assign_branding(live, branding.brand_ratio, enabled=branding.enabled)
+    # FR-337: `style_origin` is stamped on EVERY live entry, before anything can overwrite it, so
+    # meta.yaml is never silently blank about how a creative got its look. `"rotation"` is the
+    # honest answer for three different populations and FR-73 gives the field no empty case:
+    # a whole run in `assignment: rotation`; a matched run's entries the matcher declined; and the
+    # override briefs, which are OUT of the matcher's scope by design (M14 suppressed their style
+    # channel entirely, so the only algorithm that ever touched them is the one that skipped them)
+    # and therefore keep this baseline value rather than acquiring a matched one they never saw.
+    for entry in live:
+        entry.style_origin = "rotation"
+    watch = Stopwatch()
+    # Four conditions, and each one is a way the overlay can have nothing to do rather than a
+    # failure: the operator did not ask for it; the plan is pure override briefs (nothing is
+    # styled); the registry never loaded (FR-295 refuses that run at pre-flight anyway); or there
+    # is no LLM client, which is a $0 preview tier and not a degradation. `_halt` is checked LAST
+    # and only when the call would otherwise go out, so an interrupted run orders no new spend
+    # (FR-108/FR-201) and an uninterrupted one pays nothing for the question.
+    matched_mode = (session.config.styles.assignment == "matched" and bool(styled)
+                    and session.registry is not None and session.llm is not None)
+    matches = (await _match_styles(session, styled, topics)
+               if matched_mode and not _halt(session, "style matching") else {})
+
     topic_count = len({entry.trend_key for entry in live if entry.trend_key})
     used = len({entry.style_key for entry in live if entry.style_key})
     branded = sum(1 for entry in live if entry.branded)
+    # `0.0` in rotation mode is not laziness and not a rounding: the FR-291 scan is arithmetic over
+    # a list in memory and a stage that spent no time is entitled to say so. Matched mode DID wait
+    # — on one model call — so it reports the clock it actually burned (FR-296).
     _stage(session, "ASSIGN", f"{len(live)} creative(s) <- {topic_count} topic(s), "
-                              f"{used} style(s), {branded} branded", elapsed_s=0.0)
+                              f"{used} style(s), {branded} branded",
+           elapsed_s=watch.elapsed_s if matched_mode else 0.0)
     for entry in sorted(live, key=lambda e: e.order):
         topic = topics.get(entry.trend_key or "")
         subject = topic.name if topic is not None else (entry.brief_name or "-")
@@ -515,12 +566,147 @@ def _assign_visuals(session: _Session, live: Sequence[PlanEntry],
                     f" {fit(subject, 24):<24} "
                     f"{fit(entry.style_key or 'brief_override', 19):<19} "
                     f"{'brand' if entry.branded else 'plain'}")
+        if provenance := _match_receipt(entry):  # FR-337's origin/fit/reason columns
+            session.say(provenance)
         session.log.event("visuals_assigned", f"{entry.asset_id}: {entry.style_key or 'override'}",
                           asset_id=entry.asset_id, style_key=entry.style_key,
-                          branded=entry.branded, order=entry.order)
+                          branded=entry.branded, order=entry.order,
+                          # FR-337: the four provenance fields ride the per-entry event too, so
+                          # "why does 0003 wear this style" is answerable from events.jsonl alone
+                          # without joining against the asset's meta.yaml.
+                          style_origin=entry.style_origin, style_fit=entry.style_fit,
+                          style_reason=entry.style_reason, style_wanted=entry.style_wanted)
+    placed = sum(1 for entry in styled if entry.style_origin == "matched")
+    if matched_mode:
+        session.say(f"          matched {placed} of {len(styled)} creative(s); "
+                    f"{len(styled) - placed} kept the rotation baseline")
+    if gap := _style_gap_block(live):
+        session.say(gap)
+    # The `filter_degraded` posture (FR-294), verbatim: ONE warning for a whole-call failure, said
+    # after the receipts rather than instead of them, and the run continues. Per-entry rejections
+    # are NOT this — they are ordinary matched-mode answers and are printed on their own lines.
+    cause = next((str(match.reason) for match in matches.values()
+                  if str(match.reason).startswith(_STYLE_MATCH_DEGRADED)), "")
+    if cause:
+        session.log.warn("style_match_degraded", cause)
+        # TWO lines, not one composed line (v2.4.0, measured at the W4 barrier). The cause and the
+        # reassurance were joined and fitted to 74 together: the reassurance clause alone is 67
+        # chars, so any real cause — a `TimeoutError` renders about 55 — pushed the join past 120
+        # and `fit` ate the reassurance whole. The operator was left reading that the matcher died
+        # with no word that every creative still wears a style, which is the half that decides
+        # whether to abort the run. The cause is variable-length so it stays last on its own line
+        # and is the only thing that may be cut; the fixed sentence can no longer be cut at all.
+        session.say(f"  {fit(cause, 74)}")
+        session.say("  the FR-291 rotation baseline stands, every creative kept a style")
+    session.log.event(
+        "style_match",  # FR-337's per-run event: detail-only, never a console line of its own
+        f"matched assignment: {placed}/{len(styled)} placed by the matcher" if matched_mode
+        else f"rotation assignment: {len(styled)} creative(s) on the FR-291 baseline",
+        mode=session.config.styles.assignment, called=matched_mode, styled=len(styled),
+        matched=placed, degraded=bool(cause), cause=cause,
+        wanted=sorted({entry.style_wanted for entry in live if entry.style_wanted}),
+        picks=[{"asset_id": entry.asset_id, "style_key": entry.style_key,
+                "origin": entry.style_origin, "fit": entry.style_fit}
+               for entry in sorted(live, key=lambda e: e.order)])
     if brief_only:
         session.note("brief-only plan: styles suppressed for override briefs (M14); branding "
                      "rotation still applies")
+
+
+async def _match_styles(session: _Session, styled: Sequence[PlanEntry],
+                        topics: Mapping[str, TrendItem]) -> Mapping[str, style_match.Match]:
+    """FR-334's matched overlay: ONE batched fail-open call, stamped onto the entries it answered.
+
+    Named and shaped like `_screen_topics`, the other batched screen in this file, and for the same
+    reason: `style_match.match()` owns the prompt, the pool arithmetic and the validation, and this
+    function owns the seam — the metered wrapper (so the spend lands in FR-84's tally, reconciles
+    against the budget and appears in events.jsonl like every other model call), the FR-299
+    silence-breaker while the call is out, and the write-back onto `PlanEntry`.
+
+    The write-back is deliberately narrow. `style_key` moves ONLY for an accepted pick
+    (`origin == "matched"` carrying a key); the four provenance fields are stamped for EVERY answer
+    including the rejections, because "the matcher looked at this and said low" is the fact FR-337
+    exists to record and it is invisible from the pick alone. An entry the answer had no row for
+    keeps the baseline pick AND the baseline `style_origin` already stamped by the caller.
+
+    Answers join on `asset_id` and never on position. That is not a style preference: the W5
+    renumbering bug (see `_pipeline`'s roster comment) was an ordinal join surviving a re-filtered
+    sequence, and a matcher that mis-joins hands every creative its neighbour's style.
+
+    Returns the raw answer mapping so the caller can find the whole-call failure marker — reading
+    it off the answers keeps ONE source for "did the matcher speak", shared with the tag
+    `generate/__init__.py` attaches from `style_origin`.
+    """
+    watch = Stopwatch()
+    _stage(session, "ASSIGN", f"matching {len(styled)} creative(s) against the registry",
+           opening=True)
+    matches = await _with_pulse(
+        session,
+        style_match.match(list(styled), session.registry, topics, session.config,
+                          _metered(session)),
+        lambda: f"          matching {len(styled)} creative(s) to styles ... "
+                f"{_dur(watch.elapsed_s)}",
+        suppress_s=10.0)
+    for entry in styled:
+        answer = matches.get(entry.asset_id)
+        if answer is None:  # `match()` is total by contract; if that ever stops being true, the
+            continue        # baseline pick and the caller's `"rotation"` stamp both simply stand
+        if answer.origin == "matched" and answer.style_key:
+            entry.style_key = answer.style_key
+        entry.style_fit = answer.fit
+        entry.style_reason = answer.reason
+        entry.style_origin = answer.origin or "rotation"
+        entry.style_wanted = answer.wanted_archetype
+    return matches
+
+
+def _match_receipt(entry: PlanEntry) -> str:
+    """FR-337's provenance columns for one ASSIGN receipt — `origin/fit`, then the reason.
+
+    A CONTINUATION line under the creative's own receipt rather than four more columns on it,
+    because FR-286's 78 columns are already spent: the receipt above runs to 73 (10 indent + 2
+    ordinal + 9 format + 24 subject + 19 style + 5 brand + 4 gutters) and origin, fit and a reason
+    do not fit in the 5 that remain without gutting the subject and style columns an operator reads
+    on every run. The arithmetic here, longest line: 13 indent + 15 label + 1 gutter + 49 reason =
+    78 exactly. `rotation/medium` is the widest label the vocabulary can produce (15), and `reason`
+    is model-authored and therefore LAST — it is the only thing on the line allowed to be cut.
+
+    `""` (nothing prints) for the two cases where the line would be noise:
+
+    - a `rotation`-mode run, where all four fields are the baseline's own defaults and the receipt
+      above already said everything there is to say about how the style was chosen;
+    - a `rotation_fallback`, where every entry in the plan carries the SAME whole-call failure —
+      the single `style_match_degraded` warning below the loop says it once instead of N times.
+    """
+    if entry.style_origin == "rotation_fallback":
+        return ""
+    if entry.style_origin != "matched" and not entry.style_fit:
+        return ""
+    label = f"{entry.style_origin}/{entry.style_fit}" if entry.style_fit else entry.style_origin
+    return f"             {fit(label, 15):<15} {fit(entry.style_reason, 49)}".rstrip()
+
+
+def _style_gap_block(live: Sequence[PlanEntry]) -> str:
+    """FR-334's gap report: the archetypes the matcher wanted and this registry does not offer.
+
+    D56 decision 3 in console form. The engine never synthesizes a style at runtime — that would
+    break FR-295's registry authority and FR-189's sole-consistency mechanism — so a `low` fit is
+    written down instead of worked around, and this block is where the operator learns that four
+    creatives wanted a numbered-listicle deck the registry has no style for. Distinct archetypes
+    with a count, commonest first: the list is a *shopping list* for `prompts/styles.yaml`, and
+    reprinting the same want once per creative would bury how many distinct gaps there really are.
+
+    `""` when nothing is wanted, so a clean run prints no block at all (D45: a heading with no rows
+    under it reads as a bug). Free model text throughout, so every row goes through `fit`.
+    """
+    wanted = Counter(entry.style_wanted.strip() for entry in live if entry.style_wanted.strip())
+    if not wanted:
+        return ""
+    return "\n".join([
+        f"          style gap: {len(wanted)} archetype(s) the matcher wanted and this",
+        "          registry does not offer. Author them in styles.yaml (FR-334):",
+        *(f"            - {fit(f'{name} ({count} creative(s))', 64)}"
+          for name, count in sorted(wanted.items(), key=lambda row: (-row[1], row[0])))])
 
 
 async def _confirm(session: _Session, entries: list[PlanEntry]) -> tuple[list[PlanEntry], Estimate]:
@@ -1716,6 +1902,13 @@ def _record_style_forecast(session: _Session, live: Sequence[PlanEntry], registr
     attachments — it states coverage: how many jobs render, over how many topics, wearing how
     many distinct styles. `registry` stays in the signature because coverage is only meaningful
     once assignment has run against one; a registry-less preview records zeros honestly.
+
+    It deliberately does NOT count FR-334's matched picks (v2.4.0). The funnel's row vocabulary is
+    `sources.Counters.record_render`'s fixed keyword signature, so a `styles_matched` figure is a
+    change to `sources/virlo.py` and to the `_funnel_block` renderer, not to this function — and
+    the matched/baseline split is already stated where it is decided, on the ASSIGN summary line
+    and per entry in the `style_match` event. A second home for the same number is how two counts
+    of one run start disagreeing (§1.10: one number, one source).
     """
     session.counters.record_render(
         jobs=len(live), dropped=dropped,
@@ -1867,9 +2060,15 @@ def _launch_summary(session: _Session, overrides: Sequence[str]) -> str:
     if registry is None:
         styles_line = "  styles      registry unavailable — pre-flight will refuse (FR-295)"
     else:
-        usable = sum(1 for style in registry.styles
-                     if styles.brand_ok(style, branding.brand,
-                                        branding_enabled=branding.enabled))
+        # `usable_styles` and NOT a local `brand_ok` sum (v2.4.0/D56). This line used to re-derive
+        # the answer from the brand predicate alone, so it ignored FR-314's `styles.enabled` and
+        # reported every brand-compatible style in the file rather than the ones this config can
+        # actually wear — the exact "second copy" that `usable_styles`' own docstring warns makes
+        # the menu, pre-flight, the preview and the paid run disagree. It read 8-of-9 while a
+        # four-key selection was live and would have read 18-of-19 against D57's twelve-key pool,
+        # which is precisely the number an operator checks to confirm the pool took effect.
+        usable = len(styles.usable_styles(registry, branding.brand, config.styles.enabled,
+                                          branding_enabled=branding.enabled))
         styles_line = (f"  styles      registry v{registry.version} · {len(registry.styles)} "
                        f"styles · sha {registry.content_hash[:8]} · {usable} usable here")
     return "\n".join([

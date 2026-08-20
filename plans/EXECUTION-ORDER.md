@@ -375,6 +375,63 @@ plans/xmasterplan-compress-mode-and-style-doubledown.md (SESSION H).
 
 ---
 
+# SESSION I — Style Intelligence: archetype expansion + LLM-matched assignment + teal spine (v2.4.0, D56/D57) · ✅ W1–W4 COMPLETE (2026-08-20)
+
+> ✅ **Waves 1–4 landed; suite 1481 → 1567, zero failures.** Closeout:
+> **`plans/SESSION-I-CLOSEOUT.md` — read it before starting the next session.**
+>
+> ⚠️ **W5's PAID RUN IS STILL OWED and deliberately not automated.** Rungs 1–4 are green for
+> $0.27 (`--preview-analysis` proved the matcher live: 3/3 matched at `high`, both winning
+> styles D56 archetypes authored this session). The paid run is the last rung because its
+> acceptance is visual and human: the Confirm-gate `style_match_call` line, the teal spine
+> across styles, `build-log-mono`'s chrome grid, and **gauntlet green on `social-quote-card`
+> and `terminal-mockup-deck`** — the two UI-grammar styles closest to other styles'
+> no-platform-marks exclusions, and the highest-risk authoring in the session.
+>
+> Nine defects outside the plan were found and fixed (two FR-286 console truncations that hid
+> operator instructions, a launch block under-reporting the style pool 18-vs-12, a broken
+> `AGENTS.md` hardlink, and `run_deadline_min` doc drift the conductor initially propagated).
+> Closeout §4 has all of them; §6 lists the four operator decisions owed.
+
+**Goal: registry 9→19 (build-log-mono + 4 census-driven archetype styles + 5 teal variants), an LLM
+matcher at ASSIGN that picks the best-fitting enabled style per creative (rotation fallback + gap
+report), and the teal-spine color unification — 12-key enabled pool, `styles.assignment: matched`
+pinned in the three brand configs.**
+
+```
+/xecutor Read plans/SESSION-H-CLOSEOUT.md first, then execute ALL waves of
+plans/xmasterplan-style-intelligence.md (SESSION I).
+
+  W1  PRD amendments FIRST (D15): D56+D57 rulings (census table as rationale, no-real-platform-marks
+      brand-safety note), FR-334/335/336/337 blocks, FR-290/291 amendments, FR-73 meta keys,
+      style-count re-base 9->19 in all sibling files, diagram STY/ASSIGN nodes,
+      amendment log v2.4.0, PRD.html rebuild + artifact republish (diagram must render)
+  W2  Registry+prompts+configs: T2.1/T2.1b prompt-engineer prompts/styles.yaml (build-log-mono,
+      5 teal variants, 4 archetype styles, match_profile on all 19 — ONE writer, sequential)
+      · T2.2 prompt-engineer style_match_system.md · T2.3 prompts/README.md
+      · T2.4 configs (12-key styles.enabled + assignment: matched in the three brand configs;
+        default.yaml documents assignment + D57 pointer)
+  W3  Engine: T3.1 models.py (match_profile, PlanEntry/AssetRecord provenance fields,
+      DegradationTag, PLACEHOLDERS, GLOBAL_TEMPLATES) · T3.2 styles.py (parse + match_profile_for
+      + advisory warning) · T3.3 NEW style_match.py (batched fail-open matcher, asset_id join,
+      pool validation, topic_filter pattern) · T3.4 config.py knob · T3.5 prompts_engine
+      allowlist + built-in twin · T3.6 runner.py (_assign_visuals async + matched branch +
+      receipt columns + gap report + degraded warn) · T3.7 previews deep-stage wiring
+      · T3.8 budget.py style_match lines · T3.9 generate/_record mapping + tag
+      · T3.10 gallery label + wanted note
+  W4  Tests (test_styles, template_parity 8->9, test_prompt_fit pin 9->19, test_budget,
+      test_config, console_inventory, test_gallery, NEW test_style_match offline suite)
+      · conductor: CLAUDE.md glossary matched-mode carve-out + NAVIGATION.md
+  W5  (operator present, cheapest first): pytest -> --list-monitors / --preview-sources ($0,
+      19-entry registry validates) -> --preview-analysis (LLM-only: matcher picks visible with
+      origin/fit/reason, gap report, style_match_call estimate line; then once more with
+      assignment: rotation -> byte-identical to pre-session picks) -> ONE paid run (2-3
+      carousels, low cap) -> meta.yaml provenance fields + gallery labels + teal-spine visual
+      check + gauntlet green on the two UI-grammar styles -> SESSION-I-CLOSEOUT.md
+```
+
+---
+
 ## Standing rules for every session
 
 Restate these verbatim in every subagent prompt — they have been load-bearing on this project:

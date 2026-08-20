@@ -579,6 +579,14 @@ class StylesConfig:
     the rotation starts is a fact about this run, not about the authored looks, so changing it must
     not mean editing a style. It carries no style content either — it is one word naming an offset.
 
+    `assignment` (v2.4.0, FR-336) is the third dial and the one that changes the most: WHICH
+    ALGORITHM assigns a style at all. It is not a wider `rotation` and the two are not alternatives
+    — `rotation: seeded|fixed` chooses where the deterministic scan STARTS, `assignment:
+    rotation|matched` chooses whether that scan is the final answer or only the baseline an LLM
+    matcher may overrule, and `assignment: rotation` still obeys `rotation: seeded|fixed`
+    underneath. It carries no style content either: the matcher chooses among the keys `enabled`
+    already admitted, reading each style's authored `match_profile` out of the registry.
+
     The FR-314 amendment supersedes the D46/F3 tombstone that stood here (`styles.refs_per_job`,
     removed when a meta-style stopped shipping reference images). The tombstone's real claim —
     "the registry is never config" — still holds: this block names keys, it does not carry style
@@ -595,6 +603,26 @@ class StylesConfig:
     #: its FILE order, or the fact that within one run each pick is a pure function of
     #: `entry.order` (`styles.assign_styles` / `styles.rotation_seed`).
     rotation: Literal["seeded", "fixed"] = "seeded"
+    #: v2.4.0 (FR-334/FR-336, D56) — WHICH ALGORITHM assigns a style to a creative. **Distinct from
+    #: the `rotation` key directly above, which shares half this vocabulary and decides something
+    #: else entirely: `rotation` chooses where the deterministic scan STARTS (`seeded | fixed`),
+    #: while `assignment` chooses which algorithm runs at all — and `assignment: rotation` still
+    #: obeys `rotation: seeded | fixed` underneath it.**
+    #:
+    #: `rotation` (the engine default, so FR-291 stays the invariant substrate for anyone who never
+    #: sets this key) is the order-indexed scan unchanged: each pick a pure function of `entry.order`
+    #: over the format-affine pool, content-blind, reproducible against the same topic set.
+    #:
+    #: `matched` keeps that scan as the BASELINE and overlays one batched, fail-open LLM call per run
+    #: (role `analysis`) that reads each creative's text-only source signals against each candidate
+    #: style's `match_profile` and may overrule the baseline pick. A `low` fit, an invalid key, a
+    #: missing row or a failed call all leave the baseline pick standing — the mode can improve an
+    #: assignment and can never lose one. It is post-Confirm spend, quoted at the Confirm gate as a
+    #: `style_match_call` line (rule 7), and its picks are NOT reproducible run to run; switching
+    #: this key back to `rotation` restores pre-D56 behaviour byte-exactly, which is the escape hatch
+    #: the determinism trade is sold on. Shipped brand configs pin `matched`, because a twelve-style
+    #: `enabled` pool under plain rotation is visual chaos — the pool and this key are one decision.
+    assignment: Literal["rotation", "matched"] = "rotation"
 
 
 @dataclass(slots=True)

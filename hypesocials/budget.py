@@ -65,6 +65,33 @@ _SLIDE_INTEL_COMPLETION_PER_SLIDE = 220
 #: ceiling in the squarest shape, which is the MOST one attached image can cost: over-stating is
 #: the safe direction (D11), and understating is the one unacceptable estimator error.
 _SOURCE_SLIDE_RATIO = "1:1"
+#: FR-334's ONE batched style-match call (D56 §5), role `analysis`. Sized against the real
+#: artifacts rather than guessed, and the arithmetic is written down because a constant nobody can
+#: explain rots:
+#: - the FIXED side is `prompts/style_match_system.md`, measured at 8,817 chars on 2026-08-20 ->
+#:   ~2,204 tokens at `_CHARS_PER_TOKEN`. The hand-built answer schema and the chat scaffolding
+#:   ride on top of it, so the constant quotes 2,400.
+#: - one CANDIDATE block per style in the run's pool: the key plus its authored `match_profile`
+#:   (the 1-2 sentences FR-290 requires) plus the formats it declares — ~230 chars, ~58 tokens,
+#:   quoted at 60.
+#: - one SECTION per styled creative: its asset_id and format, ITS OWN candidate key list (the
+#:   pool is filtered per format and per brand, so the keys repeat inside every section — up to
+#:   12 keys at ~9 tokens each under the shipped configs), the deck/panel counts, the four text
+#:   lengths and Virlo's own hook/visual-hook/tone classifications. ~200 tokens.
+#: - one ANSWER row per creative: asset_id, style_key, `fit`, a ~12-word `reason`,
+#:   `wanted_archetype` and the JSON around them — ~70 tokens.
+#: Over-stating is the safe direction (D11); understating is the one unacceptable estimator
+#: error, so these four numbers only ever move against a measurement.
+_STYLE_MATCH_PROMPT_TOKENS = 2400
+_STYLE_MATCH_TOKENS_PER_CANDIDATE = 60
+_STYLE_MATCH_TOKENS_PER_ENTRY = 200
+_STYLE_MATCH_COMPLETION_PER_ENTRY = 70
+#: How many candidates to quote when `styles.enabled` is empty — which means "every style in the
+#: registry" (30 §2), not "no styles at all". This module does NO I/O (the estimate is config
+#: arithmetic only, NFR-18), so it never opens `prompts/styles.yaml` and the registry's real size
+#: is not knowable here. The shipped registry holds 19 entries (v2.4.0/D56); quoting 24 leaves
+#: room for a registry that grew since this line was typed, rather than silently under-quoting it.
+_STYLE_MATCH_ASSUMED_POOL = 24
 _IMAGE_TOKEN_DIVISOR = 750  # provider px -> vision-token rule
 _IMAGE_TOKEN_MAX_PX = 1568  # providers resize above this, so token cost stops growing
 _TIER_LONG_EDGE: dict[str, int] = {"1k": 1024, "2k": 2048, "4k": 4096}
@@ -120,8 +147,8 @@ ReservationKind = Literal["projected", "precommitted", "discretionary"]  # FR-10
 
 
 class SpendCategory(str, Enum):
-    """FR-84's grand-total split. Vision checks, the topic screen, slide intelligence and copy are
-    LLM; every Kie job is RENDER."""
+    """FR-84's grand-total split. Vision checks, the topic screen, the style match, slide
+    intelligence and copy are LLM; every Kie job is RENDER."""
 
     LLM = "llm"
     RENDER = "render"
@@ -289,7 +316,9 @@ def estimate(config: Config, entries: Sequence[PlanEntry]) -> Estimate:
     """Price a whole plan locally, enumerating every FR-107 conditional contributor.
 
     Covered bullet by bullet (10 §9, FR-107 as amended v2.1.0): the batched topic-filter screen at
-    its worst-case topic bound; **one slide-intelligence call per bound carousel source post**
+    its worst-case topic bound; **one batched style-match call when `styles.assignment: matched`**
+    (FR-334/D56 — post-Confirm spend at ASSIGN, quoted before the gate, and quoted at nothing at
+    all under the `rotation` default); **one slide-intelligence call per bound carousel source post**
     (FR-306/§0.11 — post-Confirm spend, quoted before the gate); seed-frame renders; the
     moderation-retry allowance; **the gauntlet's critic panel and per-deck re-render budget**
     (FR-326/spec §5 — `allowance=True` lines, displayed and worst-case provisioned, never gating,
@@ -498,6 +527,77 @@ def _filter_lines(config: Config, planned: Sequence[PlanEntry], effort: float,
                        SpendCategory.LLM, "retry", 2, wide, orders, allowance=True))
 
 
+def _style_match_lines(config: Config, planned: Sequence[PlanEntry],
+                       lines: list[EstimateLine]) -> None:
+    """FR-334/D56's matched style assignment: ONE batched `analysis` call for the whole plan.
+
+    Quoted here for the same reason the slide-intelligence pass above is: it is post-Confirm LLM
+    spend on top of the renders, and rule 7 says the operator approves a number before it is spent,
+    not after. The stage runs at ASSIGN — after Select binds the topics, before INTEL and COPY —
+    so this line sits between the filter screen and the source-deck reads in `_llm_lines`, and the
+    printed estimate reads in the order the run executes.
+
+    **Gated on `styles.assignment: matched`.** Under the engine default (`rotation`, 30 §2) no
+    model is asked anything at ASSIGN — the pick is a pure function of `entry.order` — and a $0
+    line for a call that will never happen reads like a rate that failed to load, which is the same
+    argument `_slide_intel_lines` makes for `vision_transcribe: false`.
+
+    **The quantity is 1 whatever the plan size.** One call carries every creative's section and
+    returns one row per creative, which is the whole reason the matcher is a stage of its own
+    rather than a question asked inside each copy call (§5) — the plan's size moves the TOKENS, not
+    the call count.
+
+    **Override briefs are excluded and can leave the line unquoted entirely.** An `override` brief
+    suppresses the style channel outright (M14: `runner._assign_visuals` filters them before
+    `assign_styles` ever sees them, so they carry no `style_key` to overrule), so they are not in
+    the matcher's entry set and must not be in its price. A plan of nothing but override briefs
+    quotes no style-match spend at all — the same shape `_filter_lines` and `_slide_intel_lines`
+    already refuse to quote.
+
+    Basis: the fixed template, one candidate block per style in the pool, one section per styled
+    creative, and one small answer row back (see the `_STYLE_MATCH_*` constants for the measured
+    arithmetic). The pool is quoted as `styles.enabled`'s length — the FR-314 selector is the
+    honest count of what the prompt will carry — falling back to `_STYLE_MATCH_ASSUMED_POOL` when
+    the selector is empty and therefore means the whole registry. Per-format filtering (`fmt_affine`,
+    `carousel_role`) can only make an entry's own candidate list SHORTER than that, so the quote
+    leans high by construction, which is the safe direction (D11).
+
+    Reasoning is priced at 0 for the same reason the slide-intelligence call prices none: `analysis`
+    is Sonnet, and the reasoning-effort knob (30 §2) is the COPY role's.
+    """
+    if config.styles.assignment != "matched":
+        return
+    styled = [entry for entry in planned if entry.brief_influence != "override"]
+    if not styled:
+        return
+    candidates = len(config.styles.enabled) or _STYLE_MATCH_ASSUMED_POOL
+    prompt = (_STYLE_MATCH_PROMPT_TOKENS + candidates * _STYLE_MATCH_TOKENS_PER_CANDIDATE
+              + len(styled) * _STYLE_MATCH_TOKENS_PER_ENTRY)
+    completion = _match_completion(config, len(styled))
+    orders = [entry.order for entry in styled]
+    lines.append(_line("style_match_call",
+                       f"style match (1 batched call, {len(styled)} creative(s), "
+                       f"{candidates} candidate style(s))",
+                       SpendCategory.LLM, "call", 1,
+                       _llm_call_price(config, "analysis", prompt, completion, 0), orders))
+    # FR-107's per-call retry allowance applies to every role, and one call can spend BOTH retries:
+    # FR-127's widened truncation retry and FR-41's parse retry are independent and each capped at
+    # 1 (`llm._run_attempts`). An allowance only — never expected spend — because the stage is
+    # fail-open (§5: a failed call leaves every entry on its FR-291 rotation baseline and the run
+    # continues), so these two are contingencies rather than a re-match.
+    wide_out = _widened_cap(completion)
+    wide = _llm_call_price(config, "analysis", prompt, wide_out, 0)
+    lines.append(_line("style_match_retry_allowance",
+                       "style match truncation + parse retry allowance (2)",
+                       SpendCategory.LLM, "retry", 2, wide, orders, allowance=True))
+
+
+def _match_completion(config: Config, creatives: int) -> int:
+    """One style-match answer's output size, bounded by `max_tokens.analysis` (30 §2)."""
+    return min(config.max_tokens_for("analysis"),
+               creatives * _STYLE_MATCH_COMPLETION_PER_ENTRY)
+
+
 def _slide_intel_lines(config: Config, planned: Sequence[PlanEntry],
                        lines: list[EstimateLine]) -> None:
     """FR-306/§0.11's slide-intelligence pass: ONE analysis call per bound carousel source post.
@@ -596,17 +696,21 @@ def _llm_lines(config: Config, entries: Sequence[PlanEntry], lines: list[Estimat
     become normal, this is the line that has to double for them.
 
     The style-brief analysis line that used to live here is gone (v2.0.0/D41): the visual authority
-    is the local meta-style registry, so no LLM is asked what a trend looks like. The `analysis`
-    ROLE survives as the slide-intelligence pass's role (FR-306) — the model, the key and the
-    max-tokens budget all keep working — and the post-render gate rides its own `critic` role
+    is the local meta-style registry, so no LLM is asked what a trend looks like — and FR-334's
+    matcher does not bring it back, because it CHOOSES among authored styles rather than describing
+    a look. The `analysis` ROLE carries both of its jobs: the slide-intelligence pass (FR-306) and,
+    under `styles.assignment: matched`, the batched style match (FR-334) — the model, the key and
+    the max-tokens budget all keep working — and the post-render gate rides its own `critic` role
     (v2.2.0/D49), priced in `_gauntlet_lines`.
     """
     planned = [e for e in entries
                if not (e.creative_format == "reel" and not config.reels_plannable)]
     effort = _REASONING_FRACTION.get(config.models.reasoning_effort, 0.0)
     _filter_lines(config, planned, effort, lines)
-    # Stage order, so the printed estimate reads like the run: screen at Collect, read the source
-    # decks after the Confirm gate, then write the copy (FR-306 sits between the two).
+    # Stage order, so the printed estimate reads like the run: screen at Collect, match the styles
+    # at ASSIGN, read the source decks after the Confirm gate, then write the copy (FR-334 sits
+    # between the screen and the reads; FR-306 between the reads and the copy).
+    _style_match_lines(config, planned, lines)
     _slide_intel_lines(config, planned, lines)
 
     groups: dict[tuple[str, str], list[PlanEntry]] = {}

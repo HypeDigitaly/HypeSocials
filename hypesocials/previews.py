@@ -6,7 +6,9 @@ Purpose: run the first stages of a real run and show what they produced, without
 the renderer. `--preview-sources` stops after Collect + the deterministic half of the competitor
 screen and prints the same topics table a paid run prints, at zero model spend (FR-139);
 `--preview-analysis` goes on through the real LLM screen, Select, style + branding assignment and
-the copy call, and shows the verbatim copy a paid run would render — LLM cost only (FR-140).
+the copy call, and shows the verbatim copy a paid run would render — LLM cost only (FR-140). Under
+`styles.assignment: matched` that includes FR-334's batched style matcher, so the mode shows the
+picks a paid run would render in, for the price of the calls and nothing else (v2.4.0/D56).
 
 Public API: `await preview_sources(opts)` · `await preview_analysis(opts)` — both return an
 FR-202 exit code (`0` shown, `2` config/pre-flight refusal, `3` transport-dead source or a topic
@@ -42,10 +44,11 @@ Do not: render, package, write history, repoint `latest`, or re-implement a stag
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from contextlib import suppress
 
-from hypesocials import cli, plan, preflight, runner, styles, topic_filter
+from hypesocials import cli, plan, preflight, runner, style_match, styles, topic_filter
 from hypesocials.budget import format_usd
 from hypesocials.config import Config, ConfigError, load_config
 from hypesocials.copywrite import MODE_COMPRESS, CopyResult
@@ -64,12 +67,15 @@ from hypesocials.runner import (
     _funnel_block,
     _launch_summary,
     _load_registry,
+    _match_receipt,
+    _metered,
     _open,
     _post_roster,
     _record_style_forecast,
     _screen_topics,
     _select,
     _slide_intel,
+    _style_gap_block,
     _topics_table,
     _write,
 )
@@ -77,6 +83,8 @@ from hypesocials.runner import (
 _REFS_DIR = "refs"  # created by `create_run_folder()`; a log-only folder does not keep it
 #: FR-286: 6 spaces of indent + a 9-column label + 61 of text = 76, inside the 78-column ceiling.
 _ROW_LABEL, _ROW_WIDTH = 9, 61
+#: Reading order for the fit tally on the assignment header — best fit first, not alphabetical.
+_FIT_ORDER = {"high": 0, "medium": 1, "low": 2}
 #: The one line that tells a `--preview-sources` reader which half of the screen they are seeing.
 #: Not a degradation notice: a $0 mode that cannot call a model is working exactly as specified.
 _BLOCKLIST_NOTE = (
@@ -189,6 +197,12 @@ async def _deep_stages(session: runner._Session, trends: Sequence[TrendItem],
     and no `KIE_API_KEY` is read), then screen, select, assign, dress, write. What differs from
     `runner._pipeline` is only what comes after: no reference upload, no render, no packaging.
 
+    ASSIGN is two stages under `styles.assignment: matched` (FR-334/D56), and both run here: the
+    deterministic FR-291 rotation lays down the baseline, then `_match_styles` overlays the batched
+    matcher call on top of it. That is what makes `--preview-analysis` the cheapest place to read
+    the matcher's picks — the same call a paid run makes, at $LLM and no render spend — and it is
+    the reason this module reaches for `runner._metered` rather than calling the LLM seam directly.
+
     Printing order follows the console mockups (§1.10): the topics table with the LLM verdicts,
     the per-topic post roster UNCAPPED (a paid run shows the top 3×3 — showing everything is the
     whole point of a preview), FR-8's supply restatement, one determinism-receipt line per
@@ -213,7 +227,11 @@ async def _deep_stages(session: runner._Session, trends: Sequence[TrendItem],
                          # which cannot be forecast before that run's id exists. `fixed` restores
                          # exact preview↔run agreement, and is what to set when that matters.
                          run_id=session.run_id, rotation=config.styles.rotation)
+    await _match_styles(session, live, by_key, registry)
     styles.assign_branding(live, config.branding.brand_ratio, enabled=config.branding.enabled)
+    # After the matcher, deliberately: the forecast counts DISTINCT style keys (FR-155 coverage),
+    # and counting the rotation baseline would forecast a spread the paid run is not going to
+    # render — matched mode repeats a style on purpose wherever two creatives share an archetype.
     _record_style_forecast(session, live, registry, dropped=len(assignment.dropped))
 
     if table := _topics_table(list(trends), verdicts,
@@ -241,6 +259,85 @@ async def _deep_stages(session: runner._Session, trends: Sequence[TrendItem],
     session.say(f"LLM spend {format_usd(session.budget.spent_usd)} against the "
                 f"{format_usd(session.budget.cap_usd)} cap — nothing was rendered (FR-140).")
     return runner.EXIT_OK
+
+
+# ----------------------------------------------------------------- matched assignment (FR-334)
+
+
+async def _match_styles(session: runner._Session, live: Sequence[PlanEntry],
+                        topics: Mapping[str, TrendItem],
+                        registry: styles.StyleRegistry) -> None:
+    """FR-334's matched overlay on the preview tier: one batched call, metered, fail-open.
+
+    The rotation baseline is already on every entry when this runs, so the ONLY thing the call can
+    do is replace a content-blind pick with a content-aware one. `style_match.match` is total over
+    the entries it is handed and never raises (§5); a `low` fit, a key outside an entry's own pool,
+    a missing row and a failed call all come back as `origin: "rotation"` / `"rotation_fallback"`,
+    which is why the write-back below overwrites `style_key` on `matched` alone. Every entry keeps
+    its four provenance fields either way — the fields are what the ASSIGN receipt, the gallery and
+    (on a paid run) meta.yaml read to say WHY a creative wears the style it wears.
+
+    **Override briefs are excluded, exactly as `runner._assign_visuals` excludes them** (M14: an
+    `override` brief suppresses the style channel outright), which also keeps this call's entry set
+    identical to the one `budget._style_match_lines` quoted at the Confirm gate — a preview that
+    matched more creatives than the estimate priced would be a preview of a different run.
+
+    The call rides `runner._metered`, so its spend lands in the same tally the copy call lands in
+    and the closing `LLM spend` line of this mode counts it. That is the whole cost story of
+    `--preview-analysis` under matched mode: two model calls more than a rotation run makes, no
+    render job, no upload (FR-140).
+    """
+    config = session.config
+    if config.styles.assignment != "matched":
+        return  # FR-291 rotation is the whole answer; no model is asked anything at ASSIGN
+    styled = [entry for entry in live if entry.brief_influence != "override"]
+    if not styled:
+        return
+    matches = await style_match.match(styled, registry, topics, config, _metered(session))
+    for entry in styled:
+        answer = matches.get(entry.asset_id)
+        if answer is None:  # total by contract; a gap here simply leaves the baseline pick alone
+            continue
+        # `style_key` is the OVERRIDE and not the outcome: `style_match` leaves it empty wherever
+        # the baseline stands, so the guard below is what keeps a rejected row from blanking a
+        # perfectly good rotation pick. `origin` is checked too, belt-and-braces — the one field
+        # that is never empty, and the one a reader is told to check first.
+        if answer.origin == style_match.ORIGIN_MATCHED and answer.style_key:
+            entry.style_key = answer.style_key
+        entry.style_fit = answer.fit
+        entry.style_reason = answer.reason
+        entry.style_origin = answer.origin
+        entry.style_wanted = answer.wanted_archetype
+    origins = Counter(entry.style_origin for entry in styled)
+    matched = origins.get(style_match.ORIGIN_MATCHED, 0)
+    failed = origins.get(style_match.ORIGIN_FALLBACK, 0)
+    session.log.event(
+        "style_match", f"{matched} of {len(styled)} creative(s) matched",
+        matched=matched, baseline=origins.get(style_match.ORIGIN_ROTATION, 0), degraded=failed,
+        candidates=len(registry), picks={e.asset_id: e.style_key for e in styled},
+        wanted=[e.style_wanted for e in styled if e.style_wanted])
+    if failed:
+        # The same shape `_screen_topics` uses for `filter_degraded`: one warning naming the cause,
+        # and a run that continues on the deterministic layer. A matcher that cannot speak is not a
+        # reason to lose a creative — the baseline pick it would have overruled is an authored
+        # style either way, which is why this is a warning and never an abort.
+        session.log.warn("style_match_degraded",
+                         f"{_degraded_cause(styled) or 'the style matcher failed'} — all {failed} "
+                         "creative(s) kept their FR-291 rotation pick (fail-open, FR-334)")
+
+
+def _degraded_cause(live: Sequence[PlanEntry]) -> str:
+    """WHY the matcher call failed, read off the marker `style_match` stamps on every fallback row.
+
+    One cause for the whole call by construction (the failure is run-wide), so it is read once and
+    printed once — under the header that already said the baseline stands, rather than repeated
+    verbatim under every creative in the plan. Empty when the rows carry no marker, which is what a
+    future `style_match` that stops stamping one would look like: the caller then falls back to its
+    own sentence instead of printing an empty `cause:` line.
+    """
+    marked = next((entry.style_reason for entry in live
+                   if entry.style_origin == style_match.ORIGIN_FALLBACK and entry.style_reason), "")
+    return marked.partition(f"{style_match.DEGRADED_MARKER}:")[2].strip() or marked
 
 
 # --------------------------------------------------------------------------- filter plumbing
@@ -321,17 +418,83 @@ def _assign_block(live: Sequence[PlanEntry], trends: Mapping[str, TrendItem],
 
     The leading number is the asset id's trailing ordinal, the short handle every other §1.10
     surface uses for a creative (the provenance block, the render lines, the gallery).
+
+    **FR-334's provenance rides on rows of its own, borrowed from the paid ASSIGN receipt.**
+    `runner._match_receipt` and `runner._style_gap_block` are called here rather than re-formatted,
+    for the reason the module contract gives at the top: a second implementation of an
+    operator-facing block is free to drift from the one a paid run prints, and "the preview shows
+    what the run will do" then stops being a fact about the code. It also settles FR-286 once
+    instead of twice — that line's own arithmetic (13 indent + 15 label + 1 gutter + 49 reason)
+    lands on 78 exactly, and `reason` is the model-authored field it trims.
+
+    Both borrowed blocks are SILENT in rotation mode, so this block prints byte-identically to
+    every version before D56 whenever `assignment: rotation` is set. That is not an accident of the
+    layout: it is what makes the rotation regression check (one preview under `assignment:
+    rotation` against the same topic set) a diff of two files rather than a reading exercise.
     """
     head = (f"Assignment — {len(live)} creative(s), {len({e.style_key for e in live})} style(s), "
             f"{sum(1 for e in live if e.branded)} branded")
     lines = [fit(head, 78), f"  {_brand_line(registry)}"]
+    if summary := _match_summary(live):
+        lines.append(f"  {summary}")
     for entry in live:
         topic = trends.get(entry.trend_key or "")
         name = topic.name if topic is not None else (entry.brief_name or "no topic")
         lines.append(f"      {_ordinal(entry)} {fit(entry.creative_format, 8):<10}"
                      f"{fit(name, 24):<25}{fit(entry.style_key or '-', 19):<20}"
                      f"{'brand' if entry.branded else 'plain'}")
+        # Empty in rotation mode and on the fallback path — `_match_receipt` owns both rules, and
+        # the fallback's single cause is printed once by `_match_summary` above instead of once per
+        # creative. What is left is exactly the per-entry facts: the matcher looked at THIS
+        # creative, and this is what it said.
+        if provenance := _match_receipt(entry):
+            lines.append(provenance)
+    if gap := _style_gap_block(live):
+        lines.append(gap)
     return "\n".join(lines)
+
+
+def _match_summary(live: Sequence[PlanEntry]) -> str:
+    """The assignment header's second line under matched mode: how many picks the matcher moved.
+
+    Silent unless the matcher actually SPOKE — which is tested by looking for a matched pick, a
+    whole-call fallback or any fit at all, and deliberately NOT by "does an entry carry an origin".
+    `runner._assign_visuals` stamps `style_origin: "rotation"` on every live entry before the
+    overlay runs (FR-337 gives meta.yaml's field no empty case), so an origin on its own means only
+    "ASSIGN happened here" and would print a matcher tally under a rotation run that never made a
+    call. That is exactly the line the rotation regression check would trip over.
+
+    A whole-call failure replaces the tally rather than joining it: "0 matched, 4 baseline" and
+    "the call failed, everything is on baseline" are the same numbers and different facts, and the
+    second one is the one an operator has to act on (§5's `style_match_degraded`). It is also where
+    the failure's CAUSE is printed — once for the call that had it, rather than once per creative,
+    which is what the per-row marker would have produced.
+    """
+    origins = Counter(entry.style_origin for entry in live if entry.style_origin)
+    spoke = (origins.keys() & {style_match.ORIGIN_MATCHED, style_match.ORIGIN_FALLBACK}
+             or any(entry.style_fit for entry in live))
+    if not spoke:
+        return ""
+    if failed := origins.get(style_match.ORIGIN_FALLBACK, 0):
+        # Three lines rather than one trimmed one: "nothing was lost" is the half an operator needs
+        # and it is the half a 78-column cut would have taken (FR-286 is met by wrapping here, the
+        # same trade `_rows` makes for the copy it prints). The cause is the third line because it
+        # is the only variable-length part and the only one worth a whole line of its own.
+        cause = _degraded_cause(live)
+        return (f"{style_match.DEGRADED_MARKER} — the matcher call failed; all {failed} "
+                "creative(s)\n  kept their FR-291 rotation pick and nothing was lost (fail-open)"
+                + (f"\n  cause: {fit(cause, 69)}" if cause else ""))
+    fits = Counter(entry.style_fit for entry in live
+                   if entry.style_origin == style_match.ORIGIN_MATCHED and entry.style_fit)
+    detail = ", ".join(f"{count} {level}" for level, count in
+                       sorted(fits.items(), key=lambda item: _FIT_ORDER.get(item[0], 9)))
+    # The paid ASSIGN receipt's own sentence (`runner._assign_visuals`), plus the fit tally this
+    # mode can afford to add: a preview is read side by side with the copy it would quote, and
+    # "3 matched, all of them high" is a different decision to make than "3 matched, all medium".
+    baseline = origins.get(style_match.ORIGIN_ROTATION, 0)
+    return fit(f"matched {origins.get(style_match.ORIGIN_MATCHED, 0)} of {sum(origins.values())} "
+               "creative(s)" + (f" ({detail})" if detail else "")
+               + (f"; {baseline} kept the rotation baseline" if baseline else ""), 76)
 
 
 def _brand_line(registry: styles.StyleRegistry) -> str:

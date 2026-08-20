@@ -52,6 +52,14 @@ place those two are composed, so the menu's count, the pre-flight refusal, the p
 paid run cannot disagree. The selector is a CONFIG key naming registry keys; it carries no style
 content and no render text, so the registry remains the sole visual authority.
 
+**This module stays OFFLINE and sync under matched assignment (D56/FR-334).** `assign_styles` is
+the BASELINE every run computes — a pure function of `entry.order`, unchanged — and `style_match`
+may then overwrite a winner per entry from one LLM call. The matcher lives in its own leaf module
+and IMPORTS the predicates above (`usable_styles`, `fmt_affine`, `brand_ok`, `selected`) so a
+candidate pool is narrowed by exactly the rules the rotation is narrowed by; the only thing this
+module owes it is `match_profile_for`, the one sentence describing what a style is FOR. Nothing
+here awaits, calls an LLM or learns what a topic is about.
+
 I/O: `load_registry` reads one small local YAML file synchronously at startup, exactly as
 `config.py` reads `configs/*.yaml` — that is the precedent, and neither runs on a hot event loop.
 That single read is the whole of this module's filesystem contact.
@@ -197,6 +205,13 @@ def _style(item: Any, path: Path, index: int) -> MetaStyle:
     return MetaStyle(
         key=key,
         render_prompt=str(item.get("render_prompt") or "").strip(),
+        # FR-290/FR-335 (D56): one or two sentences saying what KIND OF SOURCE MATERIAL this style
+        # suits — the line the matcher reads when it picks a style for a creative. OPTIONAL by
+        # contract, and deliberately so: a registry authored before the field existed loads clean
+        # here and gets a weaker derived line from `match_profile_for` below, with one advisory
+        # warning from `_style_warnings`. A missing match profile makes the MATCHER weaker; it
+        # never makes a run impossible, so it is never an FR-295 error.
+        match_profile=str(item.get("match_profile") or "").strip(),
         subject_mode=str(item.get("subject_mode") or "scene_open").strip(),
         layout_zones=_zones(item.get("layout_zones")),
         # Affinities are lower-cased here so `[Image]` in a hand-edited override is a style that
@@ -448,6 +463,46 @@ def fmt_affine(style: MetaStyle, creative_format: str) -> bool:
     return True
 
 
+def match_profile_for(style: MetaStyle) -> str:
+    """What this style is FOR, in one line — the sentence the FR-334 matcher matches on.
+
+    The registry's vocabulary again, beside `brand_ok` and `fmt_affine`: `style_match` describes
+    each candidate to the LLM through this one call, so there is a single answer to "what does this
+    style suit" and a caller cannot invent a second one.
+
+    Authored `match_profile` wins whenever there is one. Otherwise the answer is DERIVED from the
+    first sentence of `render_prompt` (FR-290/FR-335), and that derivation is deliberately the
+    weaker line: `render_prompt` describes how a style LOOKS — its ground, its typography, its
+    motifs — where a `match_profile` says what kind of SOURCE MATERIAL it suits. Those are
+    different questions, and a matcher handed the first one has to guess the second: "near-black
+    ground, glowing teal circuit motifs" tells it nothing about whether a numbered listicle deck
+    belongs there. So the fallback keeps the matcher running against an old or half-authored
+    registry rather than blanking a candidate out of its own pool — it is not a substitute for
+    writing the real line, and `_style_warnings` says so once per style that needs it.
+
+    Never raises and never returns `None`. A style with neither field yields `""`, which a caller
+    renders as a candidate with no profile — still nameable, just undescribed.
+    """
+    if profile := style.match_profile.strip():
+        return profile
+    return _first_sentence(style.render_prompt)
+
+
+def _first_sentence(text: str) -> str:
+    """The first sentence of some prose, whitespace-collapsed; the whole of it if it has no end.
+
+    A terminator only counts when a space or the end of the string follows it, so a decimal ("a
+    1.5:1 crop") and a ratio do not cut the sentence in half. Prose with no terminator at all
+    returns whole — a `render_prompt` written as one long unpunctuated instruction still yields
+    something the matcher can read, and returning "" there would be worse than returning too much.
+    """
+    body = " ".join(text.split())
+    for index, char in enumerate(body):
+        if char in ".!?" and (index + 1 == len(body) or body[index + 1] == " "):
+            return body[:index + 1]
+    return body
+
+
 # --------------------------------------------------------------------------------------------
 # Pre-flight validation (FR-295)
 # --------------------------------------------------------------------------------------------
@@ -586,7 +641,14 @@ def _selection_note(enabled: Sequence[str]) -> str:
 
 
 def _style_warnings(style: MetaStyle, where: str) -> list[str]:
-    """Advisory findings about the WORDS — an over-long prompt, an unresolved variant choice."""
+    """Advisory findings about the WORDS — an over-long prompt, an unresolved variant choice, a
+    style that never says what it is for.
+
+    Everything here is a WARNING and none of it is ever promoted to an error: FR-295's exit-2 list
+    is for defects that make a run impossible (no render instruction, no affine format, an empty
+    pool), and none of these do. A style with no `match_profile` still renders exactly as authored
+    — only the matcher that has to choose between styles is left reading the wrong field (D56).
+    """
     out: list[str] = []
     if (words := len(style.render_prompt.split())) > _MAX_RENDER_WORDS:
         out.append(f"{where}: `render_prompt` is {words} words — over the {_MAX_RENDER_WORDS}-word "
@@ -597,6 +659,11 @@ def _style_warnings(style: MetaStyle, where: str) -> list[str]:
                    "for this style and its `layout` prose will never reach a render prompt — set "
                    "`reflow_over_chars` or `max_rows` to a real threshold, or drop the block "
                    "(FR-304b)")
+    if not style.match_profile:
+        out.append(f"{where}: no `match_profile` — matched assignment (FR-334) falls back to the "
+                   "first sentence of `render_prompt` for this style, which says how it LOOKS and "
+                   "not what it SUITS; write one or two sentences naming the kinds of source "
+                   "material it fits (FR-290/335)")
     lowered = style.render_prompt.lower()
     if leaks := [marker.strip() for marker in _VARIANT_MARKERS if marker in lowered]:
         out.append(f"{where}: `render_prompt` still offers a choice ({', '.join(leaks)}) — the "
@@ -753,5 +820,5 @@ def style_for(reg: StyleRegistry, key: str) -> MetaStyle:
 
 
 __all__ = ["StyleRegistry", "StyleRegistryError", "assign_branding", "assign_styles",
-           "brand_ok", "fmt_affine", "is_list_panel", "load_registry", "rotation_seed", "selected",
-           "style_for", "usable_styles", "validate"]
+           "brand_ok", "fmt_affine", "is_list_panel", "load_registry", "match_profile_for",
+           "rotation_seed", "selected", "style_for", "usable_styles", "validate"]

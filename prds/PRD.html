@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>HypeSocials PRD — Lean Viral Content Engine (v2.2.0)</title>
+<title>HypeSocials PRD — Lean Viral Content Engine (v2.4.0)</title>
 <style>
   :root{
     --paper:#FBFAF7; --surface:#FFFFFF; --ink:#1D1F26; --muted:#6B6E78;
@@ -148,10 +148,10 @@
     <h1>HypeSocials — Lean Viral Content Engine</h1>
     <p class="sub">One command in, a folder of trend-derived social creatives out. Topic-first architecture with local style registry and verbatim copy selection. Every finished frame now passes a three-critic quality gate before it can ship.</p>
     <div class="metaline">
-      <span class="chip">PRD <b>v2.2.0</b></span>
-      <span class="chip">2026-08-14</span>
-      <span class="chip">Gauntlet gate (<b>3 critics</b>, <b>≤3 rounds</b>, <b>BLOCKED</b> never publishes)</span>
-      <span class="chip"><b>25,899 lines</b> Python (measured, 41 files)</span>
+      <span class="chip">PRD <b>v2.4.0</b></span>
+      <span class="chip">2026-08-20</span>
+      <span class="chip">19-Style Registry + LLM-Matched Assignment (FR-334-337) + Teal Spine (D56-D57)</span>
+      <span class="chip"><b>34,745 lines</b> Python · <b>32,238</b> tests (measured 2026-08-20)</span>
       <span class="chip">Batch <b>~3 min</b> expected · <b>60 min</b> deadline (worst case)</span>
     </div>
   </div>
@@ -163,7 +163,7 @@
     <a href="#diagram">Flow Diagram</a>
     <a href="#why">Why</a>
     <a href="#gauntlet">Gauntlet (FR-322–330)</a>
-    <a href="#decisions">Decisions (D41–D53)</a>
+    <a href="#decisions">Decisions (D41–D57)</a>
     <a href="#pipeline">Pipeline</a>
     <a href="#metrics">Metrics</a>
     <a href="#open">Open Qs</a>
@@ -176,7 +176,7 @@
     <div class="tldr">
       <h2>TL;DR — Plain English</h2>
       <p><strong>HypeSocials creates viral social media posts directly from trending topics.</strong> You pick how many images, slide-decks and short videos you want, set your budget, and press Enter. About three minutes later — eight to ten if you asked for videos — you have a folder of finished posts ready to publish.</p>
-      <p><strong>What happens in between:</strong> Virlo provides trending topics as text (captions, hooks, panel texts, metadata). The engine screens for brand safety, picks the strongest topics, quotes exact words from the trending posts' on-image text and captions, applies one of eight defined visual styles (you control these via a YAML registry — colors, typography, layout), optionally adds your wordmark, and generates images, slide-decks or videos. For slideshows, each source slide's text and visuals are analyzed and mapped to the output slides. Style choices and which posts were quoted are all visible in the gallery so nothing is hidden.</p>
+      <p><strong>What happens in between:</strong> Virlo provides trending topics as text (captions, hooks, panel texts, metadata). The engine screens for brand safety, picks the strongest topics, quotes exact words from the trending posts' on-image text and captions, applies one of nineteen defined visual styles — chosen by deterministic rotation or optional LLM-matched fit assessment (you control these via a YAML registry — colors, typography, layout, match profiles), optionally adds your wordmark in a unified teal palette, and generates images, slide-decks or videos. For slideshows, each source slide's text and visuals are analyzed and mapped to the output slides. Style choices and which posts were quoted are all visible in the gallery so nothing is hidden.</p>
       <p><strong>Every finished picture is now checked before it ships.</strong> Three separate AI critics look at each rendered frame — one checks the words are the right words and nobody else's name or logo sneaked in, one checks it looks like the style it was supposed to be, one checks it is simply well made. Anything they fail gets re-made with a targeted fix, up to three tries. A creative that still cannot pass is <strong>blocked</strong>: you keep the files and a plain-English report of what was wrong, but it is never treated as ready to publish. The critics only ever see the finished picture — never the instructions used to make it — so they cannot be talked into approving something.</p>
       <p><strong>Key facts:</strong> Cost is estimated and confirmed before anything is billed. If the estimate is over budget and you're sitting there, it refuses and offers smaller numbers; if run unattended, it drops posts from the end until it fits. Every step is logged — if one post fails, the rest ship. You can stop at any time (Ctrl+C). You can preview trends and their verdicts for free. The quality gate never spends money you did not approve: its re-render budget is shown up front and it stops rather than overspending.</p>
     </div>
@@ -210,7 +210,7 @@
         <rect class="node" x="40" y="50" width="140" height="50" rx="4"/>
         <text class="label" x="110" y="80">Virlo Topics</text>
         <rect class="node" x="210" y="50" width="140" height="50" rx="4"/>
-        <text class="label" x="280" y="80">Text-Only Styles</text>
+        <text class="label" x="280" y="80">19-Style Registry</text>
         <rect class="node" x="380" y="50" width="140" height="50" rx="4"/>
         <text class="label" x="450" y="80">Branding Config</text>
         <rect class="node" x="550" y="50" width="140" height="50" rx="4"/>
@@ -231,7 +231,8 @@
         <!-- Assign -->
         <line class="edge" x1="620" y1="280" x2="620" y2="310"/>
         <rect class="node" x="530" y="310" width="180" height="50" rx="4"/>
-        <text class="label" x="620" y="340">ASSIGN Styles + Brand</text>
+        <text class="label" x="620" y="330">ASSIGN: Rotation or</text>
+        <text class="label" x="620" y="348">LLM-Matched (FR-334)</text>
 
         <!-- Copy -->
         <line class="edge" x1="620" y1="360" x2="620" y2="390"/>
@@ -313,7 +314,7 @@
     <h2>Why: The Pivot</h2>
     <p class="lede">Three core inversions from the pre-pivot design:</p>
     <ul>
-      <li><strong>Visual authority:</strong> Was vision-analyzed Virlo images → Now a local, versioned <code>styles.yaml</code> registry (8 textual style definitions: palette, typography, layout, stored in the repo, edited like code). No style reference images; rendering is driven by text-only metadata. For slideshows, source slides are analyzed post-Confirm (Sonnet 5) to extract on-image text and visual descriptions enriching render prompts. This makes fidelity auditable and removes 262 lines of vision-analysis code.</li>
+      <li><strong>Visual authority:</strong> Was vision-analyzed Virlo images → Now a local, versioned <code>styles.yaml</code> registry (19 textual style definitions as of v2.4.0: palette, typography, layout, stored in the repo, edited like code). No style reference images; rendering is driven by text-only metadata. For slideshows, source slides are analyzed post-Confirm (Sonnet 5) to extract on-image text and visual descriptions enriching render prompts. This makes fidelity auditable and removes 262 lines of vision-analysis code.</li>
       <li><strong>Copy:</strong> Was LLM-generated "our words" → Now verbatim quotes from trending posts' on-image text (panel texts, hooks, overlays) and captions, selected by an AI but resolved to bytes by the engine. Descriptions never render. Every rendered word is from a real post in its source language. Eliminates hallucination and removes 210 lines of copywrite code.</li>
       <li><strong>Topics:</strong> Was monitor-based grouping → Now topics extracted per monitor (up to 9 each) with per-topic strength computed from their own posts' views. Unlocks post-level recency: fresh posts from the same monitor within the history window, breaking the old 2-reuse bottleneck (measured 30–39 sets now available).</li>
     </ul>
@@ -368,14 +369,14 @@
   </section>
 
   <section id="decisions">
-    <h2>Design Decisions — The Pivot and the Gate (D41–D53)</h2>
-    <p class="lede"><strong>D1–D22, D25–D30</strong> are in the detailed PRD files. These decisions define the post-pivot architecture, its slideshow-fidelity amendment, and the v2.2.0 quality gate:</p>
+    <h2>Design Decisions — The Pivot, the Gate, and Style Intelligence (D41–D57)</h2>
+    <p class="lede"><strong>D1–D22, D25–D30</strong> are in the detailed PRD files. D41–D53 define the post-pivot architecture, slideshow fidelity, and the v2.2.0 quality gate. D54–D57 (v2.3.0–v2.4.0) introduce compress mode for carousel copy and the v2.4.0 registry expansion with LLM-matched style assignment and teal-spine unification:</p>
 
     <div class="decisions">
       <div class="dcard">
         <div class="id">D41</div>
         <h4>Meta-style Registry (Text-Only)</h4>
-        <p>Visual authority: eight textual style definitions in <code>styles.yaml</code> (colors, typography, layout, motion profile). No reference images attached to styles; rendering driven by metadata only. No vision analysis, no built-in fallback tier. Missing registry → exit 2. Deterministic rotation per creative on <code>entry.order</code>.</p>
+        <p>Visual authority: nineteen textual style definitions in <code>styles.yaml</code> (9 originals + build-log-mono + 4 archetype + 5 teal variants; colors, typography, layout, motion profile, match profiles for LLM). No reference images attached to styles; rendering driven by metadata only. No vision analysis, no built-in fallback tier. Missing registry → exit 2. Deterministic rotation or optional LLM-matched assignment per creative.</p>
       </div>
 
       <div class="dcard">
@@ -436,6 +437,30 @@
         <div class="id">D53</div>
         <h4>Pillow Scope Extended to Crop Validation</h4>
         <p>D48 admitted Pillow for one job: cropping sanctioned tool-logo patches. D53 extends it to <em>validating</em> those crops — a pixel-variance floor that refuses near-uniform patches, and content-rect detection used only as a fallback when the first crop fails validation. Still no compositing, no resizing pipelines, no thumbnails.</p>
+      </div>
+
+      <div class="dcard">
+        <div class="id">D54</div>
+        <h4>Compress Mode for Carousel Decks (v2.3.0)</h4>
+        <p>Operator-opted copy compression: in <code>compress</code> mode (versus <code>verbatim</code> default), the copy LLM receives the bound post's panel texts verbatim and returns compressed text fitting the style's budget, humanized (no comment bait, hashtags checked), in source language, never invented. One-walk invariant guarantees gauntlet contract integrity. Fallback: failed compress call yields verbatim mapped deck tagged <code>copy_degraded</code>. Three shipped configs pin compress; engine default is verbatim.</p>
+      </div>
+
+      <div class="dcard">
+        <div class="id">D55</div>
+        <h4>Style Doubling-Down (v2.3.0)</h4>
+        <p>Shipped brand configs narrow the rotation pool to four handpicked styles: <code>anime-noir-statement</code>, <code>letterpress-print-carousel</code>, <code>meme-caricature-panels</code>, and the new <code>quiet-luxury-night-photoreal</code>. <code>meme-caricature-panels</code> is <code>carousel_role: slides_only</code> and stays inert on carousel-only runs (kept deliberately), so effective carousel rotation is 3 styles. No fallback tier; missing/invalid styles exit 2 pre-flight (FR-295).</p>
+      </div>
+
+      <div class="dcard">
+        <div class="id">D56</div>
+        <h4>Registry Expansion: 9 → 19 Styles (v2.4.0)</h4>
+        <p>Census-driven expansion (21 bound posts analyzed 2026-08-20): <code>build-log-mono</code> (brutalist editorial typographic system); four archetype styles addressing 48% of recent posts — <code>icon-ledger-carousel</code> (listicle infographics), <code>circuit-atlas-dark</code> (dark tech diagrams), <code>social-quote-card</code> (social screenshots, no real platform names/logos), <code>terminal-mockup-deck</code> (tool-UI mockups). Five <code>-teal</code> variants (letterpress-print, meme-caricature, quiet-luxury-night, photoreal-ambient, ugc-tabletop) apply teal spine to originals. Every entry gets <code>match_profile</code> (1-2 sentences: "what sources this style suits") for FR-334 LLM matching. Brand-safety ruling: social-quote-card and terminal-mockup-deck evoke format, never imitate platforms.</p>
+      </div>
+
+      <div class="dcard">
+        <div class="id">D57</div>
+        <h4>Teal-Spine Unification (v2.4.0)</h4>
+        <p>Standing decision D-G ("colour is curated by choosing styles, never by editing a style") is preserved. Teal spine achieved through -teal variant styles and a 12-key <code>styles.enabled</code> pool shipped in all three brand configs. Operator curates feed's unifying color by selecting from the spine-aligned pool, not by editing any style's palette. Grounds, surfaces, and type remain native to each style; accent placement stays under 5% in photographic styles.</p>
       </div>
     </div>
   </section>
@@ -548,8 +573,8 @@
         </tr>
         <tr>
           <td>10-pipeline.md</td>
-          <td>1–29, 90–109, 141–149, 200–209, 290–291, 293, 302–304, <b>322–330</b></td>
-          <td>Detailed run flow, topic extraction, filtering, copying, rendering, budget, panel mapping, <b>the Gauntlet gate</b></td>
+          <td>1–29, 90–109, 141–149, 200–209, 290–291, 293, 302–304, <b>322–330, 331, 334</b></td>
+          <td>Detailed run flow, topic extraction, filtering, copying, rendering, budget, panel mapping, <b>the Gauntlet gate, carousel compress pipeline, LLM-matched style assignment</b></td>
         </tr>
         <tr>
           <td>20-integrations.md</td>
@@ -558,18 +583,18 @@
         </tr>
         <tr>
           <td>30-configuration-and-run.md</td>
-          <td>50–69, 130–140, 170–177, 250–259, 280–289, 292, 299–300, 307</td>
-          <td>Config schema, run.bat, menu, CLI flags, branding, text-only styles</td>
+          <td>50–69, 130–140, 170–177, 250–259, 280–289, 292, 299–300, 307, <b>333, 336</b></td>
+          <td>Config schema, run.bat, menu, CLI flags, branding, text-only styles, <b>compress config, style assignment knob</b></td>
         </tr>
         <tr>
           <td>40-outputs-and-logging.md</td>
-          <td>70–89, 150–159, 230–239, 296–298, 309</td>
-          <td>Folder structure, gallery, run log, events, metadata, provenance with source slides</td>
+          <td>70–89, 150–159, 230–239, 296–298, 309, <b>337</b></td>
+          <td>Folder structure, gallery, run log, events, metadata, provenance with source slides, <b>style-match fields in outputs</b></td>
         </tr>
         <tr>
           <td>50-promptcraft.md</td>
-          <td>180–199, 260–269, 294, 308</td>
-          <td>Prompt design, template playbooks, registry, filter/copy/branding, slide intelligence</td>
+          <td>180–199, 260–269, 294, 308, <b>332, 335</b></td>
+          <td>Prompt design, template playbooks, registry, filter/copy/branding, slide intelligence, <b>compress and style-match playbooks</b></td>
         </tr>
         <tr>
           <td>60-publishing-postiz.md</td>
@@ -578,12 +603,12 @@
         </tr>
       </table>
     </div>
-    <p style="margin-top:20px"><strong>Next block: FR-331+</strong> for future amendments. FR-27 and FR-105 are <strong>superseded</strong> by FR-322–330 (D49) and their numbers are not reused.</p>
+    <p style="margin-top:20px"><strong>Next block: FR-338+</strong> for future amendments. FR-27 and FR-105 are <strong>superseded</strong> by FR-322–330 (D49) and their numbers are not reused.</p>
   </section>
 
   <div class="foot">
-    <p><strong>Source of truth:</strong> <code>prds/*.md</code> files. This HTML is a current snapshot as of 2026-08-14 (v2.2.0, the Gauntlet amendment cycle: FR-322–330 three-critic post-render gate, D49–D53, run deadline 60 min, FR-27/FR-105 superseded). For the latest changes, see the amendment log in 00-overview.md or the individual PRD files.</p>
-    <p><strong>Built by:</strong> Technical Writer (T0.1), Carousel Fidelity + Gauntlet Loop amendment cycle (D49–D53), plan folder <code>plans/carousel-gauntlet/</code>.</p>
+    <p><strong>Source of truth:</strong> <code>prds/*.md</code> files. This HTML is current as of 2026-08-20 (v2.4.0, the Style Intelligence amendment cycle: registry 9→19, LLM-matched assignment FR-334–337, teal spine, D54–D57). For the latest changes, see the amendment log in 00-overview.md or the individual PRD files.</p>
+    <p><strong>Built by:</strong> Technical Writer (T0.1), Style Intelligence amendment cycle (D54–D57, v2.4.0), plans <code>plans/xmasterplan-compress-mode-and-style-doubledown.md</code> (v2.3.0) and <code>plans/xmasterplan-style-intelligence.md</code> (v2.4.0).</p>
   </div>
 
 </main>

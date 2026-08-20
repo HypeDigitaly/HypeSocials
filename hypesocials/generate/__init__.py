@@ -949,6 +949,15 @@ def _record(entry: PlanEntry, env: Env) -> AssetRecord:
     for tag in _intel_tags(intel):  # FR-306: `vision_transcribed` / `vision_unavailable`
         if tag not in degradations:  # the copy stage may already have carried one
             degradations.append(tag)
+    # FR-334/FR-337 (v2.4.0, D56): the ONE batched style matcher never spoke, so every entry in
+    # this plan kept the FR-291 rotation pick it already had. Tagged from the ENTRY's own origin
+    # rather than from a run-level flag, because that is the field the runner stamps and the field
+    # the gallery reads — one answer, not two that can disagree. A per-entry `low` fit is NOT this
+    # tag: it also keeps the baseline, but it is the matcher working (`style_origin: "rotation"`
+    # plus `style_wanted`), and calling a working matcher degraded would make the badge meaningless.
+    if (entry.style_origin == "rotation_fallback"
+            and DegradationTag.STYLE_MATCH_DEGRADED not in degradations):
+        degradations.append(DegradationTag.STYLE_MATCH_DEGRADED)
     return AssetRecord(
         asset_id=entry.asset_id,
         source=entry.trend_key or (f"brief/{entry.brief_name}" if entry.brief_name else "none"),
@@ -961,6 +970,17 @@ def _record(entry: PlanEntry, env: Env) -> AssetRecord:
                                       else ""),
         brand=env.branding.brand,
         branded=entry.branded,
+        # FR-337 (v2.4.0, D56): what that `style_key` MEANS on this asset — which algorithm chose
+        # it, how well the matcher thought it fitted, why, and which archetype it wished the
+        # registry had offered instead. Copied ACROSS untouched, never re-derived: ASSIGN owns the
+        # decision (`runner._assign_visuals`), this record is its receipt, and a second opinion
+        # computed here would be free to disagree with the ASSIGN console line the operator read.
+        # All four stay empty on a rotation-mode run and on every override brief — no matched
+        # answer applies to either, and empty is the honest way to say so.
+        style_fit=entry.style_fit,
+        style_reason=entry.style_reason,
+        style_origin=entry.style_origin,
+        style_wanted=entry.style_wanted,
         topic_key=entry.topic_key or (trend.topic_key if trend else ""),
         copy_source_post_id=prov.post_id if prov else "",
         copy_source_refs=dict(prov.refs) if prov else {},

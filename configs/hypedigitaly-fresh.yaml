@@ -104,20 +104,47 @@ sources:
 
 # Style selection (v2.1.2/FR-314/D-E): which of the authored meta-styles this config's runs may
 # rotate over. A SELECTOR only - prompts/styles.yaml (FR-290) still owns every render prompt,
-# palette and layout zone, and nothing written here carries style content. SET since 2026-08-20
-# (v2.3.0/D55, operator decision): these four keys are the look this niche doubles down on, and
-# every other style the registry offers is out of the rotation until this list changes. A key the
-# registry does not define, or a selection that leaves a requested format with no affine style
-# under the brand, refuses at pre-flight: exit 2, $0 spent, and the message names what the
-# registry really offers. Pass `run.bat --styles key1,key2` to narrow it further for one run.
+# palette and layout zone, and nothing written here carries style content. RE-BASED 2026-08-20
+# (v2.4.0/D57, operator decision; this was D55's four-key list until the same day): these twelve
+# keys are the look this niche doubles down on, and every other style the registry offers is out
+# of the rotation until this list changes. The unifying teal spine is curated BY THIS LIST: the
+# `-teal` entries are their own registry entries, copied from the originals and re-roled onto the
+# house teals, and the originals they came from are untouched - which is D-G honoured exactly as
+# written (colour is curated by CHOOSING styles, never by editing a style, because an edit would
+# change every later run too). A key the registry does not define, or a selection that leaves a
+# requested format with no affine style under the brand, refuses at pre-flight: exit 2, $0 spent,
+# and the message names what the registry really offers. Pass `run.bat --styles key1,key2` to
+# narrow it further for one run.
 # (The old `styles.refs_per_job` window is still gone - D46/F3, a text-only style ships no
 # reference images - and this key is not its return.)
 styles:
-  enabled: [anime-noir-statement, letterpress-print-carousel, meme-caricature-panels, quiet-luxury-night-photoreal]
-  # meme-caricature-panels is carousel_role: slides_only - inert while this config runs
-  # carousels only (operator: keep for now; activates if image posts return).
+  # Listed in reading order, which is NOT the order they are drawn in: both FR-291's rotation and
+  # FR-334's matcher walk the pool in prompts/styles.yaml FILE order, so how this list is typed
+  # changes nothing but how this block reads.
+  enabled: [anime-noir-statement, platform-showcase-card, letterpress-print-carousel-teal,
+            meme-caricature-panels-teal, quiet-luxury-night-photoreal-teal,
+            photoreal-ambient-caption-teal, ugc-tabletop-statement-teal, build-log-mono,
+            icon-ledger-carousel, circuit-atlas-dark, social-quote-card, terminal-mockup-deck]
+  # meme-caricature-panels-teal inherits `carousel_role: slides_only` from the entry it was copied
+  # from - inert while this config runs carousels only (operator: keep for now; activates if image
+  # posts return). Same ruling D55 made for the un-tinted key, kept deliberately for the same
+  # reason: an inert key costs nothing, because fmt_affine drops it per format.
   # hypelead-brand-card deliberately absent: branding.enabled is false here (brand_ok drops
   # it anyway); branded entries sign through the TEXT block on any style (FR-318/FR-292).
+  # v2.4.0/FR-334 (D56): WHICH ALGORITHM assigns a style to a creative - not to be confused with
+  # the neighbouring `styles.rotation` key (`seeded | fixed`, engine default `seeded`, left unset
+  # in this file), which only decides where the deterministic scan STARTS. `matched` runs ONE
+  # batched, fail-open LLM screen at ASSIGN (the `analysis` role, quoted at the Confirm gate as
+  # `style_match_call`) that reads each creative's own source signals and picks the best-fitting
+  # style out of the enabled pool above. It never replaces the deterministic rotation, it
+  # OVERLAYS it: FR-291's pick is computed first and is what an entry keeps when the matcher
+  # answers `low` fit, names a style outside that entry's pool or skips the row, and what the
+  # WHOLE plan keeps when the call itself fails - tagged `style_match_degraded`, run continues.
+  # Twelve enabled styles under plain rotation would be visual chaos, so the pool above and this
+  # key are ONE decision: `assignment: rotation` restores pre-D56 behaviour byte-exactly (and
+  # still obeys `styles.rotation: seeded|fixed`), and narrowing the list again is what should
+  # come with it.
+  assignment: matched
 
 # Brand identity for this config (FR-292/D43) - which brand the run signs with, how often, and in
 # what shape. Only the branded fraction below carries the wordmark. The wordmark itself is NOT

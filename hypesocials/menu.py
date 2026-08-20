@@ -63,9 +63,17 @@ from hypesocials.prompts_engine import PROMPTS_DIR
 from hypesocials.util import fit, read_text
 
 #: FR-286: 78 is the ceiling for every printed line. `  [n] ` + a 15-char name + two spaces = 23,
-#: so a picker label gets 55; a facts line is indented 6, so 70 leaves two columns of slack for a
+#: so a picker label gets 55; a facts line is indented 6, so 71 leaves one column of slack for a
 #: glyph a legacy console renders double-width.
-_NAME_WIDTH, _LABEL_WIDTH, _FACTS_WIDTH = 15, 55, 70
+#:
+#: v2.4.0 (D56): the facts width was 70, and the worst row — zero monitors, styles fine — measured
+#: exactly 70, i.e. one character from truncation for as long as the registry stayed single-digit.
+#: Growing it to 19 styles made that row 71 and `_fit` ate the tail, which is where the operator's
+#: cure lives: the badge printed `NOT RUNNABLE - pick…` and the `[4]` naming the fix was gone. The
+#: column came out of the slack rather than out of the badge because a truncated instruction is a
+#: worse failure than a wide glyph wrapping, and because the picker LABEL line above already runs
+#: to the full 78 with no slack at all — 77 here is still the more conservative of the two.
+_NAME_WIDTH, _LABEL_WIDTH, _FACTS_WIDTH = 15, 55, 71
 #: FR-284's prose, beside this module and NOT under `prompts/` (pre-flight validates that tree).
 _HELP_FILE = Path(__file__).with_name("wizard_help.md")
 _HELP: dict[str, str] = {}

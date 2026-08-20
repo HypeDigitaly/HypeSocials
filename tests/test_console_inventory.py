@@ -33,6 +33,13 @@ asked for in words:
    is a two-character edit. The counts come off the per-asset receipt, never off
    `config.run.carousel_copy_mode` — a compress-mode run whose call failed shipped the verbatim
    mapped deck, and a line claiming "compressed" over it would hide the degradation.
+8. **The console says which ALGORITHM chose each look** (v2.4.0, D56/FR-334–337) — the ASSIGN
+   stage gained a per-creative provenance line (origin/fit, then the matcher's own reason), a
+   `matched N of M` tally, a gap report naming the archetypes the registry has no style for, and
+   exactly ONE `style_match_degraded` warning for a whole-call failure. Under `assignment:
+   rotation` none of them print and no call is made, which is the escape hatch FR-334 promises and
+   is pinned as console silence rather than described. The launch block's style count joined the
+   same discipline: it reports the ENABLED-aware usable pool, not the brand-only one.
 
 House rules asserted throughout: FR-286's 78 columns (URLs carved out onto their own line), no
 ANSI, no `→` glyph, only `util.fit`'s proven-safe set. Offline: every surface here is a pure
@@ -54,11 +61,11 @@ from typing import Any
 import pytest
 
 from hypesocials import (cli, copywrite, generate, preflight, previews, render, runner,
-                         topic_filter)
+                         style_match, styles, topic_filter)
 from hypesocials.config import Config
-from hypesocials.models import (AssetRecord, CopySet, PlanEntry, PlanEntryStatus, RenderFailCause,
-                                RenderOutcome, RenderOutcomeKind, RenderPriority, SourcePost,
-                                TrendItem, VisionCheckResult)
+from hypesocials.models import (AssetRecord, CopySet, MetaStyle, PlanEntry, PlanEntryStatus,
+                                RenderFailCause, RenderOutcome, RenderOutcomeKind, RenderPriority,
+                                SourcePost, TrendItem, VisionCheckResult)
 from hypesocials.util import Deadline, Pulse, Stopwatch
 
 #: FR-286's ceiling, read off the runner so a widened console cannot silently pass this file.
@@ -1549,3 +1556,362 @@ def test_fr286_the_widest_row_this_module_can_print_still_fits_the_console() -> 
     assert lines[0].startswith("      compressed compressed"), "label, one space, then content"
     assert lines[1].startswith(" " * (6 + previews._ROW_LABEL)), \
         "continuation lines align under the content, not under the label"
+
+# ------------------------- D56/FR-334-337: what MATCHED assignment adds to the ASSIGN stage
+#
+# Matched assignment is an overlay on the FR-291 rotation, and the console is where an operator
+# sees which of the two chose each look. Four surfaces are new, and each is a §1.10 rule applied
+# to a new fact rather than a new rule:
+#
+# * a per-creative CONTINUATION line under the existing receipt (origin/fit, then the model's own
+#   reason) — a continuation and not four more columns, because FR-286's 78 are already spent;
+# * a `matched N of M` tally, so "the mode is on" is arithmetic rather than an announcement;
+# * the GAP REPORT — the archetypes the matcher wanted and this registry has no style for. D56
+#   decision 3: the engine never synthesizes a style at runtime, so a miss is written down and the
+#   operator authors it deliberately;
+# * exactly ONE `style_match_degraded` warning for a whole-call failure, in the `filter_degraded`
+#   posture (FR-294): said after the receipts, never instead of them, and the run continues.
+#
+# Everything below is offline. Two tests call the pure block builders; three drive `_assign_visuals`
+# with `style_match.match` stubbed, which is the seam — the matcher's OWN fail-open behaviour is
+# `tests/test_style_match.py`'s subject, and asserting it twice would be two owners of one rule.
+
+
+def _match_style(key: str, **over: object) -> MetaStyle:
+    """One registry entry, affine to everything, so a fixture's pool is never the variable."""
+    fields: dict[str, object] = {"render_prompt": "Flat graphic card, centred subject.",
+                                 "match_profile": "Suits short single-idea sources.",
+                                 "format_affinity": ["image", "carousel", "reel"]}
+    fields.update(over)
+    return MetaStyle(key=key, **fields)  # type: ignore[arg-type]
+
+
+def _match_registry(*keys: str) -> styles.StyleRegistry:
+    return styles.StyleRegistry(version=1, styles=[_match_style(key) for key in keys],
+                                origin="prompts/styles.yaml", content_hash="0123456789ab")
+
+
+def _match_session(assignment: str = "matched") -> runner._Session:
+    """An ASSIGN-stage session: matched mode, a three-style registry, an unused client."""
+    config = Config()
+    config.styles.assignment = assignment
+    config.styles.enabled = []
+    live = session(config=config, stages=["ASSIGN"])
+    live.registry = _match_registry("s0", "s1", "s2")
+    live.llm = object()  # `_metered` needs a client; the stubbed matcher never calls through it
+    return live
+
+
+def _answer(item: PlanEntry, **over: object) -> style_match.Match:
+    return style_match.Match(asset_id=item.asset_id, **over)  # type: ignore[arg-type]
+
+
+def _stub_matcher(monkeypatch: pytest.MonkeyPatch,
+                  answers: dict[str, style_match.Match]) -> list[int]:
+    """Replace `style_match.match` with one that answers `answers`; returns a call counter."""
+    calls: list[int] = []
+
+    async def matcher(entries: Any, registry: Any, topics: Any, cfg: Any, llm: Any) -> Any:
+        calls.append(len(list(entries)))
+        return answers
+
+    monkeypatch.setattr(runner.style_match, "match", matcher)
+    return calls
+
+
+def test_fr337_the_assign_receipt_gains_an_origin_fit_and_reason_continuation_line() -> None:
+    """The per-creative provenance line, in all four of the states the vocabulary can produce.
+
+    Two of them print NOTHING, and that is the load-bearing half. A `rotation`-mode run has no
+    provenance to report — the receipt above it already said everything there is to say about how
+    the style was chosen — and a `rotation_fallback` means every entry in the plan carries the SAME
+    whole-call failure, which the single warning below the loop says once instead of N times. A
+    line per creative in either case would be D45's "a heading with no rows under it" defect wearing
+    a different shape: noise an operator learns to skip, on the one surface that has to stay worth
+    reading.
+
+    A `low` fit DOES print, on `rotation/low`: that entry got a real answer, the answer was "nothing
+    here fits", and the operator wants the sentence that said so beside the gap report.
+    """
+    matched = entry(0)
+    matched.style_origin, matched.style_fit = "matched", "high"
+    matched.style_reason = "seven dense labelled panels suit a ledger deck"  # 45 of the 49 columns
+    low = entry(1)
+    low.style_origin, low.style_fit = "rotation", "low"
+    low.style_reason = "no enabled style renders a social screenshot"
+    low.style_wanted = "social screenshot card"
+    baseline, degraded = entry(2), entry(3)
+    baseline.style_origin = "rotation"  # what `_assign_visuals` stamps on every entry, pre-overlay
+    degraded.style_origin = "rotation_fallback"
+    degraded.style_reason = f"{style_match.DEGRADED_MARKER}: the match call raised TimeoutError"
+
+    lines = {item.asset_id: runner._match_receipt(item)
+             for item in (matched, low, baseline, degraded)}
+
+    for line in lines.values():
+        console_safe(line)
+    assert lines[matched.asset_id].split() == [
+        "matched/high", "seven", "dense", "labelled", "panels", "suit", "a", "ledger", "deck"]
+    assert lines[matched.asset_id].startswith(" " * 13), "it hangs under its creative's receipt"
+    assert "…" not in lines[matched.asset_id], "a reason inside 49 columns arrives whole"
+    assert lines[low.asset_id].startswith(" " * 13 + "rotation/low "), \
+        "a low fit keeps its number — the answer was real, it just did not fit"
+    assert lines[baseline.asset_id] == "", "a rotation-mode entry has no provenance to add"
+    assert lines[degraded.asset_id] == "", \
+        "a whole-call failure is ONE warning below the loop, never one line per creative"
+
+
+def test_fr286_the_widest_provenance_line_the_vocabulary_can_produce_still_fits() -> None:
+    """The arithmetic `_match_receipt`'s own docstring states, asserted rather than trusted:
+    13 indent + 15 label + 1 gutter + 49 reason = 78, which is exactly FR-286's ceiling.
+
+    `rotation/medium` is the widest label the origin/fit vocabulary can spell (15 characters) and
+    `reason` is MODEL-AUTHORED, which is why it is last on the line and why it is the only thing on
+    it allowed to be cut. This session already fixed a real truncation defect caused by exactly this
+    kind of growth in `menu.py`, so the ceiling is measured on the WORST case rather than on a
+    typical one: a reason at the matcher's own `_MAX_REASON_CHARS` bound with no word boundary in
+    it, which is the only shape that makes `util.fit` return its full width (a reason with spaces
+    backs up to the last boundary and comes out shorter). Both shapes are asserted, because "it
+    fits" has to hold for the one that fills the line and not only for the one that does not reach
+    it.
+    """
+    worst, spaced = entry(0), entry(1)
+    for item in (worst, spaced):
+        item.style_origin, item.style_fit = "rotation", "medium"
+    worst.style_reason = "x" * style_match._MAX_REASON_CHARS
+    spaced.style_reason = "reason " * 40
+
+    line, wrapped_line = runner._match_receipt(worst), runner._match_receipt(spaced)
+
+    assert len("rotation/medium") == 15, "the widest label the origin/fit vocabulary can produce"
+    assert 13 + 15 + 1 + 49 == WIDTH, "the arithmetic `_match_receipt`'s docstring states"
+    assert len(line) == WIDTH, f"{len(line)} chars — this shape is meant to fill FR-286 exactly"
+    assert len(wrapped_line) <= WIDTH, f"{len(wrapped_line)} chars (FR-286 allows {WIDTH})"
+    console_safe(line)
+    console_safe(wrapped_line)
+    # …and the cut lands on the reason, never on the label the operator needs to read.
+    for cut in (line, wrapped_line):
+        assert cut.startswith(" " * 13 + "rotation/medium ")
+        assert cut.endswith("…"), "util.fit marks the cut rather than ending mid-word"
+    assert style_match._MAX_REASON_CHARS > WIDTH, \
+        "the matcher's own bound is looser than this line, so `fit` is what really holds it"
+
+
+def test_fr334_the_gap_report_lists_distinct_archetypes_commonest_first_and_is_silent_when_clean(
+) -> None:
+    """D56 decision 3 in console form: the shopping list for `prompts/styles.yaml`.
+
+    Distinct wants with a count, not one row per creative — reprinting the same archetype four
+    times would bury how many distinct gaps there really are, which is the only number that turns
+    this block into an authoring decision. Commonest first for the same reason.
+
+    Silent on a clean run, because the alternative is a heading with no rows under it (D45), and
+    silent on a matched run where every creative found a style — which is the normal outcome and
+    must not print a block that reads like a finding.
+    """
+    wanted = []
+    for index, want in enumerate(["numbered listicle deck"] * 3 + ["social screenshot card"] * 2
+                                 + ["dark benchmark diagram"]):
+        item = entry(index)
+        item.style_wanted = want
+        wanted.append(item)
+
+    block = runner._style_gap_block(wanted)
+
+    console_safe(block)
+    lines = block.splitlines()
+    assert lines[0].strip().startswith("style gap: 3 archetype(s)"), "DISTINCT wants, not creatives"
+    assert "styles.yaml (FR-334)" in lines[1]
+    assert [line.strip() for line in lines[2:]] == [
+        "- numbered listicle deck (3 creative(s))",
+        "- social screenshot card (2 creative(s))",
+        "- dark benchmark diagram (1 creative(s))"], "commonest first, then alphabetical"
+    assert runner._style_gap_block([entry(0), entry(1)]) == "", \
+        "a run that wanted nothing prints no block at all"
+
+
+def test_fr334_a_gap_report_row_of_runaway_model_prose_is_still_bounded_to_the_console() -> None:
+    """Every row is free model text, so every row goes through `util.fit` — the same discipline the
+    receipt's reason gets. A matcher that answered with a paragraph would otherwise wrap the
+    operator's console and take the block's readability with it."""
+    runaway = entry(0)
+    runaway.style_wanted = "listicle " * 40
+
+    block = runner._style_gap_block([runaway])
+
+    console_safe(block)
+    assert block.splitlines()[2].strip().startswith("- listicle listicle"), "still named"
+
+
+def test_fr337_a_matched_run_prints_the_provenance_lines_the_tally_and_the_gap_block(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The whole ASSIGN stage under matched mode, end to end through the real narration.
+
+    Three creatives, three different outcomes — an accepted pick, an accepted `medium` (a decent
+    fit is a fit, so it reads exactly like `high` and the operator judges the difference), and a
+    `low` that keeps its rotation baseline and contributes a want to the gap report. The tally is
+    what makes "the mode ran" arithmetic: `matched 2 of 3` cannot be true of a run where the
+    matcher never spoke, and `2` is countable off the lines above it.
+    """
+    live = _match_session()
+    entries = [entry(0), entry(1), entry(2)]
+    _stub_matcher(monkeypatch, {
+        entries[0].asset_id: _answer(entries[0], style_key="s2", fit="high", origin="matched",
+                                     reason="a single big claim suits the statement style"),
+        entries[1].asset_id: _answer(entries[1], style_key="s0", fit="medium", origin="matched",
+                                     reason="dense rows, close enough to a ledger deck"),
+        entries[2].asset_id: _answer(entries[2], fit="low", origin="rotation",
+                                     reason="no enabled style renders a terminal mockup",
+                                     wanted_archetype="terminal mockup deck")})
+
+    asyncio.run(runner._assign_visuals(live, entries, {}, brief_only=False))
+
+    lines = printed(capsys)
+    for line in lines:
+        console_safe(line)
+    baseline = [entry(index) for index in range(3)]
+    styles.assign_styles(baseline, _match_registry("s0", "s1", "s2"), live.config.branding.brand,
+                         branding_enabled=live.config.branding.enabled, run_id=live.run_id,
+                         rotation=live.config.styles.rotation)
+    assert [item.style_key for item in entries[:2]] == ["s2", "s0"], \
+        "the two accepted winners are written in place, over whatever the rotation gave them"
+    assert entries[2].style_key == baseline[2].style_key, \
+        "the low fit keeps the FR-291 baseline byte for byte — the overlay cannot lose a pick"
+    assert any(line.strip().startswith("matched/high ") for line in lines)
+    assert any(line.strip().startswith("matched/medium ") for line in lines), \
+        "`medium` is ACCEPTED and prints like `high` — the operator reads the difference"
+    assert any(line.strip().startswith("rotation/low ") for line in lines)
+    assert any("matched 2 of 3 creative(s); 1 kept the rotation baseline" in line
+               for line in lines)
+    assert any("style gap: 1 archetype(s)" in line for line in lines)
+    assert any("terminal mockup deck (1 creative(s))" in line for line in lines)
+    assert live.log.warnings == [], "nothing degraded — a per-entry rejection is a normal answer"
+
+
+def test_fr337_a_whole_call_failure_is_ONE_warning_and_never_a_line_per_creative(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """FR-294's `filter_degraded` posture, verbatim: one warning, after the receipts rather than
+    instead of them, and the run continues on the FR-291 baseline.
+
+    **This began as a MEASURED FINDING and is now the fix (2026-08-20, W4 barrier).** The runner
+    used to compose `f"{cause} — the FR-291 rotation baseline stands, every creative kept a style"`
+    and print it through `fit(told, 74)`. The reassurance clause alone is 67 characters, so ANY real
+    cause (`style_match_degraded: the match call raised TimeoutError` is 55) pushed the composed
+    line past 120 and `fit` ate the reassurance entirely — the console showed the failure and not
+    the "nothing was lost" half, which is the half that decides whether an operator aborts a run
+    they think has styleless creatives. The conductor split it into two lines: the cause keeps the
+    marker and stays last-and-cuttable on its own line, and the fixed sentence gets a line where
+    nothing can cut it. Both now measure well inside FR-286 (58 and 66 with their indents).
+
+    So the assertions below pin the SPLIT, not the join: exactly one marker-bearing line however
+    large the plan, the cause whole on it, and the reassurance present and untruncated on a line of
+    its own. `run.log` still keeps the cause whole through `log.warn`.
+    """
+    live = _match_session()
+    entries = [entry(index) for index in range(4)]
+    cause = f"{style_match.DEGRADED_MARKER}: the match call raised TimeoutError"
+    _stub_matcher(monkeypatch, {item.asset_id: _answer(item, origin="rotation_fallback",
+                                                       reason=cause) for item in entries})
+
+    asyncio.run(runner._assign_visuals(live, entries, {}, brief_only=False))
+
+    lines = printed(capsys)
+    for line in lines:
+        console_safe(line)
+    assert [code for code, _ in live.log.warnings] == ["style_match_degraded"], \
+        "exactly one warning for the whole call, whatever the plan size"
+    assert live.log.warnings[0][1] == cause, "run.log keeps the cause whole; only the console cuts"
+    told = [line for line in lines if style_match.DEGRADED_MARKER in line]
+    assert len(told) == 1, told
+    assert "the match call raised TimeoutError" in told[0], \
+        "WHAT failed is the half that must survive the cut — it is what an operator acts on"
+    reassurance = [line for line in lines if "the FR-291 rotation baseline stands" in line]
+    assert len(reassurance) == 1, reassurance
+    assert reassurance[0].strip() == "the FR-291 rotation baseline stands, every creative kept " \
+                                     "a style", "the fixed half must arrive WHOLE — it is the " \
+                                                "half that says nothing was lost"
+    assert all(len(line) <= 78 for line in (told[0], reassurance[0])), \
+        "FR-286: splitting the join must not merely move the overflow"
+    assert not any(runner._STYLE_MATCH_DEGRADED in line for line in lines
+                   if line.startswith(" " * 13)), \
+        "no per-creative provenance line: four entries, one shared cause, one warning"
+    # …and the baseline really did stand: the same keys the pure rotation would have assigned.
+    expected = [entry(index) for index in range(4)]
+    styles.assign_styles(expected, _match_registry("s0", "s1", "s2"), live.config.branding.brand,
+                         branding_enabled=live.config.branding.enabled, run_id=live.run_id,
+                         rotation=live.config.styles.rotation)
+    assert [item.style_key for item in entries] == [item.style_key for item in expected]
+    assert all(item.style_origin == "rotation_fallback" for item in entries), \
+        "the PICK is the baseline; the ORIGIN records that the matcher never spoke (FR-337)"
+
+
+def test_fr291_a_rotation_mode_run_prints_exactly_what_it_printed_before_d56(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The escape hatch, asserted on the console rather than described: `assignment: rotation` makes
+    no call, adds no line and raises no warning.
+
+    That is the promise FR-334's determinism note makes — one config line restores pre-D56
+    behaviour — and the console is where an operator would first notice it had not been kept. The
+    stubbed matcher is left in place ON PURPOSE: if the mode gate ever moved out of the call site,
+    this test would see the call and the extra lines it prints.
+    """
+    live = _match_session(assignment="rotation")
+    entries = [entry(0), entry(1)]
+    calls = _stub_matcher(monkeypatch, {})
+
+    asyncio.run(runner._assign_visuals(live, entries, {}, brief_only=False))
+
+    lines = printed(capsys)
+    assert calls == [], "rotation mode must not reach the matcher at all — it is post-Confirm spend"
+    assert live.log.warnings == []
+    assert not any("matched" in line for line in lines)
+    assert not any("style gap" in line for line in lines)
+    assert all(item.style_origin == "rotation" for item in entries), \
+        "FR-337 gives the field no empty case — `rotation` is the honest answer here"
+    for line in lines:
+        console_safe(line)
+
+
+def test_fr290_the_launch_block_style_count_is_the_ENABLED_aware_usable_pool() -> None:
+    """FR-77's opening block, and the one number in it an operator reads to confirm a pool took
+    effect.
+
+    This line used to re-derive its answer from `brand_ok` alone, so it ignored FR-314's
+    `styles.enabled` and reported every brand-compatible style in the FILE rather than the ones the
+    config can actually wear. Against a twelve-key selection over a nineteen-style registry that is
+    `18 usable here` where the truth is `12` — precisely the number the operator is checking.
+
+    Pinned as an EQUALITY against `styles.usable_styles`, never as a literal, because a literal
+    would pass again the moment someone re-derived the count from a second predicate that happened
+    to agree on this fixture. The fixture is chosen so the two predicates DISAGREE: an empty
+    `styles.enabled` cannot catch this regression, since brand-only and enabled-aware give the same
+    answer there.
+    """
+    config = Config()
+    config.branding.brand, config.branding.enabled = "hypedigitaly", False
+    config.styles.enabled = ["s0", "s2"]
+    live = session(config=config)
+    live.registry = styles.StyleRegistry(
+        version=3, content_hash="abcdef012345", origin="prompts/styles.yaml",
+        styles=[_match_style("s0"), _match_style("s1"), _match_style("s2"),
+                _match_style("lead", brand_affinity=["hypelead"]), _match_style("s4")])
+
+    block = runner._launch_summary(live, [])
+
+    console_safe(block)
+    enabled_aware = len(styles.usable_styles(live.registry, config.branding.brand,
+                                             config.styles.enabled,
+                                             branding_enabled=config.branding.enabled))
+    brand_only = sum(1 for style in live.registry.styles
+                     if styles.brand_ok(style, config.branding.brand,
+                                        branding_enabled=config.branding.enabled))
+    assert (enabled_aware, brand_only) == (2, 4), "the fixture must make the two predicates differ"
+    line = next(row for row in block.splitlines() if row.startswith("  styles"))
+    assert "5 styles ·" in line, "the FILE's own size is still stated — the two numbers differ"
+    assert f"· {enabled_aware} usable here" in line
+    assert f"{brand_only} usable here" not in line, \
+        "the brand-only count is the pre-D56 bug: it promises styles this config cannot wear"
+    assert "registry v3 · " in line and "sha abcdef01" in line

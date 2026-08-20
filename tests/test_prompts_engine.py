@@ -2,8 +2,9 @@
 
 Post-pivot (v2.0.0) the engine's inputs changed under it: the visual authority is an ASSIGNED
 `MetaStyle` from the registry rather than a per-trend `StyleBrief`, a branding block and a wordmark
-arrive on two deliberately separate channels, and one prompt in the run (`topic_filter_system.md`)
-carries nothing but scraped competitor text. So this file pins, in order:
+arrive on two deliberately separate channels, and two prompts in the run — `topic_filter_system.md`
+and, since v2.4.0/D56, `style_match_system.md` — carry nothing but third-party post material inside
+DATA fences. So this file pins, in order:
 
 * FR-102 delimiter integrity and FR-261's three structural conditions — unchanged rules, new data;
 * the pinned `build_context(...)` surface (contracts item 1 + the W2 addendum's `wordmark` /
@@ -67,6 +68,39 @@ CREATIVE a1 — language: the one these panels are written in; mirror it exactly
 caption source: Seven tools, one bill.
 1. (at most 90 characters) The first panel, at the length a real slideshow page carries.
 3. (at most 90 characters) The third panel, which is where the argument turns."""
+
+#: D56/FR-335's `{{style_candidates}}`, in the shape `style_match._candidate_block` writes it — the
+#: VOCABULARY block: every style any entry in this run may wear, described once by its key, the
+#: formats `styles.fmt_affine` says it can actually take, and the one `match_profile_for` line
+#: saying what kind of source material it suits. Two entries here, deliberately: one carousel-affine
+#: and one whose `slides_only` marker keeps `carousel` off its formats line, which is the property
+#: the block exists to keep honest against the per-entry ballots below.
+STYLE_CANDIDATES = """key: editorial-voxel-carousel
+formats: image, carousel, reel
+suits: Suits playful tool round-ups and "here is my stack" decks with short labelled rows.
+
+key: meme-caricature-panels
+formats: image
+suits: Suits before-and-after jokes and relatable pain-versus-relief hooks."""
+
+#: D56/FR-335's `{{match_entries}}`, in the shape `style_match._entry_block` writes it — one
+#: section per creative, opened by `asset_id:` (the ONLY join key; the W5 renumbering bug is what
+#: an ordinal join costs), carrying its own `candidates:` ballot and then the §3 signals: counts,
+#: lengths and the source platform's own classification labels. Never source text.
+#:
+#: Like `COMPRESS_PANELS` and `audience_profile`, both of these are WRITTEN ONTO a built context by
+#: the caller rather than produced by `build_context` — `style_match` owns the pool arithmetic and
+#: a second copy of it in the engine would be two implementations of "what may this creative wear".
+MATCH_ENTRIES = """asset_id: a1
+format: carousel
+candidates: editorial-voxel-carousel
+deck_length: 7
+source_panels: 7
+panel_lengths: 210, 188, 240, 196, 174, 233, 205
+hook_types: listicle, curiosity
+emotional_tones: aspiration
+topic: AI tool stacks
+why_it_works: concrete numbers in the first line"""
 
 
 class Recorder:
@@ -326,18 +360,23 @@ def test_the_allowlist_table_is_the_pinned_final_one() -> None:
     assert "layout_zones" not in pe.allowlist("critic_craft.md")
     assert "platform" not in pe.allowlist("critic_brief.md")
     assert "platform" not in pe.allowlist("critic_system.md")
-    # And the table holds exactly the thirteen shipped roles: eight after the W3.5 excision and
+    # v2.4.0 (D56/FR-334/335): the style matcher, the SECOND screening role beside the topic
+    # filter. Its two slots are locked to it and to nothing else, for the same §1.5 B4 reason
+    # `topic_items` is — see the dedicated test below.
+    assert pe.allowlist("style_match_system.md") == frozenset({"style_candidates", "match_entries"})
+    # And the table holds exactly the fourteen shipped roles: eight after the W3.5 excision and
     # D46's slide-intelligence question, plus the four v2.2.0 gauntlet artifacts, MINUS the retired
-    # `vision_check_question.md`, PLUS v2.3.0's `copy_compress_system.md`. No transitional rows are
-    # left behind. Pinned as a roster and not only as a count, because a count alone passes for a
-    # row deleted and a different one added in the same edit.
+    # `vision_check_question.md`, PLUS v2.3.0's `copy_compress_system.md` and v2.4.0's
+    # `style_match_system.md`. No transitional rows are left behind. Pinned as a roster and not
+    # only as a count, because a count alone passes for a row deleted and a different one added in
+    # the same edit.
     assert set(pe._ALLOWLIST) == {
-        "topic_filter_system.md", "slide_intel_question.md",
+        "topic_filter_system.md", "style_match_system.md", "slide_intel_question.md",
         "copywriter_system.md", "copy_compress_system.md",
         "image_post.md", "carousel_slide.md", "carousel_anchor_instruction.md",
         "reel_seed_frame.md", "reel_director.md",
         "critic_brief.md", "critic_system.md", "critic_craft.md", "gauntlet_fix.md"}
-    assert len(pe._ALLOWLIST) == 13
+    assert len(pe._ALLOWLIST) == 14
 
 
 def test_the_competitor_screens_two_slots_are_allowlisted_for_that_role_and_nowhere_else() -> None:
@@ -383,6 +422,8 @@ def test_every_shipped_live_template_stays_inside_its_role_allowlist_and_renders
         seed_frame_ref="@Image1", audio_cue="silent")
     context["audience_profile"] = "solo founders shipping AI tools"  # screen-only, see topic_filter
     context["compress_panels"] = COMPRESS_PANELS  # copy-only, see copywrite._call_compress
+    context["style_candidates"] = STYLE_CANDIDATES  # match-only, see style_match._candidate_block
+    context["match_entries"] = MATCH_ENTRIES        # match-only, see style_match._entry_block
     context.update(critic_values())  # gauntlet-only, see gauntlet._context
     for profile, role in live_roles():
         template = engine.template(role, profile=profile)
@@ -403,6 +444,8 @@ def test_every_live_built_in_default_renders_from_a_normal_context(tmp_path) -> 
         competitor_strings=("Acme",), reference_roles=["Image 1 — style"])
     context["audience_profile"] = "solo founders shipping AI tools"  # screen-only, see topic_filter
     context["compress_panels"] = COMPRESS_PANELS  # copy-only, see copywrite._call_compress
+    context["style_candidates"] = STYLE_CANDIDATES  # match-only, see style_match._candidate_block
+    context["match_entries"] = MATCH_ENTRIES        # match-only, see style_match._entry_block
     context.update(critic_values())  # gauntlet-only, see gauntlet._context
     for key, text in pe._BUILT_INS.items():
         profile, _, role = key.rpartition("/")
@@ -1509,3 +1552,84 @@ def test_the_shipped_compress_template_renders_from_the_compress_call_shaped_con
             f"{origin}: the panels never reached the prompt"
         assert "each slide's text at most" in text, f"{origin}: no ceiling was stated"
         assert "compress post P1's panels" in text, f"{origin}: the sibling line is missing"
+
+
+# --------------------------- D56/FR-334-335: the style matcher's two slots and their one role
+
+
+def test_the_two_match_slots_are_allowlisted_for_ONE_role_and_nowhere_else() -> None:
+    """The same here-and-nowhere-else enforcement `topic_items` and `compress_panels` get.
+
+    `{{match_entries}}` carries every OTHER creative's source signals — hooks, tones, panel
+    counts, the topic name — and `{{style_candidates}}` carries the registry's own authored prose
+    for every style this run may wear. A render role that named either would be handed the whole
+    plan's third-party material plus a wall of style DNA it was never assigned, and the registry's
+    key names as words it might letter onto a frame (§1.5 B4). Neither belongs to the copywriter
+    either: the words a creative ships are chosen before a look is matched, and the matcher's
+    answer is read by an operator, never by a copy call.
+
+    FR-260/261 is what makes the restriction real rather than advisory — an out-of-role name is
+    unresolved, so a template that reached for one FAILS instead of quietly rendering a blank.
+    """
+    for name in ("style_candidates", "match_entries"):
+        holders = {role for role in pe._ALLOWLIST if name in pe.allowlist(role)}
+        assert holders == {"style_match_system.md"}, name
+        assert name in PLACEHOLDERS, f"{name} is real vocabulary, not a typo in the table"
+        # …and the enforcement, at the level that actually refuses.
+        for role in ("image_post.md", "carousel_slide.md", "reel_seed_frame.md",
+                     "reel_director.md", "copywriter_system.md", "copy_compress_system.md",
+                     "topic_filter_system.md"):
+            assert pe._unresolvable_names("{{%s}}" % name, role) == [name], f"{name} in {role}"
+        assert pe._unresolvable_names("{{%s}}" % name, "style_match_system.md") == []
+
+
+def test_the_two_match_slots_are_never_BUILT_by_build_context_only_written_onto_it() -> None:
+    """Neither slot has a builder, deliberately, and this pins that neither grows one by accident.
+
+    `style_match` owns the pool arithmetic — a ballot is `styles.usable_styles(...)` narrowed by
+    `styles.fmt_affine(...)`, imported rather than re-derived — and it owns the asset_id-keyed
+    section order that the answer joins back on. A second implementation of either inside
+    `build_context` would be two answers to "what may this creative wear" and two orderings of the
+    same sections, which is the divergence that hands a creative its neighbour's style. So the
+    engine produces neither value and the caller writes both on, exactly as `topic_filter` writes
+    `audience_profile` and `copywrite` writes `compress_panels`.
+    """
+    context = pe.build_context(trend=make_trend(), style=make_style(), creative_format="carousel",
+                               topic_items=[make_trend()], competitor_strings=("Acme",))
+
+    assert "style_candidates" not in context, "no builder; style_match owns the pool arithmetic"
+    assert "match_entries" not in context, "no builder; style_match owns the asset_id sections"
+    assert set(context) <= PLACEHOLDERS, "and nothing else crept in either (FR-261 condition 2)"
+
+
+def test_the_shipped_match_template_renders_from_a_match_call_shaped_context() -> None:
+    """The one screening role added since the topic filter, assembled for real — both copies.
+
+    A fallback that dropped `{{match_entries}}` would send the model a matching mandate with
+    nothing to match at the moment its file is already broken, and the model would answer from the
+    candidate vocabulary alone — i.e. it would pick a style per RUN rather than per creative, which
+    is the one failure this contract cannot survive quietly (every card in the batch would wear the
+    same look and nothing would say why). FR-334's fail-open covers a call that did not happen; it
+    does not cover a call that happened against the wrong prompt.
+    """
+    context = pe.build_context()
+    context["style_candidates"] = STYLE_CANDIDATES
+    context["match_entries"] = MATCH_ENTRIES
+
+    shipped = pe.PromptEngine().render("style_match_system.md", context)
+    fallback = pe.PromptEngine(prompts_dir=Path("no-such-folder")).render(
+        "style_match_system.md", context)
+
+    for origin, text in (("prompts/style_match_system.md", shipped),
+                         ("the FR-183 built-in", fallback)):
+        assert "{{" not in text, f"{origin}: a slot was left unresolved (FR-260)"
+        assert "asset_id: a1" in text, f"{origin}: the per-creative sections never arrived"
+        assert "key: editorial-voxel-carousel" in text, f"{origin}: the candidate block is missing"
+        assert "candidates: editorial-voxel-carousel" in text, \
+            f"{origin}: the per-entry ballot is missing — the vocabulary block is not the ballot"
+        # Both DATA fences, and both closed: the two blocks carry third-party post text and the
+        # registry's own prose, and FR-102's fencing is what keeps either from reading as an
+        # instruction. A twin that lost a marker would be a screen with no screen.
+        for marker in ("<<<BEGIN DATA: STYLE CANDIDATES>>>", "<<<END DATA: STYLE CANDIDATES>>>",
+                       "<<<BEGIN DATA: MATCH ENTRIES>>>", "<<<END DATA: MATCH ENTRIES>>>"):
+            assert marker in text, f"{origin}: the DATA fence {marker!r} is gone (FR-102)"

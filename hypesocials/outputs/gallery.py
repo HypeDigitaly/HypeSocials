@@ -26,6 +26,12 @@ Invariants:
   exact ref label it quoted (`quotes P1.hook.2 verbatim`), and the source Virlo URL. Every one
   of those is a `meta.yaml` field written by `generate._record` — this module reads, never
   derives.
+- **The style badge says WHICH algorithm chose that key** (FR-337, v2.4.0): `style: X ·
+  matched/high` for a matched pick, `style: X · rotation` for the FR-291 baseline, and a
+  wanted-archetype note on the cards where the matcher found nothing in the registry that fitted.
+  `style_reason` and `style_wanted` are MODEL-authored prose that reaches this page, so they go
+  through the same `html.escape` every other read-from-disk string here does — there is one
+  escaping mechanism in this module and no card is entitled to a second one.
 - **A panel-mapped carousel gets FR-309's three-part card** (v2.1.0): the source post's own
   provenance (author, reach, date, permalink, original caption), the SOURCE panel strip with each
   panel's extracted words and visual brief, and OUR slides laid against them BY INDEX, so slide
@@ -88,6 +94,14 @@ _TRUNCATED = DegradationTag.PANELS_TRUNCATED.value
 #: headline receipt quotes; the rest are listed after it. Slot names are `CopySet` field names,
 #: set by `copywrite` when it resolves a ref to bytes.
 _RECEIPT_SLOTS = ("headline", "overlay_text", "slide_1", "subline", "caption")
+
+#: FR-337's `style_origin` vocabulary, as the CARD annotates it. `rotation_fallback` deliberately
+#: reads `rotation`: the pick on that card genuinely IS the FR-291 baseline, which is what this
+#: annotation names, and the fact that the matcher never spoke is already on the same line as the
+#: `style match degraded` badge (`generate._record` writes the tag, the badge loop prints it). An
+#: origin this table does not know is printed VERBATIM rather than dropped — the same rule the
+#: degradation badges follow, and the reason a meta.yaml from a newer engine still reads honestly.
+_ORIGIN_LABELS = {"matched": "matched", "rotation": "rotation", "rotation_fallback": "rotation"}
 
 #: FR-73's `copy_mode` value that means "these slides were COMPRESSED, not quoted" (D54/FR-331).
 #: Read as a string because that is what `meta.yaml` carries, and compared rather than imported
@@ -202,6 +216,11 @@ def _card_html(folder: Path, meta: _Meta) -> str:
              f'{" blocked" if blocked else ""}">',
              f'<h2>{html.escape(folder.name)}</h2>',
              f'<div class="badges">{_badges(folder, meta)}</div>']
+    # FR-337: the style badge above says WHICH style and which algorithm chose it; these two lines
+    # say why, and what the matcher wished the registry had. They sit here — before either layout
+    # branches — so an image, a reel and a panel-mapped deck all carry them in the same place,
+    # directly under the badge they explain, and neither layout has to remember to print them.
+    parts.extend(_style_html(meta))
     parts.extend(_deck_html(folder, meta, rows) if rows else _single_html(folder, meta))
     # The topic's own winning hook line, verbatim (`models.AssetRecord.source_hook`) — context for
     # the copy above it: this is what the trend sounded like, whether or not this creative quoted
@@ -513,6 +532,66 @@ def _slot_label(slot: str) -> str:
     return slot.removesuffix("_text").replace("_", " ")
 
 
+# ------------------------------------------------------------------ FR-337: the style-match badge
+
+
+def _style_label(meta: _Meta) -> str:
+    """FR-337's style badge: which house style rendered this, and WHICH algorithm chose it.
+
+    Three shapes, and the difference between them is a fact about the run rather than a formatting
+    preference:
+
+    * `style: quiet-luxury-night-photoreal · matched/high` — the D56 matcher read this creative's
+      source and picked this style for it, with the fit it claimed. `medium` is a pick that was
+      ACCEPTED (a decent fit is a fit), so it prints exactly like `high` does and the operator reads
+      the difference rather than being told one of them is a problem.
+    * `style: letterpress-print-carousel-teal · rotation` — the FR-291 deterministic baseline stood,
+      either because the run is in rotation mode or because the matcher's answer for this entry was
+      low, invalid or absent. A whole-call failure (`rotation_fallback`) reads the same way here and
+      wears the `style match degraded` badge beside it, because the PICK is identical in both cases:
+      annotating it differently would suggest a different style was rendered.
+    * `style: brief_override` — no origin at all. Every `meta.yaml` written before v2.4.0 lands
+      here too, and a page that reads a two-week-old run must not start printing an origin nobody
+      recorded. The bare label is what those cards have always shown.
+
+    A `low` fit keeps its number (`rotation/low`): that entry DID get an answer, the answer was
+    "nothing here fits", and the wanted-archetype note under the badge is the other half of it.
+    """
+    key = str(meta.get("style_key") or "").strip()
+    if not key:
+        return ""
+    origin = str(meta.get("style_origin") or "").strip()
+    if not origin:
+        return f"style: {key}"
+    fit = str(meta.get("style_fit") or "").strip()
+    return f"style: {key} · {_ORIGIN_LABELS.get(origin, origin)}" + (f"/{fit}" if fit else "")
+
+
+def _style_html(meta: _Meta) -> list[str]:
+    """FR-337's two style-match lines under the badges: the matcher's reason, then the gap it found.
+
+    Both are MODEL-AUTHORED strings (`style_match`'s answer, straight through `PlanEntry` and
+    `meta.yaml`), so both go through `html.escape` like every other string this module reads off
+    disk, and both are whitespace-collapsed first — a reason that arrived with a newline in it
+    would otherwise open a two-line hole in a one-line slot.
+
+    The wanted-archetype line is the operator's cue and the whole point of D56 decision 3: the
+    engine never synthesizes a style at runtime (that would break FR-295's registry authority), so
+    a miss is WRITTEN DOWN and the operator authors the missing style deliberately. It is styled as
+    a note rather than as provenance because it is the one line on this card that asks for an
+    action. Silent — both of them — on every rotation-mode run, every override brief and every
+    pre-v2.4.0 `meta.yaml`, which all carry the same empty strings and mean the same thing by them.
+    """
+    out: list[str] = []
+    if reason := " ".join(str(meta.get("style_reason") or "").split()):
+        out.append(f'<p class="prov">Style match: {html.escape(reason)}</p>')
+    if wanted := " ".join(str(meta.get("style_wanted") or "").split()):
+        out.append(f'<p class="note">Wanted archetype: {html.escape(wanted)} — no enabled style '
+                   "covers this source, so the rotation baseline rendered it; author one to close "
+                   "the gap (FR-337).</p>")
+    return out
+
+
 def _badges(folder: Path, meta: _Meta) -> str:
     """Identity badges, then EVERY degradation tag, looped over the enum (FR-73's single source)."""
     labels = [str(meta.get("platform") or "?"), str(meta.get("creative_format") or "?")]
@@ -521,8 +600,8 @@ def _badges(folder: Path, meta: _Meta) -> str:
     # fraction, so "unsigned" is a normal outcome and is stated rather than left to be inferred
     # from an absent badge). `brief_override` is a style key like any other — it says the override
     # brief, not the registry, was the visual authority for this creative (M14).
-    if style_key := str(meta.get("style_key") or "").strip():
-        labels.append(f"style: {style_key}")
+    if style := _style_label(meta):
+        labels.append(style)
     # FR-318: the brand chip appears only on a SIGNED creative. With branding off (or on an
     # unsigned sibling) the brand selector still filtered the style pool, but naming it here
     # would wave a brand name at an operator who just disabled branding — provenance keeps the

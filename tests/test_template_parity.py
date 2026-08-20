@@ -19,10 +19,14 @@ fallback renders a different prompt from the one the run was configured with.
 Everything here is a pure read of `prompts/` and the module's own tables. No network, no run
 folder, no temp files.
 
-**Final post-pivot state (v2.0.0, W3.5).** The excision wave removed the three retired templates
-from every surface, so the shipped count is the final 8 (3 global + 4 gpt-image-2 + 1 seedance)
-and every name in `models.PLACEHOLDERS` must be reachable from some role — the W2 transitional
-carve-outs are gone.
+**Post-pivot state (v2.0.0, W3.5), and what has grown on it.** The excision wave removed the three
+retired templates from every surface and left 8 shipped roles (3 global + 4 gpt-image-2 +
+1 seedance); every name in `models.PLACEHOLDERS` has had to be reachable from some role ever
+since — the W2 transitional carve-outs are gone. The count has since moved with the pipeline, not
+with the rules: +4 for the v2.2.0 gauntlet artifacts, -1 for the retired `vision_check_question.md`
+(D49), +1 for v2.3.0's `copy_compress_system.md` (D54) and +1 for v2.4.0's `style_match_system.md`
+(D56), which is **14** today. `SHIPPED_COUNT` below is that number, and raising it is how a new
+role is ADMITTED to every check in this module.
 """
 
 from __future__ import annotations
@@ -52,14 +56,14 @@ SHIPPED: list[tuple[str, str]] = (
     [("", role) for role in GLOBAL_TEMPLATES if role not in PENDING_TEMPLATES]
     + [(profile, role) for profile, names in PROFILE_TEMPLATES.items() for role in names])
 
-#: The count of roles that ship BYTES today: 8 global — `copywriter_system.md`,
-#: `copy_compress_system.md` (v2.3.0/D54), `topic_filter_system.md`, `slide_intel_question.md` and
-#: the gauntlet's four (`critic_brief.md`, `critic_system.md`, `critic_craft.md`,
-#: `gauntlet_fix.md`) — plus 4 gpt-image-2 (the merged `image_post.md` and its three siblings) plus
-#: 1 seedance. `vision_check_question.md` is gone with the FR-105 machinery it asked for
-#: (v2.2.0/D49), and `PENDING_TEMPLATES` is now empty, so this number is every shipped role there
-#: is.
-SHIPPED_COUNT = 13
+#: The count of roles that ship BYTES today: 9 global — `copywriter_system.md`,
+#: `copy_compress_system.md` (v2.3.0/D54), `topic_filter_system.md`, `style_match_system.md`
+#: (v2.4.0/D56), `slide_intel_question.md` and the gauntlet's four (`critic_brief.md`,
+#: `critic_system.md`, `critic_craft.md`, `gauntlet_fix.md`) — plus 4 gpt-image-2 (the merged
+#: `image_post.md` and its three siblings) plus 1 seedance. `vision_check_question.md` is gone with
+#: the FR-105 machinery it asked for (v2.2.0/D49), and `PENDING_TEMPLATES` is now empty, so this
+#: number is every shipped role there is.
+SHIPPED_COUNT = 14
 
 #: `prompts/humanizer_skill.md` ships in the same folder and is NOT a role: it is the vendored MIT
 #: `SKILL.md` from github.com/blader/humanizer, kept as the reference the compress template's ~14
@@ -105,11 +109,20 @@ def test_every_shipped_role_ships_both_a_file_and_a_built_in_default() -> None:
 
     A role with no file has nothing to compare; a role with no built-in has no FR-183 fallback at
     all and would raise `MissingTemplateError` on the day its file went unreadable.
+
+    The count and the ROSTER are both asserted, and neither is redundant: a count alone passes for
+    a role deleted and a different one added in the same edit, and a roster alone would not notice
+    a profile template going missing (`SHIPPED` spans both registries, `GLOBAL_TEMPLATES` only the
+    global one). `style_match_system.md` is the ninth global role, added v2.4.0 (D56/FR-335) — it
+    is a SCREEN like `topic_filter_system.md`, never a render prompt, and it earns its place here
+    for the ordinary FR-183 reason: a matcher whose built-in twin went missing would raise on the
+    one day its file is already broken, and FR-334's fail-open would then be answering for a defect
+    it was never meant to cover.
     """
     assert len(SHIPPED) == SHIPPED_COUNT, \
         "the shipped role set changed — the parity checks below need it"
     assert set(GLOBAL_TEMPLATES) == {"copywriter_system.md", "copy_compress_system.md",
-                                     "topic_filter_system.md",
+                                     "topic_filter_system.md", "style_match_system.md",
                                      "slide_intel_question.md", "critic_brief.md",
                                      "critic_system.md", "critic_craft.md", "gauntlet_fix.md"}
     assert PENDING_TEMPLATES <= set(GLOBAL_TEMPLATES), \

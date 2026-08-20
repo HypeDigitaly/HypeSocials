@@ -539,6 +539,88 @@ def test_fr314_a_stale_refs_per_job_key_warns_and_the_run_still_loads(tmp_path: 
     assert not hasattr(cfg.styles, "refs_per_job")
 
 
+# ------------------------------------------- FR-336: matched style assignment (v2.4.0/D56)
+
+
+def test_fr336_the_assignment_knob_parses_defaults_to_rotation_and_refuses_anything_else(
+    tmp_path: Path,
+) -> None:
+    """`styles.assignment` chooses WHICH ALGORITHM assigns a style at all (FR-334/336).
+
+    The default is `rotation` and it is a DEFAULT, not a fallback: FR-291 stays the invariant
+    substrate for every config written before the key existed (NFR-19), and switching back to it
+    restores pre-D56 behaviour byte-exactly. `matched` is the opt-in that costs an LLM call, which
+    is why a typo may not silently land on either value — it is refused at LOAD, in one
+    operator-facing line naming the key and both accepted words (FR-51/69), so the mistake costs
+    exit 2 and $0 rather than a run assigned by an algorithm nobody chose.
+    """
+    assert Config().styles.assignment == "rotation", "the dataclass default"
+    assert load(tmp_path, "run: {}\n").styles.assignment == "rotation", "an absent block"
+
+    for word in ("rotation", "matched"):
+        cfg = load(tmp_path, f"styles:\n  assignment: {word}\n")
+        assert cfg.styles.assignment == word and isinstance(cfg.styles.assignment, str)
+
+    # A file that writes a sibling key still reports this one as defaulted (FR-50's honesty line).
+    partial = load(tmp_path, "styles:\n  enabled: [alpha]\n")
+    assert partial.styles.assignment == "rotation"
+    assert "styles.assignment" in partial.defaults_applied
+    assert "styles.enabled" not in partial.defaults_applied
+
+    line = refusal(tmp_path, "styles:\n  assignment: banana\n")
+    assert "styles.assignment" in line and "'banana'" in line
+    assert "rotation | matched" in line, "the refusal has to name what IS accepted"
+
+
+def test_fr336_the_two_dials_in_the_styles_block_share_half_a_vocabulary_and_stay_independent(
+    tmp_path: Path,
+) -> None:
+    """THE trap in this block, pinned deliberately: `styles.rotation` (`seeded | fixed`, D52) and
+    `styles.assignment` (`rotation | matched`, D56) are different questions whose value
+    vocabularies OVERLAP on the word "rotation".
+
+    `rotation` chooses where the deterministic scan STARTS; `assignment` chooses whether that scan
+    is the final answer or only the baseline an LLM matcher may overrule — and `assignment:
+    rotation` still obeys `rotation: seeded | fixed` underneath it. A loader that conflated them
+    would look completely correct on the shipped configs (all three pin `matched` + `seeded`) and
+    would silently pin the rotation offset at 0, or silently switch the matcher off, on the one
+    config that asked for the other pairing.
+
+    So all four pairings are asserted to load as written, and each key is asserted to REFUSE the
+    other's vocabulary — which is what makes a copy-paste between the two lines a one-line refusal
+    instead of a run that quietly did something else.
+    """
+    for assignment in ("rotation", "matched"):
+        for start in ("seeded", "fixed"):
+            cfg = load(tmp_path,
+                       f"styles:\n  assignment: {assignment}\n  rotation: {start}\n")
+            assert (cfg.styles.assignment, cfg.styles.rotation) == (assignment, start)
+            assert cfg.warnings == (), "both are known keys; neither is a typo of the other"
+
+    swapped = refusal(tmp_path, "styles:\n  assignment: seeded\n")
+    assert "styles.assignment" in swapped and "rotation | matched" in swapped
+
+    other_way = refusal(tmp_path, "styles:\n  rotation: matched\n")
+    assert "styles.rotation" in other_way and "seeded | fixed" in other_way
+
+
+def test_fr336_the_three_shipped_brand_configs_pin_matched_and_default_yaml_does_not() -> None:
+    """D56's shipped posture, read off the files that actually ship (§2 decision 6).
+
+    The three brand configs are the operator's own runs and they opt IN — matched assignment is
+    what keeps the 12-key `styles.enabled` set coherent, since twelve styles under plain rotation
+    is visual chaos. `default.yaml` is the template a new config is copied from and stays on the
+    engine-wide default, because a template that silently spent an LLM call at ASSIGN would make
+    the opt-in invisible to whoever copies it next.
+    """
+    for name in ("hypedigitaly", "hypedigitaly-cs", "hypedigitaly-fresh"):
+        cfg = load_config(name, configs_dir=CONFIGS_DIR)
+        assert cfg.styles.assignment == "matched", f"{name} should pin D56's matched assignment"
+        assert len(cfg.styles.enabled) == 12, "the D57 12-key selection matched mode guards"
+
+    assert load_config("default", configs_dir=CONFIGS_DIR).styles.assignment == "rotation"
+
+
 # --------------------------------------------------------------------------- the YAML 1.1 trap
 
 

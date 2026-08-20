@@ -13,6 +13,14 @@ failure modes out of the run and into pre-flight, and this suite is where each o
 * branding must be counted with `floor`, not `round`, over the FULL emitted plan (§1.4), because
   a ratio the operator set is a promise about how many posts carry the wordmark.
 
+v2.4.0 (D56/D57) added a fourth, and it is an ABSENCE: this module stays offline and sync under
+matched assignment. `assign_styles` is still the pure, content-blind FR-291 baseline every run
+computes, `style_match` is a separate leaf module that may overwrite a winner afterwards, and the
+only thing this module owes it is `match_profile_for` — one line per style saying what it SUITS,
+authored where possible and derived from `render_prompt` where not. Nothing here awaits, calls a
+model or learns what a topic is about, and a missing `match_profile` is an advisory warning rather
+than an FR-295 refusal. Both halves of that are pinned below.
+
 Everything here is offline and deterministic: no network, no API key, no `logs/`, no `output/`.
 The only filesystem use is `tmp_path`. The API under test is pinned in
 `plans/topic-first-pivot-contracts.md` item 5, which is this suite's source of truth — it was
@@ -52,9 +60,16 @@ def _style(key: str, **over) -> MetaStyle:
 
     The default `render_prompt` is deliberately short and free of " or " / "either " / "Variant ",
     the three variant-leak spellings the registry warns about (§1.3/M9).
+
+    `match_profile` carries a real line for the same reason (v2.4.0/D56): a style that never says
+    what it is FOR earns its own advisory warning, and a builder that produced one would make
+    every `warnings == []` baseline below a test about the builder rather than about the defect it
+    introduced. The missing-profile warning has its own tests, on registries that omit it on
+    purpose.
     """
     fields: dict[str, object] = {
         "render_prompt": "Flat graphic card, centred subject, hard shadow, wide margins.",
+        "match_profile": "Suits short, single-idea sources with one clear subject.",
         "format_affinity": ["image", "carousel", "reel"],
     }
     fields.update(over)
@@ -94,7 +109,16 @@ def _write_registry(folder: Path, entries: list[dict], *, version: int = 1) -> P
     return path
 
 
-_MINIMAL = {"key": "minimal", "render_prompt": "Flat card.", "format_affinity": ["image"]}
+#: The smallest YAML block that both PARSES and validates clean. `match_profile` is in it for the
+#: same reason it is in `_style` above — D56's advisory warning fires without one, and a fixture
+#: that earned a warning it never meant to test would blunt every `warnings == []` baseline here.
+#: `_MINIMAL_NO_PROFILE` below is the deliberate opposite, used where the absence IS the subject.
+_MINIMAL = {"key": "minimal", "render_prompt": "Flat card.", "format_affinity": ["image"],
+            "match_profile": "Suits one-line hooks with no source panels behind them."}
+#: A registry block authored BEFORE `match_profile` existed — the shape an operator's on-disk
+#: `styles.yaml` really has after an engine upgrade. It must load, validate without errors and
+#: assign exactly like any other style (D56); only the matcher is weaker for it.
+_MINIMAL_NO_PROFILE = {key: value for key, value in _MINIMAL.items() if key != "match_profile"}
 
 
 # --------------------------------------------------------------------------- load_registry
@@ -483,6 +507,130 @@ def test_validation_has_nothing_to_say_about_files_any_more() -> None:
 
     assert (errors, warnings) == ([], [])
     assert not any("reference" in line.lower() for line in errors + warnings)
+
+
+# ------------------------------ D56/FR-335: `match_profile`, the one line the matcher reads
+#
+# A style's `render_prompt` says how it LOOKS; a `match_profile` says what kind of SOURCE MATERIAL
+# it SUITS. Those are different questions, and matched assignment (FR-334) is a decision about the
+# second one — which is why the field exists, why `match_profile_for` is the single public answer
+# to it (`style_match` describes every candidate through that one call), and why the fallback
+# below is deliberately the weaker line rather than a blank.
+#
+# Nothing here is ever an ERROR. The whole field is optional by contract: a registry authored
+# before it existed loads clean, assigns identically and renders identically — only the matcher is
+# left reading the wrong field, and FR-295's exit-2 list is for defects that make a run IMPOSSIBLE.
+# That distinction is asserted below rather than described, because promoting the advisory to an
+# error would refuse every operator's on-disk registry on the day they upgrade the engine.
+
+
+def test_d56_match_profile_round_trips_from_the_yaml_exactly_as_authored(tmp_path: Path) -> None:
+    """The field is read at the load boundary like every other string in a style block: stripped,
+    never re-wrapped, never re-punctuated. An engine that normalised it would be editing the
+    operator's own sentence on its way to a model."""
+    profile = ("Suits numbered listicle decks and tool round-ups — sources whose panels are short "
+               "labelled rows rather than prose.")
+    _write_registry(tmp_path, [dict(_MINIMAL, key="ledger", match_profile=f"  {profile}\n"),
+                               dict(_MINIMAL_NO_PROFILE, key="legacy")])
+
+    ledger, legacy = styles.load_registry([tmp_path]).styles
+
+    assert ledger.match_profile == profile, "stripped at the boundary, and otherwise verbatim"
+    assert legacy.match_profile == "", "absent is the empty string, never None and never a default"
+
+
+def test_d56_match_profile_for_prefers_the_authored_line_and_derives_one_when_it_is_absent(
+) -> None:
+    """The two branches of the single public answer, exercised on a SYNTHETIC registry.
+
+    It has to be synthetic: all nineteen shipped styles author a real `match_profile` (pinned
+    below), so the derivation branch is untaken against `prompts/styles.yaml` and a test that read
+    the shipped file would measure nothing while looking like it measured everything.
+
+    The derived line is the first sentence of `render_prompt`, and the sentence rule is what makes
+    it usable rather than merely non-empty: a terminator only ends the sentence when a space or the
+    end of the string follows it, so a ratio ("a 1.5:1 crop") and a decimal do not cut it in half,
+    and a prompt written as one long unpunctuated instruction comes back whole rather than empty.
+    """
+    authored = _style("a", match_profile="Suits dense infographic sources with labelled diagrams.",
+                      render_prompt="Near-black ground. Glowing teal circuit motifs.")
+    derived = _style("b", match_profile="",
+                     render_prompt="Near-black ground with glowing teal nodes. Big white headline "
+                                   "top. Labelled icon chips below.")
+    ratio = _style("c", match_profile="",
+                   render_prompt="Shot on a 1.5:1 crop at f2.8 with a warm cast. Second sentence.")
+    unpunctuated = _style("d", match_profile="",
+                          render_prompt="Cream ground heavy geometric sans headline no photography")
+
+    assert styles.match_profile_for(authored) == \
+        "Suits dense infographic sources with labelled diagrams.", "the authored line always wins"
+    assert styles.match_profile_for(derived) == "Near-black ground with glowing teal nodes."
+    assert styles.match_profile_for(ratio) == \
+        "Shot on a 1.5:1 crop at f2.8 with a warm cast.", "a decimal is not a sentence end"
+    assert styles.match_profile_for(unpunctuated) == \
+        "Cream ground heavy geometric sans headline no photography", \
+        "no terminator returns the whole prompt — too much beats nothing for a matcher"
+
+
+def test_d56_a_style_with_neither_field_answers_with_an_empty_string_and_never_raises() -> None:
+    """The degenerate case, which `style_match._candidate_block` reads as "a candidate with no
+    profile" and simply omits the `suits:` line for. Still nameable, just undescribed — and never
+    an exception, because the matcher is fail-open by contract and a raise here would take out the
+    whole call over one under-authored entry."""
+    blank = _style("blank", match_profile="", render_prompt="")
+    spaces = _style("spaces", match_profile="   ", render_prompt="   \n  ")
+
+    assert styles.match_profile_for(blank) == ""
+    assert styles.match_profile_for(spaces) == "", "whitespace is absence, on both fields"
+
+
+def test_d56_a_missing_match_profile_is_an_advisory_warning_and_never_an_error() -> None:
+    """The FR-295 line in the sand: this field can make a MATCH worse and can never make a RUN
+    impossible.
+
+    The warning names the style and says what to write, because "no match_profile" alone would
+    leave an operator guessing whether the field is a look, a budget or a selector. And the errors
+    list stays empty — promoting this to an exit 2 would refuse the run at $0 over a style that
+    renders exactly as authored.
+    """
+    reg = _registry(_style("silent", match_profile=""), _style("b"), _style("c"))
+
+    errors, warnings = styles.validate(reg, _config(formats={"image": 1}))
+
+    assert errors == [], \
+        "an under-described style still renders; FR-295 refuses only what is impossible"
+    found = [line for line in warnings if "silent" in line]
+    assert len(found) == 1, warnings
+    assert "match_profile" in found[0] and "FR-334" in found[0]
+    # …and the style is fully assignable, which is the half a warning could otherwise be read as
+    # denying: the pool, the rotation and the render are all untouched by the missing sentence.
+    entries = _entries(range(3))
+    styles.assign_styles(entries, reg, "hypedigitaly")
+    assert "silent" in _keys(entries)
+
+
+def test_d56_a_registry_authored_before_match_profile_existed_loads_and_validates_clean(
+    tmp_path: Path,
+) -> None:
+    """The upgrade path, end to end: an operator's on-disk `styles.yaml` written before v2.4.0.
+
+    Every style in it lacks the field, so the file earns one advisory warning per style and ZERO
+    errors — it loads, it validates, it assigns, and every creative gets a look. That is the same
+    tolerance the withdrawn `reference_images` key gets (D46): a registry carrying a field a later
+    version adds, or missing one a later version wants, still runs today. Anything stricter would
+    turn "upgrade the engine" into "exit 2 until you re-author nine styles".
+    """
+    _write_registry(tmp_path, [dict(_MINIMAL_NO_PROFILE, key=f"old-{index}") for index in range(3)])
+
+    registry = styles.load_registry([tmp_path])
+    errors, warnings = styles.validate(registry, _config(formats={"image": 3}))
+
+    assert [style.key for style in registry.styles] == ["old-0", "old-1", "old-2"]
+    assert errors == [], f"an old registry must not refuse a run: {errors}"
+    assert len(warnings) == 3 and all("match_profile" in line for line in warnings), warnings
+    # And the matcher still has something to describe each candidate with — the derived line.
+    for style in registry.styles:
+        assert styles.match_profile_for(style) == "Flat card.", "derived from `render_prompt`"
 
 
 # --------------------------------------------------------------------------- assign_styles
@@ -1048,6 +1196,10 @@ def test_a_stale_registry_that_still_lists_pictures_loads_clean_and_ignores_them
         {"key": f"legacy-{index}",
          "render_prompt": "Flat graphic card, centred subject, hard shadow.",
          "format_affinity": ["image"],
+         # A profile on each, so the ONE finding this test could produce is a reference-image one.
+         # A registry that predates D56 as well as D46 is a different fixture — see
+         # `test_d56_a_registry_authored_before_match_profile_existed_loads_and_validates_clean`.
+         "match_profile": "Suits plain single-subject sources with very little text.",
          "reference_images": ["Inspiration/definitely-not-here.png"]}
         for index in range(3)])  # three, so the FR-291 thin-pool warning stays out of the way
 
@@ -1074,20 +1226,30 @@ def test_style_for_answers_the_exact_key_and_names_an_unknown_one(tmp_path: Path
     assert "vanished" in str(caught.value)
 
 
-# --------------------------------------------------- D55: the SHIPPED registry, read as it ships
+# ----------------------------------------- D55-D57: the SHIPPED registry, read as it ships
 #
 # Every test above builds a synthetic registry, deliberately: a suite whose assertions move when a
 # style is re-authored is a suite that stops being run. These few read `prompts/styles.yaml`
-# itself, because three facts about it are not properties of the module at all — they are the
-# operator's decisions of 2026-08-20 (D55), and the run refuses at pre-flight (FR-295, exit 2, $0)
-# the day the file and the shipped configs disagree about them.
+# itself, because the facts they pin are not properties of the module at all — they are the
+# operator's decisions of 2026-08-20 (D55, then D56/D57), and the run refuses at pre-flight
+# (FR-295, exit 2, $0) the day the file and the shipped configs disagree about them.
 
-SHIPPED_STYLES = 9
-#: D55's selection, pinned as data: the four keys the three brand configs enable. The list is here
-#: rather than read from a config so a config edit that silently drops a key fails a test with a
-#: name instead of quietly narrowing the rotation.
-ENABLED_FOUR = ["anime-noir-statement", "letterpress-print-carousel", "meme-caricature-panels",
-                "quiet-luxury-night-photoreal"]
+#: NINETEEN since v2.4.0. D55 brought the registry to nine; D56 added `build-log-mono` plus the
+#: four census-driven archetype styles (`icon-ledger-carousel`, `circuit-atlas-dark`,
+#: `social-quote-card`, `terminal-mockup-deck`); D57 added the five `-teal` spine variants. The
+#: originals were left untouched by D57 on purpose — colour is curated by CHOOSING styles, never by
+#: editing one (standing decision D-G), which is why a variant is a new key and not an edit.
+SHIPPED_STYLES = 19
+#: D57's selection, pinned as data: the twelve keys the three brand configs enable. The list is
+#: here rather than read from a config so a config edit that silently drops a key fails a test with
+#: a name instead of quietly narrowing the rotation. Twelve enabled styles are only coherent
+#: BECAUSE those configs also pin `assignment: matched` (D56 decision 5) — the two settings are one
+#: decision in one file, and the config test below asserts them together for that reason.
+ENABLED_TWELVE = ["anime-noir-statement", "platform-showcase-card",
+                  "letterpress-print-carousel-teal", "meme-caricature-panels-teal",
+                  "quiet-luxury-night-photoreal-teal", "photoreal-ambient-caption-teal",
+                  "ugc-tabletop-statement-teal", "build-log-mono", "icon-ledger-carousel",
+                  "circuit-atlas-dark", "social-quote-card", "terminal-mockup-deck"]
 
 
 def _shipped() -> StyleRegistry:
@@ -1095,17 +1257,28 @@ def _shipped() -> StyleRegistry:
     return styles.load_registry([REPO / "prompts"])
 
 
-def test_d55_the_shipped_registry_parses_and_holds_nine_uniquely_keyed_styles() -> None:
+def test_d56_the_shipped_registry_parses_and_holds_nineteen_uniquely_keyed_styles() -> None:
     """There is NO fallback (FR-295): a registry that will not parse is exit 2 and $0, not a
     built-in default set. So "it parses" is a real assertion about the shipped bytes, and the
     count is what catches a style added or removed without anyone updating the configs that
-    enable it."""
+    enable it.
+
+    The three membership assertions are one per decision that put a style in this file — D55's
+    photoreal entry, one of D56's archetype four, one of D57's spine variants — because a count
+    alone passes for a style deleted and a different one added in the same edit, which is exactly
+    the shape a registry re-organisation takes.
+    """
     registry = _shipped()
     keys = [style.key for style in registry.styles]
 
     assert len(registry.styles) == SHIPPED_STYLES
     assert len(set(keys)) == SHIPPED_STYLES, f"duplicate style key in the registry: {keys}"
-    assert "quiet-luxury-night-photoreal" in keys, "D55's new style"
+    assert "quiet-luxury-night-photoreal" in keys, "D55's style"
+    assert "circuit-atlas-dark" in keys, "one of D56's four census-driven archetype styles"
+    assert "ugc-tabletop-statement-teal" in keys, "one of D57's five teal-spine variants"
+    # D57's mechanism, pinned as the absence of the alternative: a variant is a NEW KEY beside an
+    # untouched original (D-G), never an edit to the original's palette. Both must be present.
+    assert "ugc-tabletop-statement" in keys, "D57 duplicated the style; it did not move it"
     assert registry.origin.endswith("styles.yaml") and registry.content_hash
 
 
@@ -1187,71 +1360,119 @@ def test_d55_the_new_style_is_carousel_affine_and_may_anchor_a_deck() -> None:
     assert styles.fmt_affine(style, "image") is True and styles.fmt_affine(style, "reel") is True
 
 
-def test_d55_the_four_key_selection_validates_clean_under_the_shipped_brand() -> None:
-    """S1 and S2 had to land in the SAME change: an `styles.enabled` key the registry lacks is a
-    pre-flight exit 2 on EVERY run of that config (FR-314/FR-295). This is that barrier, asserted
-    against the real registry and the real four-key list — no errors, and no warnings either.
+def test_d57_the_twelve_key_selection_validates_clean_under_the_shipped_brand() -> None:
+    """The registry and the configs have to land in the SAME change: a `styles.enabled` key the
+    registry lacks is a pre-flight exit 2 on EVERY run of that config (FR-314/FR-295). This is that
+    barrier, asserted against the real registry and the real twelve-key list — no errors, and no
+    warnings either.
+
+    "No warnings" is the stronger half and covers more since D56: it means no style in the SHIPPED
+    file is over the 120-word ceiling, leaks an unresolved either/or, declares a dead `list_mode`
+    **or ships without a `match_profile`**. `validate` walks the whole registry for warnings, not
+    just the selection, so this one assertion covers all nineteen entries.
     """
     registry = _shipped()
     config = _config(brand="hypelead", formats={"image": 0, "carousel": 6, "reel": 0},
-                     enabled=ENABLED_FOUR)
+                     enabled=ENABLED_TWELVE)
 
     errors, warnings = styles.validate(registry, config)
 
     assert errors == [], f"the shipped selection would refuse a run: {errors}"
     assert warnings == [], f"and it earns not even the thin-pool warning: {warnings}"
-    assert [style.key for style in styles.usable_styles(registry, "hypelead", ENABLED_FOUR)] == [
-        "letterpress-print-carousel", "meme-caricature-panels", "anime-noir-statement",
-        "quiet-luxury-night-photoreal"], "FILE order, never the order the config typed"
+    assert [style.key for style in styles.usable_styles(registry, "hypelead", ENABLED_TWELVE)] == [
+        "anime-noir-statement", "platform-showcase-card", "build-log-mono",
+        "icon-ledger-carousel", "circuit-atlas-dark", "social-quote-card", "terminal-mockup-deck",
+        "letterpress-print-carousel-teal", "meme-caricature-panels-teal",
+        "quiet-luxury-night-photoreal-teal", "photoreal-ambient-caption-teal",
+        "ugc-tabletop-statement-teal"], "FILE order, never the order the config typed"
 
 
-def test_d55_the_three_shipped_brand_configs_all_enable_exactly_those_four_keys() -> None:
+def test_d56_every_shipped_style_authors_its_own_match_profile() -> None:
+    """The matcher reads ONE line per candidate, and this is where the shipped file is held to
+    writing it (D56/FR-335).
+
+    `match_profile_for` never blanks a candidate out — it derives a weaker line from the first
+    sentence of `render_prompt` — so a missing profile does not break a run and is deliberately
+    only a warning. What it breaks is the QUALITY of every match on that style: `render_prompt`
+    says how a look works ("near-black ground, glowing teal circuit motifs") where a
+    `match_profile` says what source material it suits, and a matcher handed the first has to guess
+    the second. With a twelve-key pool that guess is most of the decision, which is why every one
+    of the nineteen shipped entries authors the real line and why the derivation is exercised
+    against a SYNTHETIC registry (below) rather than here — there is nothing to derive from in this
+    file, and a test that silently measured nothing would be worse than no test.
+    """
+    registry = _shipped()
+
+    missing = [style.key for style in registry.styles if not style.match_profile]
+    assert missing == [], f"shipped style(s) with no `match_profile`: {missing}"
+    for style in registry.styles:
+        assert styles.match_profile_for(style) == style.match_profile, \
+            f"{style.key}: the authored line must win over the derived one"
+        assert len(style.match_profile.split()) >= 8, \
+            f"{style.key}: `match_profile` is a stub, not one or two usable sentences"
+
+
+def test_d57_the_three_shipped_brand_configs_enable_those_twelve_keys_and_pin_matched() -> None:
     """The configs and the registry are one decision in two files; this is where they are checked
     against each other. Read through `load_config` rather than by parsing YAML, so a key that
-    loads to something different from what it looks like on disk is caught here."""
+    loads to something different from what it looks like on disk is caught here.
+
+    `assignment: matched` is asserted in the same loop and not in a test of its own, because it is
+    not a separate setting: twelve enabled styles under plain rotation would put twelve unrelated
+    looks through one batch (D56 risk 3). The selection is only coherent BECAUSE the matcher is
+    choosing, so a config that widened the pool and left `assignment` on the engine default would
+    be a regression this pairing is here to catch.
+    """
     registry = _shipped()
     registry_keys = {style.key for style in registry.styles}
 
     for name in ("hypedigitaly", "hypedigitaly-cs", "hypedigitaly-fresh"):
         config = load_config(name, configs_dir=CONFIGS_DIR)
-        assert config.styles.enabled == ENABLED_FOUR, f"{name} drifted from D55's selection"
+        assert config.styles.enabled == ENABLED_TWELVE, f"{name} drifted from D57's selection"
+        assert config.styles.assignment == "matched", \
+            f"{name} widened the pool to twelve without the matcher that makes it coherent (D56)"
         assert set(config.styles.enabled) <= registry_keys, \
             f"{name} enables a style the registry does not define — exit 2 on every run"
         assert styles.validate(registry, config)[0] == [], f"{name} would refuse at pre-flight"
 
 
-def test_d55_meme_caricature_is_enabled_but_INERT_and_never_dresses_a_carousel() -> None:
-    """The operator kept `meme-caricature-panels` in the list knowing it cannot be assigned while
-    the configs are all-carousel (`carousel_role: slides_only`): it is there to activate the day
-    image posts return, and keeping it costs nothing because `fmt_affine` drops it per format.
+def test_d57_the_two_slides_only_keys_are_enabled_but_INERT_on_a_carousel_plan() -> None:
+    """The operator kept both `slides_only` variants in the twelve knowing neither can be assigned
+    while the configs are all-carousel: they are there to activate the day image posts return, and
+    keeping them costs nothing because `fmt_affine` drops them per format. Same ruling as D55, now
+    covering two keys instead of one (`ugc-tabletop-statement-teal` inherits the marker from its
+    original exactly as `meme-caricature-panels-teal` does).
 
-    So the effective carousel rotation is THREE, and this pins that it is three of the right ones
-    — an inert key that silently became assignable would put a caricature panel on a deck's anchor
-    slide, which is the exact outcome `carousel_role` exists to prevent.
+    So the effective carousel rotation is TEN of the twelve, and this pins that the two it excludes
+    are the right two — a `slides_only` key that silently became assignable would put a caricature
+    panel or a tabletop shot on a deck's ANCHOR slide, and under anchor chaining slide 1 sets the
+    look for every slide that follows it.
     """
     registry = _shipped()
-    pool = styles.usable_styles(registry, "hypelead", ENABLED_FOUR)
-    entries = _entries(range(9), fmt="carousel")
+    inert = ("meme-caricature-panels-teal", "ugc-tabletop-statement-teal")
+    pool = {style.key for style in styles.usable_styles(registry, "hypelead", ENABLED_TWELVE)}
+    entries = _entries(range(24), fmt="carousel")
 
-    styles.assign_styles(entries, registry, "hypelead", enabled=ENABLED_FOUR)
+    styles.assign_styles(entries, registry, "hypelead", enabled=ENABLED_TWELVE)
 
-    assert "meme-caricature-panels" in {style.key for style in pool}, "selected and brand-clean…"
-    assert styles.fmt_affine(styles.style_for(registry, "meme-caricature-panels"),
-                             "carousel") is False, "…and still never affine to a deck"
-    assert set(_keys(entries)) == {"letterpress-print-carousel", "anime-noir-statement",
-                                   "quiet-luxury-night-photoreal"}
-    assert "meme-caricature-panels" not in _keys(entries)
+    for key in inert:
+        assert key in pool, f"{key}: selected and brand-clean…"
+        assert styles.fmt_affine(styles.style_for(registry, key), "carousel") is False, \
+            f"{key}: …and still never affine to a deck"
+        assert key not in _keys(entries), f"{key}: an inert key was assigned to a carousel"
+    assert set(_keys(entries)) == set(ENABLED_TWELVE) - set(inert), \
+        "and every one of the other ten really is reachable — an inert THIRD key would be a bug"
 
 
-def test_d55_the_brand_card_is_absent_from_the_selection_and_would_be_dropped_anyway() -> None:
+def test_d57_the_brand_card_is_absent_from_the_selection_and_would_be_dropped_anyway() -> None:
     """Two independent reasons, and the test asserts both because either alone would be a
-    coincidence. `hypelead-brand-card` is not in the four keys; and `branding.enabled` is false in
+    coincidence. `hypelead-brand-card` is not in the twelve keys; and `branding.enabled` is false in
     all three shipped configs, so `brand_ok` drops a `brand_slot` style regardless. Branded
     entries sign through the TEXT block on any style (FR-318/FR-292), which is why excluding the
     card costs the run no signature it would otherwise have carried."""
     registry = _shipped()
 
-    assert "hypelead-brand-card" not in ENABLED_FOUR
+    assert "hypelead-brand-card" not in ENABLED_TWELVE
     with_switch_off = styles.usable_styles(registry, "hypelead", branding_enabled=False)
     assert "hypelead-brand-card" not in {style.key for style in with_switch_off}
     for name in ("hypedigitaly", "hypedigitaly-cs", "hypedigitaly-fresh"):

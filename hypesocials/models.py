@@ -74,6 +74,17 @@ class DegradationTag(str, Enum):
     # ships, with our own assembled caption and no on-image text. Famine over silent repeats: a
     # post an earlier run quoted is never quoted again, and no neighbour is substituted for it.
     NO_FRESH_POST_AVAILABLE = "no_fresh_post_available"
+    # --- D56 / v2.4.0 (FR-334): matched style assignment ---
+    # FR-334 — the ONE batched style-matcher call failed outright (transport error, unparseable
+    # answer, degraded `ParsedResult`), so EVERY entry in the plan kept the FR-291 rotation pick it
+    # already had and the run continued. A whole-call tag, deliberately: it says the matcher never
+    # spoke, which is a different fact from "the matcher looked at this creative and its best
+    # candidate was a poor fit" — that case is per-entry, keeps the same baseline pick, and is
+    # recorded as `style_origin: "rotation"` plus `style_wanted` rather than as a degradation. The
+    # creative is never worse off than a `assignment: rotation` run would have made it, which is
+    # exactly why this is fail-open (§0.14c) and never a failure: a style matcher that is
+    # unavailable is not a reason to lose a creative the operator approved spending on.
+    STYLE_MATCH_DEGRADED = "style_match_degraded"
     REFERENCE_FREE = "reference_free"  # FR-18
     REFS_DROPPED_MODERATION = "refs_dropped_moderation"  # FR-97
     TEXT_TRIMMED = "text_trimmed"  # FR-101
@@ -292,6 +303,40 @@ class PlanEntry:
     # persisted to meta.yaml and because trimming must never re-assign a surviving creative.
     style_key: str = ""
     branded: bool = False
+    # --- FR-334 match provenance (v2.4.0, D56) — WHY this creative wears `style_key` ---
+    # Written at ASSIGN by the matched-mode overlay (`style_match.match`) after `assign_styles` has
+    # already laid down the FR-291 rotation baseline. On an `assignment: rotation` run the three
+    # matcher-authored fields stay empty, but `style_origin` is still stamped `"rotation"` — see its
+    # own note below. A blank origin means ASSIGN has not run yet, never that rotation chose.
+    # They live HERE, on the entry, for the same reason `style_key` and `branded` do: `PlanEntry` is
+    # what `generate/__init__.py:_record()` can see when it builds the `AssetRecord`, so a side table
+    # keyed by asset_id would have to be threaded through the whole render stage to reach meta.yaml.
+    # Trimming (FR-106) removes entries whole, so a surviving creative never loses its provenance and
+    # never acquires somebody else's.
+    #
+    #: `high` | `medium` | `low` — the matcher's own confidence that this style suits this source.
+    #: `medium` ACCEPTS the pick (a decent fit is a fit); `low` REJECTS it and the entry keeps its
+    #: rotation baseline. Empty whenever no matched answer applies: rotation mode, a whole-call
+    #: failure, an entry the answer had no row for, and every override brief (never styled at all).
+    style_fit: str = ""
+    #: The matcher's short prose for the fit — one operator-facing sentence, printed on the ASSIGN
+    #: receipt and the gallery card. Never executable: it explains a decision already made and no
+    #: render prompt, budget or drop path ever reads it.
+    style_reason: str = ""
+    #: WHICH algorithm produced `style_key`, and the field a reader should check FIRST: `"matched"`
+    #: (the matcher picked it and the fit was accepted), `"rotation"` (the FR-291 baseline stood —
+    #: either the run is in rotation mode, or the matcher's answer for this entry was low/invalid/
+    #: missing), `"rotation_fallback"` (the whole matcher call failed, so every entry is on baseline
+    #: and the asset also carries `STYLE_MATCH_DEGRADED`). `""` before ASSIGN has run. The
+    #: rotation/rotation_fallback split is what tells a per-entry rejection apart from a run-wide
+    #: outage, which the pick alone cannot: both leave the same `style_key` behind.
+    style_origin: str = ""
+    #: The archetype the matcher WANTED and the registry did not offer, set only alongside a `low`
+    #: fit and PRESERVED through the fallback to baseline. This is the gap report (D56 decision 3):
+    #: the engine never synthesizes a style at runtime — that would break FR-295's registry
+    #: authority and FR-189's sole-consistency mechanism — so the miss is written down and the
+    #: operator authors the missing style deliberately. Free text from the model; never a key.
+    style_wanted: str = ""
     # The topic this entry quotes (§1.6). Sits beside `trend_key`, which stays the history key:
     # one monitor yields many topics, so the history key alone no longer names the material.
     topic_key: str = ""
@@ -395,6 +440,18 @@ class MetaStyle:
     #: FR-304b (v2.2.0): this style's list/table treatment, or `None` when it has none. See
     #: `ListMode` — a reflow trigger, never a ceiling; `styles.py` parses and validates it.
     list_mode: ListMode | None = None
+    #: FR-290/FR-334 (v2.4.0, D56) — 1-2 authored sentences naming WHAT SOURCE MATERIAL this style
+    #: suits: the content archetypes and source-post patterns it was drawn for (a dense listicle
+    #: deck, a lifestyle POV photo set, a terminal/code walkthrough), written plainly.
+    #:
+    #: Read by the FR-334 matcher ALONE — it is how a candidate pool describes itself to the model
+    #: that is choosing between styles. It is NOT part of the style's visual DNA and never reaches a
+    #: render prompt, a budget, the gauntlet or a copy call: it says which sources deserve this look,
+    #: not what the look is, and a render model handed it would try to draw the description of its
+    #: own audience. Missing is legal (FR-290 as amended) — `styles.py` raises an ADVISORY warning
+    #: and derives a stand-in from the first sentence of `render_prompt`, so an old registry and a
+    #: hand-written override both keep loading; it is never an FR-295 pre-flight error.
+    match_profile: str = ""
 
 
 @dataclass(slots=True)
@@ -511,6 +568,23 @@ class AssetRecord:
     style_key: str = ""  # registry key, or "brief_override" under an override brief (M14)
     brand: str = ""  # active branding.brand at render time — never mixed (D43)
     branded: bool = False  # FR-292 floor-predicate outcome for this entry
+    # FR-73/FR-334/FR-337 (v2.4.0, D56) — the style-match receipt, mirroring the four `PlanEntry`
+    # fields of the same names field for field: `_record()` copies them across untouched. They sit
+    # beside `style_key` because they are what that key MEANS on this asset — which algorithm chose
+    # it, how well it fits, why, and what the matcher wished the registry had instead. All four are
+    # empty on an `assignment: rotation` run and on every override brief, which is the honest reading
+    # of "no matched answer applies" rather than a manufactured one. The FR-309 gallery prints
+    # `style: X · <origin>/<fit>` from the first two, `style_reason` under it, and a wanted-archetype
+    # note on any card carrying one; `style_wanted` is additionally what the operator greps across a
+    # week of runs to find the archetype worth authoring next. One wrinkle worth knowing before you
+    # read a card: FR-337 fixes the BADGE vocabulary at `rotation`, so a `rotation_fallback` origin
+    # prints as plain `rotation` there and the `style_match_degraded` tag beside it is what says the
+    # matcher never spoke. The distinction is never lost — it is just carried by the tag rather than
+    # spelled twice — and meta.yaml below always records the exact origin.
+    style_fit: str = ""  # high | medium | low; "" when no matched answer applies
+    style_reason: str = ""  # the matcher's short prose; never executable, never a render input
+    style_origin: str = ""  # rotation | matched | rotation_fallback ("" before ASSIGN ran)
+    style_wanted: str = ""  # the archetype the registry did not offer — the FR-334 gap report
     topic_key: str = ""  # stable slug of the topic name (FR-293)
     # FR-298 (v2.3) — the verbatim receipt: WHICH post this creative quoted, and WHICH string.
     # `copy_source_refs` maps CopySet slot -> ref label per the §1.7 grammar, e.g.
@@ -810,6 +884,13 @@ GLOBAL_TEMPLATES: tuple[str, ...] = (
     # versus compress a string), the operator chooses between them per run, and giving the second
     # its own file is what lets either be hot-edited (FR-181) without disturbing the other.
     "copy_compress_system.md",
+    # v2.4.0 (D56, FR-334/FR-335): the style matcher. Global on the same grounds as
+    # `topic_filter_system.md`, which it is modelled on — it belongs to the `analysis` role rather
+    # than to any render profile, and it must read identically for every entry it assigns, because
+    # the whole point of one batched call is that every creative in the plan is judged by the same
+    # question. It is the SECOND template on the analysis role beside `slide_intel_question.md`, the
+    # same one-role-two-contracts shape `copy_compress_system.md` introduced for `copy`.
+    "style_match_system.md",
 )
 
 #: The subset of `GLOBAL_TEMPLATES` that is DECLARED here but whose file and FR-183 built-in twin
@@ -970,5 +1051,22 @@ PLACEHOLDERS: frozenset[str] = frozenset(
         #   `_unresolvable_names()` checks this vocabulary FIRST — a template naming a slot absent
         #   from it is refused as unusable, the role falls back silently to its FR-183 built-in
         #   twin, and every operator hot-edit of the file (FR-181) stops reaching a model.
+        # --- v2.4.0 (D56, FR-334/FR-335): the style matcher's two slots. ---
+        # Both are allowlisted for `style_match_system.md` ALONE, and that exclusivity is the
+        # enforcement that matters: a render role handed `{{style_candidates}}` would receive a
+        # catalogue of the styles it was NOT assigned and blend them, which is precisely the
+        # cross-style contamination FR-189 exists to prevent. The same rule that keeps
+        # `compress_panels` off every render prompt keeps these two there.
+        "style_candidates",  # the entry-eligible candidate pool as fenced DATA: one block per
+        #   style key with its `match_profile` (FR-290's "what sources this style suits"), built
+        #   from `styles.usable_styles` x `styles.fmt_affine` — the imported predicates, never
+        #   re-derived, so a `carousel_role: slides_only` style can no more be matched onto a deck
+        #   anchor than it could be rotated onto one.
+        "match_entries",  # the per-entry sections, keyed by ASSET_ID and never by ordinal: format,
+        #   the text-only source signals (topic strength, Virlo's own hook/visual-hook/emotional
+        #   classifications, the bound post's overlays, hooks, panel count and views, the derived
+        #   deck length) — all $0, all already in memory at ASSIGN. The asset_id key is load-bearing:
+        #   an ordinal join is what caused the W5 renumbering bug, and a trimmed or reordered plan
+        #   must never be able to hand one creative another creative's verdict.
     }
 )

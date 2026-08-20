@@ -5,10 +5,17 @@ no build step and no restart of anything but the run. Spec: `prds/50-promptcraft
 
 **This file is documentation, not a template. The engine never loads it.**
 
-**Current state (D54 compress mode, v2.3.0).** Thirteen shipped roles: eight
-global templates flat in `prompts/`, four `gpt-image-2` render templates, one
-`seedance-2-5` director template — plus `styles.yaml`, which is not a template,
-and `humanizer_skill.md`, which is not a template either (see below).
+**Current state (D56/D57 style intelligence, v2.4.0).** Fourteen shipped roles:
+nine global templates flat in `prompts/`, four `gpt-image-2` render templates,
+one `seedance-2-5` director template — plus `styles.yaml`, which is not a
+template, and `humanizer_skill.md`, which is not a template either (see below).
+`style_match_system.md` is the ninth global and the newest (FR-334/335): the
+registry grew to 19 styles at D56/D57, and one batched, fail-open analysis call
+per run now decides which of them fits each creative, instead of rotation
+deciding alone. (`prds/50-promptcraft.md` FR-181 counts *fifteen* roles rather
+than fourteen because it counts the registry itself among its ten globals; this
+file keeps `styles.yaml` outside the template count, because it plays by none of
+the template rules.)
 Two things changed under every file in this folder at v2.1.0 and are the reason
 several sentences read the way they do:
 
@@ -26,11 +33,12 @@ several sentences read the way they do:
 
 ```
 prompts/
-  styles.yaml                    the meta-style registry — 8 styles, the VISUAL AUTHORITY
+  styles.yaml                    the meta-style registry — 19 styles (9 originals + build-log-mono + 4 archetype + 5 -teal variants, D56/D57), the VISUAL AUTHORITY
   humanizer_skill.md             NOT a template — the vendored humanizer reference (see below)
   copywriter_system.md           global — Luna copy-selection system prompt (verbatim mode)
   copy_compress_system.md        global — Luna compression system prompt (compress mode, D54)
   topic_filter_system.md         global — the batched competitor / language / audience screen
+  style_match_system.md          global — the matched style-assignment screen (v2.4.0, FR-334/335): one batched `analysis` call per run, fail-open
   slide_intel_question.md        global — per-slide transcription + foreground visual brief + deck mark boxes (FR-306/315/316)
   critic_brief.md                global — the gauntlet's CONTRACT critic: presence + leakage (D49/FR-322)
   critic_system.md               global — the gauntlet's STYLE critic: style contract + cross-frame consistency
@@ -65,7 +73,15 @@ this folder falls back to a compiled built-in when it breaks (FR-183). The
 registry's own editing rules live in the comment block at the top of the file —
 including the one number that matters most, `max_onimage_chars`: the budget in
 force is `min(config text_budgets, this style's cap)`, so a low cap here is what
-actually decides whether a source panel can be quoted at all.
+actually decides whether a source panel can be quoted at all. Since v2.4.0 they
+also cover the one entry field that never reaches a render model:
+**`match_profile`** — one or two sentences naming what kind of source material
+this style suits ("a numbered how-to deck", "a dense benchmark chart", "a single
+large statement"), which is what FR-334's matcher judges every candidate on. It
+is advisory, not required: a style that omits it raises a warning, never an
+error, and the matcher falls back to a stand-in derived from the first sentence
+of that style's `render_prompt` — a sentence that says how the style LOOKS, not
+what it SUITS, so an authored line beats the fallback every time.
 
 **FR-183's second copy.** Every shipped template also exists as a compiled
 built-in in `prompts_engine._BUILT_INS`, used when the file is missing,
@@ -124,6 +140,8 @@ Two rules govern every row below, and the second is the one people forget:
 | `{{niche_visual_world}}` | the niche's `visual_world` line **alone** — standing art direction, no audience and no copy context; empty when unset | image_post, carousel_slide, reel_seed_frame |
 | `{{topic_items}}` | the engine-numbered topic blocks for the competitor screen — ordinals 1..N in arrival order, never the topic's own key | topic_filter_system **only** |
 | `{{competitor_list}}` | `branding.competitors`, the deterministic blocklist, for the same call | topic_filter_system **only** |
+| `{{style_candidates}}` | **the run's candidate styles, as fenced data** (v2.4.0, FR-334/335) — one entry per style usable anywhere in this run, each described by its `key` (the engine's identifier, and the exact string an answer copies), its `match_profile` (that style's own one-or-two-sentence claim about what source material it suits — the field the match is actually made against) and the formats it is meant for. The vocabulary, not the ballot: the keys answerable for any one creative are the shorter per-entry list inside `{{match_entries}}`. Fenced on the `{{topic_items}}` precedent, because style text is prose written *at* a render model in imperatives — "use a cream ground", "never show platform chrome" — and the screen must read it as a description of a look, never as orders | style_match_system **only** |
+| `{{match_entries}}` | **the match work order** (v2.4.0, FR-334/335) — one section per planned creative, opened by its engine-assigned `asset_id`: the only identity a creative has in this call, and the only key its answer row is joined on. A section carries that creative's format; its source signals — topic `strength`, Virlo's own `hook_types` / `visual_hook_types` / `emotional_tones`, the bound post's caption / hook / overlay / panel-text **lengths**, `panel_count`, `views`, and the `deck_length` and `usable_panel_slots` we are building against; and that entry's OWN candidate pool, the only keys it may be answered with. Fenced for the second `{{topic_items}}` reason as well: every line in it is either a number the engine measured or text scraped from a third-party post | style_match_system **only** |
 
 ### Per-role allowlists, in full
 
@@ -135,6 +153,7 @@ actually enforces. A role's set is exact: not a minimum, not a suggestion.
 | `copywriter_system.md` | `niche_descriptor`, `brand_context`, `trend_texts`, `source_hooks`, `sibling_list`, `text_budgets`, `platform_conventions`, `brief_directives` |
 | `copy_compress_system.md` | `niche_descriptor`, `brand_context`, `trend_texts`, `compress_panels`, `sibling_list`, `text_budgets`, `platform_conventions`, `brief_directives` |
 | `topic_filter_system.md` | `topic_items`, `competitor_list`, `audience_profile` |
+| `style_match_system.md` | `style_candidates`, `match_entries` |
 | `critic_brief.md` | `expected_blocks`, `forbidden_terms`, `list_mode`, `required_marks`, `sanctioned_illegible`, `style_dna` |
 | `critic_system.md` | `expected_blocks`, `layout_zones`, `list_mode`, `required_marks`, `style_dna` |
 | `critic_craft.md` | `expected_blocks`, `platform`, `required_marks`, `sanctioned_illegible` |
@@ -179,6 +198,19 @@ else. A competitor list inside a render prompt is a list of brand names handed
 to an image model, which is the exact shape of the failure it exists to
 prevent; and topic blocks are third-party text that belongs behind a fence, in
 the one call whose entire job is to read them as data.
+
+**Why the matcher's two slots are locked to one file.** `{{style_candidates}}`
+and `{{match_entries}}` are allowlisted for `style_match_system.md` and nowhere
+else, for both of the reasons above at once. `{{match_entries}}` is scraped
+third-party post text and engine measurements, and it belongs behind a fence in
+the one call that reads them as data. `{{style_candidates}}` is a menu of every
+*other* enabled style's authored prose: a render role that could resolve it
+would be told to draw one look while reading a dozen descriptions of others —
+the two-art-directors failure the visual-brief rule exists to prevent, with the
+second director speaking in the same imperative voice as the first. Nothing on
+either slot becomes pixels: the match call decides which style a creative is
+assigned, and its `reason` and `wanted_archetype` are read by a person in the
+run log and the gallery, never by a render model (FR-334/335).
 
 **Why the two copy roles never share a slot.** `copywriter_system.md` and
 `copy_compress_system.md` are the same role (Luna, the `copy` LLM role, the same
@@ -353,6 +385,8 @@ any labelled line above that is empty"* line.
 | Compression work order — one section per creative: its language-mirror line, its caption source, and its admitted panels numbered by SOURCE POSITION with each position's own character ceiling (D54/FR-331) | `{{compress_panels}}` | `copywrite.py` `_compress_block` (same seam as `source_hooks`: written onto the built context, and the same walk that builds this block builds the `panel_map`) |
 | `source panel i of N` position line and the per-slide visual brief | `{{slide_panel_source}}`, `{{visual_brief}}` | `generate/carousel.py` `_panel_source_line` / `_visual_brief`, fed by `sources/slide_intel.py` |
 | Numbered topic blocks for the competitor screen, ordinals 1..N | `{{topic_items}}` | `prompts_engine.py` `_topic_items` |
+| Candidate-style block — one entry per style usable somewhere in this run, each printed as `key` + `match_profile` + the formats it is meant for, the profile falling back to the first sentence of `render_prompt` where a style declares none (FR-334/335) | `{{style_candidates}}` | `style_match.py`, off `styles.py`'s own pool predicates (`usable_styles` / format affinity — imported, never re-derived) |
+| Match entries — one section per planned creative keyed by `asset_id`: its format, its measured source signals, and its own candidate pool (FR-334/335) | `{{match_entries}}` | `style_match.py` (same seam as the two `copywrite.py` blocks: written onto the built context) |
 | Campaign-brief context — the `Campaign brief "<name>" — influence: …` header, its directives, and the precedence sentence (`override` vs blend, FR-144/145) | `{{brief_directives}}` | `prompts_engine.py` `_brief_directives` |
 
 Changing any of these means changing the constant in code (and the

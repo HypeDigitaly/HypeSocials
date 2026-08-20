@@ -322,6 +322,100 @@ def test_two_bound_decks_of_different_lengths_get_different_estimated_costs(cfg:
     assert est.per_entry_usd == {0: short.estimated_cost_usd, 1: tall.estimated_cost_usd}
 
 
+# ------------------------------------------------- FR-334 matched style assignment (v2.4.0/D56)
+
+
+def test_fr334_the_style_match_call_is_quoted_under_matched_and_not_at_all_under_rotation(
+    cfg: Config,
+) -> None:
+    """§5: matched assignment is ONE batched `analysis` call at ASSIGN, and ASSIGN runs long after
+    the Confirm gate — so rule 7 says the operator approves the number before it is spent.
+
+    `assignment: rotation` is the engine default and the escape hatch, and it spends nothing at
+    all: the FR-291 scan is arithmetic over a list in memory. A line quoting a call that will not
+    happen reads as a rate that failed to load, so both rows have to disappear together.
+    """
+    plan = [entry(0, trend_key="t1"), entry(1, "carousel", trend_key="t1")]
+
+    assert cfg.styles.assignment == "rotation", "the engine default, unchanged by D56"
+    off = estimate(cfg, plan)
+    assert lines(off, "style_match_call") == []
+    assert lines(off, "style_match_retry_allowance") == []
+
+    cfg.styles.assignment = "matched"
+    est = estimate(cfg, plan)
+    call = one(est, "style_match_call")
+
+    assert call.category is SpendCategory.LLM and call.unit == "call"
+    assert call.assumed_model == cfg.models.analysis  # the `analysis` role — Sonnet prices it
+    assert call.price_key == "models.price_per_unit.llm.sonnet"
+    assert not call.allowance and call.amount_usd > 0  # paid work the run WILL do, not a hedge
+    assert call.entry_orders == (0, 1) and "2 creative(s)" in call.label
+    assert est.expected_usd == pytest.approx(off.expected_usd + call.amount_usd)
+
+
+def test_fr334_one_batched_call_whatever_the_plan_size_with_the_same_two_retries_beside_it(
+    cfg: Config,
+) -> None:
+    """ONE call per RUN, batched over every styled creative — so the QUANTITY never grows with the
+    plan and only the prompt does. A per-creative line would over-quote a twenty-creative run by
+    twentyfold and would quietly describe an architecture the module does not have.
+
+    The allowance beside it is FR-107's per-call bound, identical to every other LLM role: FR-127's
+    widened truncation retry and FR-41's parse retry are independent, each capped at one, and one
+    call can spend BOTH (`llm._run_attempts`) — hence 2, priced at the widened cap. An allowance
+    only, because the stage is fail-open: a failed match leaves every entry on its FR-291 baseline
+    and the run continues, so there is never a re-match to pay for.
+    """
+    cfg.styles.assignment = "matched"
+
+    prices = []
+    for size in (1, 3, 12):
+        est = estimate(cfg, [entry(index, trend_key="t1") for index in range(size)])
+        call, retry = one(est, "style_match_call"), one(est, "style_match_retry_allowance")
+
+        assert call.quantity == 1, f"{size} creatives is still one batched call"
+        assert retry.quantity == 2 and retry.allowance and retry.unit == "retry"
+        assert retry.category is SpendCategory.LLM
+        assert call.unit_price is not None and retry.unit_price is not None
+        assert retry.unit_price > call.unit_price  # ... each at FR-127's widened token cap
+        assert retry.amount_usd == pytest.approx(retry.unit_price * 2)
+        # The contingency rides worst case alone: FR-106a's expected projection is what the batch
+        # is gated on and what `trim()` compares against a cap.
+        assert est.worst_case_usd - est.expected_usd >= retry.amount_usd
+        prices.append(call.unit_price)
+
+    assert prices[0] < prices[1] < prices[2], "one call, but a prompt that grows with the plan"
+
+
+def test_fr334_a_plan_of_override_briefs_alone_is_never_charged_for_a_style_match(
+    cfg: Config,
+) -> None:
+    """Override briefs are never styled at all (M14: the brief's directives replace the style
+    channel outright, so `runner._assign_visuals` filters them out before `assign_styles` ever sees
+    them and they carry no `style_key` to overrule). They are therefore not in the matcher's entry
+    set and must not be in its price — the same shape `_filter_lines` and `_slide_intel_lines`
+    already refuse to quote for work that will not happen.
+
+    The mixed plan is the half that matters in practice: the line still appears, but it is
+    attributed to the styled orders only, and that attribution is what the per-entry share — and
+    therefore every trim decision — is computed from.
+    """
+    cfg.styles.assignment = "matched"
+    briefs_only = [entry(0, brief_name="ai-audit-cta", brief_influence="override"),
+                   entry(1, brief_name="ai-audit-cta", brief_influence="override")]
+
+    assert lines(estimate(cfg, briefs_only), "style_match_call") == []
+    assert lines(estimate(cfg, briefs_only), "style_match_retry_allowance") == []
+
+    mixed = [entry(0, brief_name="ai-audit-cta", brief_influence="override"),
+             entry(1, trend_key="t1"), entry(2, "carousel", trend_key="t1")]
+    call = one(estimate(cfg, mixed), "style_match_call")
+
+    assert call.entry_orders == (1, 2), "the brief pays for no part of a match it never enters"
+    assert "2 creative(s)" in call.label
+
+
 # ------------------------------------------------- FR-306 slide intelligence (D46 §0.11)
 
 

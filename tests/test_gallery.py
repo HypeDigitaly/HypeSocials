@@ -22,6 +22,12 @@ correct. So the properties pinned here are the ones a wrong page would break sil
    are on disk either way. A malformed `panel_map` row is dropped, not raised.
 6. **FR-73's vocabulary is looped, not listed** — an older `meta.yaml` carrying a tag this build's
    enum does not know still renders, and shows the unknown tag rather than hiding it.
+7. **The style badge says WHICH ALGORITHM chose the look** (FR-337, v2.4.0/D56) — `matched/high`
+   or `rotation`, with `rotation_fallback` deliberately collapsed onto `rotation` and the
+   distinction carried by the `style match degraded` tag beside it. The matcher's reason and its
+   wanted-archetype note are MODEL-AUTHORED strings landing in HTML, so both are whitespace-
+   collapsed and `html.escape`d like every other string this module reads off disk; and a
+   `meta.yaml` written before v2.4.0 keeps the bare label it always had.
 
 Everything is built on `tmp_path`: real folders, real `meta.yaml` files written as `packager`
 writes them, real media bytes. No network, no run, no money — `write_gallery` reads disk and
@@ -1077,3 +1083,232 @@ def test_the_header_and_the_tile_measure_read_the_same_originals(tmp_path: Path)
     # …and the deck-level mode is what arms it: the same rows under `verbatim` measure nothing.
     document["copy_mode"] = "verbatim"
     assert gallery._compressed_from(document) == 0
+
+# ------------------------------------- FR-337 (v2.4.0/D56): which ALGORITHM chose this style
+#
+# The card has named the style key since FR-76. What D56 added is the OTHER half of the question an
+# operator asks in front of a batch: not only "which look is this" but "who chose it, and why".
+# Matched assignment is an overlay on the FR-291 rotation, so both algorithms are live in one run
+# and a card that annotated neither would leave the operator unable to tell a deliberate match from
+# a content-blind default.
+#
+# Three properties, and each is a PRD-driven choice rather than a formatting preference:
+#
+# * the badge vocabulary is fixed at `matched` / `rotation`, and `rotation_fallback` deliberately
+#   prints as plain `rotation` — the PICK on that card genuinely IS the FR-291 baseline, and the
+#   `style match degraded` tag beside it carries the distinction that the matcher never spoke;
+# * `style_reason` and `style_wanted` are MODEL-AUTHORED strings that reach an HTML page, so both
+#   go through the one `html.escape` this module uses for every string it reads off disk;
+# * a `meta.yaml` written before v2.4.0 carries none of these keys and must render exactly as it
+#   always did — no origin invented, no note printed.
+
+
+def badges(html_text: str) -> list[str]:
+    """The identity chips (`<span class="badge">`), in the order the card prints them."""
+    return re.findall(r'<span class="badge">([^<]+)</span>', html_text)
+
+
+def test_fr337_a_matched_pick_names_the_algorithm_and_the_fit_it_claimed(tmp_path: Path) -> None:
+    """`style: X · matched/high` — the badge an operator scans a page of cards with.
+
+    `medium` prints identically to `high` on purpose: a `medium` answer was ACCEPTED by the matcher
+    (a decent fit is a fit), so the card states the fit and lets the operator judge it rather than
+    flagging one of the two as a problem. The reason line under the badges is where the model's own
+    sentence lands, and it is `prov` rather than `note` because it is provenance — it explains a
+    decision that was already taken, and asks for nothing.
+    """
+    deck(tmp_path, asset_id="0001_carousel_linkedin", style_key="icon-ledger-carousel",
+         style_origin="matched", style_fit="high",
+         style_reason="seven dense labelled panels suit a numbered ledger deck")
+    deck(tmp_path, asset_id="0002_carousel_linkedin", style_key="circuit-atlas-dark",
+         style_origin="matched", style_fit="medium",
+         style_reason="benchmark tables, close enough to a diagram deck")
+
+    html_text = page(tmp_path)
+
+    chips = badges(html_text)
+    assert "style: icon-ledger-carousel · matched/high" in chips
+    assert "style: circuit-atlas-dark · matched/medium" in chips, \
+        "an accepted `medium` reads exactly like `high`; the operator judges the difference"
+    assert "Style match: seven dense labelled panels suit a numbered ledger deck" in html_text
+    assert "Wanted archetype" not in html_text, "nothing was wanted — nothing asks for an action"
+
+
+def test_fr337_a_low_fit_keeps_its_number_and_asks_for_the_style_it_could_not_find(
+    tmp_path: Path,
+) -> None:
+    """The other accepted outcome: the matcher answered, the answer was "nothing here fits", and the
+    FR-291 baseline rendered the card.
+
+    Both halves are on the card because either alone would mislead. `rotation/low` says the pick was
+    the deterministic default AND that a real judgement stands behind that; the wanted-archetype
+    note says WHICH style the registry is missing. D56 decision 3 is the reason the note exists at
+    all — the engine never synthesizes a style at runtime (that would break FR-295's registry
+    authority), so a miss is written down and the operator authors the missing style deliberately.
+    """
+    deck(tmp_path, style_key="letterpress-print-carousel-teal", style_origin="rotation",
+         style_fit="low", style_reason="no enabled style renders a social screenshot",
+         style_wanted="social screenshot card")
+
+    html_text = page(tmp_path)
+
+    assert "style: letterpress-print-carousel-teal · rotation/low" in badges(html_text)
+    assert "Wanted archetype: social screenshot card" in html_text
+    assert "author one to close the gap (FR-337)" in html_text, "the note asks for an action"
+    assert 'class="note"' in html_text, "it is a call to action, not provenance"
+
+
+def test_fr337_a_rotation_fallback_prints_as_plain_rotation_beside_the_degraded_tag(
+    tmp_path: Path,
+) -> None:
+    """The deliberate collapse in the badge vocabulary, pinned because it looks like a bug.
+
+    `_ORIGIN_LABELS` maps `rotation_fallback` to `rotation`, so a card whose matcher call never
+    came back is annotated exactly like a card the matcher declined. That is correct and it is a
+    PRD choice: the PICK on both cards IS the FR-291 baseline, which is what this annotation names,
+    and annotating them differently would suggest a different STYLE was rendered. The distinction
+    that actually matters — the matcher never spoke — is carried by the `style match degraded`
+    badge beside it, which `generate._record` attaches from `style_origin` and the FR-73 badge loop
+    prints without knowing anything about styles.
+
+    So the two vocabularies are asserted TOGETHER: the word `rotation_fallback` must never reach a
+    card, and the degradation badge must be there to say what the collapsed word left out.
+    """
+    deck(tmp_path, style_key="anime-noir-statement", style_origin="rotation_fallback",
+         degradations=[DegradationTag.STYLE_MATCH_DEGRADED.value])
+
+    html_text = page(tmp_path)
+
+    assert "style: anime-noir-statement · rotation" in badges(html_text)
+    # Scoped to the CARDS, not to the document: the page title is the run folder's name, which is
+    # this test function's name under `tmp_path` and therefore carries the word by construction.
+    cards = "".join(re.findall(r"<article.*?</article>", html_text, re.S))
+    assert cards, "the fixture must actually produce a card for this to mean anything"
+    assert "rotation_fallback" not in cards, \
+        "the card names the PICK's algorithm; the tag names what failed"
+    assert '<span class="badge warn">style match degraded</span>' in html_text
+    assert DegradationTag.STYLE_MATCH_DEGRADED.value in [tag.value for tag in DegradationTag], \
+        "the tag is FR-73 vocabulary, so the badge loop finds it with no change here"
+
+
+def test_fr337_the_two_model_authored_style_strings_are_html_escaped(tmp_path: Path) -> None:
+    """`style_reason` and `style_wanted` are written by a MODEL, travel through `PlanEntry` and
+    `meta.yaml`, and land in HTML. That is a three-hop path from a language model to a page the
+    operator opens in a browser, so both go through the same `html.escape` every other
+    read-from-disk string here does — there is one escaping mechanism in this module and no card is
+    entitled to a second one.
+
+    Asserted on the two shapes that matter: a `<script>` open tag (the injection an escape exists
+    to defuse) and a bare `&`/quote pair (the ordinary case that would produce invalid markup and
+    a silently mangled sentence). The raw strings must appear NOWHERE, escaped or not, as tags.
+    """
+    deck(tmp_path,
+         style_key="social-quote-card", style_origin="rotation", style_fit="low",
+         style_reason='<script>alert("xss")</script> & "quoted" prose',
+         style_wanted="<b>listicle</b> & co")
+
+    html_text = page(tmp_path)
+
+    assert "<script" not in html_text, "an escaped page has no script tag of any origin"
+    assert "&lt;script&gt;" in html_text and "&amp;" in html_text
+    assert "&lt;b&gt;listicle&lt;/b&gt;" in html_text, "the wanted note is escaped too"
+    assert "<b>listicle</b>" not in html_text
+    # …and the escaping does not eat the sentence: what survives is readable prose.
+    assert "quoted" in html_text and "prose" in html_text
+
+
+def test_fr337_a_reason_that_arrived_with_newlines_is_collapsed_onto_one_line(
+    tmp_path: Path,
+) -> None:
+    """Both lines are whitespace-collapsed before they are escaped, because a model-authored string
+    that arrived with a newline in it would otherwise open a two-line hole in a one-line slot and
+    the card would stop reading as a row of facts."""
+    deck(tmp_path, style_origin="matched", style_fit="high",
+         style_reason="dense labelled rows\n\n   suit a ledger deck",
+         style_wanted="listicle\ndeck")
+
+    html_text = page(tmp_path)
+
+    assert "Style match: dense labelled rows suit a ledger deck" in html_text
+    assert "Wanted archetype: listicle deck" in html_text
+
+
+def test_fr337_a_pre_v240_meta_prints_the_bare_style_label_and_no_match_lines(
+    tmp_path: Path,
+) -> None:
+    """NFR-22's oldest rule applied to the newest fields: this module READS documents off disk,
+    including ones written by earlier versions of this engine.
+
+    A `meta.yaml` from two weeks ago carries no `style_origin`, no `style_fit`, no `style_reason`
+    and no `style_wanted` — so the card shows what those cards have always shown, a bare
+    `style: X`, and invents no origin for a run that recorded none. The same silence covers every
+    `assignment: rotation` run and every override brief, all of which carry the same empty strings
+    and mean the same thing by them.
+    """
+    document = meta(asset_id="0001_carousel_linkedin", style_key="editorial-voxel-carousel")
+    for key in ("style_origin", "style_fit", "style_reason", "style_wanted"):
+        assert key not in document, f"the pre-v2.4.0 fixture must not carry {key}"
+    asset(tmp_path, document, media=("slide_01.jpg",))
+
+    html_text = page(tmp_path)
+
+    assert "style: editorial-voxel-carousel" in badges(html_text)
+    assert not any("·" in chip and chip.startswith("style:") for chip in badges(html_text)), \
+        "no origin was recorded, so none is printed"
+    assert "Style match:" not in html_text and "Wanted archetype" not in html_text
+
+
+def test_fr337_an_override_brief_still_shows_its_bare_brief_override_label(tmp_path: Path) -> None:
+    """M14: an override brief's style channel is suppressed outright, so it is never matched and
+    never rotated — `generate._record` writes `brief_override` as the key and the four provenance
+    fields stay empty. The card says so with the same bare label a pre-v2.4.0 meta gets, because it
+    is the same fact: no algorithm chose this look, a brief did."""
+    asset(tmp_path, meta(asset_id="0001_image_linkedin", creative_format="image",
+                         style_key="brief_override", style_origin="rotation", slide_count=0),
+          media=("image.jpg",))
+
+    html_text = page(tmp_path)
+
+    assert "style: brief_override · rotation" in badges(html_text), \
+        "the runner stamps `rotation` on every live entry, including the ones it never styled"
+    assert "Style match:" not in html_text, "no matcher answer, so no reason line"
+    assert "Wanted archetype" not in html_text
+
+
+def test_fr75_the_match_provenance_lines_add_no_remote_byte_to_the_page(tmp_path: Path) -> None:
+    """The self-containment guarantee, re-asserted over the FIELDS D56 added.
+
+    A model-authored string is exactly the shape that could smuggle a URL onto an offline page — and
+    a page that fetches one thing is no longer a page an operator can review on a plane. So the
+    reason and the wanted note are given a URL each, and neither may become anything a browser
+    loads.
+
+    **Measured, and narrower than the sibling test above.**
+    `test_fr75_the_only_remote_string_on_the_page_is_a_permalink_nobody_has_to_load` asserts that
+    every `http` string on the page sits inside an `<a href>`. That holds for every string the
+    ENGINE writes, and it does not hold for model prose: a URL inside `style_reason` renders as
+    escaped plain text in a `<p class="prov">`. Which is fine, and is what this test pins — a bare
+    text URL is inert (no browser auto-links one), so FR-75's actual guarantee is intact: nothing on
+    the page is fetched. The assertion is therefore made where the guarantee lives, on the
+    ATTRIBUTES a browser acts on, rather than on the presence of the characters `http` anywhere in
+    the document. If the model-text URL is ever considered noise worth stripping, that is a change
+    to `gallery._style_html`, and this test is where it would be re-based.
+    """
+    deck(tmp_path, virlo_url=PERMALINK, style_origin="rotation", style_fit="low",
+         style_reason="see https://evil.test/track.gif for why",
+         style_wanted="card like https://evil.test/style.png")
+
+    html_text = page(tmp_path)
+
+    assert all(src.startswith("./") for src in media_srcs(html_text)), media_srcs(html_text)
+    assert not any("evil.test" in src for src in media_srcs(html_text)), \
+        "a model-authored URL is never a fetch"
+    hrefs = re.findall(r'href="([^"]*)"', html_text)
+    assert {href for href in hrefs if not href.startswith("./")} == {PERMALINK}, \
+        f"the permalink is the only REMOTE link on the page: {hrefs}"
+    assert not any("evil.test" in href for href in hrefs), \
+        "model prose must never become something the operator can click by accident"
+    assert "<script" not in html_text and "<link" not in html_text and "@import" not in html_text
+    # The URLs ARE on the page — as inert escaped text inside the two provenance paragraphs, which
+    # is the honest rendering of what the matcher said and loads nothing.
+    assert "Style match: see https://evil.test/track.gif for why" in html_text
