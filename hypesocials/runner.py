@@ -582,6 +582,23 @@ async def _assign_visuals(session: _Session, live: Sequence[PlanEntry],
                     f"{len(styled) - placed} kept the rotation baseline")
     if gap := _style_gap_block(live):
         session.say(gap)
+    # FR-355 (D61): the supply alarm, last of the post-loop findings and deliberately AFTER the
+    # receipts that make it checkable — an operator who reads "6/9" wants the six lines it
+    # counted already on screen above it. It runs in both assignment modes, because a
+    # rotation over a twelve-key pool and a matcher that keeps landing on one style are the
+    # same operator problem arriving by two roads. The console picks ONE of the two triggers
+    # to say; `run.log` records both numbers, since "one style took six" and "only two
+    # styles were used at all" are different authoring problems, and the log is read later,
+    # by someone who has to tell them apart.
+    if concentration := _concentration_line(live):
+        session.say(concentration)
+        keys = Counter(entry.style_key for entry in live if entry.style_key)
+        commonest, top = keys.most_common(1)[0]  # non-empty: the line above is "" without a key
+        session.log.warn("style_concentration",
+                         f"{commonest} on {top} of {sum(keys.values())} styled creative(s), "
+                         f"{len(keys)} distinct style(s) - the pool may be starved",
+                         style_key=commonest, count=top, total=sum(keys.values()),
+                         distinct=len(keys))
     # The `filter_degraded` posture (FR-294), verbatim: ONE warning for a whole-call failure, said
     # after the receipts rather than instead of them, and the run continues. Per-entry rejections
     # are NOT this — they are ordinary matched-mode answers and are printed on their own lines.
@@ -707,6 +724,60 @@ def _style_gap_block(live: Sequence[PlanEntry]) -> str:
         "          registry does not offer. Author them in styles.yaml (FR-334):",
         *(f"            - {fit(f'{name} ({count} creative(s))', 64)}"
           for name, count in sorted(wanted.items(), key=lambda row: (-row[1], row[0])))])
+
+
+def _concentration_line(live: Sequence[PlanEntry]) -> str:
+    """FR-355's concentration alarm: ONE line when a plan's looks bunched onto too few styles.
+
+    D61's supply check, stated as arithmetic rather than as a judgement. A run whose nine
+    carousels all came out `icon-ledger-carousel` is not a defect — the FR-291 rotation and
+    FR-334's matcher are each entitled to that answer — but it IS the shape a starved pool
+    makes, and the operator is the only one who can tell "this topic set really is nine
+    ledger decks" from "twelve styles are enabled and only one of them ever wins". So this
+    WARNS and never refuses: no retry, no second match, no model call, no exit code, no effect
+    on a single render. The decision it feeds is an authoring one (`prompts/styles.yaml`, or a
+    wider `styles.enabled`), taken after the run rather than during it, which is why the whole
+    thing is a pure function over the plan.
+
+    Two triggers, and the first one wins when both fire — "one style took six of nine" already
+    names the culprit, and "only two styles across nine" would say it again with less in it:
+
+    a. the commonest style takes MORE than half the styled creatives (`count * 2 > total`). The
+       comparison is strict on purpose: an exact half — 3 of 6, 2 of 4 — is two styles
+       sharing a plan evenly, which is a spread and not a bunch;
+    b. a plan of 5 or more wears fewer than 3 distinct styles. The floor is what keeps the alarm
+       worth reading: 2 styles across 3 creatives is the best a 3-creative run can do, so without
+       it this would fire on nearly every small run, and an alarm that always fires is furniture.
+
+    **Override briefs are outside BOTH the numerator and the denominator.** M14 suppresses their
+    style channel entirely (their `style_key` stays "" and meta.yaml records `brief_override`), so
+    counting them would report a starved pool in exactly the runs that asked for no pool at all —
+    a brief-only plan would read as "0 styles across 6" every single time.
+
+    `""` when neither trigger fires, so a healthy run prints nothing at all (D45: a line that shows
+    up on every run stops being read, and this one has to survive being read).
+
+    FR-286 arithmetic, worst case on trigger (a): 10 indent + 15 label + 20 style + 1 gutter + 3
+    counts + 29 tail = 78 exactly, which is the ceiling. The style key is registry-authored — the
+    one unbounded token on the line — so it is last-but-one and it is the only thing here allowed
+    to be cut, and its width is computed from what the counts actually spend rather than fixed: a
+    `12/34` plan buys its two extra digits out of the key instead of off the end of the line.
+    Trigger (b) carries no free text at all — 25 lead + 5 + 17 + 22 = 69 plus two integers —
+    so it stays well inside 78 for any plan size a Confirm gate would ever pass.
+    """
+    counts = Counter(entry.style_key for entry in live if entry.style_key)
+    if not counts:  # a brief-only plan, or an ASSIGN that never ran: nothing to be concentrated
+        return ""
+    commonest, top = counts.most_common(1)[0]
+    total = sum(counts.values())
+    lead = "          concentration: "  # the ASSIGN receipts' own 10-space indent, so it hangs
+    if top * 2 > total:                 # with the lines whose keys it is counting
+        tally, tail = f"{top}/{total}", " (>1/2) - pool may be starved"
+        return f"{lead}{fit(commonest, _FUNNEL_WIDTH - len(lead) - len(tally) - len(tail) - 1)}" \
+               f" {tally}{tail}"
+    if total >= 5 and len(counts) < 3:
+        return f"{lead}only {len(counts)} style(s) across {total} - pool may be starved"
+    return ""
 
 
 async def _confirm(session: _Session, entries: list[PlanEntry]) -> tuple[list[PlanEntry], Estimate]:

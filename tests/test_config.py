@@ -608,15 +608,21 @@ def test_fr336_the_three_shipped_brand_configs_pin_matched_and_default_yaml_does
     """D56's shipped posture, read off the files that actually ship (§2 decision 6).
 
     The three brand configs are the operator's own runs and they opt IN — matched assignment is
-    what keeps the 12-key `styles.enabled` set coherent, since twelve styles under plain rotation
-    is visual chaos. `default.yaml` is the template a new config is copied from and stays on the
-    engine-wide default, because a template that silently spent an LLM call at ASSIGN would make
-    the opt-in invisible to whoever copies it next.
+    what keeps the 17-key `styles.enabled` set coherent, since seventeen styles under plain
+    rotation is visual chaos. `default.yaml` is the template a new config is copied from and stays
+    on the engine-wide default, because a template that silently spent an LLM call at ASSIGN would
+    make the opt-in invisible to whoever copies it next.
+
+    The count moved 12 -> 17 in D61 and the roster itself is pinned in `tests/test_styles.py`
+    (`ENABLED_SEVENTEEN`), beside the registry the keys have to exist in — a length here and a
+    roster there is the split that keeps this file from needing to know what a style is.
     """
     for name in ("hypedigitaly", "hypedigitaly-cs", "hypedigitaly-fresh"):
         cfg = load_config(name, configs_dir=CONFIGS_DIR)
         assert cfg.styles.assignment == "matched", f"{name} should pin D56's matched assignment"
-        assert len(cfg.styles.enabled) == 12, "the D57 12-key selection matched mode guards"
+        assert len(cfg.styles.enabled) == 17, \
+            "the D61 17-key (D57's twelve + five teal-accented D61 styles) selection matched " \
+            "mode guards"
 
     assert load_config("default", configs_dir=CONFIGS_DIR).styles.assignment == "rotation"
 

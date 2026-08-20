@@ -10,7 +10,7 @@ nine global templates flat in `prompts/`, four `gpt-image-2` render templates,
 one `seedance-2-5` director template — plus `styles.yaml`, which is not a
 template, and `humanizer_skill.md`, which is not a template either (see below).
 `style_match_system.md` is the ninth global and the newest (FR-334/335): the
-registry grew to 19 styles at D56/D57, and one batched, fail-open analysis call
+registry grew to 19 styles at D56/D57 and to 26 at D61, and one batched, fail-open analysis call
 per run now decides which of them fits each creative, instead of rotation
 deciding alone. (`prds/50-promptcraft.md` FR-181 counts *fifteen* roles rather
 than fourteen because it counts the registry itself among its ten globals; this
@@ -33,7 +33,7 @@ several sentences read the way they do:
 
 ```
 prompts/
-  styles.yaml                    the meta-style registry — 19 styles (9 originals + build-log-mono + 4 archetype + 5 -teal variants, D56/D57), the VISUAL AUTHORITY
+  styles.yaml                    the meta-style registry — 26 styles (9 originals + build-log-mono + 4 archetype + 5 -teal variants, D56/D57; + 7 carousel-derived, D61), the VISUAL AUTHORITY
   humanizer_skill.md             NOT a template — the vendored humanizer reference (see below)
   copywriter_system.md           global — Luna copy-selection system prompt (verbatim mode)
   copy_compress_system.md        global — Luna compression system prompt (compress mode, D54)
@@ -91,6 +91,14 @@ ban-lists excepted) and the FR-348 type-family count (more than two families,
 a third `mono` tolerated) stay warnings. The house spine (FR-350: counter
 top-right, ground at a value extreme, text inside the central 80% of the 1:1
 frame) is enforced by test guards over the shipped file, not at load.
+Since v2.5.2 (D61) the file holds 26 styles: seven carousel-derived entries were
+authored AFTER those contracts existed and measured one at a time with
+`plans/tools/measure_one_style.py` (validator clean, owned ≤ 4,700 chars,
+`style_dna` ≤ 2,000, tier-A trim ≤ 1,540, tier-B slack ≥ 60) before the next one
+was written. Their `match_profile`s are mutually exclusive by archetype (FR-341):
+each newcomer names the partner it hands off to, and `icon-ledger-carousel` and
+`circuit-atlas-dark` were narrowed so the matcher no longer has one style to put
+every numbered deck on.
 
 **FR-183's second copy.** Every shipped template also exists as a compiled
 built-in in `prompts_engine._BUILT_INS`, used when the file is missing,

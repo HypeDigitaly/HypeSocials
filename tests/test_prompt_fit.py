@@ -32,11 +32,19 @@ Czech panel plus its FR-186 echo is ~2,700 uncuttable characters of TEXT block o
   budget, the panel and every SAFETY rule still arrive, and what a hard truncation eats is
   confined to the droppable tail prose F1-E demoted. That is the property the reorder was for.
 
-**RE-measured on the shipped bytes, 2026-08-20, after v2.5.1/D60** (`assembled` = the filled
+**RE-measured on the shipped bytes, 2026-08-20, after v2.5.2/D61** (`assembled` = the filled
 template before any fit pass; `cut` = the last-resort trio trim; `over` = characters hard-truncated
-past the floors). D60 touched NO template, NO engine code on this path and no slot the fit pass
-reads — every number below moved because `prompts/styles.yaml` was re-authored under FR-347/348/
-349/350, and it moved almost entirely in one direction:
+past the floors). D61 touched NO template, NO engine code on this path and no slot the fit pass
+reads — and this time it did not re-author a single existing style either. Every one of the
+nineteen rows that were already here is byte-identical to the number D60 left behind it. What
+changed is that SEVEN ROWS WERE ADDED at the foot, one per style D61 appended to
+`prompts/styles.yaml`, and they were measured the same way every other row was: the
+parametrisation reads `STYLE_KEYS`, so a style that enters the registry enters these three tiers
+with it and nobody has to remember to add it.
+
+**Why the other nineteen rows sit where they do — D60, kept because it still reads true.** Those
+numbers moved last session because `prompts/styles.yaml` was re-authored under FR-347/348/349/350,
+and they moved almost entirely in one direction:
 
 * **The safe-area sentence reached the other twelve styles.** J left "inside the central 80% of
   the 1:1 frame" on seven of the nineteen; FR-350 item 4 requires it on every carousel-affine
@@ -56,63 +64,80 @@ reads — every number below moved because `prompts/styles.yaml` was re-authored
   the nineteen moved further at tier A than their own trio did (the trim has to find an uncuttable
   slot's growth somewhere, and the trio is the only place it can look).
 
-    style                                asm@700  cut@700 |  asm@1500  cut@1500  over
-    photoreal-ambient-caption             20,491    1,185 |    21,898     1,727   861
-    editorial-voxel-carousel              20,756    1,451 |    22,163     1,800 1,053
-    letterpress-print-carousel            20,771    1,468 |    22,178     1,775 1,093
-    meme-caricature-panels                19,618      314 |    21,025     1,695    20
-    anime-noir-statement                  20,794    1,487 |    22,201     1,992   899
-    ugc-tabletop-statement                20,306    1,005 |    21,713     1,665   738
-    platform-showcase-card                20,644    1,346 |    22,051     1,709 1,032
-    hypelead-brand-card                   20,694    1,393 |    22,101     1,853   938
-    quiet-luxury-night-photoreal          20,673    1,371 |    22,080     1,973   797
-    build-log-mono                        20,741    1,445 |    22,148     1,865   973
-    icon-ledger-carousel                  20,816    1,516 |    22,223     1,903 1,010
-    circuit-atlas-dark                    20,740    1,431 |    22,147     1,867   970
-    social-quote-card                     20,699    1,394 |    22,106     1,707 1,089
-    terminal-mockup-deck                  20,740    1,433 |    22,147     1,761 1,076
-    letterpress-print-carousel-teal       20,771    1,468 |    22,178     1,775 1,093
-    meme-caricature-panels-teal           19,604      297 |    21,011     1,685    16
-    quiet-luxury-night-photoreal-teal     20,681    1,381 |    22,088     1,977   801
-    photoreal-ambient-caption-teal        20,556    1,251 |    21,963     1,766   887
-    ugc-tabletop-statement-teal           20,329    1,036 |    21,736     1,679   747
+    style                              asm@700  cut@700 |  asm@1500  cut@1500  over
+    photoreal-ambient-caption           20,491    1,185 |    21,898     1,727   861
+    editorial-voxel-carousel            20,756    1,451 |    22,163     1,800 1,053
+    letterpress-print-carousel          20,771    1,468 |    22,178     1,775 1,093
+    meme-caricature-panels              19,618      314 |    21,025     1,695    20
+    anime-noir-statement                20,794    1,487 |    22,201     1,992   899
+    ugc-tabletop-statement              20,306    1,005 |    21,713     1,665   738
+    platform-showcase-card              20,644    1,346 |    22,051     1,709 1,032
+    hypelead-brand-card                 20,694    1,393 |    22,101     1,853   938
+    quiet-luxury-night-photoreal        20,673    1,371 |    22,080     1,973   797
+    build-log-mono                      20,741    1,445 |    22,148     1,865   973
+    icon-ledger-carousel                20,816    1,516 |    22,223     1,903 1,010
+    circuit-atlas-dark                  20,740    1,431 |    22,147     1,867   970
+    social-quote-card                   20,699    1,394 |    22,106     1,707 1,089
+    terminal-mockup-deck                20,740    1,433 |    22,147     1,761 1,076
+    letterpress-print-carousel-teal     20,771    1,468 |    22,178     1,775 1,093
+    meme-caricature-panels-teal         19,604      297 |    21,011     1,685    16
+    quiet-luxury-night-photoreal-teal   20,681    1,381 |    22,088     1,977   801
+    photoreal-ambient-caption-teal      20,556    1,251 |    21,963     1,766   887
+    ugc-tabletop-statement-teal         20,329    1,036 |    21,736     1,679   747
+    big-number-editorial                20,680    1,375 |    22,087     1,842   935
+    contrast-verdict-deck               20,693    1,387 |    22,100     1,838   952
+    photo-poster-statement              20,718    1,410 |    22,125     1,877   938
+    mono-cutout-editorial               20,681    1,378 |    22,088     1,844   934
+    neon-glass-dark                     20,772    1,469 |    22,179     1,854 1,015
+    paper-editorial-carousel            20,706    1,402 |    22,113     1,862   941
+    aurora-white-deck                   20,740    1,439 |    22,147     1,845   992
 
-**The worst case did NOT change hands this time, and it got slightly worse.**
-`icon-ledger-carousel` is still the tightest style at 1,516 (from 1,499): retiring the footer strip
-took 23 characters out of its `render_prompt`, and its `counter_slot` zone put 15 straight back
-into an uncuttable slot, so the one style that already paid every uncuttable cost at once paid one
-more. `anime-noir-statement` is the runner-up at 1,487 (from 1,416). `_TRIO_CUT_CEILING` below
-stays 1,600, which leaves 84 characters of headroom on the worst style — that is thin, it is meant
-to be read that way, and the next session that wants a paragraph should take it out of the
-template rather than out of this number.
+**The worst case did not change hands and did not move at all.** `icon-ledger-carousel` is still
+the tightest style in the file at 1,516, exactly where D60 left it, and `anime-noir-statement` is
+still the runner-up at 1,487. `_TRIO_CUT_CEILING` below therefore stays 1,600 with the same 84
+characters of headroom on the worst style — thin, meant to be read that way, and the next session
+that wants a paragraph should take it out of the template rather than out of this number.
 
-**Tier B is now 19 of 19.** The `meme-caricature-panels` pair were the last two styles that fitted
-a 1,500-character panel with no hard truncation at all; they now go over by 20 and 16 characters.
-Their tier-A trim is still the mildest in the file by a distance (314 and 297 against a registry
-median near 1,400), so this is a pair crossing a line by twenty characters, not a style getting
-fat. **The five D57 variants still track their originals** to within ~95 characters at tier A
-(`letterpress` 1,468 -> 1,468, `ugc-tabletop` 1,005 -> 1,036, `photoreal-ambient` 1,185 -> 1,251,
-`quiet-luxury` 1,371 -> 1,381, `meme-caricature` 314 -> 297), so the teal spine is still an accent
-re-role rather than a rewrite.
+**The seven newcomers landed inside the pack, which is the point.** They were authored one at a
+time against `plans/tools/measure_one_style.py` rather than written first and measured afterwards,
+and it shows in how narrow the band is: every one of them sits between 1,375 (`big-number-
+editorial`) and 1,469 (`neon-glass-dark`) at tier A, against a registry median of 1,394. The worst
+of them, `neon-glass-dark` at 1,469, is still 47 characters clear of `icon-ledger-carousel` and it
+is the only newcomer inside the top five — so D61 added a quarter more styles to the registry
+without moving the number this file exists to watch. `plans/tools/measure_prompt_fit.py` says the
+same thing in one line: **`0 of 26 styles outside target (cutA <= 1540, slackB >= 60)`**.
+
+**Tier B is now 26 of 26**, up from D60's 19 of 19 — every style in the registry hard-truncates on
+a 1,500-character panel, and the seven newcomers went over from their first measurement rather
+than crossing a line they used to be under. What matters is what the truncation EATS, and that is
+unchanged: the marker assertions below still pass on every one of the twenty-six, so the panel and
+every SAFETY rule still arrive and what gets dropped is the droppable tail prose F1-E demoted.
+Their `over` figures (934-1,015) sit squarely inside the range the nineteen already occupied
+(16-1,093), so this is a wider registry rather than a heavier one. **The five D57 variants still
+track their originals** to within ~95 characters at tier A (`letterpress` 1,468 -> 1,468,
+`ugc-tabletop` 1,005 -> 1,036, `photoreal-ambient` 1,185 -> 1,251, `quiet-luxury` 1,371 -> 1,381,
+`meme-caricature` 314 -> 297), so the teal spine is still an accent re-role rather than a rewrite.
 
 **The finding this table carries, stated rather than asserted away.** Session 5.5's plan expected
-`chars_cut == 0` at tier A. It is not 0, and since D59 it is not 0 for ANYBODY: all NINETEEN
+`chars_cut == 0` at tier A. It is not 0, and since D59 it is not 0 for ANYBODY: all TWENTY-SIX
 shipped styles spend part of their style trio to fit a 700-character Czech list panel under the
 full re-render reference stack. The two exceptions this file used to name are gone for the reason
-in the paragraph above — the house-default counter line reaches the styles that never described a
-counter, which is the point of FR-338 and not a regression in them.
+in the D60 bullets above — the house-default counter line reaches the styles that never described
+a counter, which is the point of FR-338 and not a regression in them.
 
 Nothing is LOST at this tier — the trim is proportional, floored at 40%, logged as
 `prompt_hard_trimmed`, and the whole rulebook survives — but the headroom F1-B was aiming for is
 still not there and D59, then D60, each spent a little more of it. The template's fixed prose came
 down 11,838 -> 10,576 under F1-B, went back to 10,699 under D59's empty-zone rule and is UNTOUCHED
-by D60, while F1-A's `{{list_treatment}}` slot adds 692-955 uncuttable characters on seventeen of
-the nineteen styles — exactly the slides that were already the tightest (the `meme-caricature`
-pair declare no `list_mode` and pay 0, which is most of why they sit 1,100 characters clear of
-everybody else). `_TRIO_CUT_CEILING` below is where that headroom is watched, and it is UNCHANGED
-at 1,600: the worst case rose 17 characters this session and there are 84 left, which is a reason
-to compress something, not a reason to move the bar. Raising it is a decision about the deck's
-look, never a fix.
+by D60 and by D61, while F1-A's `{{list_treatment}}` slot adds 692-955 uncuttable characters on
+twenty-four of the twenty-six styles — exactly the slides that were already the tightest (the
+`meme-caricature` pair declare no `list_mode` and pay 0, which is most of why they sit 1,100
+characters clear of everybody else; all seven D61 styles declare one and pay it). Every one of
+D61's seven paid that slot from its own trio at authoring time instead of asking the file for
+room, which is why the worst case is unchanged. `_TRIO_CUT_CEILING` below is where that headroom
+is watched, and it is UNCHANGED at 1,600: the worst case did not move this session and there are
+still 84 characters left, which is a reason to compress something, not a reason to move the bar.
+Raising it is a decision about the deck's look, never a fix.
 
 **The known limitation, past both tiers.** A PATHOLOGICAL 1,500-character panel — every single word
 accented — doubles the FR-186 echo instead of adding a quarter to it, and the raw assembly runs
@@ -291,7 +316,7 @@ def worst_slide(style, panel: str, engine: pe.PromptEngine) -> dict[str, str]:
     * D-A's 21-mark sanctioned line and D-D's position badge — which since D59/FR-338 also fills
       `{{counter_rule}}`, straight out of `build_context` and with no stamp of its own (unlike
       `style_dna` and `render_prompt` below, `generate.carousel._prompt` passes `slide_counter`
-      and takes the built value). A COUNTED deck is the heavier arm on all nineteen shipped
+      and takes the built value). A COUNTED deck is the heavier arm on all twenty-six shipped
       styles — every `counter_slot` zone line is longer than `_NO_COUNTER_LINE`, and the house
       line beats the empty string — so the fixture stays a strict upper bound;
     * the operator's standing art direction, FR-316's visual brief and FR-292's branding block.
@@ -376,16 +401,17 @@ def trio_floor_room(context: dict[str, str]) -> int:
 # ------------------------------------------------------------------------- the fixture itself
 
 
-#: The registry this file measures, in full. NINETEEN since v2.4.0 (D56 added `build-log-mono`
-#: plus the four census-driven archetype styles; D57 added the five `-teal` spine variants). The
-#: number lives here rather than inline because three assertions read it and because bumping it is
-#: the deliberate act that admits a new style to the measurements below — see the test.
-SHIPPED_STYLES = 19
+#: The registry this file measures, in full. TWENTY-SIX since v2.5.2 (D56 added `build-log-mono`
+#: plus the four census-driven archetype styles; D57 added the five `-teal` spine variants; D61
+#: added the seven carousel-derived styles). The number lives here rather than inline because
+#: three assertions read it and because bumping it is the deliberate act that admits a new style
+#: to the measurements below — see the test.
+SHIPPED_STYLES = 26
 
 
-def test_the_shipped_registry_is_the_nineteen_styles_this_file_measures() -> None:
-    """A guard on the parametrisation, not on the registry: a TWENTIETH style must be MEASURED, and
-    a style silently removed must not quietly shrink this file's coverage.
+def test_the_shipped_registry_is_the_twenty_six_styles_this_file_measures() -> None:
+    """A guard on the parametrisation, not on the registry: a TWENTY-SEVENTH style must be
+    MEASURED, and a style silently removed must not quietly shrink this file's coverage.
 
     The rule this pin has always encoded is unchanged and is the reason the number is bumped rather
     than the test deleted: a style that ships without passing through the fit measurements is a
@@ -393,13 +419,16 @@ def test_the_shipped_registry_is_the_nineteen_styles_this_file_measures() -> Non
     know until a render call returned HTTP 500. Raising the count is how a new style is ADMITTED to
     the three parametrised tiers below — the parametrisation reads `STYLE_KEYS`, so the measurement
     follows the registry automatically and this assertion is what makes that automatic step
-    conscious.
+    conscious. D61's seven were measured by that mechanism alone: nothing below was re-parametrised
+    by hand, and the only edits this file took were this number, this test's name and the table in
+    the module docstring.
 
-    Two membership assertions, not one, and both on purpose: `quiet-luxury-night-photoreal` is
-    D55's entry and the tightest of the pre-D56 nine, `circuit-atlas-dark` is the densest of D56's
-    archetype four (its DNA carries the diagram node cap and the greeking rule). A registry edit
-    that dropped either would leave the count intact only by adding something else, which is
-    exactly the substitution a bare count cannot see.
+    Three membership assertions, not one, and all three on purpose: `quiet-luxury-night-photoreal`
+    is D55's entry and the tightest of the pre-D56 nine, `circuit-atlas-dark` is the densest of
+    D56's archetype four (its DNA carries the diagram node cap and the greeking rule), and
+    `neon-glass-dark` is the tightest of D61's seven. A registry edit that dropped any of them
+    would leave the count intact only by adding something else, which is exactly the substitution
+    a bare count cannot see.
     """
     assert len(REGISTRY.styles) == SHIPPED_STYLES, STYLE_KEYS
     assert REGISTRY.origin.endswith("styles.yaml")
@@ -407,6 +436,7 @@ def test_the_shipped_registry_is_the_nineteen_styles_this_file_measures() -> Non
     assert "quiet-luxury-night-photoreal" in STYLE_KEYS, "D55's style, measured like the rest"
     assert "circuit-atlas-dark" in STYLE_KEYS, \
         "D56's densest archetype style, measured like the rest"
+    assert "neon-glass-dark" in STYLE_KEYS, "D61's tightest style, measured like the rest"
 
 
 def test_the_body_budget_is_the_provider_wall_minus_this_runs_fix_reservation() -> None:
@@ -476,9 +506,9 @@ def test_a_live_shaped_worst_slide_keeps_its_look_inside_the_trio_floors(style_k
     The floor assertion is the correctness one — a trio field cut below 40% stops being a
     shortened instruction and becomes a fragment, which misleads a render model more than a
     missing block. `_TRIO_CUT_CEILING` is the WATCH: since D59 moved the counter spec into an
-    uncuttable slot, ALL NINETEEN shipped styles spend part of their trio here (the table in this
-    module's docstring), so the day a template paragraph or a `style_dna` rewrite eats the rest of
-    that room, this is where it says so.
+    uncuttable slot, ALL TWENTY-SIX shipped styles spend part of their trio here (the table in
+    this module's docstring), so the day a template paragraph or a `style_dna` rewrite eats the
+    rest of that room, this is where it says so.
     """
     _, trim, context, _ = assemble(style_key, LIVE_WORST_PANEL_CHARS)
     cuts: dict[str, int] = trim["cuts"]  # type: ignore[assignment]
@@ -505,8 +535,9 @@ def test_at_the_panel_sanity_extreme_a_truncation_can_only_eat_the_droppable_tai
 ) -> None:
     """TIER B. `PANEL_SANITY_CHARS` is what `copywrite` admits, so 1,500 characters of panel is a
     shape the pipeline must survive — and at that length the uncuttable TEXT block alone is ~2,700
-    characters, so ALL NINETEEN shipped styles hard-truncate here (measured after v2.5.1/D60; it
-    was seventeen of nineteen under D59, and the two that used to fit were the
+    characters, so ALL TWENTY-SIX shipped styles hard-truncate here (measured after v2.5.2/D61,
+    which added seven that were over from their first measurement; it was nineteen of nineteen
+    under D60 and seventeen of nineteen under D59, and the two that used to fit were the
     `meme-caricature-panels` pair, whose terse panel grammar is still the shortest DNA in the file
     — they now go over by 20 and 16 characters. See the table above).
 

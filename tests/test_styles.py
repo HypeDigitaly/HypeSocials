@@ -546,7 +546,7 @@ def test_d56_match_profile_for_prefers_the_authored_line_and_derives_one_when_it
 ) -> None:
     """The two branches of the single public answer, exercised on a SYNTHETIC registry.
 
-    It has to be synthetic: all nineteen shipped styles author a real `match_profile` (pinned
+    It has to be synthetic: all twenty-six shipped styles author a real `match_profile` (pinned
     below), so the derivation branch is untaken against `prompts/styles.yaml` and a test that read
     the shipped file would measure nothing while looking like it measured everything.
 
@@ -1237,22 +1237,48 @@ def test_style_for_answers_the_exact_key_and_names_an_unknown_one(tmp_path: Path
 # operator's decisions of 2026-08-20 (D55, then D56/D57), and the run refuses at pre-flight
 # (FR-295, exit 2, $0) the day the file and the shipped configs disagree about them.
 
-#: NINETEEN since v2.4.0. D55 brought the registry to nine; D56 added `build-log-mono` plus the
+#: TWENTY-SIX since v2.5.2. D55 brought the registry to nine; D56 added `build-log-mono` plus the
 #: four census-driven archetype styles (`icon-ledger-carousel`, `circuit-atlas-dark`,
-#: `social-quote-card`, `terminal-mockup-deck`); D57 added the five `-teal` spine variants. The
-#: originals were left untouched by D57 on purpose — colour is curated by CHOOSING styles, never by
-#: editing one (standing decision D-G), which is why a variant is a new key and not an edit.
-SHIPPED_STYLES = 19
-#: D57's selection, pinned as data: the twelve keys the three brand configs enable. The list is
-#: here rather than read from a config so a config edit that silently drops a key fails a test with
-#: a name instead of quietly narrowing the rotation. Twelve enabled styles are only coherent
-#: BECAUSE those configs also pin `assignment: matched` (D56 decision 5) — the two settings are one
-#: decision in one file, and the config test below asserts them together for that reason.
-ENABLED_TWELVE = ["anime-noir-statement", "platform-showcase-card",
-                  "letterpress-print-carousel-teal", "meme-caricature-panels-teal",
-                  "quiet-luxury-night-photoreal-teal", "photoreal-ambient-caption-teal",
-                  "ugc-tabletop-statement-teal", "build-log-mono", "icon-ledger-carousel",
-                  "circuit-atlas-dark", "social-quote-card", "terminal-mockup-deck"]
+#: `social-quote-card`, `terminal-mockup-deck`); D57 added the five `-teal` spine variants; D61
+#: added the seven carousel-derived styles authored from the operator's own reference decks
+#: (`big-number-editorial`, `contrast-verdict-deck`, `photo-poster-statement`,
+#: `mono-cutout-editorial`, `neon-glass-dark`, `paper-editorial-carousel`, `aurora-white-deck`).
+#: The originals were left untouched by D57 on purpose — colour is curated by CHOOSING styles,
+#: never by editing one (standing decision D-G), which is why a variant is a new key and not an
+#: edit; D61's seven carry the same rule one step further and ship NO `-teal` twins at all,
+#: because five of them were authored on the house teal from the first line.
+SHIPPED_STYLES = 26
+#: D61's selection, pinned as data: the seventeen keys the three brand configs enable — D57's
+#: twelve plus the five D61 styles that carry the brand teal. The list is here rather than read
+#: from a config so a config edit that silently drops a key fails a test with a name instead of
+#: quietly narrowing the rotation. Seventeen enabled styles are only coherent BECAUSE those
+#: configs also pin `assignment: matched` (D56 decision 5) — the two settings are one decision in
+#: one file, and the config test below asserts them together for that reason.
+#:
+#: Two D61 styles are deliberately ABSENT: `paper-editorial-carousel` (vermilion accent) and
+#: `mono-cutout-editorial` (no accent at all) are off the teal spine, so they stay in the registry
+#: for `default.yaml` and an empty selector and out of the brand selection — see the D61 test at
+#: the foot of this file, which is where that absence is asserted rather than assumed.
+ENABLED_SEVENTEEN = ["anime-noir-statement", "platform-showcase-card",
+                     "letterpress-print-carousel-teal", "meme-caricature-panels-teal",
+                     "quiet-luxury-night-photoreal-teal", "photoreal-ambient-caption-teal",
+                     "ugc-tabletop-statement-teal", "build-log-mono", "icon-ledger-carousel",
+                     "circuit-atlas-dark", "social-quote-card", "terminal-mockup-deck",
+                     "big-number-editorial", "contrast-verdict-deck", "photo-poster-statement",
+                     "neon-glass-dark", "aurora-white-deck"]
+#: D61's seven, in REGISTRY FILE ORDER — they were appended to the foot of `prompts/styles.yaml`
+#: in exactly this sequence and the D61 test at the end of this file asserts that they are still
+#: the file's tail. Named as a constant because five separate guards need to say "the newcomers"
+#: (the mono roster, the counter-zone roster, the archetype map, the off-spine pair and the tail
+#: check) and a roster spelled five times is a roster that drifts in four of them.
+_D61_STYLES = ["big-number-editorial", "contrast-verdict-deck", "photo-poster-statement",
+               "mono-cutout-editorial", "neon-glass-dark", "paper-editorial-carousel",
+               "aurora-white-deck"]
+#: The two of D61's seven that stay OUT of the brand selection, and why they are a pair: neither
+#: carries the house teal. `paper-editorial-carousel` keeps its source's native vermilion and
+#: `mono-cutout-editorial` carries no accent hue at all, so both are off the D57 teal spine while
+#: still being fully valid registry entries an operator can enable from `default.yaml`.
+_D61_OFF_SPINE = ["paper-editorial-carousel", "mono-cutout-editorial"]
 
 
 def _shipped() -> StyleRegistry:
@@ -1260,16 +1286,17 @@ def _shipped() -> StyleRegistry:
     return styles.load_registry([REPO / "prompts"])
 
 
-def test_d56_the_shipped_registry_parses_and_holds_nineteen_uniquely_keyed_styles() -> None:
+def test_d56_the_shipped_registry_parses_and_holds_twenty_six_uniquely_keyed_styles() -> None:
     """There is NO fallback (FR-295): a registry that will not parse is exit 2 and $0, not a
     built-in default set. So "it parses" is a real assertion about the shipped bytes, and the
     count is what catches a style added or removed without anyone updating the configs that
     enable it.
 
-    The three membership assertions are one per decision that put a style in this file — D55's
-    photoreal entry, one of D56's archetype four, one of D57's spine variants — because a count
-    alone passes for a style deleted and a different one added in the same edit, which is exactly
-    the shape a registry re-organisation takes.
+    The four membership assertions are one per decision that put a style in this file — D55's
+    photoreal entry, one of D56's archetype four, one of D57's spine variants, one of D61's
+    seven carousel-derived entries — because a count alone passes for a style deleted and a
+    different one added in the same edit, which is exactly the shape a registry re-organisation
+    takes.
     """
     registry = _shipped()
     keys = [style.key for style in registry.styles]
@@ -1279,6 +1306,7 @@ def test_d56_the_shipped_registry_parses_and_holds_nineteen_uniquely_keyed_style
     assert "quiet-luxury-night-photoreal" in keys, "D55's style"
     assert "circuit-atlas-dark" in keys, "one of D56's four census-driven archetype styles"
     assert "ugc-tabletop-statement-teal" in keys, "one of D57's five teal-spine variants"
+    assert "contrast-verdict-deck" in keys, "one of D61's seven carousel-derived styles"
     # D57's mechanism, pinned as the absence of the alternative: a variant is a NEW KEY beside an
     # untouched original (D-G), never an edit to the original's palette. Both must be present.
     assert "ugc-tabletop-statement" in keys, "D57 duplicated the style; it did not move it"
@@ -1363,10 +1391,10 @@ def test_d55_the_new_style_is_carousel_affine_and_may_anchor_a_deck() -> None:
     assert styles.fmt_affine(style, "image") is True and styles.fmt_affine(style, "reel") is True
 
 
-def test_d57_the_twelve_key_selection_validates_clean_under_the_shipped_brand() -> None:
+def test_d61_the_seventeen_key_selection_validates_clean_under_the_shipped_brand() -> None:
     """The registry and the configs have to land in the SAME change: a `styles.enabled` key the
     registry lacks is a pre-flight exit 2 on EVERY run of that config (FR-314/FR-295). This is that
-    barrier, asserted against the real registry and the real twelve-key list — no errors, and no
+    barrier, asserted against the real registry and the real seventeen-key list — no errors, and no
     warnings either.
 
     "No warnings" is the stronger half and covers more with every session. Since D56 it means no
@@ -1377,23 +1405,33 @@ def test_d57_the_twelve_key_selection_validates_clean_under_the_shipped_brand() 
     because `_PALETTE_CONTRACT_ENFORCED` is `True`, the `errors == []` line above now additionally
     means every palette in the file obeys the one-accent-hue, one-eighth-of-frame contract
     (FR-347). `validate` walks the whole registry for warnings, not just the selection, so this one
-    assertion covers all nineteen entries; the D60 test at the foot of this file says the same
+    assertion covers all twenty-six entries; the D60 test at the foot of this file says the same
     thing from the other end, under both brands and with nothing enabled.
+
+    The ordered list is the point of the last assertion and the reason D61's five newcomers are
+    APPENDED to it rather than slotted in: `usable_styles` answers in REGISTRY FILE order, never
+    in the order the config happens to type its keys, and the seven D61 entries were appended to
+    the foot of `styles.yaml`. A newcomer that turned up in the middle of this list would mean
+    someone re-ordered the registry, which silently re-seeds FR-291's deterministic rotation for
+    every run of every config.
     """
     registry = _shipped()
     config = _config(brand="hypelead", formats={"image": 0, "carousel": 6, "reel": 0},
-                     enabled=ENABLED_TWELVE)
+                     enabled=ENABLED_SEVENTEEN)
 
     errors, warnings = styles.validate(registry, config)
 
     assert errors == [], f"the shipped selection would refuse a run: {errors}"
     assert warnings == [], f"and it earns not even the thin-pool warning: {warnings}"
-    assert [style.key for style in styles.usable_styles(registry, "hypelead", ENABLED_TWELVE)] == [
+    assert [style.key
+            for style in styles.usable_styles(registry, "hypelead", ENABLED_SEVENTEEN)] == [
         "anime-noir-statement", "platform-showcase-card", "build-log-mono",
         "icon-ledger-carousel", "circuit-atlas-dark", "social-quote-card", "terminal-mockup-deck",
         "letterpress-print-carousel-teal", "meme-caricature-panels-teal",
         "quiet-luxury-night-photoreal-teal", "photoreal-ambient-caption-teal",
-        "ugc-tabletop-statement-teal"], "FILE order, never the order the config typed"
+        "ugc-tabletop-statement-teal", "big-number-editorial", "contrast-verdict-deck",
+        "photo-poster-statement", "neon-glass-dark",
+        "aurora-white-deck"], "FILE order, never the order the config typed"
 
 
 def test_d56_every_shipped_style_authors_its_own_match_profile() -> None:
@@ -1405,8 +1443,8 @@ def test_d56_every_shipped_style_authors_its_own_match_profile() -> None:
     only a warning. What it breaks is the QUALITY of every match on that style: `render_prompt`
     says how a look works ("near-black ground, glowing teal circuit motifs") where a
     `match_profile` says what source material it suits, and a matcher handed the first has to guess
-    the second. With a twelve-key pool that guess is most of the decision, which is why every one
-    of the nineteen shipped entries authors the real line and why the derivation is exercised
+    the second. With a seventeen-key pool that guess is most of the decision, which is why every
+    one of the twenty-six shipped entries authors the real line and why the derivation is exercised
     against a SYNTHETIC registry (below) rather than here — there is nothing to derive from in this
     file, and a test that silently measured nothing would be worse than no test.
     """
@@ -1421,67 +1459,71 @@ def test_d56_every_shipped_style_authors_its_own_match_profile() -> None:
             f"{style.key}: `match_profile` is a stub, not one or two usable sentences"
 
 
-def test_d57_the_three_shipped_brand_configs_enable_those_twelve_keys_and_pin_matched() -> None:
+def test_d61_the_three_shipped_brand_configs_enable_those_seventeen_keys_and_pin_matched() -> None:
     """The configs and the registry are one decision in two files; this is where they are checked
     against each other. Read through `load_config` rather than by parsing YAML, so a key that
     loads to something different from what it looks like on disk is caught here.
 
     `assignment: matched` is asserted in the same loop and not in a test of its own, because it is
-    not a separate setting: twelve enabled styles under plain rotation would put twelve unrelated
-    looks through one batch (D56 risk 3). The selection is only coherent BECAUSE the matcher is
-    choosing, so a config that widened the pool and left `assignment` on the engine default would
-    be a regression this pairing is here to catch.
+    not a separate setting: seventeen enabled styles under plain rotation would put seventeen
+    unrelated looks through one batch (D56 risk 3). The selection is only coherent BECAUSE the
+    matcher is choosing, so a config that widened the pool and left `assignment` on the engine
+    default would be a regression this pairing is here to catch — and D61 widened it again,
+    12 -> 17, for the opposite reason to the one that reads first: the 2026-08-20 run put six of
+    nine decks on `icon-ledger-carousel` because it was the only enabled style whose profile
+    claimed numbered decks at all. A thin pool does not spread a matcher out, it concentrates it.
     """
     registry = _shipped()
     registry_keys = {style.key for style in registry.styles}
 
     for name in ("hypedigitaly", "hypedigitaly-cs", "hypedigitaly-fresh"):
         config = load_config(name, configs_dir=CONFIGS_DIR)
-        assert config.styles.enabled == ENABLED_TWELVE, f"{name} drifted from D57's selection"
+        assert config.styles.enabled == ENABLED_SEVENTEEN, f"{name} drifted from D61's selection"
         assert config.styles.assignment == "matched", \
-            f"{name} widened the pool to twelve without the matcher that makes it coherent (D56)"
+            f"{name} widened the pool to seventeen without the matcher that keeps it coherent"
         assert set(config.styles.enabled) <= registry_keys, \
             f"{name} enables a style the registry does not define — exit 2 on every run"
         assert styles.validate(registry, config)[0] == [], f"{name} would refuse at pre-flight"
 
 
 def test_d57_the_two_slides_only_keys_are_enabled_but_INERT_on_a_carousel_plan() -> None:
-    """The operator kept both `slides_only` variants in the twelve knowing neither can be assigned
-    while the configs are all-carousel: they are there to activate the day image posts return, and
-    keeping them costs nothing because `fmt_affine` drops them per format. Same ruling as D55, now
-    covering two keys instead of one (`ugc-tabletop-statement-teal` inherits the marker from its
-    original exactly as `meme-caricature-panels-teal` does).
+    """The operator kept both `slides_only` variants in the selection knowing neither can be
+    assigned while the configs are all-carousel: they are there to activate the day image posts
+    return, and keeping them costs nothing because `fmt_affine` drops them per format. Same ruling
+    as D55, now covering two keys instead of one (`ugc-tabletop-statement-teal` inherits the
+    marker from its original exactly as `meme-caricature-panels-teal` does).
 
-    So the effective carousel rotation is TEN of the twelve, and this pins that the two it excludes
-    are the right two — a `slides_only` key that silently became assignable would put a caricature
-    panel or a tabletop shot on a deck's ANCHOR slide, and under anchor chaining slide 1 sets the
-    look for every slide that follows it.
+    So the effective carousel rotation is FIFTEEN of the seventeen, and this pins that the two it
+    excludes are the right two — a `slides_only` key that silently became assignable would put a
+    caricature panel or a tabletop shot on a deck's ANCHOR slide, and under anchor chaining slide 1
+    sets the look for every slide that follows it. None of D61's seven is a third: they were all
+    authored cover-capable, which is what a deck-derived style has to be.
     """
     registry = _shipped()
     inert = ("meme-caricature-panels-teal", "ugc-tabletop-statement-teal")
-    pool = {style.key for style in styles.usable_styles(registry, "hypelead", ENABLED_TWELVE)}
+    pool = {style.key for style in styles.usable_styles(registry, "hypelead", ENABLED_SEVENTEEN)}
     entries = _entries(range(24), fmt="carousel")
 
-    styles.assign_styles(entries, registry, "hypelead", enabled=ENABLED_TWELVE)
+    styles.assign_styles(entries, registry, "hypelead", enabled=ENABLED_SEVENTEEN)
 
     for key in inert:
         assert key in pool, f"{key}: selected and brand-clean…"
         assert styles.fmt_affine(styles.style_for(registry, key), "carousel") is False, \
             f"{key}: …and still never affine to a deck"
         assert key not in _keys(entries), f"{key}: an inert key was assigned to a carousel"
-    assert set(_keys(entries)) == set(ENABLED_TWELVE) - set(inert), \
-        "and every one of the other ten really is reachable — an inert THIRD key would be a bug"
+    assert set(_keys(entries)) == set(ENABLED_SEVENTEEN) - set(inert), \
+        "and every one of the other fifteen really is reachable — an inert THIRD key is a bug"
 
 
 def test_d57_the_brand_card_is_absent_from_the_selection_and_would_be_dropped_anyway() -> None:
     """Two independent reasons, and the test asserts both because either alone would be a
-    coincidence. `hypelead-brand-card` is not in the twelve keys; and `branding.enabled` is false in
-    all three shipped configs, so `brand_ok` drops a `brand_slot` style regardless. Branded
-    entries sign through the TEXT block on any style (FR-318/FR-292), which is why excluding the
-    card costs the run no signature it would otherwise have carried."""
+    coincidence. `hypelead-brand-card` is not in the seventeen keys; and `branding.enabled` is
+    false in all three shipped configs, so `brand_ok` drops a `brand_slot` style regardless.
+    Branded entries sign through the TEXT block on any style (FR-318/FR-292), which is why
+    excluding the card costs the run no signature it would otherwise have carried."""
     registry = _shipped()
 
-    assert "hypelead-brand-card" not in ENABLED_TWELVE
+    assert "hypelead-brand-card" not in ENABLED_SEVENTEEN
     with_switch_off = styles.usable_styles(registry, "hypelead", branding_enabled=False)
     assert "hypelead-brand-card" not in {style.key for style in with_switch_off}
     for name in ("hypedigitaly", "hypedigitaly-cs", "hypedigitaly-fresh"):
@@ -1526,7 +1568,7 @@ def _dna_hits(pattern: re.Pattern[str], style: MetaStyle, fields: tuple[str, ...
 
     One hit reads `icon-ledger-carousel.typography: 'chip' in …a small counter chip top-right…`:
     the style, the field, the offending word and enough of the sentence around it to edit without
-    opening the file. A bare `assert not hits` over a registry of nineteen styles would say only
+    opening the file. A bare `assert not hits` over a registry of twenty-six styles would say only
     that something, somewhere, said "badge".
 
     A test-module helper rather than a `hypesocials.styles` function on purpose — see the section
@@ -1572,22 +1614,28 @@ def test_fr339_every_counter_slot_zone_states_its_counter_inside_the_two_hundred
     that slot is UNCUTTABLE — it is in no truncation set and it is not the style trio, so every
     character it carries is a character the last-resort trio trim has to find somewhere else
     (`tests/test_prompt_fit.py` measures exactly that trade). 200 is the PRD's number and the
-    shipped worst is `editorial-voxel-carousel` at 192, so this is a real bar and not a formality.
+    shipped worst is `editorial-voxel-carousel` at 192 — with D61's own tightest,
+    `contrast-verdict-deck`, right behind it at 190 — so this is a real bar and not a formality.
 
     The ROSTER is pinned rather than the count, because the failure that matters is a zone
     silently DISAPPEARING: a style that loses its `counter_slot` does not break, it quietly falls
     through to FR-338 arm (d) — the 86-character house-default line — and renders its counter in
-    a place its own layout never described. Eight styles declare one; the other eleven are meant
-    to be on the house default.
+    a place its own layout never described. FIFTEEN styles declare one since D61 — the eight that
+    always did plus all seven of D61's carousel-derived entries, which were authored from decks
+    whose source chrome numbered every slide and so state their own counter zone rather than
+    inheriting the house default; the other eleven are still meant to be on the house default.
     """
     registry = _shipped()
     zoned = {style.key: zone for style in registry.styles for zone in style.layout_zones
              if zone.role == "counter_slot"}
 
-    assert sorted(zoned) == ["build-log-mono", "circuit-atlas-dark", "editorial-voxel-carousel",
-                             "icon-ledger-carousel", "letterpress-print-carousel",
-                             "letterpress-print-carousel-teal", "social-quote-card",
-                             "terminal-mockup-deck"], \
+    assert sorted(zoned) == ["aurora-white-deck", "big-number-editorial", "build-log-mono",
+                             "circuit-atlas-dark", "contrast-verdict-deck",
+                             "editorial-voxel-carousel", "icon-ledger-carousel",
+                             "letterpress-print-carousel", "letterpress-print-carousel-teal",
+                             "mono-cutout-editorial", "neon-glass-dark",
+                             "paper-editorial-carousel", "photo-poster-statement",
+                             "social-quote-card", "terminal-mockup-deck"], \
         "a `counter_slot` zone appeared or vanished — a vanished one falls through to " \
         f"FR-338's house-default line silently, and is not an error: {sorted(zoned)}"
     over = [f"{key}: {len(zone.text_treatment)} chars" for key, zone in sorted(zoned.items())
@@ -1927,11 +1975,11 @@ def test_fr347_the_enforcement_switch_moves_the_same_findings_between_errors_and
 
 
 def test_fr347_the_whole_shipped_registry_is_clean_under_both_brands_with_the_switch_on() -> None:
-    """All NINETEEN, not just the twelve the configs enable — with FR-347 enforcing.
+    """All TWENTY-SIX, not just the seventeen the configs enable — with FR-347 enforcing.
 
-    The D57 test above validates the twelve-key SELECTION and is the barrier that catches a config
-    drifting from the registry. This one is the other axis: `validate` walks every entry in the
-    file for findings whether or not the run can assign it, so a style that is enabled by nobody
+    The D61 test above validates the seventeen-key SELECTION and is the barrier that catches a
+    config drifting from the registry. This one is the other axis: `validate` walks every entry
+    in the file for findings whether or not the run can assign it, so a style enabled by nobody
     today and re-enabled next month is held to the same contract now, while the person who
     authored it is still in the room.
 
@@ -2219,6 +2267,13 @@ def test_fr348_the_only_shipped_styles_naming_the_mono_class_are_the_four_that_m
     on it, and all four are pinned here so a fifth style quietly reaching for a mono utility shows
     up as a named failure rather than as one more warning nobody reads.
 
+    **D61 left this roster alone and that is asserted, not assumed.** Seven styles joined the
+    registry and NONE of them names a mono class: each was authored on exactly two families
+    (a display face and a body face), so the carve-out is still spent by the three code/terminal
+    identities it was written for. Seven new styles is precisely the moment a carve-out gets
+    borrowed by something that is not a terminal, so the roster is re-asserted whole below and
+    the seven are named again in their own check.
+
     Counted through the module's OWN predicates (`_clauses`, `_NEGATION`, `_TYPE_FAMILIES`) rather
     than by grepping for the word: "no mono anywhere" is a ban, not a use, and a grep would report
     every style that forbids one.
@@ -2237,6 +2292,9 @@ def test_fr348_the_only_shipped_styles_naming_the_mono_class_are_the_four_that_m
                            "terminal-mockup-deck"], \
         ("FR-348's mono carve-out is for a code/terminal identity plus HypeLead's own Geist Mono "
          f"brand stack. A style outside that set reached for a monospace utility: {naming_mono}")
+    assert not set(naming_mono) & set(_D61_STYLES), \
+        ("D61 added seven styles on two families each and none of them is a terminal identity, "
+         f"so none may name a mono utility: {sorted(set(naming_mono) & set(_D61_STYLES))}")
 
 
 # ------------------------------------------- FR-350: the house spine, guarded over shipped bytes
@@ -2309,10 +2367,10 @@ def test_fr350_every_shipped_style_is_carousel_affine_which_is_what_puts_it_unde
     """The precondition the four guards below all rest on, asserted rather than assumed.
 
     FR-350 binds "every carousel-affine style and nothing more", and it spells out what that means
-    in the same breath: `format_affinity` contains `carousel`. Today that is all nineteen, so the
-    guards can each walk the whole registry — but that is a FACT about the shipped file in August
-    2026, not a property of the spine, and the day an image-only or reel-only style is authored,
-    the guards below start holding it to rules it was never under. This test is where that shows
+    in the same breath: `format_affinity` contains `carousel`. Today that is all twenty-six, so
+    the guards can each walk the whole registry — but that is a FACT about the shipped file in
+    August 2026, not a property of the spine, and the day an image-only or reel-only style is
+    authored, the guards below start holding it to rules it was never under. This test is where that shows
     up: it fails with the new style named, and the fix is to filter the guards rather than to
     widen the spine.
 
@@ -2323,7 +2381,7 @@ def test_fr350_every_shipped_style_is_carousel_affine_which_is_what_puts_it_unde
     Those four still render carousel SLIDES when a deck is built from them by hand, they still
     ship `carousel` in their affinity, and their counters, safe areas and grounds are read by a
     viewer swiping the same batch — so the spine binds them, and using the assignment predicate
-    here would quietly exempt four of the nineteen from the house rules.
+    here would quietly exempt four of the twenty-six from the house rules.
     """
     registry = _shipped()
 
@@ -2333,8 +2391,8 @@ def test_fr350_every_shipped_style_is_carousel_affine_which_is_what_puts_it_unde
     assert not_affine == [], (
         "FR-350 binds the carousel-affine styles only. These are not, so the four guards below "
         f"must start filtering instead of walking the whole registry: {not_affine}")
-    # The narrower predicate, pinned as the difference it is: four of the nineteen are inert on a
-    # carousel PLAN (D57) and are still under the spine. A future reader swapping one for the
+    # The narrower predicate, pinned as the difference it is: four of the twenty-six are inert on
+    # a carousel PLAN (D57) and are still under the spine. A future reader swapping one for the
     # other above would silently drop them from every guard in this section.
     inert = [style.key for style in registry.styles
              if not styles.fmt_affine(style, "carousel")]
@@ -2350,12 +2408,16 @@ def test_fr350_every_shipped_counter_slot_zone_places_its_counter_top_right() ->
     top-left before Session K (`editorial-voxel-carousel`, `letterpress-print-carousel` and its
     teal twin); this is what stops the fourth.
 
+    D61's seven were the first real test of that: five of the seven reference decks number their
+    slides top-LEFT, and every one of the seven was authored top-right anyway, which is the whole
+    point of a house spine — the source is read for its shape, never copied for its chrome.
+
     The zone `position` is the string that becomes `{{counter_rule}}`, so it is the only place the
     corner is actually stated to a render model — a style whose `text_placement` says "top-right"
     and whose zone says "top-left" renders top-left.
     """
     zoned = {style.key: zone for style in _shipped().styles for zone in _counter_zones(style)}
-    assert len(zoned) == 8, f"the FR-339 roster is eight styles; this guard sees {len(zoned)}"
+    assert len(zoned) == 15, f"the FR-339 roster is fifteen styles; this guard sees {len(zoned)}"
 
     misplaced = [f"{key}: {zone.position!r}" for key, zone in sorted(zoned.items())
                  if "top-right" not in zone.position.lower()]
@@ -2385,7 +2447,7 @@ def test_fr350_no_shipped_style_puts_a_chip_badge_or_counter_at_the_top_left() -
 
 
 def test_fr350_every_shipped_style_states_the_safe_area_in_the_frame_we_actually_render() -> None:
-    """Item 4: one sentence, in `text_placement`, in J's exact words, on all nineteen.
+    """Item 4: one sentence, in `text_placement`, in J's exact words, on all twenty-six.
 
     This replaced "bottom 12% clear (4:5 crop)", which reserved an eighth of every slide for a crop
     this pipeline stopped taking (the FR-350 pre-check further up asserts that band is gone). The
@@ -2413,10 +2475,13 @@ def test_fr350_every_graphic_shipped_style_grounds_itself_at_a_value_extreme() -
 
     PHOTOGRAPHIC styles are exempt and the exemption is the whole of plan 4a rule 6: a photographed
     room HAS a cast, and demanding a value extreme of it would mean lighting every scene to the same
-    two exposures. The seven exempt today are `photoreal-ambient-caption`, `anime-noir-statement`,
-    `ugc-tabletop-statement`, `quiet-luxury-night-photoreal` and the three teal twins
+    two exposures. The eight exempt today are `photoreal-ambient-caption`, `anime-noir-statement`,
+    `ugc-tabletop-statement`, `quiet-luxury-night-photoreal`, the three teal twins
     (`quiet-luxury-night-photoreal-teal`, `photoreal-ambient-caption-teal`,
-    `ugc-tabletop-statement-teal`) — `ugc-tabletop-statement`'s honey-wood table at V 0.69 is
+    `ugc-tabletop-statement-teal`) and D61's `photo-poster-statement`, which is the only one of
+    the seven newcomers built on a full-bleed photograph — its asphalt-black street ground would
+    pass the extreme anyway at V 0.08, and it is exempt because it is a photograph, not because it
+    needed the exemption. `ugc-tabletop-statement`'s honey-wood table at V 0.69 is
     exactly the mid-tone ground this rule would otherwise forbid, and it is the right ground for a
     photograph of a table.
 
@@ -2425,7 +2490,9 @@ def test_fr350_every_graphic_shipped_style_grounds_itself_at_a_value_extreme() -
     """
     registry = _shipped()
     exempt = [style.key for style in registry.styles if style.motion_profile == "photographic"]
-    assert len(exempt) == 7, f"the photographic roster moved: {exempt}"
+    assert len(exempt) == 8, f"the photographic roster moved: {exempt}"
+    assert "photo-poster-statement" in exempt, \
+        "D61's one photographic newcomer flipped to `graphic` — the roster arithmetic is stale"
 
     mid_toned = [f"{style.key}: V {_ground_value(style):.2f}" for style in registry.styles
                  if style.motion_profile == "graphic"
@@ -2551,3 +2618,295 @@ def test_fr350_the_safe_area_guard_catches_a_style_that_paraphrases_the_sentence
     for style in (paraphrased, dropped):
         assert _SAFE_AREA_PHRASE not in style.text_placement, \
             f"the guard would pass this style: {style.text_placement}"
+
+
+# ---- D61 -------------------------------------------------------------------------------------
+# SUPPLY: the registry goes 19 -> 26 and the brand selection 12 -> 17 (FR-341).
+#
+# D59 and D60 were both about what a style may SAY. D61 is about how many styles there are, and
+# it was forced by a measurement rather than by a contract: the 2026-08-20 acceptance run put SIX
+# of nine decks on `icon-ledger-carousel`, because it was the only enabled style whose
+# `match_profile` claimed numbered decks at all. The matcher did its job perfectly. The pool was
+# the defect — a matcher can only spread work across archetypes that somebody CLAIMED.
+#
+# So the seven new styles are not seven more looks. They are seven archetype CLAIMS, authored
+# from the operator's own reference carousels, and the tests below are shaped by that: the file
+# tail (what shipped), the archetype map (that no two of them claim the same source shape), the
+# off-spine pair (that two of them deliberately stay out of the brand selection) and the two
+# narrowed incumbents (that `icon-ledger-carousel` and `circuit-atlas-dark` gave those claims up
+# in writing rather than merely having them taken away).
+#
+# Every one of them reads the SHIPPED registry, like the D59 and D60 sections above and for the
+# same reason: these are facts about the file we ship, not properties of the registry format.
+
+
+#: The nine archetypes of FR-341's handoff table (plan §3), each mapped to the ONE style that may
+#: claim it, and each named by a keyword that appears in that style's own `match_profile`.
+#:
+#: The keywords are deliberately narrow, and every one of them was chosen by reading the shipped
+#: profiles rather than by paraphrasing the plan. "round-up" would have been the obvious word for
+#: `icon-ledger-carousel` and it is unusable: `paper-editorial-carousel` legitimately claims
+#: "curated round-ups written as prose", which is a DIFFERENT archetype wearing the same noun.
+#: "manifesto" is unusable for the same reason (`letterpress-print-carousel-teal` claims the
+#: printed poster manifesto, `photo-poster-statement` the one-line kind). What the map holds is
+#: therefore the phrase that names the SHAPE OF THE SOURCE, never the shape of the output.
+_ARCHETYPE_CLAIMS = {
+    "many rows on one frame": "icon-ledger-carousel",
+    "countdown": "big-number-editorial",
+    "build log": "build-log-mono",
+    "x versus y": "contrast-verdict-deck",
+    "over a photograph": "photo-poster-statement",
+    "agency manifesto": "mono-cutout-editorial",
+    "feature tour": "neon-glass-dark",
+    "editorial explainer": "paper-editorial-carousel",
+    "business explainer": "aurora-white-deck",
+}
+
+#: The verbs a profile uses when it POINTS somewhere instead of claiming. Naming another style's
+#: key counts too and is checked separately — today every shipped handoff does both, and the verbs
+#: are here for the day one is written without a key ("that goes to the diagram style").
+_HANDOFF_VERBS = ("goes to", "hands", "→")
+
+
+def _profile_clauses(text: str) -> list[str]:
+    """`text` split into clauses on `;`, `.` and the em dash — never on the comma.
+
+    The comma is excluded on purpose and that exclusion is the whole design of the archetype test
+    below. A profile's disclaim reads "wrong for numbered steps, tool round-ups and screenshot
+    sources": splitting on commas would cut "tool round-ups" away from the "wrong for" that
+    qualifies it and turn a disclaim into what reads like a claim. The em dash IS included,
+    because these profiles use it as a full stop that keeps its breath.
+    """
+    return [" ".join(part.split()) for part in re.split(r"[;.—]", text) if part.strip()]
+
+
+def _normalised(text: str) -> str:
+    """Lower-cased, back-ticks dropped, hyphens and slashes flattened to spaces.
+
+    ONE normaliser for the keyword, the clause AND the style keys, so that `big-number-editorial`
+    in a handoff sentence and "big number editorial" in prose are the same string to this file.
+    Without it, "Hands a many-rows-on-one-frame round-up to …" would not match the keyword
+    "many rows on one frame" that the owning style states in plain words.
+    """
+    return re.sub(r"\s+", " ", text.lower().replace("`", "").replace("-", " ").replace("/", " "))
+
+
+def _claiming_styles(registry: StyleRegistry, keyword: str, scanned: list[str]) -> list[str]:
+    """The `scanned` styles that CLAIM `keyword` — i.e. name it outside a handoff clause.
+
+    A clause is a handoff when it carries one of `_HANDOFF_VERBS` or names another style's key.
+    Everything else that mentions the archetype is a claim, and two claims on one archetype is
+    the supply defect D61 exists to fix: the matcher then has to choose between them on prose
+    alone, and it will choose the same one every time.
+
+    Returned in `scanned` order and at most once per style, so a failure message reads as a
+    roster rather than as a count.
+    """
+    keys = [style.key for style in registry.styles]
+    claimants: list[str] = []
+    for key in scanned:
+        profile = _normalised(styles.style_for(registry, key).match_profile)
+        for clause in _profile_clauses(profile):
+            if _normalised(keyword) not in clause:
+                continue
+            partners = [other for other in keys if other != key and _normalised(other) in clause]
+            if not partners and not any(verb in clause for verb in _HANDOFF_VERBS):
+                claimants.append(key)
+                break
+    return claimants
+
+
+def test_d61_the_seven_carousel_derived_styles_ship_and_are_the_file_tail() -> None:
+    """What D61 added, asserted as the TAIL of the registry rather than as bare membership.
+
+    Position is load-bearing here in a way membership is not. `usable_styles` answers in FILE
+    order and FR-291's rotation scans that order, so where a style sits in `styles.yaml` decides
+    which creative of a plan wears it. Appending is the only edit that leaves every existing
+    assignment where it was; inserting a style in the middle silently re-styles every run of every
+    config, and no other test in this file would notice. The seven are pinned in their authored
+    order for that reason.
+
+    The rest of the assertions are the born-compliant checklist from plan §3, checked once at the
+    door so the D59 and D60 guards above never have to special-case a newcomer:
+
+    * **No `-teal` twin.** D57's mechanism was to duplicate a style and re-role its accent. D61's
+      five spine styles were authored on the house teal from their first line instead, so there is
+      no original to drift away from and the registry does not grow a second pair of near-copies.
+    * **Carousel-affine and cover-capable.** Every one was read off a real deck, so every one has
+      to be able to set slide 1 — under anchor chaining the anchor decides the look of every slide
+      after it, and a `slides_only` marker here would make the style unassignable to the very
+      format it was authored for.
+    * **`brand_slot: false`, `brand_affinity: []`.** None of the seven is a house card. A
+      `brand_affinity` would hide the style from the other brand for no reason, and a `brand_slot`
+      would put it under `branding.enabled`, which is false in all three shipped configs.
+    * **A `list_mode` and a `counter_slot` zone.** Both are what a DECK style owes: the list mode
+      is FR-304b's reflow trigger for a panel that arrives with rows in it, and the counter zone
+      is what keeps the style off FR-338's 86-character house-default line, which would otherwise
+      place a counter the style's own layout never described.
+    """
+    registry = _shipped()
+    keys = [style.key for style in registry.styles]
+
+    assert keys[-7:] == _D61_STYLES, (
+        "D61's seven must be the FILE TAIL, in this order — appending is the only edit that does "
+        f"not re-seed FR-291's rotation for every existing config: {keys[-7:]}")
+    assert not set(_D61_STYLES) & set(keys[:-7]), "…and each of them appears exactly once"
+
+    for key in _D61_STYLES:
+        style = styles.style_for(registry, key)
+        assert not key.endswith("-teal"), \
+            f"{key}: D61 authored its teal in place; it ships no D57-style twins"
+        assert "carousel" in style.format_affinity, \
+            f"{key}: authored from a deck and affine to everything but one"
+        assert styles.fmt_affine(style, "carousel") is True, \
+            f"{key}: a `slides_only` marker would stop a deck-derived style from anchoring a deck"
+        assert style.brand_slot is False, f"{key}: none of the seven is a house card"
+        assert style.brand_affinity == [], f"{key}: brand-locking it hides it from the other brand"
+        assert style.list_mode is not None, f"{key}: a deck style owes FR-304b a reflow trigger"
+
+        zones = [zone for zone in style.layout_zones if zone.role == "counter_slot"]
+        assert len(zones) == 1, f"{key}: exactly one `counter_slot` zone, got {len(zones)}"
+        assert "top-right" in zones[0].position.lower(), (
+            f"{key}: FR-350 item 3 — the counter corner is top-right registry-wide, not wherever "
+            f"the reference deck happened to put it: {zones[0].position!r}")
+
+
+def test_d61_match_profiles_are_mutually_exclusive_by_archetype() -> None:
+    """The actual fix for the six-of-nine concentration, stated as a property of the PROSE.
+
+    Adding styles does not spread a matcher out on its own. `icon-ledger-carousel` took six of
+    nine decks while eleven other styles were enabled, because it was the only profile that
+    CLAIMED a numbered deck — the other eleven described looks the matcher had no reason to reach
+    for. So the property that matters is not "there are more styles now", it is "each archetype in
+    FR-341's handoff table is claimed by exactly one of them".
+
+    The hard part is that every one of these profiles also NAMES its neighbours: `big-number-
+    editorial` says "Hands a many-rows-on-one-frame round-up to `icon-ledger-carousel`", which
+    mentions `icon-ledger-carousel`'s archetype in as many words. A test that searched a profile
+    as one string would call that a collision, and would be telling the authors to delete the
+    handoffs — the single most useful sentence in each profile. So the search is per CLAUSE, and a
+    clause carrying a handoff verb or naming another style's key is a POINTER, never a claim.
+
+    The scanned set is the seventeen enabled keys plus the two off-spine owners. Enabled is the
+    set that matters — a style nobody enabled cannot starve a pool it is not in — and the two
+    owners join it because they own an archetype without being selectable, which is exactly the
+    state that would let a future config enable one and collide in silence.
+
+    The last block is the planted arm and it is not optional: a mutual-exclusivity test over prose
+    that is already exclusive passes identically to one whose normaliser has quietly broken.
+    """
+    registry = _shipped()
+    scanned = [*ENABLED_SEVENTEEN, *_D61_OFF_SPINE]
+
+    assert len(set(_ARCHETYPE_CLAIMS.values())) == len(_ARCHETYPE_CLAIMS), \
+        "two archetypes routed to one style is a map that cannot spread anything"
+
+    for keyword, owner in _ARCHETYPE_CLAIMS.items():
+        profile = _normalised(styles.style_for(registry, owner).match_profile)
+        assert _normalised(keyword) in profile, \
+            f"{owner} no longer claims its own archetype {keyword!r}: {profile}"
+        claimants = _claiming_styles(registry, keyword, scanned)
+        assert claimants == [owner], (
+            f"FR-341: the {keyword!r} archetype must be claimed by exactly ONE style, or the "
+            "matcher chooses between them on prose alone and chooses the same one every run. "
+            f"Claimed by: {claimants}")
+
+    # The planted arm: a second style claiming a mapped archetype has to be REPORTED. Asserted
+    # through the same predicate, on a registry whose only difference is the planted sentence.
+    poached = dataclasses.replace(styles.style_for(registry, "social-quote-card"),
+                                  match_profile="Suits any source built as a feature tour.")
+    planted = dataclasses.replace(
+        registry, styles=[poached if style.key == "social-quote-card" else style
+                          for style in registry.styles])
+    assert _claiming_styles(planted, "feature tour", scanned) == ["social-quote-card",
+                                                                 "neon-glass-dark"], \
+        "the predicate cannot see a second claim — the normaliser or the clause split is broken"
+
+    # …and the scope, pinned as the absence it is: the same words behind a handoff are not a claim.
+    pointed = dataclasses.replace(poached, match_profile=(
+        "Suits quote-led sources. A feature tour goes to `neon-glass-dark`."))
+    rerouted = dataclasses.replace(
+        planted, styles=[pointed if style.key == "social-quote-card" else style
+                         for style in planted.styles])
+    assert _claiming_styles(rerouted, "feature tour", scanned) == ["neon-glass-dark"], \
+        "a handoff clause must never read as a claim, or the authors are told to delete them"
+
+
+def test_d61_the_two_off_spine_styles_are_in_the_registry_but_not_in_the_brand_selection() -> None:
+    """D-G, applied to SUPPLY rather than to colour: a style is excluded, never re-painted.
+
+    `paper-editorial-carousel` and `mono-cutout-editorial` are the two of D61's seven that do not
+    carry the house teal, and the standing decision says what happens to them — colour is curated
+    by CHOOSING styles, never by editing one. So they ship whole, they validate clean, they are
+    reachable from `default.yaml` with an empty selector, and they are simply absent from the
+    three brand configs' `styles.enabled`. Re-roling their accents to teal was the other answer
+    and it is the one D-G forbids: it would produce two more near-copies of styles that are only
+    interesting BECAUSE they are not teal.
+
+    Their palettes are read through `styles._HEX` / `styles._saturated` — the module's own FR-347
+    predicates — rather than by eyeballing the hexes on the line, because "has no accent" is a
+    claim about SATURATION and a grep would have to re-implement the threshold to check it.
+    `mono-cutout-editorial` is the zero-accent case FR-347 explicitly allows (pure monochrome is
+    legal and the validator was written so that it stays legal); `paper-editorial-carousel` is a
+    one-accent style whose one accent is its source's native vermilion.
+    """
+    registry = _shipped()
+    default = load_config("default", configs_dir=CONFIGS_DIR)
+    reachable = {style.key for style in styles.usable_styles(
+        registry, default.branding.brand, default.styles.enabled,
+        branding_enabled=default.branding.enabled)}
+
+    for key in _D61_OFF_SPINE:
+        assert styles.style_for(registry, key) is not None, f"{key} left the registry"
+        assert key in reachable, (
+            f"{key}: an empty selector means 'every style this brand can wear', and this one "
+            "cannot be worn at all")
+        assert key not in ENABLED_SEVENTEEN, \
+            f"{key}: off the teal spine, so it stays out of the brand selection (D-G)"
+    assert styles.validate(registry, default) == ([], []), \
+        "`default.yaml` has to load both of them clean — they are ordinary registry entries"
+
+    accents = {key: [hex6 for line in styles.style_for(registry, key).palette
+                     for hex6 in styles._HEX.findall(line) if styles._saturated(hex6)]
+               for key in _D61_OFF_SPINE}
+
+    assert accents["mono-cutout-editorial"] == [], (
+        "FR-347 allows zero accents and `mono-cutout-editorial` is the shipped proof that it "
+        f"does — a saturated hex here gives it one hue nobody chose: {accents}")
+    assert accents["paper-editorial-carousel"] == ["E8481F"], (
+        "the vermilion is this style's whole reason to exist off the spine, and it is ONE hue: "
+        f"{accents['paper-editorial-carousel']}")
+
+
+def test_d61_icon_ledger_and_circuit_atlas_hand_off_their_narrowed_archetypes() -> None:
+    """The other half of the supply fix, and the half that is easy to forget.
+
+    Seven new claims are worth nothing while the incumbent still claims the same ground. Before
+    D61, `icon-ledger-carousel`'s profile read as "any deck with rows in it", which is why it took
+    six of nine; `circuit-atlas-dark`'s "card pair" clause reached every before/after source and
+    every product hero object. Both were NARROWED — and narrowing a profile by deletion would have
+    been the wrong edit, because a matcher reading the narrowed line still has to send that source
+    somewhere. So both of them now name their successors in writing.
+
+    Asserted by successor KEY rather than by the wording around it. The sentence will be re-worded
+    the first time somebody re-reads it; what has to survive is that the pointer exists at all and
+    that it points at the style D61 authored to receive the work.
+
+    The last assertion is the floor under the narrowing: a profile that gave away everything would
+    pass the two above and be unmatchable. Both incumbents must still CLAIM their own archetype.
+    """
+    registry = _shipped()
+    handoffs = {"icon-ledger-carousel": ("big-number-editorial", "contrast-verdict-deck"),
+                "circuit-atlas-dark": ("contrast-verdict-deck", "neon-glass-dark")}
+
+    for key, successors in handoffs.items():
+        profile = styles.style_for(registry, key).match_profile
+        for successor in successors:
+            assert successor in profile, (
+                f"{key} was narrowed but never says where the work it gave up goes. A matcher "
+                f"reading it still has to place that source: name `{successor}`.\n  {profile}")
+
+    assert _claiming_styles(registry, "many rows on one frame", ["icon-ledger-carousel"]) == \
+        ["icon-ledger-carousel"], "icon-ledger gave away the one archetype it was narrowed TO"
+    assert _claiming_styles(registry, "benchmark", ["circuit-atlas-dark"]) == \
+        ["circuit-atlas-dark"], "circuit-atlas gave away the benchmark decks it was narrowed to"

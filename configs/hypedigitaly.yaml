@@ -148,7 +148,16 @@ styles:
   enabled: [anime-noir-statement, platform-showcase-card, letterpress-print-carousel-teal,
             meme-caricature-panels-teal, quiet-luxury-night-photoreal-teal,
             photoreal-ambient-caption-teal, ugc-tabletop-statement-teal, build-log-mono,
-            icon-ledger-carousel, circuit-atlas-dark, social-quote-card, terminal-mockup-deck]
+            icon-ledger-carousel, circuit-atlas-dark, social-quote-card, terminal-mockup-deck,
+            big-number-editorial, contrast-verdict-deck, photo-poster-statement, neon-glass-dark,
+            aurora-white-deck]
+  # v2.5.2/D61 (SESSION L): 12 -> 17. The five newcomers above are the carousel-derived styles
+  # whose ONE accent is the house teal, so the feed keeps a single colour (D57). The other two
+  # D61 styles are deliberately NOT here: paper-editorial-carousel inks vermilion and
+  # mono-cutout-editorial has no accent at all - both are in the registry for default.yaml and an
+  # empty selector, and both would break the teal spine this list exists to keep. Supply is what
+  # the 2026-08-20 run lacked (6 of 9 decks on icon-ledger-carousel, the one enabled style whose
+  # match_profile claimed numbered decks); each newcomer owns one archetype (FR-341).
   # meme-caricature-panels-teal inherits `carousel_role: slides_only` from the entry it was copied
   # from - inert while this config runs carousels only (operator: keep for now; activates if image
   # posts return). Same ruling D55 made for the un-tinted key, kept deliberately for the same

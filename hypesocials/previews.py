@@ -63,6 +63,7 @@ from hypesocials.runner import (
     _Abort,
     _cleanup,
     _collect,
+    _concentration_line,
     _configure_llm,
     _funnel_block,
     _launch_summary,
@@ -431,6 +432,14 @@ def _assign_block(live: Sequence[PlanEntry], trends: Mapping[str, TrendItem],
     every version before D56 whenever `assignment: rotation` is set. That is not an accident of the
     layout: it is what makes the rotation regression check (one preview under `assignment:
     rotation` against the same topic set) a diff of two files rather than a reading exercise.
+
+    **FR-355's concentration line is the one borrowed block that is NOT mode-silent** (v2.5.2,
+    D61), and deliberately so: a rotation over a twelve-key pool that keeps landing on one style is
+    the same starved supply as a matcher that does, and the PRD requires the alarm to land here —
+    `--preview-analysis` is the $0.30 place to find out that nine carousels want one style, rather
+    than the $5 one. It does not break the rotation regression check either, because it is pure
+    arithmetic over the keys printed directly above it: the same topic set and the same run id
+    produce the same keys and therefore the same line, every time.
     """
     head = (f"Assignment — {len(live)} creative(s), {len({e.style_key for e in live})} style(s), "
             f"{sum(1 for e in live if e.branded)} branded")
@@ -451,6 +460,8 @@ def _assign_block(live: Sequence[PlanEntry], trends: Mapping[str, TrendItem],
             lines.append(provenance)
     if gap := _style_gap_block(live):
         lines.append(gap)
+    if concentration := _concentration_line(live):  # FR-355, borrowed like the two blocks above
+        lines.append(concentration)
     return "\n".join(lines)
 
 

@@ -455,11 +455,12 @@ async def test_a_slides_only_style_is_never_a_carousel_candidate_and_is_refused_
 
 
 async def test_the_shipped_registrys_slides_only_styles_reach_no_carousel_ballot() -> None:
-    """The same predicate against the REAL artifacts (19 styles, D56/D57), because the fake
+    """The same predicate against the REAL artifacts (26 styles since D61 — 19 at D56/D57 plus
+    the seven carousel-derived D61 entries, none of which is `slides_only`), because the fake
     registry above cannot catch a `carousel_role` spelling that drifted in `prompts/styles.yaml`.
 
     Four shipped styles carry `slides_only` — `meme-caricature-panels`, `ugc-tabletop-statement`
-    and both their `-teal` variants — and two of the four sit inside the 12-key `styles.enabled`
+    and both their `-teal` variants — and two of the four sit inside the 17-key `styles.enabled`
     set the brand configs ship, so a carousel-only run genuinely has them in the registry, in the
     selection, and out of the ballot. The ballot is compared against `usable_styles` × `fmt_affine`
     computed here from the same inputs: what the matcher offers IS what the rotation scans, and

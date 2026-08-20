@@ -1743,6 +1743,192 @@ def test_fr334_a_gap_report_row_of_runaway_model_prose_is_still_bounded_to_the_c
     assert block.splitlines()[2].strip().startswith("- listicle listicle"), "still named"
 
 
+# ------------------------------- D61/FR-355: the concentration alarm on the same ASSIGN stage
+#
+# The gap report above says "the registry has no style for what these creatives are"; this one
+# says "the registry HAS styles and the run kept picking the same one". Both are supply findings
+# an operator acts on by authoring, never by re-running, so both are warnings with no effect on a
+# single render — and both are silent on a healthy plan, because a line that prints every time is
+# furniture rather than an alarm.
+
+
+def _plan(*keys: str) -> list[PlanEntry]:
+    """A plan carrying exactly these style keys, in order — `""` is an override brief (M14)."""
+    return [entry(index, style=key) for index, key in enumerate(keys)]
+
+
+def test_fr355_one_style_over_half_the_plan_prints_the_alarm_and_fills_fr286_exactly() -> None:
+    """The plan document's own worked example, asserted character for character.
+
+    `icon-ledger-carousel 6/9` is the shape D61 was written for: nine carousels, a twelve-key
+    enabled pool, and two thirds of the run wearing one style. Six of nine is not a defect — it
+    is a legal answer from both assignment algorithms — so the line reports and never refuses.
+
+    The width is the second half of the point. This exact line is 78 characters, which is FR-286's
+    ceiling to the column, and it got there with the longest style key the shipped registry
+    actually holds. That is not luck: `_concentration_line` sizes the key from what the counts
+    spend, so the arithmetic in its docstring (10 + 15 + 20 + 1 + 3 + 29) is the line below.
+    """
+    plan = _plan(*["icon-ledger-carousel"] * 6, "letterpress-print-carousel", "neon-glass-dark",
+                 "aurora-white-deck")
+
+    line = runner._concentration_line(plan)
+
+    console_safe(line)
+    assert line == "          concentration: icon-ledger-carousel 6/9 (>1/2) - pool may be starved"
+    assert len(line) == WIDTH, f"{len(line)} chars — this shape is meant to fill FR-286 exactly"
+    assert line.startswith(" " * 10), "the ASSIGN receipts' own indent, so it hangs with them"
+
+
+def test_fr355_the_distinct_count_trigger_needs_a_plan_of_five_and_an_even_split_to_be_seen(
+) -> None:
+    """Trigger (b) — "fewer than 3 distinct styles on a plan of 5+", and where it can show.
+
+    A MEASURED consequence of the two rules rather than a design choice, and worth pinning because
+    it is not obvious from reading them: on 5 creatives across 2 styles the split is 3/2 or 4/1,
+    and `count * 2 > total` is true of both, so trigger (a) claims that plan and names the culprit.
+    The distinct-count line is only ever the whole story on an EVEN plan split exactly down the
+    middle — 3/3 on six — where no style holds more than half and the alarm would otherwise
+    have nothing to say about a run that used two styles all day.
+
+    Both are asserted here, because "the 5-creative plan still warns" is the operator-facing
+    promise and "it warns through arm (a)" is the reason the (b) line does not appear there.
+    """
+    even = runner._concentration_line(_plan("s0", "s1", "s0", "s1", "s0", "s1"))
+    lopsided = runner._concentration_line(_plan("s0", "s1", "s0", "s1", "s0"))
+    single = runner._concentration_line(_plan(*["s0"] * 5))
+
+    for line in (even, lopsided, single):
+        console_safe(line)
+    assert even == "          concentration: only 2 style(s) across 6 - pool may be starved"
+    assert lopsided == "          concentration: s0 3/5 (>1/2) - pool may be starved", \
+        "both triggers hold and (a) wins: it names the style, which is the actionable half"
+    assert single == "          concentration: s0 5/5 (>1/2) - pool may be starved", \
+        "a one-style plan is the starvation this alarm is named after"
+
+
+def test_fr355_a_healthy_spread_and_a_plan_too_small_to_judge_both_print_nothing() -> None:
+    """D45's rule applied to an alarm: silence is the normal outcome and has to be the normal
+    output.
+
+    Three styles across nine creatives is the spread D61 wants and prints nothing at all. The
+    4-creative 2/2 plan is the other half of the same discipline — 2 of 4 is not MORE than half
+    (the comparison is strict), and trigger (b)'s floor of 5 exists precisely so that small plans,
+    which cannot be spread by construction, are not scolded for their size on every run.
+    """
+    spread = runner._concentration_line(_plan("a", "b", "c", "a", "b", "c", "a", "b", "c"))
+    small = runner._concentration_line(_plan("a", "a", "b", "b"))
+    empty = runner._concentration_line([])
+
+    assert spread == "", "3 of 9 is not more than half and 3 distinct clears the floor"
+    assert small == "", "an exact half is a spread, and 4 creatives are below the (b) floor"
+    assert empty == "", "no plan, no finding"
+
+
+def test_fr355_override_briefs_count_in_neither_the_numerator_nor_the_denominator() -> None:
+    """M14 in the alarm's arithmetic: a creative with no style channel is not a starved one.
+
+    An `override` brief's `style_key` stays `""` all run (`_assign_visuals` filters those entries
+    out before `assign_styles` ever sees them), so counting them would make every brief-only plan
+    read as a starved pool — the one shape that deliberately asked for no pool at all. Both
+    halves are pinned: they cannot ADD a distinct "style" to the denominator, and cannot rescue a
+    genuinely concentrated plan by padding the total until the majority test stops being true.
+    """
+    brief_only = runner._concentration_line(_plan("", "", "", "", "", ""))
+    padded = runner._concentration_line(_plan("s0", "s0", "s0", "s1", "", "", "", ""))
+
+    console_safe(padded)
+    assert brief_only == "", "six creatives, zero style channels, nothing to report"
+    assert padded == "          concentration: s0 3/4 (>1/2) - pool may be starved", \
+        "4 styled creatives, not 8 — the four briefs are outside both sides of the fraction"
+
+
+def test_fr286_the_widest_concentration_line_a_registry_key_can_produce_still_fits() -> None:
+    """The style key is registry-authored and therefore unbounded, so it is the one token on this
+    line allowed to be cut — the same discipline `_match_receipt` gives the model's reason.
+
+    A 40-character key is roughly double anything the shipped registry holds, which is the point:
+    the width guarantee has to come from the arithmetic and not from the fixture. The cut is
+    checked too, because a line that fits by silently deleting the style name would pass a length
+    assertion and tell the operator nothing about which style ran away with the plan.
+    """
+    long_key = "photoreal-ambient-caption-with-a-long-tail"[:40]
+    wide = runner._concentration_line(_plan(*[long_key] * 6, "s1", "s2", "s3"))
+    many = runner._concentration_line(_plan(*[long_key] * 60, *(f"s{n}" for n in range(40))))
+
+    for line in (wide, many):
+        console_safe(line)
+        assert len(line) <= WIDTH, f"{len(line)} chars (FR-286 allows {WIDTH}): {line!r}"
+        assert "concentration: photoreal-ambie" in line, "cut, but still named"
+        assert line.endswith("(>1/2) - pool may be starved"), "the verdict is never the cut"
+    assert len(long_key) == 40, "the fixture must be wider than any key the registry holds"
+    assert "…" in wide, "util.fit marks the cut rather than ending mid-word"
+    assert len(many.split()[1]) < len(wide.split()[1]), \
+        "a 3-digit tally buys its extra columns out of the key, never off the end of the line"
+
+
+def test_fr355_a_rotation_run_over_a_one_style_registry_says_so_on_the_console_and_in_the_log(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The wire-in, driven through the real ASSIGN narration in ROTATION mode.
+
+    A registry offering one usable style is the starved pool in its purest form, and the FR-291
+    scan will dutifully put all five creatives in it. That is the case FR-355 exists for, and it
+    has nothing to do with the matcher — which is why the alarm sits outside the `matched_mode`
+    branch and why this test makes no model call at all.
+
+    `run.log` gets BOTH numbers (the majority and the distinct count) while the console gets one
+    line, because the two triggers are two different authoring problems and the log is read after
+    the fact by someone who has to tell them apart.
+    """
+    live = _match_session(assignment="rotation")
+    live.registry = _match_registry("only-style")
+    entries = [entry(index) for index in range(5)]
+
+    asyncio.run(runner._assign_visuals(live, entries, {}, brief_only=False))
+
+    lines = printed(capsys)
+    for line in lines:
+        console_safe(line)
+    alarm = [line for line in lines if "concentration:" in line]
+    assert alarm == ["          concentration: only-style 5/5 (>1/2) - pool may be starved"]
+    assert [code for code, _ in live.log.warnings] == ["style_concentration"]
+    assert live.log.warnings[0][1] == ("only-style on 5 of 5 styled creative(s), 1 distinct "
+                                       "style(s) - the pool may be starved"), \
+        "the log states both triggers' numbers; the console chose one of them to say"
+    fields = next(data for code, _, data in live.log.events if code == "visuals_assigned")
+    assert fields["style_key"] == "only-style", "the alarm counted what the receipts printed"
+
+
+def test_fr355_the_alarm_lands_in_preview_analysis_through_the_same_borrowed_function() -> None:
+    """FR-286/FR-355's other required surface, and the reason it is a borrow rather than a copy.
+
+    The PRD puts the concentration line in `--preview-analysis` on purpose: that mode is the
+    ~$0.30 place to learn that nine carousels all want one style, and a paid run is the $5 one.
+    `previews._assign_block` does NOT go through `_assign_visuals` — previews assign styles on
+    their own prefix path — so the line had to be wired there too, and it is wired by calling the
+    runner's own function, exactly as that block already borrows `_match_receipt` and
+    `_style_gap_block`. The identity assertion is the part that matters: a second implementation
+    of an operator-facing line is free to drift from the one a paid run prints.
+
+    Unlike the two blocks it sits under, this one is NOT silent in rotation mode — a rotation
+    that keeps landing on one style is the same starved pool as a matcher that does — so the
+    assertion below runs on a plain unmatched plan, which is the ordinary preview.
+    """
+    assert previews._concentration_line is runner._concentration_line, \
+        "borrowed, never re-formatted — two shapes would be free to disagree about one run"
+    live = _plan(*["icon-ledger-carousel"] * 6, "s1", "s2", "s3")
+
+    block = previews._assign_block(live, {}, _match_registry("icon-ledger-carousel"))
+
+    console_safe(block)
+    assert block.splitlines()[-1] == \
+        "          concentration: icon-ledger-carousel 6/9 (>1/2) - pool may be starved", \
+        "last line of the assignment block, under the receipts it counted"
+    clean = previews._assign_block(_plan("a", "b", "c"), {}, _match_registry("a"))
+    assert "concentration" not in clean, "a spread preview prints byte-identically to before D61"
+
+
 def test_fr337_a_matched_run_prints_the_provenance_lines_the_tally_and_the_gap_block(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -1753,6 +1939,11 @@ def test_fr337_a_matched_run_prints_the_provenance_lines_the_tally_and_the_gap_b
     `low` that keeps its rotation baseline and contributes a want to the gap report. The tally is
     what makes "the mode ran" arithmetic: `matched 2 of 3` cannot be true of a run where the
     matcher never spoke, and `2` is countable off the lines above it.
+
+    Since D61 this fixture also earns FR-355's concentration warning — two of its three creatives
+    land on one style — which is why the warning assertion below names that code instead of
+    demanding an empty list. The distinction it now pins is the one that matters: a supply FINDING
+    is not a DEGRADATION, and neither is a per-entry `low`.
     """
     live = _match_session()
     entries = [entry(0), entry(1), entry(2)]
@@ -1786,7 +1977,10 @@ def test_fr337_a_matched_run_prints_the_provenance_lines_the_tally_and_the_gap_b
                for line in lines)
     assert any("style gap: 1 archetype(s)" in line for line in lines)
     assert any("terminal mockup deck (1 creative(s))" in line for line in lines)
-    assert live.log.warnings == [], "nothing degraded — a per-entry rejection is a normal answer"
+    assert [code for code, _ in live.log.warnings] == ["style_concentration"], \
+        "nothing DEGRADED — a per-entry rejection is a normal answer. The one warning here is " \
+        "FR-355's supply alarm, which this fixture earns honestly: two of its three creatives " \
+        "land on one style, and D61 says so whichever algorithm put them there"
 
 
 def test_fr337_a_whole_call_failure_is_ONE_warning_and_never_a_line_per_creative(
