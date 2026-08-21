@@ -52,8 +52,8 @@ from pathlib import Path
 from typing import Any
 
 from hypesocials import (
-    cli, copywrite, generate, menu, plan, preflight, render, sources, style_match, styles,
-    topic_filter)
+    cli, codex_proxy, copywrite, generate, menu, plan, preflight, render, sources, style_match,
+    styles, topic_filter)
 from hypesocials.budget import Budget, Estimate, SpendCategory, SpendSummary, estimate, format_usd
 from hypesocials.config import LOGS_DIR, Config, ConfigError, load_config
 from hypesocials.llm import CREDITS_EXHAUSTED_REASON, LLMClient, RoleSettings
@@ -416,6 +416,10 @@ async def _pipeline(session: _Session, overrides: Sequence[str]) -> int:
                                      "--images/--carousels/--reels or check each platform's "
                                      "formats allowlist (FR-64)")
 
+    # SESSION O (D64, FR-357): the subscription doors need the local proxy UP before pre-flight can
+    # judge the model ids. `ensure_backends` probes it and starts it when absent; it never raises —
+    # its reason lands inside `check()`'s exit-2 refusal — and it is a no-op on the metered path.
+    await preflight.ensure_backends(config, action="run", log=session.log)
     verdict = preflight.check(config, action="run", entries=resolved.entries,
                               briefs_errors=brief_errors)
     if verdict.report:
@@ -2409,6 +2413,9 @@ def _launch_summary(session: _Session, overrides: Sequence[str]) -> str:
            if config.run.gauntlet.enabled else "off"),
         f"  spend cap   {format_usd(config.run.spend_cap_usd)} · deadline "
         f"{config.run.run_deadline_min} min",
+        # SESSION O (D64): which doors this run leaves through — the metered OpenRouter/Kie lines
+        # or the codex subscription ones with their model ids. 2–3 lines, already wrapped to 78.
+        *preflight.provider_summary(config),
         # FR-333 (D54) + FR-351 (D62): the two carousel-only dials, printed ONLY when the plan
         # has carousels — a line about decks on a run that makes none is noise. FR-333's
         # pre-flight display obligation ("Carousel copy mode: <mode>") is met here and nowhere
@@ -2695,6 +2702,9 @@ async def _cleanup(session: _Session) -> None:
         steps.insert(0, render.aclose())
     if session.llm is not None:
         steps.insert(0, session.llm.aclose())
+    # SESSION O (D64): a proxy THIS run started dies last, after the clients that talk to it; one
+    # the operator started themselves (`owned=False`) is left alone. Idempotent, never raises.
+    steps.append(codex_proxy.stop(codex_proxy.current_handle()))
     for step in steps:
         try:
             await step

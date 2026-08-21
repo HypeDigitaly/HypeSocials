@@ -115,6 +115,9 @@ async def _preview(opts: cli.Options, control: runner.Control | None, *, deep: b
     briefs, brief_errors, brief_warnings = preflight.resolve_briefs(
         opts.briefs, config, assume_yes=opts.yes)
     resolved = plan.build_plan(config, briefs=briefs)
+    # SESSION O (D64): `--preview-analysis` talks to the LLM door, so under codex the proxy must
+    # be up before `check()` can judge the ids; `--preview-sources` makes this a no-op.
+    await preflight.ensure_backends(config, action=action)
     verdict = preflight.check(config, action=action, entries=resolved.entries,
                               briefs_errors=brief_errors)  # picks the secrets THIS action needs
     if verdict.report:

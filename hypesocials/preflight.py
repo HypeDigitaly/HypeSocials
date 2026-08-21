@@ -8,11 +8,22 @@ FR-281, FR-263, FR-283, FR-292, FR-295, FR-103, 30 §8). Callers get a verdict o
 scattering of booleans.
 
 Public API: `check()` · `Preflight` · `collect_secrets()` · `resolve_briefs()` ·
-`EXIT_PREFLIGHT`.
+`ensure_backends()` · `codex_needed()` · `provider_summary()` · `EXIT_PREFLIGHT`.
 
 Invariants:
 - **Refusal is free** (FR-202 code 2): every check here is local — env vars, config arithmetic,
-  a template listing, one test file inside `output.dir`. Nothing external is contacted.
+  a template listing, one test file inside `output.dir`. Nothing external is contacted, and
+  nothing is BILLED on any path; the one thing that leaves this process is D64's proxy start,
+  which spends no money and talks only to 127.0.0.1.
+- **`check()` is synchronous and stays synchronous.** It runs inside the event loop, so it may
+  never wait on a socket or a subprocess. D64's Codex proxy needs 10–25 s to start, so the wait
+  lives in `ensure_backends()` — an `async` sibling the caller awaits IMMEDIATELY BEFORE `check()`
+  — and `check()` reads only the result (`codex_proxy.current_handle()`). One rule, two calls:
+  anything that can block goes in the coroutine, every VERDICT is reached in `check()`.
+- **A key is required only when its door is the one this run uses (D64).** `OPENROUTER_API_KEY`
+  is a refusal under `llm_backend: openrouter` and irrelevant under `codex`; `KIE_API_KEY` the
+  same for `render_provider`. Redaction is untouched by that gating — `collect_secrets()` still
+  masks every secret present in the environment, used or not.
 - **Two failure grades, deliberately.** An *error* refuses the run; a *warning* or *hint* lets it
   proceed. Missing `NOTION_TOKEN` is the canonical warning (FR-47: influence drops to `off`), an
   out-of-range `reel_duration_s` the canonical clamp (FR-103) — nothing is silently sent to a
@@ -51,8 +62,10 @@ import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
+from urllib.parse import urlsplit
 
-from hypesocials import briefs, styles
+from hypesocials import briefs, codex_proxy, styles
 from hypesocials.budget import critic_price_gap
 from hypesocials.gauntlet import CRITIC_TEMPLATES as _CRITIC_TEMPLATES
 from hypesocials.util import read_text, wrapped
@@ -65,25 +78,43 @@ from hypesocials.sources import SOURCE_STATUS
 
 EXIT_PREFLIGHT = 2
 
-#: The three keys FR-46 refuses on, plus FR-47's optional one. Values never leave this module
-#: except through `collect_secrets()`, which feeds the logger's redaction set (D30).
+#: The three keys FR-46 can refuse on, plus FR-47's optional one. Values never leave this module
+#: except through `collect_secrets()`, which feeds the logger's redaction set (D30). Two of the
+#: three are now CONDITIONAL (SESSION O/D64): a key is only required when the door it opens is the
+#: one this run leaves through — see `_needed_secrets()`. The descriptions say which door.
 REQUIRED_SECRETS: dict[str, str] = {
     "VIRLO_API_KEY": "Virlo trend discovery",
     # `analysis` is the VISION CHECK's role post-pivot (D41): the style-brief call is gone, the
-    # Sonnet key is not — the check, the topic filter and the copy call all go through OpenRouter.
-    "OPENROUTER_API_KEY": "Sonnet 5 vision check and GPT 5.6 Luna copy",
-    "KIE_API_KEY": "GPT Image 2 and Seedance 2.5 renders",
+    # Sonnet key is not. D64: this is the OPENROUTER door's key — under `llm_backend: codex` the
+    # same three roles ride the local proxy on the operator's subscription and need no key at all.
+    "OPENROUTER_API_KEY": "the OpenRouter door every LLM role rides (models.llm_backend: openrouter)",
+    "KIE_API_KEY": "the Kie.ai render door (models.render_provider: kie) — images and reels",
 }
 OPTIONAL_SECRETS: tuple[str, ...] = ("NOTION_TOKEN", "POSTIZ_API_KEY", "HANDLE_HASH_KEY")
 
 #: Which secrets each action can actually spend against — `--list-monitors` needs one key and no
-#: plan at all (FR-251), a source preview never reaches an LLM, a full run needs all three.
+#: plan at all (FR-251), a source preview never reaches an LLM, a full run needs all three. This is
+#: the ACTION half of the answer; `_needed_secrets()` then drops whichever keys this config's
+#: backend choices make irrelevant.
 _NEEDED: dict[str, tuple[str, ...]] = {
     "run": ("VIRLO_API_KEY", "OPENROUTER_API_KEY", "KIE_API_KEY"),
     "preview-analysis": ("VIRLO_API_KEY", "OPENROUTER_API_KEY"),
     "preview-sources": ("VIRLO_API_KEY",),
     "list-monitors": ("VIRLO_API_KEY",),
 }
+#: Which config choice makes each metered key required (D64). A key absent from this map — Virlo's
+#: — is required on every path that lists it, because there is no second door to trends.
+_SECRET_DOOR: dict[str, tuple[str, str]] = {
+    "OPENROUTER_API_KEY": ("llm_backend", "openrouter"),
+    "KIE_API_KEY": ("render_provider", "kie"),
+}
+#: The one image model the Codex proxy renders with (D64). Named here rather than read off
+#: `models.image`, which carries Kie's ROUTE names (`gpt-image-2-text-to-image`) and not a proxy id.
+CODEX_IMAGE_MODEL = "gpt-image-2"
+#: What the proxy actually returns, measured 2026-08-21. `platforms.<name>.image_resolution` is a
+#: Kie knob (FR-342) and the proxy honours no tier at all, so a `2k` config renders at this and the
+#: operator is told so before the gate rather than after the download.
+CODEX_IMAGE_PX = 1254
 
 MIN_PYTHON = (3, 12)
 REEL_DURATION_RANGE = (4, 30)  # FR-103 / 20 FR-164 — the provider's verified continuous range
@@ -142,6 +173,120 @@ class Preflight:
         return "\n".join(lines)
 
 
+#: Why the last `ensure_backends()` could not produce a proxy — one sentence, or empty. A module
+#: cell for the same reason `codex_proxy` keeps its handle in one: the awaited starter and the
+#: synchronous check that reports its failure are two calls at two different points of the run, and
+#: the operator needs the REASON ("Node/npx was not found on PATH") and not just the symptom.
+_PROXY_FAILURE: str = ""
+
+
+def codex_needed(config: Config, action: str = "run") -> bool:
+    """Does this action, on this config, need the local Codex proxy running? (D64)
+
+    The runner's gate for whether to await `ensure_backends()` at all — and the same predicate
+    `_check_codex` uses to decide whether it has anything to say, so the starter and the checker
+    can never disagree about which runs need a proxy.
+
+    The two doors have DIFFERENT reaches, which is the whole content of this function.
+    `--preview-analysis` really does make LLM calls (that is what it previews), so the LLM door
+    needs its proxy there. It renders nothing at all, so the RENDER door does not — refusing a $0
+    preview because no image endpoint is up would break the cheapest way to check a config, which
+    is FR-251's posture. `--list-monitors` and `--preview-sources` reach neither.
+    """
+    return ((action in ("run", "preview-analysis") and str(config.models.llm_backend) == "codex")
+            or (action == "run" and str(config.models.render_provider) == "codex"))
+
+
+async def ensure_backends(config: Config, *, action: str = "run", log: Any = None) -> str:
+    """Start (or find) the Codex proxy this run needs. Await this IMMEDIATELY BEFORE `check()`.
+
+    The one asynchronous thing pre-flight does, and it is deliberately not inside `check()`:
+    `check()` is synchronous, is called from inside the running event loop, and is documented as
+    local and instant. Starting `npx openai-oauth@latest` takes 10–25 s. So the two are split —
+    this coroutine does the waiting, records its outcome, and `check()` reads the result out of
+    `codex_proxy.current_handle()` in the same breath as every other refusal.
+
+    Never raises, deliberately. A failure here is not an exception the caller has to catch and
+    translate: it is a pre-flight FINDING, and `_check_codex` writes it as one, at exit 2 with $0
+    spent, alongside anything else that is also wrong with this run. Calling `check()` without
+    calling this first is safe too — it simply refuses, because there is no handle.
+
+    A no-op (returns `""`) on any run whose doors are both metered, and on `--list-monitors` /
+    `--preview-sources`, which never reach an LLM.
+
+    Args:
+        config: the loaded, flag-overridden config. `models.llm_base_url` is the endpoint.
+        action: the same action string `check()` will be given.
+        log: the run's `LogWriter`, when one exists; the proxy's start/ready lines go there.
+
+    Returns:
+        `""` when a proxy is ready (or none was needed), otherwise the one-sentence reason it is
+        not — already recorded for `check()`, so most callers can ignore the return value.
+    """
+    global _PROXY_FAILURE
+    _PROXY_FAILURE = ""
+    if not codex_needed(config, action):
+        return ""
+    try:
+        await codex_proxy.ensure_proxy(config.models.llm_base_url, log=log)
+    except (codex_proxy.ProxyUnavailable, ValueError) as exc:
+        _PROXY_FAILURE = str(exc)
+    except Exception as exc:  # noqa: BLE001 — a starter that raises must not crash a pre-flight
+        _PROXY_FAILURE = f"{type(exc).__name__}: {exc}"
+    return _PROXY_FAILURE
+
+
+def provider_summary(config: Config) -> tuple[str, ...]:
+    """The console lines naming the DOORS this run leaves through — LLM first, renders second.
+
+    Written for the launch block rather than as a finding: it is not a problem, it is the single
+    most consequential fact about what a run will cost, and after D64 it is no longer inferable
+    from the config's model ids alone (`gpt-image-2` is a Kie route name AND a proxy id). An
+    operator reading `codex gpt-image-2 ($0, subscription)` knows why the estimate is small; the
+    same operator reading a $6 estimate knows the pivot did not take.
+
+    Laid out on `_launch_summary`'s own 14-character label column and wrapped to FR-286's 78
+    columns, so the caller can drop the lines straight into that block. That is why the return is
+    a variable-length tuple rather than exactly two strings: a run with three critic ids on the
+    subscription door needs a continuation line, and truncating it would hide the id that is
+    wrong on exactly the run where somebody is looking for it.
+
+    No secret, no key, no token — not even a masked one. The lines name a provider, a loopback
+    host and model ids, all of which are already written in the config file (D30).
+    """
+    models = config.models
+    if str(models.llm_backend) == "codex":
+        host = urlsplit(models.llm_base_url).netloc or models.llm_base_url
+        llm = f"codex via {host} · $0, subscription · " + _role_clause(config)
+    else:
+        llm = "openrouter · " + _role_clause(config)
+    if str(models.render_provider) == "codex":
+        render = (f"codex {CODEX_IMAGE_MODEL} · $0, subscription · fixed ~{CODEX_IMAGE_PX} px · "
+                  "no video")
+    else:
+        render = f"kie · {models.image_profile} images · {models.video_profile} video"
+    return (*_summary_lines("llm", llm), *_summary_lines("render", render))
+
+
+def _role_clause(config: Config) -> str:
+    """`analysis <id> · copy <id> · critic <id>` — the roles that will really be called.
+
+    Role names rather than config keys, because this line is read as prose ("what is doing the
+    thinking") and not as an edit target; the refusals in `_check_codex` are where a key belongs.
+    The critic is named only when the gauntlet is on, for the same reason it is only CHECKED then.
+    """
+    models = config.models
+    clauses = [f"analysis {models.analysis}", f"copy {models.copy}"]
+    if config.run.gauntlet.enabled:
+        clauses.append(f"critic {models.critic or models.analysis}")
+    return " · ".join(clauses)
+
+
+def _summary_lines(label: str, text: str) -> list[str]:
+    """One labelled fact, packed onto as many ≤78-column lines as it needs (FR-286)."""
+    return [f"  {label if first else '':<10}  {part}" for first, part in wrapped(text, 64)]
+
+
 def collect_secrets() -> tuple[str, ...]:
     """Every secret VALUE present in the environment — the `LogWriter` redaction set (FR-152).
 
@@ -191,7 +336,8 @@ def check(
         action: `run` | `preview-analysis` | `preview-sources` | `list-monitors`; picks which
             secrets are genuinely required (FR-46, FR-202's `--list-monitors` row) and which
             checks apply at all — the style registry (FR-295) and the branding block (FR-292) are
-            read only on the paths that actually assign a style.
+            read only on the paths that actually assign a style, and D64's Codex proxy check only
+            on the two that reach an LLM.
         entries: the expanded plan — sizes FR-255's disk footprint and tells FR-283's supply
             check which creatives need a trend at all.
         briefs_errors: unresolved-brief lines from `resolve_briefs()`, folded in so a caller
@@ -215,6 +361,7 @@ def check(
     _check_profiles(config, action, errors)
     _check_prompt_overrides(config, action, warnings)
     _check_gauntlet(config, action, errors, warnings)
+    _check_codex(config, action, entries, errors, hints)
     _check_styles(config, action, errors, warnings)
     _check_branding(config, action, errors, warnings)
     _check_node(config, errors)
@@ -232,9 +379,36 @@ def check(
 # --------------------------------------------------------------------------- individual checks
 
 
+def _needed_secrets(config: Config, action: str) -> tuple[str, ...]:
+    """Which env vars THIS action, on THIS config, genuinely cannot run without (FR-46 + D64).
+
+    Two questions, answered in order. First the action: `--list-monitors` needs one key and no plan
+    at all (FR-251), a source preview never reaches an LLM. Then the DOOR each key opens — SESSION
+    O gave both metered providers a subscription twin, and a key for a provider this run will never
+    contact is not a missing requirement, it is an irrelevant one. Under `llm_backend: codex` every
+    LLM role rides the local proxy on the operator's ChatGPT sign-in, so `OPENROUTER_API_KEY` is not
+    consulted; under `render_provider: codex` the same is true of `KIE_API_KEY`. Refusing on either
+    would make the whole point of the pivot unreachable — a workstation with no metered keys at all
+    is exactly the configuration D64 exists to serve.
+
+    `VIRLO_API_KEY` is in no door map and is therefore unconditional: there is one source of trends
+    and no subscription substitutes for it.
+
+    Note what this does NOT touch: `collect_secrets()` still hands the logger every secret VALUE
+    present in the environment (D30). Gating changes what is REQUIRED, never what is REDACTED — a
+    key left in `.env` from last week must still be masked in this week's logs whether or not this
+    run has any use for it.
+    """
+    doors = {"llm_backend": str(config.models.llm_backend),
+             "render_provider": str(config.models.render_provider)}
+    return tuple(name for name in _NEEDED.get(action, _NEEDED["run"])
+                 if name not in _SECRET_DOOR
+                 or doors[_SECRET_DOOR[name][0]] == _SECRET_DOOR[name][1])
+
+
 def _check_secrets(config: Config, action: str, errors: list[str], warnings: list[str]) -> None:
     """FR-45/46: refuse on a missing required key, naming the variable. FR-47: Notion degrades."""
-    for name in _NEEDED.get(action, _NEEDED["run"]):
+    for name in _needed_secrets(config, action):
         if not os.environ.get(name, "").strip():
             errors.append(f"{name} is not set — {REQUIRED_SECRETS[name]} cannot run without it. "
                           "Put it in .env in the repo root (FR-46)")
@@ -448,6 +622,113 @@ def _check_gauntlet(config: Config, action: str, errors: list[str],
                           "gate would ship unjudged work it was priced for (FR-183/FR-322)")
     if gap := critic_price_gap(config):
         warnings.append(gap)
+
+
+def _check_codex(config: Config, action: str, entries: Sequence[PlanEntry],
+                 errors: list[str], hints: list[str]) -> None:
+    """D64: when either door is `codex`, prove the local proxy can serve THIS run — or exit 2.
+
+    Three findings, and the order is the order an operator can act on them.
+
+    1. **Is there a proxy at all?** This function is SYNCHRONOUS, like every other check here, so
+       it does not start anything — `ensure_backends()` above did that, before `check()` was
+       called, and left its handle in `codex_proxy.current_handle()`. No handle (or a handle with
+       an empty model list) means the endpoint is not there and could not be made to be, which is
+       an FR-295-shaped refusal: exit 2, $0 spent, and the cure printed rather than implied. The
+       whole point of starting the proxy from pre-flight is the unattended run — a scheduled
+       `--yes` batch has nobody at the keyboard to notice a missing window.
+
+    2. **Are the configured model ids ids the proxy actually has?** This is the misconfiguration
+       that D64 will produce over and over: `models.analysis` still says
+       `anthropic/claude-sonnet-5`, which is an OpenRouter id and means nothing to the proxy. It
+       is a refusal rather than a warning because there is no degraded version of it — the call
+       would 404 at the first analysis and every stage after it would run on nothing. The refusal
+       names the key, the id, and the ids that DO exist, because "unknown model" without the list
+       is a search, not a fix.
+
+       Only the roles this run can really call are judged. `analysis` and `copy` always run; the
+       critic ids are judged only when the gauntlet is on and that critic is enabled, since a
+       switched-off critic's model is never resolved and refusing on it would refuse a run for a
+       call that cannot happen.
+
+    3. **Reels.** There is no subscription path for video: the proxy renders `gpt-image-2` and
+       nothing else. A plan that wants a reel under `render_provider: codex` is refused here
+       rather than half-delivered, and the cure is in the sentence.
+
+    Plus one informational line, never a finding's grade: the proxy returns a fixed ~1254 px frame
+    whatever `platforms.<name>.image_resolution` says (FR-342 is a Kie knob). The operator approves
+    a plan at the Confirm gate; they should know what size the pixels will be before they do,
+    not after they open the folder.
+
+    Scope is per DOOR, not per action: the LLM door is judged on `run` and `--preview-analysis`
+    (both make LLM calls), the render door on `run` alone (a preview renders nothing).
+    `--list-monitors` and `--preview-sources` reach neither and must never be refused by a door
+    they never open — the FR-251 posture, applied to a new provider.
+    """
+    llm_codex = (action in ("run", "preview-analysis")
+                 and str(config.models.llm_backend) == "codex")
+    render_codex = action == "run" and str(config.models.render_provider) == "codex"
+    if not (llm_codex or render_codex):
+        return  # `codex_needed()` is the same predicate — see its docstring for the two reaches
+
+    handle = codex_proxy.current_handle()
+    if handle is None or not handle.models:
+        detail = f" ({_PROXY_FAILURE})" if _PROXY_FAILURE else ""
+        errors.append(f"Codex proxy not reachable at {config.models.llm_base_url} and could not be "
+                      f"started{detail} — run `npx openai-oauth@latest` and sign in once with "
+                      "`codex login` (D64)")
+        return
+    available = list(handle.models)
+    listed = ", ".join(available)
+
+    if llm_codex:
+        for key, model in _codex_llm_models(config):
+            if model not in available:
+                errors.append(f"{key} is {model!r}, which this proxy does not serve — "
+                              f"{config.models.llm_base_url} offers {listed}. An id with a vendor "
+                              "prefix is the OpenRouter name and never reaches the subscription "
+                              "door (D64)")
+    if render_codex:
+        if CODEX_IMAGE_MODEL not in available:
+            errors.append(f"models.render_provider is 'codex' but the proxy does not serve "
+                          f"{CODEX_IMAGE_MODEL!r} — it offers {listed}; nothing in this run could "
+                          "be rendered (D64)")
+        # `entries` is the expanded plan when the caller has one; an empty plan falls back to
+        # the configured counts, which is the same question asked one step earlier.
+        reels = (sum(1 for entry in entries if str(entry.creative_format) == "reel")
+                 if entries else int(config.run.formats.get("reel", 0)))
+        if reels:
+            errors.append(f"{reels} reel(s) are planned but reels need the kie provider — no "
+                          "subscription path renders video; set models.render_provider: kie, or "
+                          "run with --reels 0 (D64)")
+        else:
+            hints.append(f"render_provider: codex renders every image at the proxy's fixed "
+                         f"~{CODEX_IMAGE_PX} px whatever platforms.<name>.image_resolution asks "
+                         "for, and bills $0 against the subscription rather than the spend cap "
+                         "(D64/FR-342)")
+
+
+def _codex_llm_models(config: Config) -> list[tuple[str, str]]:
+    """Every `(config key, model id)` pair this run can really send to the proxy.
+
+    The critic rows follow the gauntlet's own resolution order (`critic.model or models.critic or
+    models.analysis`) so the id checked here is the id the call would carry — checking
+    `models.critic` while a per-critic override was in force would validate a string nobody sends.
+    """
+    models = config.models
+    pairs = [("models.analysis", models.analysis), ("models.copy", models.copy)]
+    gate = config.run.gauntlet
+    if gate.enabled:
+        for name, critic in sorted(gate.critics.items()):
+            if not critic.enabled:
+                continue
+            resolved = str(critic.model or models.critic or models.analysis)
+            key = f"run.gauntlet.critics.{name}.model" if critic.model else "models.critic"
+            pairs.append((key, resolved))
+    seen: dict[str, str] = {}
+    for key, model in pairs:  # one row per distinct id: three critics on one model is one finding
+        seen.setdefault(str(model), key)
+    return [(key, model) for model, key in seen.items()]
 
 
 def _check_styles(config: Config, action: str, errors: list[str], warnings: list[str]) -> None:
@@ -729,6 +1010,7 @@ def _check_disk(config: Config, entries: Sequence[object], errors: list[str]) ->
 
 
 __all__ = [
-    "EXIT_PREFLIGHT", "MIN_PYTHON", "OPTIONAL_SECRETS", "Preflight", "REEL_DURATION_RANGE",
-    "REQUIRED_SECRETS", "check", "collect_secrets", "resolve_briefs",
+    "CODEX_IMAGE_MODEL", "CODEX_IMAGE_PX", "EXIT_PREFLIGHT", "MIN_PYTHON", "OPTIONAL_SECRETS",
+    "Preflight", "REEL_DURATION_RANGE", "REQUIRED_SECRETS", "check", "codex_needed",
+    "collect_secrets", "ensure_backends", "provider_summary", "resolve_briefs",
 ]

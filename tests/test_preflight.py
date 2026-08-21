@@ -41,7 +41,9 @@ from hypesocials.config import (
     Config, OutputConfig, RunConfig, SourcesConfig, formats_sourcing_violation, windows_violation,
 )
 from hypesocials.models import PlanEntry
-from hypesocials.preflight import EXIT_PREFLIGHT, Preflight, check
+from hypesocials import codex_proxy
+from hypesocials import preflight as preflight_module
+from hypesocials.preflight import EXIT_PREFLIGHT, Preflight, check, collect_secrets
 
 #: The exact key the refusal must name — an operator has to know which line to edit (FR-69).
 KEY = "sources.virlo_monitor_ids"
@@ -1016,3 +1018,391 @@ def test_fr345_a_translating_run_with_the_gauntlet_off_gets_its_own_glyph_hint(
     assert [hint for hint in silent.hints if "copy_language_mode: target" in hint] == []
     assert [hint for hint in silent.hints if "quoted verbatim" in hint] != [], \
         "the pre-D63 hint is unchanged on the mode every default run uses"
+
+
+# ---- D64 --------------- SESSION O: the two subscription doors, judged before the money gate
+#
+# `models.llm_backend` and `models.render_provider` each gained a `codex` value that routes work to
+# a local `npx openai-oauth@latest` proxy on the operator's own ChatGPT subscription. Three things
+# change at pre-flight, and each is a way a run could otherwise fail AFTER paying:
+#
+#   1. a metered key is only required when its door is the one this run uses (a workstation with no
+#      OpenRouter key at all is exactly the configuration the pivot exists to serve);
+#   2. the proxy has to be reachable, and it has to serve the ids this config names — an OpenRouter
+#      id like `anthropic/claude-sonnet-5` means nothing to it, and is the obvious repeat mistake;
+#   3. there is no subscription path for video, so a reel plan is refused rather than half-shipped.
+#
+# The proxy is STARTED by `preflight.ensure_backends()` (async, awaited by the runner immediately
+# before `check()`); `check()` itself only reads `codex_proxy.current_handle()`, so every test here
+# installs a handle directly and nothing starts, probes or downloads anything.
+
+
+@pytest.fixture(autouse=True)
+def _no_proxy_handle() -> object:
+    """No test in this file inherits another's proxy — the handle cell is process-global."""
+    codex_proxy._CURRENT = None
+    preflight_module._PROXY_FAILURE = ""
+    yield
+    codex_proxy._CURRENT = None
+    preflight_module._PROXY_FAILURE = ""
+
+
+#: What the real proxy served on 2026-08-21. The ids are bare — no vendor prefix — which is the
+#: whole difference between a working `codex` config and an OpenRouter one pointed at localhost.
+_PROXY_MODELS = ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-image-2")
+
+
+def _proxy_is_up(models: tuple[str, ...] = _PROXY_MODELS) -> None:
+    """Install the handle `ensure_backends()` would have left behind on a healthy start."""
+    codex_proxy._CURRENT = codex_proxy.ProxyHandle(
+        base_url="http://127.0.0.1:10531/v1", port=10531, models=models, owned=False)
+
+
+def _codex_config(tmp_path: Path, *, llm: bool = True, render: bool = True, **kwargs: object):
+    """A runnable config with one or both doors pivoted, and proxy-shaped model ids throughout."""
+    config = _styled_config(tmp_path, registry=_TWO_STYLES, **kwargs)
+    if llm:
+        config.models.llm_backend = "codex"  # type: ignore[assignment]
+        config.models.analysis = "gpt-5.6-sol"
+        config.models.copy = "gpt-5.6-luna"
+        config.models.critic = "gpt-5.6-sol"
+    if render:
+        config.models.render_provider = "codex"  # type: ignore[assignment]
+    return config
+
+
+def _codex_errors(verdict: Preflight) -> list[str]:
+    return [line for line in verdict.errors if "D64" in line]
+
+
+def test_d64_a_key_is_required_only_when_its_own_door_is_the_one_this_run_uses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The point of the pivot: a workstation with NO metered keys must be able to run.
+
+    `OPENROUTER_API_KEY` opens the OpenRouter door and `KIE_API_KEY` the Kie one. Under `codex`
+    neither door is opened, so refusing on a key that would never be sent anywhere would make the
+    subscription path unreachable for the operator it was built for. `VIRLO_API_KEY` is in no door
+    map and stays unconditional — there is one source of trends and no substitute for it.
+    """
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("KIE_API_KEY", raising=False)
+    _proxy_is_up()
+    config = _codex_config(tmp_path)
+    config.run.formats = {"image": 0, "carousel": 1, "reel": 0}
+
+    verdict = check(config, action="run", entries=[_deck(0)])
+
+    assert [line for line in verdict.errors if "OPENROUTER_API_KEY" in line] == [], verdict.report
+    assert [line for line in verdict.errors if "KIE_API_KEY" in line] == [], verdict.report
+    # And the key that has no second door is still refused when it is missing.
+    monkeypatch.delenv("VIRLO_API_KEY", raising=False)
+    assert [line for line in check(config, action="run", entries=[_deck(0)]).errors
+            if "VIRLO_API_KEY" in line], "there is no subscription substitute for Virlo"
+
+
+@pytest.mark.parametrize(
+    ("key", "attribute", "metered"),
+    [("OPENROUTER_API_KEY", "llm_backend", "openrouter"),
+     ("KIE_API_KEY", "render_provider", "kie")],
+)
+def test_d64_the_metered_door_still_refuses_on_its_own_missing_key(
+    key: str, attribute: str, metered: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The other half of the gate: nothing about D64 weakens FR-46 on the doors that ARE metered.
+
+    Parameterised over both pairs precisely because the gating is a mapping — a wiring mistake
+    that dropped one key's requirement entirely would still pass a test that only checked the
+    other, and the failure would surface as an HTTP 401 halfway through a paid run.
+    """
+    monkeypatch.delenv(key, raising=False)
+    config = _styled_config(tmp_path, registry=_TWO_STYLES)
+    assert getattr(config.models, attribute) == metered, "the engine default, not set by this test"
+
+    verdict = check(config, action="run", entries=[_deck(0)])
+
+    refusals = [line for line in verdict.errors if key in line]
+    assert len(refusals) == 1, verdict.report
+    assert "FR-46" in refusals[0] and ".env" in refusals[0]
+
+
+def test_d64_gating_changes_what_is_required_and_never_what_is_redacted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D30 is not on the same dial as FR-46, and this is where the two could quietly be confused.
+
+    A key left in `.env` from last week is still a secret this week. `collect_secrets()` feeds the
+    logger's redaction set, so it must keep masking every value PRESENT in the environment whether
+    or not this run has any use for it — otherwise pivoting to `codex` would start writing a live
+    OpenRouter key into `events.jsonl` the first time an error message quoted a request.
+    """
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-not-a-real-key")
+    monkeypatch.setenv("KIE_API_KEY", "kie-not-a-real-key")
+    _proxy_is_up()
+    config = _codex_config(tmp_path)
+    config.run.formats = {"image": 0, "carousel": 1, "reel": 0}
+
+    verdict = check(config, action="run", entries=[_deck(0)])
+
+    assert "sk-or-not-a-real-key" in verdict.secrets
+    assert "kie-not-a-real-key" in verdict.secrets
+    assert collect_secrets() == verdict.secrets, "one derivation, and the pivot does not touch it"
+
+
+def test_d64_no_proxy_means_exit_2_with_the_two_commands_that_fix_it(tmp_path: Path) -> None:
+    """The refusal an unattended run has to produce, and why it is a refusal at all.
+
+    `ensure_backends()` already tried to START the proxy before `check()` ran — a scheduled `--yes`
+    batch has nobody at the keyboard to notice a missing window, so pre-flight starting one is the
+    difference between a run and a dead night. When even that failed there is nothing left to
+    degrade to: every LLM call and every render would 404. So: exit 2, $0 spent, and both halves of
+    the cure on the line, because "unreachable" alone sends an operator to their firewall.
+
+    The reason the start failed rides along when there is one — "Node/npx was not found on PATH" is
+    a different afternoon from "not signed in", and the symptom does not distinguish them.
+    """
+    config = _codex_config(tmp_path)
+    config.run.formats = {"image": 0, "carousel": 1, "reel": 0}
+    assert codex_proxy.current_handle() is None
+
+    verdict = check(config, action="run", entries=[_deck(0)])
+
+    refusals = [line for line in verdict.errors if "Codex proxy not reachable" in line]
+    assert len(refusals) == 1, verdict.report
+    assert "127.0.0.1:10531" in refusals[0]
+    assert "npx openai-oauth@latest" in refusals[0] and "codex login" in refusals[0]
+    assert not verdict.ok
+
+    preflight_module._PROXY_FAILURE = "Node/npx was not found on PATH"
+    detailed = [line for line in check(config, action="run", entries=[_deck(0)]).errors
+                if "Codex proxy not reachable" in line]
+    assert "Node/npx was not found on PATH" in detailed[0]
+
+
+def test_d64_an_openrouter_model_id_under_the_codex_door_is_refused_by_name(
+    tmp_path: Path,
+) -> None:
+    """The repeat misconfiguration, caught for $0 instead of at the first analysis call.
+
+    `models.analysis: anthropic/claude-sonnet-5` is the shipped value and it is an OPENROUTER id.
+    Pointed at the proxy it resolves to nothing, so the vision pass 404s, slide intelligence
+    degrades, and every stage after it runs on empty — after the renders were paid for. There is no
+    degraded version of a model that does not exist, so it is a refusal, and it names three things:
+    the key to edit, the id that is wrong, and the ids that exist. The last one is not decoration —
+    "unknown model" without the list is a search rather than a fix.
+    """
+    _proxy_is_up()
+    config = _codex_config(tmp_path)
+    config.models.analysis = "anthropic/claude-sonnet-5"
+    config.run.formats = {"image": 0, "carousel": 1, "reel": 0}
+
+    verdict = check(config, action="run", entries=[_deck(0)])
+
+    refusals = [line for line in verdict.errors if "models.analysis" in line]
+    assert len(refusals) == 1, verdict.report
+    assert "anthropic/claude-sonnet-5" in refusals[0]
+    assert "gpt-5.6-sol" in refusals[0] and "gpt-image-2" in refusals[0], "the list, not a hint"
+    assert not verdict.ok
+    # Only the roles this run can call are judged, and each distinct id is ONE finding: `copy` and
+    # the critic are proxy ids here, so nothing else fires.
+    assert len(_codex_errors(verdict)) == 1, verdict.report
+
+
+def test_d64_a_disabled_critics_model_id_never_refuses_a_run_it_cannot_reach(
+    tmp_path: Path,
+) -> None:
+    """A switched-off critic's model is never resolved, so it cannot be a reason to refuse.
+
+    The gauntlet reads `critic.model or models.critic or models.analysis` at CALL time, only for
+    critics that are on. Refusing on a stale id under a disabled critic would refuse a run for a
+    call that cannot happen — the same posture `_check_gauntlet` already takes when it declines to
+    look at a disabled critic's prompt template.
+    """
+    _proxy_is_up()
+    config = _codex_config(tmp_path)
+    config.run.formats = {"image": 0, "carousel": 1, "reel": 0}
+    for name, critic in config.run.gauntlet.critics.items():
+        critic.enabled = name == "brief"
+        critic.model = None if name == "brief" else "anthropic/claude-sonnet-5"
+
+    verdict = check(config, action="run", entries=[_deck(0)])
+    assert _codex_errors(verdict) == [], verdict.report
+
+    # Turn one of them on and the same id is refused immediately, naming ITS key.
+    config.run.gauntlet.critics["craft"].enabled = True
+    refused = _codex_errors(check(config, action="run", entries=[_deck(0)]))
+    assert len(refused) == 1 and "run.gauntlet.critics.craft.model" in refused[0], refused
+
+
+def test_d64_reels_are_refused_under_the_codex_render_provider(tmp_path: Path) -> None:
+    """There is no subscription path for video, and half a run is worse than a clear no.
+
+    The proxy renders `gpt-image-2` and nothing else. A plan holding a reel under
+    `render_provider: codex` would ship its images and drop its reels, which is a partial delivery
+    an operator did not choose. The refusal names the count, the provider to switch back to, and
+    the flag that drops the reels instead — both ways out, because either may be the right one.
+    """
+    _proxy_is_up()
+    config = _codex_config(tmp_path)
+    config.run.formats = {"image": 0, "carousel": 1, "reel": 1}
+    config.sources.include_videos = True
+    reel = _entry(1)
+    reel.creative_format = "reel"  # type: ignore[assignment]
+
+    verdict = check(config, action="run", entries=[_deck(0), reel])
+
+    refusals = [line for line in verdict.errors if "reels need the kie provider" in line]
+    assert len(refusals) == 1, verdict.report
+    assert "1 reel(s)" in refusals[0] and "render_provider: kie" in refusals[0]
+    assert "--reels 0" in refusals[0]
+    assert not verdict.ok
+    # The same plan on the metered door is not this rule's business at all.
+    config.models.render_provider = "kie"  # type: ignore[assignment]
+    assert [line for line in check(config, action="run", entries=[_deck(0), reel]).errors
+            if "reels need the kie provider" in line] == []
+
+
+def test_d64_the_proxys_fixed_frame_size_is_stated_before_the_money_gate(
+    tmp_path: Path,
+) -> None:
+    """FR-342 is a KIE knob, and a `2k` config under the proxy is not wrong — it is ignored.
+
+    An operator who pinned `image_resolution: 2k` on all three brand configs for colour accuracy
+    will get ~1254 px frames from the subscription door whatever that key says. They should read
+    that on the screen where they approve the plan, not discover it in the folder afterwards. A
+    hint and never a finding: the run is fine, the expectation is what needed correcting.
+    """
+    _proxy_is_up()
+    config = _codex_config(tmp_path)
+    config.run.formats = {"image": 0, "carousel": 1, "reel": 0}
+
+    verdict = check(config, action="run", entries=[_deck(0)])
+
+    stated = [hint for hint in verdict.hints if "1254 px" in hint]
+    assert len(stated) == 1, verdict.report
+    assert "image_resolution" in stated[0] and "$0" in stated[0]
+    assert verdict.ok, "a fixed frame size is a fact, never a refusal"
+    # Kie renders at the tier the operator asked for, so the line would be a lie there.
+    config.models.render_provider = "kie"  # type: ignore[assignment]
+    assert [h for h in check(config, action="run", entries=[_deck(0)]).hints if "1254" in h] == []
+
+
+def test_d64_the_metered_defaults_reach_none_of_this(tmp_path: Path) -> None:
+    """An openrouter+kie run must not gain a single new finding, a probe or a proxy dependency.
+
+    This is the regression that would be easiest to ship: a check that fires on every run rather
+    than on the pivoted ones would make a missing proxy refuse the runs that never wanted one. The
+    handle is deliberately absent here — the default config must not so much as ask for it.
+    """
+    config = _styled_config(tmp_path, registry=_TWO_STYLES)
+    config.run.formats = {"image": 0, "carousel": 1, "reel": 0}
+    assert config.models.llm_backend == "openrouter" and config.models.render_provider == "kie"
+    assert codex_proxy.current_handle() is None
+
+    verdict = check(config, action="run", entries=[_deck(0)])
+
+    assert _codex_errors(verdict) == [], verdict.report
+    assert [line for line in verdict.errors if "Codex proxy" in line] == [], verdict.report
+    assert [hint for hint in verdict.hints if "1254" in hint] == []
+    assert not preflight_module.codex_needed(config, "run")
+
+
+@pytest.mark.parametrize("action", ["list-monitors", "preview-sources"])
+def test_d64_the_zero_dollar_cure_paths_never_need_a_proxy(
+    action: str, tmp_path: Path,
+) -> None:
+    """FR-251's posture, applied to a new provider: a diagnostic must not need what it diagnoses.
+
+    `--list-monitors` prints the ids a broken config is missing and `--preview-sources` is the $0
+    blocklist preview. Neither reaches an LLM or renders a pixel, so refusing either because a
+    proxy is not running would break the very commands an operator uses to get back to a run.
+    """
+    config = _codex_config(tmp_path)
+    assert codex_proxy.current_handle() is None
+
+    verdict = check(config, action=action)
+
+    assert [line for line in verdict.errors if "Codex proxy" in line] == [], verdict.report
+    assert not preflight_module.codex_needed(config, action)
+
+
+@pytest.mark.asyncio
+async def test_d64_ensure_backends_is_a_no_op_on_a_metered_run_and_never_raises(
+    tmp_path: Path,
+) -> None:
+    """The async half, at both ends of its contract.
+
+    On a metered run it must not touch the network at all — the base URL is deliberately garbage
+    here, and a call that tried to reach it would fail. On a pivoted run whose proxy cannot start
+    it must still not RAISE: a failure there is a pre-flight finding, written by `_check_codex`,
+    printed beside everything else that is wrong with the run. A coroutine that threw would abort
+    the pass and hide those other lines.
+    """
+    metered = _styled_config(tmp_path, registry=_TWO_STYLES)
+    metered.models.llm_base_url = "http://an-address-nothing-can-reach.invalid:1/v1"
+    assert await preflight_module.ensure_backends(metered, action="run") == ""
+    assert codex_proxy.current_handle() is None
+
+    off_box = _codex_config(tmp_path)
+    off_box.models.llm_base_url = "http://10.0.0.5:10531/v1"  # the loopback guard's own case
+    reason = await preflight_module.ensure_backends(off_box, action="run")
+    assert "off-box" in reason and codex_proxy.current_handle() is None
+    assert [line for line in check(off_box, action="run", entries=[_deck(0)]).errors
+            if "Codex proxy not reachable" in line], "the reason becomes a finding, not a crash"
+
+
+def test_d64_the_provider_summary_names_both_doors_in_console_width(tmp_path: Path) -> None:
+    """The one fact about a run that stopped being inferable from the config's model ids.
+
+    `gpt-image-2` is a Kie route name AND a proxy id, so after D64 an operator reading the launch
+    block cannot tell from the models alone which provider they are about to spend against. These
+    two lines say it outright, and they carry the money clause — an operator reading
+    `$0, subscription` beside a $6 estimate knows the pivot did not take.
+
+    Nothing secret is in them: a provider, a loopback host and model ids, all of which are already
+    written in the config file (D30).
+    """
+    codex = _codex_config(tmp_path)
+    lines = preflight_module.provider_summary(codex)
+    block = "\n".join(lines)
+
+    assert "codex via 127.0.0.1:10531" in block and "subscription" in block
+    # The clause may wrap onto the continuation line, so the words are checked and not the run of
+    # bytes between them — a width assertion below is what pins the layout.
+    flat = " ".join(block.split())
+    assert "copy gpt-5.6-luna" in flat and "analysis gpt-5.6-sol" in flat
+    assert "gpt-image-2" in block and "$0" in block and "1254 px" in block
+    assert "no video" in block, "the one thing the subscription door cannot do"
+    assert all(len(line) <= 78 for line in lines), lines
+
+    metered = "\n".join(preflight_module.provider_summary(_styled_config(
+        tmp_path, registry=_TWO_STYLES)))
+    assert "openrouter" in metered and "anthropic/claude-sonnet-5" in metered
+    assert "kie" in metered and "seedance-2-5" in metered
+    assert "127.0.0.1" not in metered, "a metered run names no proxy it will never contact"
+
+
+def test_d64_a_preview_needs_the_llm_door_and_never_the_render_one(tmp_path: Path) -> None:
+    """The two doors have different reaches, and `--preview-analysis` is where they part.
+
+    A preview really does make LLM calls — that is the thing it previews — so a pivoted LLM door
+    needs its proxy there or the preview would 404 its way through every stage. It renders nothing
+    at all, so a pivoted RENDER door needs nothing: refusing a $0 preview because no image
+    endpoint was up would break the cheapest way there is to check a config, which is exactly what
+    FR-251 says must never happen.
+    """
+    render_only = _codex_config(tmp_path, llm=False)  # kie -> codex renders, OpenRouter LLM
+    assert not preflight_module.codex_needed(render_only, "preview-analysis")
+    preview = check(render_only, action="preview-analysis", entries=[_deck(0)])
+    assert [line for line in preview.errors if "Codex proxy" in line] == [], preview.report
+
+    llm_only = _codex_config(tmp_path, render=False)  # OpenRouter -> codex LLM, Kie renders
+    assert preflight_module.codex_needed(llm_only, "preview-analysis")
+    refused = check(llm_only, action="preview-analysis", entries=[_deck(0)])
+    assert [line for line in refused.errors if "Codex proxy not reachable" in line], refused.report
+
+    # With the proxy up, the same preview is clean and says nothing about pixels it will not make.
+    _proxy_is_up()
+    clean = check(llm_only, action="preview-analysis", entries=[_deck(0)])
+    assert [line for line in clean.errors if "Codex proxy" in line] == [], clean.report
+    assert [hint for hint in clean.hints if "1254" in hint] == [], "a preview renders nothing"
