@@ -161,6 +161,20 @@ _RETRY_TOKEN_CEILING = 16384  # ... and is then clamped here, which the estimate
 #: price the whole gauntlet at $0 — the estimate would then show a quality gate that costs nothing,
 #: which is the one estimator error that is never safe (D11).
 _ROLE_PRICE_KEY: dict[str, str] = {"analysis": "sonnet", "copy": "luna", "critic": "sonnet"}
+#: SESSION O / D64. Under `models.llm_backend: codex` every LLM call leaves through the operator's
+#: own ChatGPT/Codex subscription on loopback, and the invoice for it is a flat monthly fee this
+#: estimator cannot apportion per call. So the rate is not "unknown", it is ZERO, and the honest
+#: line says so with its own price key and origin instead of quoting Sonnet's or Luna's per-token
+#: rate for tokens nobody will be billed for. Mirrors `config.ModelsConfig.llm_backend`'s literal
+#: rather than importing it, for the same reason `_RETRY_TOKEN_*` mirrors `llm.py`: this module
+#: prices, it does not depend on the modules whose behaviour it prices.
+#:
+#: What this does NOT touch: render pricing. Kie keeps metering pixels whatever door the text
+#: calls use, and the cap still guards that spend (plus Virlo's own deposit, which was never in
+#: this estimate at all).
+_CODEX_BACKEND = "codex"
+_CODEX_PRICE_KEY = "codex"
+_CODEX_ORIGIN = "subscription (Codex OAuth) — $0 metered"
 #: FR-326's per-call arithmetic (gauntlet spec §5), RE-BASED ON MEASUREMENT (F5, Session 5.5).
 #: The prompt side is the critic template plus the `DeckContract` blocks it carries (expected
 #: per-frame line blocks, required/forbidden marks, style DNA, layout zones); the completion side
@@ -350,7 +364,14 @@ def _llm_call_price(config: Config, role: str, prompt: int, completion: int, rea
 
     Blending keeps the estimate readable (one line per call kind) while still charging input,
     output and — for Luna — reasoning tokens at their own configured rates.
+
+    Under the `codex` backend there is nothing to blend: the call rides a subscription, costs $0
+    at the margin, and prices as `$0.00 [subscription (Codex OAuth)]`. The assumed model is still
+    the configured id, because that is the thing an operator swaps and the line that names it is
+    how they check WHICH model answered (FR-282 is about provenance, not only about money).
     """
+    if config.models.llm_backend == _CODEX_BACKEND:
+        return (0.0, _CODEX_PRICE_KEY, _CODEX_ORIGIN, getattr(config.models, role))
     table_key = _ROLE_PRICE_KEY[role]
     key = f"models.price_per_unit.llm.{table_key}"
     rates = config.models.price_per_unit.llm.get(table_key) or {}
@@ -370,9 +391,15 @@ def _llm_call_price(config: Config, role: str, prompt: int, completion: int, rea
 def _line(code: str, label: str, category: SpendCategory, unit: str, quantity: float,
           priced: Priced, orders: Sequence[int], *, allowance: bool = False,
           blocking: bool = False) -> EstimateLine:
-    """Build one line from a pricing tuple; a missing or zero rate makes it unpriced at $0."""
+    """Build one line from a pricing tuple; a missing or zero rate makes it unpriced at $0.
+
+    The ONE exception is the codex price key: $0 there is a measured fact (a subscription call is
+    not metered), not a rate nobody entered. Flagging it `unpriced` would raise the governance
+    banner — "governance partial, N lines unpriced" — on a run whose LLM spend is genuinely and
+    knowably zero, which trains an operator to ignore the one banner that exists to be read.
+    """
     price, key, origin, model = priced
-    unpriced = price is None or price <= 0
+    unpriced = (price is None or price <= 0) and key != _CODEX_PRICE_KEY
     return EstimateLine(
         code=code, label=label, category=category, unit=unit, quantity=quantity,
         unit_price=None if unpriced else price,
@@ -1177,6 +1204,8 @@ def critic_price_gap(config: Config) -> str | None:
     gauntlet = config.run.gauntlet
     if not gauntlet.enabled or not any(critic.enabled for critic in gauntlet.critics.values()):
         return None
+    if config.models.llm_backend == _CODEX_BACKEND:
+        return None  # D64: the critic panel rides the subscription; $0 is the true quote, not a gap
     table_key = _ROLE_PRICE_KEY["critic"]
     key = f"models.price_per_unit.llm.{table_key}"
     rates = config.models.price_per_unit.llm.get(table_key) or {}

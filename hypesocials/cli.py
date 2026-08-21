@@ -447,8 +447,11 @@ def estimate_report(estimate: Estimate, entries: Sequence[PlanEntry], cap_usd: f
         tail = " (worst-case allowance)" if key[2] else ""
         # Sub-cent lines print at four decimals: a real $0.0019 copy call must never look like
         # the "$0.00" of an unpriced one (FR-282's whole point is telling those two apart).
+        # SESSION O (D64): a `codex` price key at $0.00 is a PRICE — the subscription door bills
+        # nothing per call — so it must not wear the "unpriced" label FR-282 reserves for a
+        # missing rate. The origin line beneath still says "subscription (Codex OAuth)".
         rate = (f"${amount:.4f}" if 0 < amount < 0.01 else format_usd(amount)) if amount \
-            else "unpriced — contributes $0.00"
+            else ("$0.00 — subscription" if key[1] == "codex" else "unpriced — contributes $0.00")
         out.append(f"  {code:<28} x{quantity:<6g} {rate}{tail}")
         out.append(f"      price {key[1]} [{origin}]")  # two lines, each ending in its variable
         out.append(f"            assumed for {model}")  # part: a long model id never truncates

@@ -849,6 +849,11 @@ def _configure_providers(session: _Session) -> None:
     config = session.config
     on_intent, on_submitted = generate.ledger_hooks(session.ledger)
     render.configure(render.RenderSettings(
+        # SESSION O (D64): which provider renders. Under `codex` no key is read, uploads become
+        # `file://` URLs and results land under `<run>/.renders/` — hence `scratch_dir`.
+        provider=config.models.render_provider,
+        base_url=config.models.llm_base_url,
+        scratch_dir=session.run_dir,
         max_inflight_render_jobs=config.models.max_inflight_render_jobs,
         poll_interval_s=float(config.models.poll_interval_s),
         image_job_timeout_s=float(config.models.image_job_timeout_s),
@@ -875,6 +880,11 @@ def _configure_llm(session: _Session) -> None:
         # a critic call would take the whole gate down rather than degrade it — registration is
         # what makes `models.critic or models.analysis` a runtime fact instead of a config comment.
         {role: _role_settings(config, role) for role in _live_roles(config)},
+        # SESSION O (D64): which door. `base_url` is gated on the backend ON PURPOSE — the config
+        # default is the localhost proxy, and handing that to the openrouter path would send
+        # every metered call to 127.0.0.1 (llm.py picks the OpenRouter URL from "").
+        backend=config.models.llm_backend,
+        base_url=(config.models.llm_base_url if config.models.llm_backend == "codex" else ""),
         max_inflight_llm_calls=config.models.max_inflight_llm_calls,
         http_max_attempts=config.models.http_max_attempts,
         on_warning=session.log.warn)

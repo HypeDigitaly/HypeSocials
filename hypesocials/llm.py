@@ -1,4 +1,4 @@
-"""OpenRouter REST seam — the engine's only door to an LLM (FR-39–41, 125–129, 248).
+"""LLM REST seam — the engine's only door to an LLM (FR-39–41, 125–129, 248).
 
 Module contract
 ---------------
@@ -8,10 +8,45 @@ retries, truncation handling and the run-scoped 402 behind ONE call.
 
 Public API:
     RoleSettings                                   — one role's model + limits, passed IN
-    LLMClient(roles, ...)                          — owns the httpx client and the LLM semaphore
+    LLMClient(roles, backend=…, base_url=…, …)     — owns the httpx client and the LLM semaphore
     await client.structured_call(role, messages, json_schema, images=None) -> ParsedResult
     client.credits_exhausted                       — FR-248 run condition, for the run summary
     await client.aclose()                          — also usable as `async with LLMClient(...)`
+
+TWO DOORS, ONE CONTRACT (SESSION O / D64)
+-----------------------------------------
+`backend="openrouter"` (default) is the metered REST seam this engine shipped with: a POST to
+`OPENROUTER_URL` carrying `messages`, `response_format`, `max_tokens`, `provider` and
+`usage.include`, priced per token and answered with `choices[0].message.content`.
+
+`backend="codex"` is the operator's own ChatGPT/Codex subscription, exposed on loopback by
+`npx openai-oauth@latest` as an OpenAI-compatible endpoint (default `http://127.0.0.1:10531/v1`).
+Three measured facts shape that path (all verified live 2026-08-21):
+
+- **Everything goes to `/responses`, images or not.** The proxy's `/chat/completions` REFUSES a
+  base64 image — HTTP 500 `URL scheme must be http or https, got data:` — and FR-40 forbids
+  handing it a CDN URL instead. Two endpoints would mean two response parsers, two truncation
+  ladders and a vision path nobody exercises until the first slide-intelligence call of a paid
+  run, so there is ONE codex request shape: `instructions` + `input` + `text.format`.
+- **The cap and the nudge live under different keys.** `/responses` caps with
+  `max_output_tokens` and carries turns in `input`, so FR-127's widened retry and FR-41's single
+  nudge reach the body through `_cap_key` / `_append_nudge` rather than by name. The LADDER is
+  unchanged: widen once, nudge once, never an identical resubmit.
+- **There is no price in the answer.** `usage` has `input_tokens`/`output_tokens`/
+  `output_tokens_details.reasoning_tokens` and no `cost`, because a subscription call is not
+  metered. Tokens are still accumulated (they are the only measurement of a retry's weight);
+  `cost_usd` stays 0.0, and `budget._llm_call_price` prices every LLM line of the estimate at $0
+  with origin "subscription (Codex OAuth)" so the Confirm gate does not quote Sonnet's rate for
+  work the invoice will never show.
+
+What the codex door does NOT do: send an `Authorization` header, read `OPENROUTER_API_KEY`, send
+`provider`/`usage`/`temperature`/`seed`, or latch `credits_exhausted` on a 402 — that latch prints
+the words "OpenRouter credits exhausted", which on a subscription call would send the operator to
+top up an account that is not in the loop. A 402 from the proxy is an ordinary HTTP error.
+`reasoning.effort` accepts `xhigh` here, which OpenRouter does not take.
+
+Everything else below is backend-agnostic: the tolerant parse, the shape gate, the two capped
+content retries, the backoff ladder and the never-raises contract are the same code for both.
 
 Invariants enforced here, once, for every caller:
 - **Schema-agnostic (plan §3).** `json_schema` is whatever the caller needs; this module never
@@ -36,7 +71,9 @@ Invariants enforced here, once, for every caller:
 - **Vision is base64 only (FR-40).** Callers hand over already-downloaded bytes; a CDN URL is
   never re-fetched at call time. Downscaling/capping is the caller's job (FR-128/FR-93).
 - **Secrets (D30/NFR-112).** `OPENROUTER_API_KEY` reaches the Authorization header and nowhere
-  else — not a prompt, not a log line, not an exception message.
+  else — not a prompt, not a log line, not an exception message. Under `backend="codex"` it is
+  not read at all and no Authorization header is built: the OAuth token stays inside the local
+  proxy's own `~/.codex/auth.json` and this process never holds it.
 
 ⚠ FR-129 CONFLICT — surfaced, not silently resolved (D15 amendment candidate).
 FR-129 mandates "a stable, configured temperature". RESULTS.md §E measured that NEITHER shipped
@@ -50,7 +87,8 @@ caller-supplied and never mutated here. The PRD text needs the amendment; the co
 honour it as written.
 
 Do not: import config here; add a schema-specific helper; retry a 402; resubmit an identical
-request after a truncation; log the API key, a header dict, or raw image bytes.
+request after a truncation; log the API key, a header dict, or raw image bytes; send a codex
+request to `/chat/completions`; or expose the proxy on anything but loopback.
 """
 
 from __future__ import annotations
@@ -74,6 +112,23 @@ OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 #: FR-248's exact operator-facing reason; the runner prints it verbatim, distinct from Kie's 402.
 CREDITS_EXHAUSTED_REASON = "OpenRouter credits exhausted"
 
+BACKEND_OPENROUTER = "openrouter"
+BACKEND_CODEX = "codex"
+#: Where `npx openai-oauth@latest` listens by default. Mirrors `config.ModelsConfig.llm_base_url`;
+#: the runner passes the configured value through, so this constant is only the last resort for a
+#: caller that builds an `LLMClient` without a config in hand (tests, one-off probes).
+CODEX_DEFAULT_BASE_URL = "http://127.0.0.1:10531/v1"
+#: The one endpoint the codex backend uses — see the module docstring for why it is not
+#: `/chat/completions` even for a text-only call.
+_CODEX_PATH = "/responses"
+_OPENROUTER_PATH = "/chat/completions"
+#: What an error message calls the far end. An operator who reads "OpenRouter HTTP 500" while
+#: running on their subscription goes and checks the wrong dashboard.
+_BACKEND_LABELS = {BACKEND_OPENROUTER: "OpenRouter", BACKEND_CODEX: "Codex proxy"}
+#: Appended to a codex transport failure that looks like "nothing is listening". The proxy is a
+#: process the operator starts, so naming the command is the whole fix in one line.
+_CODEX_DOWN_HINT = "is `npx openai-oauth@latest` running?"
+
 DEFAULT_HTTP_MAX_ATTEMPTS = 3  # NFR-14 / 20 §7 — transport retries only
 DEFAULT_MAX_INFLIGHT_LLM_CALLS = 4
 DEFAULT_TIMEOUT_S = 180.0  # reasoning models think for a while; a hung call must still end
@@ -88,6 +143,11 @@ _DEFAULT_MAX_OUTPUT_CEILING = 16384
 _SCHEMA_NAME_SAFE = re.compile(r"[^A-Za-z0-9_-]+")
 #: FR-41's one retry appends this as a USER turn — the per-role SYSTEM prompt is never touched.
 _RETRY_NUDGE = "Return ONLY the JSON object required by the schema. No prose, no markdown fences."
+#: `/responses` asks how hard to look at an image. Every image this engine sends is a rendered
+#: frame or a source slide whose small on-image TEXT is the whole question (slide intelligence,
+#: the gauntlet's critics), so `low` would defeat the call it is part of. The chat backend has no
+#: such field and its provider default is already the equivalent.
+_IMAGE_DETAIL = "high"
 #: Magic-byte sniff for the data: URI; OpenRouter needs a real media type, not a guess from a path.
 _IMAGE_MIMES: tuple[tuple[bytes, str], ...] = (
     (b"\xff\xd8\xff", "image/jpeg"), (b"\x89PNG\r\n\x1a\n", "image/png"),
@@ -120,23 +180,46 @@ class RoleSettings:
 
 
 class LLMClient:
-    """The OpenRouter seam. One instance per run; holds the `max_inflight_llm_calls` semaphore."""
+    """The LLM seam. One instance per run; holds the `max_inflight_llm_calls` semaphore."""
 
     def __init__(
         self,
         roles: dict[str, RoleSettings],
         *,
         api_key: str | None = None,
+        backend: str = BACKEND_OPENROUTER,
+        base_url: str = "",
         max_inflight_llm_calls: int = DEFAULT_MAX_INFLIGHT_LLM_CALLS,
         http_max_attempts: int = DEFAULT_HTTP_MAX_ATTEMPTS,
         timeout_s: float = DEFAULT_TIMEOUT_S,
         on_warning: Callable[..., Any] | None = None,
         client: httpx.AsyncClient | None = None,
     ) -> None:
-        """`on_warning(event_type, message, **data)` matches `LogWriter.warn` — pass it straight in."""
+        """`on_warning(event_type, message, **data)` matches `LogWriter.warn` — pass it straight in.
+
+        Args:
+            backend: `"openrouter"` (metered REST) or `"codex"` (the local subscription proxy).
+                Anything else is a programmer error and raises — config's `Literal` already
+                guards the operator-facing side, so a bad value here can only come from code.
+            base_url: the API root, WITHOUT the endpoint path. Empty means "the default for this
+                backend": OpenRouter's own URL, or `CODEX_DEFAULT_BASE_URL`. Passing a root for
+                the openrouter backend is honoured too (a corporate gateway), which is why the
+                path is appended here rather than baked into one constant.
+        """
+        if backend not in _BACKEND_LABELS:
+            raise ValueError(f"unknown LLM backend {backend!r}; expected one of {sorted(_BACKEND_LABELS)}")
         self._on_warning = on_warning
+        self._backend = backend
+        self._codex = backend == BACKEND_CODEX
+        self._label = _BACKEND_LABELS[backend]
+        self._url = _endpoint(backend, base_url)
+        # After the backend is known: `_apply_floor` also grades `reasoning_effort`, which is
+        # backend-dependent (`xhigh` exists on the proxy and nowhere else).
         self._roles = {name: self._apply_floor(name, s) for name, s in roles.items()}
-        self._key = api_key if api_key is not None else os.environ.get("OPENROUTER_API_KEY", "")
+        # D30: on the codex path the environment is never consulted. The proxy authenticates with
+        # the operator's OAuth token out of process; this engine holds no credential at all.
+        self._key = "" if self._codex else (
+            api_key if api_key is not None else os.environ.get("OPENROUTER_API_KEY", ""))
         self._attempts = max(1, int(http_max_attempts))
         self._gate = asyncio.Semaphore(max(1, int(max_inflight_llm_calls)))
         self._owns_client = client is None
@@ -147,8 +230,17 @@ class LLMClient:
 
     @property
     def credits_exhausted(self) -> bool:
-        """True once OpenRouter has answered 402 — the run summary reports the shortfall (FR-248)."""
+        """True once OpenRouter has answered 402 — the run summary reports the shortfall (FR-248).
+
+        Always False on the codex backend: a subscription call cannot run a prepaid balance dry,
+        so a 402 from the proxy is reported as the ordinary HTTP error it is.
+        """
         return self._credits_exhausted
+
+    @property
+    def backend(self) -> str:
+        """Which door this client is using — `"openrouter"` or `"codex"`, for the run summary."""
+        return self._backend
 
     async def structured_call(
         self,
@@ -178,7 +270,8 @@ class LLMClient:
             return ParsedResult(parsed=None, raw_text=CREDITS_EXHAUSTED_REASON, degraded=True,
                                 reason=CREDITS_EXHAUSTED_REASON)
         schema = _inner_schema(json_schema)
-        body = _build_body(settings, messages, images, json_schema)
+        build = _build_codex_body if self._codex else _build_body
+        body = build(settings, messages, images, json_schema)
         async with self._gate:  # `max_inflight_llm_calls` — every call, retries included
             return await self._run_attempts(role, body, schema, _output_ceiling(settings))
 
@@ -203,9 +296,16 @@ class LLMClient:
         `attempt` counts CONTENT attempts — one `_post` call each, transport retries folded in —
         not HTTP requests, because that is the number an operator reading `events.jsonl` needs to
         answer "how many times was this prompt billed".
+
+        Backend-agnostic by construction: the two things the ladder MUTATES — the output cap and
+        the turn list — are reached through `_cap_key` and `_append_nudge`, which read the body's
+        own shape. A chat body widens `max_tokens` and appends a `messages` turn; a `/responses`
+        body widens `max_output_tokens` and appends an `input` turn. Same two spends, same order,
+        same "never resubmit an identical request".
         """
         out = ParsedResult(parsed=None, raw_text="")
         truncation_retry, content_retry = True, True
+        cap = _cap_key(body)
         attempt = 0
         while True:
             attempt += 1
@@ -224,10 +324,10 @@ class LLMClient:
             cut_off = finish in _TRUNCATED_REASONS
             if cut_off and truncation_retry:
                 out.truncated = True
-                wider = _widen(int(body["max_tokens"]), ceiling)
+                wider = _widen(int(body[cap]), ceiling)
                 if wider:
                     truncation_retry = False
-                    body["max_tokens"] = wider
+                    body[cap] = wider
                     self._warn("llm_truncated", f"{role}: response hit the token limit; retrying wider",
                                role=role, new_max_tokens=wider, finish_reason=finish, attempt=attempt,
                                truncated=True, retried=out.retried)
@@ -241,14 +341,14 @@ class LLMClient:
                 # call). Truncation is handled above, or it is terminal.
                 content_retry = False
                 out.retried = True  # FR-41's single content retry, spent only after FR-126 failed
-                body["messages"] = [*body["messages"], {"role": "user", "content": _RETRY_NUDGE}]
+                _append_nudge(body)
                 self._warn("llm_parse_retry", f"{role}: response was not schema-valid JSON; retrying once",
                            role=role, chars=len(text), finish_reason=finish, attempt=attempt,
                            truncated=out.truncated, retried=True)
                 continue
             out.degraded = True
             out.reason = _degrade_reason(role, cut_off=cut_off, retry_left=truncation_retry,
-                                         max_tokens=int(body["max_tokens"]), ceiling=ceiling,
+                                         max_tokens=int(body[cap]), ceiling=ceiling,
                                          retried=out.retried, chars=len(text))
             self._warn("llm_parse_failed", f"{role}: {out.reason}",
                        role=role, chars=len(text), finish_reason=finish, attempt=attempt,
@@ -258,21 +358,29 @@ class LLMClient:
     async def _post(
         self, role: str, body: dict[str, Any], usage_sink: ParsedResult
     ) -> tuple[str, str, str | None]:
-        """One request with bounded 429/5xx backoff. Returns `(content, finish_reason, failure)`."""
-        headers = {"Authorization": f"Bearer {self._key}", "Content-Type": "application/json"}
+        """One request with bounded 429/5xx backoff. Returns `(content, finish_reason, failure)`.
+
+        Both backends share this ladder — only the header set, the endpoint, the name in every
+        failure string and the shape of a 200 differ, and each of those four is one branch.
+        """
+        headers = self._headers()
         delay = _BACKOFF_BASE_S
         for attempt in range(1, self._attempts + 1):
             last = attempt == self._attempts
             try:
-                response = await self._client.post(OPENROUTER_URL, json=body, headers=headers)
+                response = await self._client.post(self._url, json=body, headers=headers)
             except httpx.HTTPError as exc:  # transport-level: timeout, connect, read, protocol
                 if last:
-                    return "", "", f"OpenRouter transport error after {attempt} attempts: {type(exc).__name__}"
+                    return "", "", (f"{self._label} transport error after {attempt} attempts: "
+                                    f"{type(exc).__name__}{self._down_hint(exc)}")
                 await self._backoff(role, delay, f"transport {type(exc).__name__}")
                 delay = min(delay * 2, _BACKOFF_CEILING_S)
                 continue
             status = response.status_code
-            if status == 402:  # FR-248 — latched once, never retried, whole-run condition
+            # FR-248 — latched once, never retried, whole-run condition. OPENROUTER ONLY: the
+            # latched reason names OpenRouter credits, and a subscription call has none to run
+            # out of, so a 402 from the proxy falls through to the ordinary error path below.
+            if status == 402 and not self._codex:
                 self._latch_credits_exhausted()
                 return "", "", CREDITS_EXHAUSTED_REASON
             if status in _RETRY_STATUSES and not last:
@@ -282,18 +390,38 @@ class LLMClient:
             if status >= 400:
                 # The body matters: a 404 here often means "unroutable parameter set", not
                 # "unknown model" (RESULTS.md §E) — surfacing only the status hides the cause.
-                return "", "", f"OpenRouter HTTP {status}: {_error_message(response)}"
+                return "", "", f"{self._label} HTTP {status}: {_error_message(response)}"
             try:
                 data = response.json()
             except ValueError:
-                return "", "", "OpenRouter returned a non-JSON body"
+                return "", "", f"{self._label} returned a non-JSON body"
             if isinstance(data.get("error"), dict):  # 200 with an error envelope
-                return "", "", f"OpenRouter error: {data['error'].get('message', 'unknown')}"
+                return "", "", f"{self._label} error: {data['error'].get('message', 'unknown')}"
+            if self._codex:
+                _absorb_codex_usage(data, usage_sink)
+                return (*_codex_reply(data), None)
             _absorb_usage(data, usage_sink)
             choice = (data.get("choices") or [{}])[0]
             content = (choice.get("message") or {}).get("content") or ""
             return content, str(choice.get("finish_reason") or ""), None
-        return "", "", f"OpenRouter retries exhausted ({self._attempts} attempts)"
+        return "", "", f"{self._label} retries exhausted ({self._attempts} attempts)"
+
+    def _headers(self) -> dict[str, str]:
+        """D30: the Authorization header exists ONLY on the metered path, and only in this dict."""
+        if self._codex:
+            return {"Content-Type": "application/json"}
+        return {"Authorization": f"Bearer {self._key}", "Content-Type": "application/json"}
+
+    def _down_hint(self, exc: httpx.HTTPError) -> str:
+        """"Nothing is listening on 10531" is the codex backend's single most likely failure.
+
+        It reads as a bare `ConnectError` otherwise, which tells an operator nothing about the
+        one command that fixes it. Only connect-shaped failures get the hint: a read timeout on
+        a call that DID reach the proxy is a slow model, not a missing process.
+        """
+        if self._codex and isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)):
+            return f" - {_CODEX_DOWN_HINT}"
+        return ""
 
     async def _backoff(self, role: str, delay: float, cause: str) -> None:
         self._warn("llm_retry", f"{role}: {cause}; retrying in {delay:.1f}s", role=role, delay_s=delay)
@@ -305,7 +433,22 @@ class LLMClient:
             self._warn("llm_credits_exhausted", CREDITS_EXHAUSTED_REASON)
 
     def _apply_floor(self, role: str, settings: RoleSettings) -> RoleSettings:
-        """NFR-111: clamp a per-role token limit UP to its floor, loudly, once per run."""
+        """NFR-111: clamp a per-role token limit UP to its floor, loudly, once per run.
+
+        Since D64 it also clamps an `xhigh` effort DOWN to `high` on the openrouter backend, on
+        the same principle and for a sharper reason: `xhigh` is a GPT-5.6-through-the-proxy value,
+        OpenRouter does not list it, and an unknown enum there is a 400 on EVERY call of that role
+        — a config edited for the codex door would otherwise take the whole run down the moment it
+        was switched back. One loud warning, one working call, no silent config rewrite (the
+        `RoleSettings` the runner built is the only thing changed, never the config file).
+        """
+        if settings.reasoning_effort == "xhigh" and not self._codex:
+            self._warn(
+                "llm_effort_clamped",
+                f"{role}: reasoning effort 'xhigh' exists only on the codex backend; using 'high'",
+                role=role, configured="xhigh", used="high", backend=self._backend,
+            )
+            settings.reasoning_effort = "high"
         if settings.max_tokens_floor and settings.max_tokens < settings.max_tokens_floor:
             self._warn(
                 "llm_token_floor_applied",
@@ -353,6 +496,39 @@ def _widen(current: int, ceiling: int) -> int:
     """
     widened = min(current + min(current, _TRUNCATION_BUMP_MAX), ceiling)
     return widened if widened > current else 0
+
+
+def _endpoint(backend: str, base_url: str) -> str:
+    """The full POST target for a backend + configured root. Empty root means "the default".
+
+    Kept out of `__init__` so a reader can see both doors' URLs in three lines, and so a test can
+    assert the openrouter constant is untouched without constructing a client.
+    """
+    if backend == BACKEND_CODEX:
+        return f"{(base_url or CODEX_DEFAULT_BASE_URL).rstrip('/')}{_CODEX_PATH}"
+    return f"{base_url.rstrip('/')}{_OPENROUTER_PATH}" if base_url else OPENROUTER_URL
+
+
+def _cap_key(body: dict[str, Any]) -> str:
+    """Which key holds THIS body's output cap — the one FR-127's widened retry may raise.
+
+    Read off the body rather than passed down from the backend flag: the body is the thing being
+    mutated, so the ladder cannot drift from the request it is editing.
+    """
+    return "max_output_tokens" if "max_output_tokens" in body else "max_tokens"
+
+
+def _append_nudge(body: dict[str, Any]) -> None:
+    """FR-41's single formatting retry — one extra USER turn, in whichever list this body uses.
+
+    The per-role SYSTEM prompt (chat `messages[0]`, codex `instructions`) is never touched on
+    either backend: the retry asks again, it does not re-write the role.
+    """
+    if "input" in body:
+        body["input"] = [*body["input"],
+                         {"role": "user", "content": [{"type": "input_text", "text": _RETRY_NUDGE}]}]
+        return
+    body["messages"] = [*body["messages"], {"role": "user", "content": _RETRY_NUDGE}]
 
 
 def _build_body(
@@ -413,6 +589,158 @@ def _with_images(messages: list[dict[str, Any]], images: Sequence[bytes] | None)
 def _data_uri(blob: bytes) -> str:
     mime = next((m for magic, m in _IMAGE_MIMES if blob.startswith(magic)), "image/jpeg")
     return f"data:{mime};base64,{base64.b64encode(blob).decode('ascii')}"
+
+
+# --------------------------------------------------------------------------------------------
+# The codex door — the `/responses` request shape, measured live 2026-08-21 (D64).
+# --------------------------------------------------------------------------------------------
+
+def _build_codex_body(
+    settings: RoleSettings,
+    messages: list[dict[str, Any]],
+    images: Sequence[bytes] | None,
+    json_schema: dict[str, Any],
+) -> dict[str, Any]:
+    """The same call `_build_body` describes, in the shape the local proxy accepts.
+
+    Deliberately ABSENT, each for a reason: `provider` and `usage` are OpenRouter routing/billing
+    fields the proxy does not know; `temperature` and `seed` are the FR-129 opt-ins whose whole
+    justification (an OpenRouter `supported_parameters` list) does not exist here, so sending
+    them would be a guess at a 400. `store: false` keeps the request out of the account's saved
+    responses — this engine keeps its own transcript in `events.jsonl` (D30: nothing of ours
+    should linger server-side).
+    """
+    instructions, turns = _codex_turns(messages)
+    body: dict[str, Any] = {
+        "model": settings.model,
+        "input": _attach_codex_images(turns, images),
+        "text": {"format": _codex_text_format(json_schema)},  # strict schema, same as FR-41's
+        "max_output_tokens": settings.max_tokens,
+        "store": False,
+    }
+    if instructions:
+        body["instructions"] = instructions
+    if settings.reasoning_effort:  # `xhigh` is legal on this backend and only on this backend
+        body["reasoning"] = {"effort": settings.reasoning_effort}
+    return body
+
+
+def _codex_text_format(json_schema: dict[str, Any]) -> dict[str, Any]:
+    """`/responses` flattens `{type, json_schema: {name, strict, schema}}` into one object.
+
+    Built FROM `_response_format` rather than beside it so the schema-name sanitising and the
+    bare-vs-wrapped input handling stay in ONE place — a second copy would drift the first time
+    a caller passes a name with a space in it.
+    """
+    wrapper = _response_format(json_schema)["json_schema"]
+    return {"type": "json_schema", **wrapper}
+
+
+def _codex_turns(messages: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
+    """Split chat messages into the two halves `/responses` wants: `instructions` and `input`.
+
+    System (and `developer`) turns become the instructions block, joined by a blank line so two
+    system messages read as two paragraphs and not one run-on sentence. Everything else keeps its
+    role and becomes content PARTS, because parts are the only content form an image can join.
+    """
+    instructions: list[str] = []
+    turns: list[dict[str, Any]] = []
+    for message in messages:
+        role = str(message.get("role") or "user")
+        if role in {"system", "developer"}:
+            text = _codex_flat_text(message.get("content"))
+            if text:
+                instructions.append(text)
+            continue
+        part_type = "output_text" if role == "assistant" else "input_text"
+        turns.append({"role": role, "content": _codex_parts(message.get("content"), part_type)})
+    return "\n\n".join(instructions), turns
+
+
+def _codex_flat_text(content: Any) -> str:
+    """A system turn as one string, whether the caller passed a string or already-built parts."""
+    if isinstance(content, str):
+        return content
+    return "\n".join(str(part.get("text") or "") for part in content or ()
+                      if isinstance(part, dict) and part.get("text"))
+
+
+def _codex_parts(content: Any, part_type: str) -> list[dict[str, Any]]:
+    """One turn's content as `/responses` parts. A plain string is the overwhelmingly common case."""
+    if isinstance(content, str):
+        return [{"type": part_type, "text": content}]
+    parts: list[dict[str, Any]] = []
+    for part in content or ():
+        if not isinstance(part, dict):
+            continue
+        if part.get("type") in {"text", "input_text", "output_text"}:
+            parts.append({"type": part_type, "text": str(part.get("text") or "")})
+        elif part.get("type") == "image_url":  # a caller that pre-built a CHAT image part
+            url = part.get("image_url")
+            url = url.get("url") if isinstance(url, dict) else url
+            parts.append({"type": "input_image", "image_url": str(url or ""), "detail": _IMAGE_DETAIL})
+    return parts
+
+
+def _attach_codex_images(
+    turns: list[dict[str, Any]], images: Sequence[bytes] | None
+) -> list[dict[str, Any]]:
+    """FR-40 again, in `/responses` clothing: base64 parts on the LAST user turn. No CDN URLs.
+
+    Same rule as `_with_images` — same turn, same order, same "invent a user turn if there is
+    none" tail — because the two backends must show a model the same conversation.
+    """
+    if not images:
+        return turns
+    parts = [{"type": "input_image", "image_url": _data_uri(blob), "detail": _IMAGE_DETAIL}
+             for blob in images if blob]
+    for turn in reversed(turns):
+        if turn.get("role") == "user":
+            turn["content"] = [*(turn.get("content") or ()), *parts]
+            return turns
+    turns.append({"role": "user", "content": parts})
+    return turns
+
+
+def _codex_reply(data: dict[str, Any]) -> tuple[str, str]:
+    """`(text, finish_reason)` out of a `/responses` answer, mapped onto the chat vocabulary.
+
+    The answer is a LIST of output items — a reasoning item first, then the message — so the text
+    is every `output_text` part concatenated and a reasoning item contributes nothing. A cut-off
+    answer arrives as `status: "incomplete"` with `incomplete_details.reason`; that maps to
+    `"length"` for the token cap so `_TRUNCATED_REASONS` recognises it and FR-127's widened retry
+    fires exactly as on the chat path. Any other incomplete reason passes through under its own
+    name — it is NOT a truncation, and calling it one would spend the wrong retry.
+    """
+    chunks: list[str] = []
+    for item in data.get("output") or ():
+        if not isinstance(item, dict):
+            continue
+        for part in item.get("content") or ():
+            if isinstance(part, dict) and part.get("type") == "output_text":
+                chunks.append(str(part.get("text") or ""))
+    text = "".join(chunks)
+    if str(data.get("status") or "") != "incomplete":
+        return text, "stop"
+    details = data.get("incomplete_details")
+    reason = str((details or {}).get("reason") or "") if isinstance(details, dict) else ""
+    return text, "length" if reason == "max_output_tokens" else (reason or "incomplete")
+
+
+def _absorb_codex_usage(data: dict[str, Any], sink: ParsedResult) -> None:
+    """`/responses` usage → the same three counters. No `cost`: the subscription is not metered.
+
+    `cost_usd` is left at 0.0 ON PURPOSE, not because a field happened to be missing — under this
+    backend the run's LLM spend is genuinely zero, and `budget._llm_call_price` prices the
+    estimate to match so the Confirm gate and the run summary tell the same story.
+    """
+    usage = data.get("usage")
+    if not isinstance(usage, dict):
+        return
+    details = usage.get("output_tokens_details") or {}
+    sink.prompt_tokens += int(usage.get("input_tokens") or 0)
+    sink.completion_tokens += int(usage.get("output_tokens") or 0)
+    sink.reasoning_tokens += int(details.get("reasoning_tokens") or 0)
 
 
 # --------------------------------------------------------------------------------------------
@@ -541,4 +869,5 @@ def _error_message(response: httpx.Response) -> str:
     return str(error or payload)[:300]
 
 
-__all__ = ["CREDITS_EXHAUSTED_REASON", "LLMClient", "RoleSettings"]
+__all__ = ["BACKEND_CODEX", "BACKEND_OPENROUTER", "CODEX_DEFAULT_BASE_URL",
+           "CREDITS_EXHAUSTED_REASON", "LLMClient", "RoleSettings"]

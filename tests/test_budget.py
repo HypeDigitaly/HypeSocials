@@ -1667,3 +1667,67 @@ def test_fr345_the_translate_completion_never_exceeds_the_configured_copy_ceilin
     assert budget._translate_completion(cfg, 2) < ceiling, "a short deck is sized off its panels"
     assert budget._translate_completion(cfg, 500) == ceiling
     assert budget._translate_completion(cfg, 0) == budget._TRANSLATE_COMPLETION_FIXED
+
+
+# ---- D64 -------------------------------- SESSION O: the LLM lines under the codex backend
+#
+# `models.llm_backend: codex` routes every structured call through the operator's own ChatGPT /
+# Codex subscription on loopback. Those calls are not metered per token, so quoting Sonnet's or
+# Luna's rate for them would put money on the Confirm table that no invoice will ever show — the
+# mirror image of the understating that D11 forbids, and just as useless for a decision.
+
+
+def test_d64_the_codex_backend_prices_every_llm_line_at_zero_with_its_own_origin(
+    cfg: Config,
+) -> None:
+    """Same plan, two backends: every LLM line loses its money and keeps its provenance.
+
+    The RENDER lines must not move by a cent — Kie meters pixels whatever door the text calls use,
+    and the cap exists to guard exactly that spend.
+    """
+    plan = [entry(0), entry(1, "carousel")]
+    metered = estimate(cfg, plan)
+
+    cfg.models.llm_backend = "codex"
+    free = estimate(cfg, plan)
+
+    llm_before = [line for line in metered.lines if line.category is SpendCategory.LLM]
+    llm_after = [line for line in free.lines if line.category is SpendCategory.LLM]
+    assert llm_before and len(llm_after) == len(llm_before), "the same calls are still QUOTED"
+    assert any(line.amount_usd > 0 for line in llm_before), "the comparison needs real money"
+    assert all(line.amount_usd == 0.0 and line.unit_price == 0.0 for line in llm_after)
+    assert all(line.price_key == "codex" for line in llm_after)
+    assert all(line.price_origin == "subscription (Codex OAuth) — $0 metered" for line in llm_after)
+    # FR-282's third column is provenance, not money: the model id an operator would swap stays.
+    assert {line.assumed_model for line in lines(free, "copy_call")} == {cfg.models.copy}
+    assert all(line.assumed_model for line in llm_after), "no line loses the id it assumes"
+
+    render_before = sum(line.amount_usd for line in metered.lines
+                        if line.category is SpendCategory.RENDER)
+    render_after = sum(line.amount_usd for line in free.lines
+                       if line.category is SpendCategory.RENDER)
+    assert render_after == pytest.approx(render_before) and render_after > 0
+
+
+def test_d64_a_codex_zero_is_a_price_not_a_missing_rate(cfg: Config) -> None:
+    """A $0 subscription line must NOT raise the governance banner.
+
+    "governance partial — N lines unpriced" means "somebody has to go and enter a rate". Under the
+    codex backend nobody does: zero is the measured answer. Firing the banner anyway would teach
+    the operator to scroll past the one line that exists to stop a run.
+    """
+    cfg.models.llm_backend = "codex"
+    est = estimate(cfg, [entry(0), entry(1, "carousel")])
+
+    assert not [line for line in est.unpriced_lines if line.price_key == "codex"]
+    assert est.banner == "", est.banner
+    assert budget.critic_price_gap(cfg) is None, "the critic panel is quoted, and quoted at $0"
+
+
+def test_d64_the_codex_backend_does_not_disturb_the_openrouter_default(cfg: Config) -> None:
+    """The default is unchanged and still metered — this is the regression guard for every other
+    test in this file, which all run on that default."""
+    assert cfg.models.llm_backend == "openrouter"
+    est = estimate(cfg, [entry(0)])
+    assert all(line.price_key != "codex" for line in est.lines)
+    assert one(est, "copy_call").amount_usd > 0
