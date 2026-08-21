@@ -49,6 +49,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
+from urllib.request import url2pathname
 
 import httpx
 
@@ -331,7 +333,12 @@ async def _load_one(source: bytes | Path | str, client: httpx.AsyncClient | None
             response = await client.get(str(source))
             response.raise_for_status()
             return response.content
-        return await asyncio.to_thread(Path(source).read_bytes)
+        # SESSION O (D64): under `render_provider: codex` a result URL is a `file://` URI (the
+        # provider writes PNGs under `<run>/.renders/`), and `Path("file:///C:/...")` is not a
+        # path — every cover candidate and seed frame would be dropped as unreadable and the
+        # cover pick degraded on every deck. Resolve it the way the provider wrote it.
+        local = _file_url_path(source)
+        return await asyncio.to_thread((local if local is not None else Path(source)).read_bytes)
     except (OSError, httpx.HTTPError, ValueError) as exc:
         _warn(log, "frame_input_unreadable",
               f"frame not loaded for the gauntlet: {type(exc).__name__}",
@@ -341,6 +348,15 @@ async def _load_one(source: bytes | Path | str, client: httpx.AsyncClient | None
 
 def _is_url(source: bytes | Path | str) -> bool:
     return isinstance(source, str) and source.startswith(("http://", "https://"))
+
+
+def _file_url_path(source: bytes | Path | str) -> Path | None:
+    """A `file://` result URL as a real path; `None` for bytes, plain paths and http(s) URLs."""
+    if not isinstance(source, str) or not source.startswith("file:"):
+        return None
+    parts = urlparse(source)
+    raw = f"//{parts.netloc}{parts.path}" if parts.netloc else parts.path
+    return Path(url2pathname(raw))
 
 
 def _warn(log: Any, event_type: str, message: str, **data: Any) -> None:

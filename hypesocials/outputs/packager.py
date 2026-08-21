@@ -39,6 +39,7 @@ result URL still resolves in a later run (~24 h retention — download inside th
 
 from __future__ import annotations
 
+import asyncio
 import errno
 import re
 from collections.abc import Mapping, Sequence
@@ -47,6 +48,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
+from urllib.request import url2pathname
 
 import httpx
 import yaml
@@ -457,13 +459,40 @@ def _extension(url: str) -> str:
     return suffix if suffix in _MEDIA_EXTS else ""
 
 
+def _read_local(url: str) -> bytes:
+    """One `file://` render off the disk, with `_download`'s own failure vocabulary (D64).
+
+    `url2pathname` is what makes this a path and not a slice: a run folder under
+    `C:/Users/Pavli/My Runs/` arrives percent-escaped, and a UNC host arrives in the netloc.
+    Missing, unreadable and zero-byte all fold into `download_failed` — the same reason a dead
+    CDN URL raises, because to the creative around it they are the same event.
+    """
+    parts = urlparse(url)
+    raw = f"//{parts.netloc}{parts.path}" if parts.netloc else parts.path
+    try:
+        data = Path(url2pathname(raw)).read_bytes()
+    except OSError as exc:
+        raise PackagingError(f"download failed: {exc}", reason="download_failed") from exc
+    if not data:
+        raise PackagingError("download returned 0 bytes", reason="download_failed")
+    return data
+
+
 _http: httpx.AsyncClient | None = None
 
 
 async def _download(url: str) -> bytes:
     """Fetch one finished render. Kie result URLs are same-run-only (~24 h), so this is where
-    the bytes stop being a borrowed URL and start being the operator's file."""
+    the bytes stop being a borrowed URL and start being the operator's file.
+
+    A `file://` URL is read off the disk instead (D64): the codex render provider has no CDN — it
+    writes each finished image under the run's own `.renders/` folder and hands back that file's
+    URI. Same failure vocabulary either way, because the caller's contract is "a failed store is a
+    failed creative" and it must not learn which provider rendered the bytes.
+    """
     global _http
+    if urlparse(str(url)).scheme == "file":
+        return await asyncio.to_thread(_read_local, str(url))
     if _http is None or _http.is_closed:
         _http = httpx.AsyncClient(
             timeout=httpx.Timeout(_DOWNLOAD_TIMEOUT_S, connect=15.0), follow_redirects=True,

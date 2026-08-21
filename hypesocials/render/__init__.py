@@ -2,7 +2,8 @@
 
 Purpose: hide every render provider behind one seam (FR-271/D34). A caller says *what* to render
 and *which wave it belongs to*; this module submits, polls, classifies and returns. Kie's field
-names, five poll states, `resultJson` shape and status codes never leave this package.
+names, five poll states, `resultJson` shape and status codes never leave this package — and
+neither do the Codex proxy's `/images/generations`, `size` enum and `b64_json`.
 
 Public API
     configure(settings, log=...)  once per run, from the runner, after config load (FR-77)
@@ -13,6 +14,21 @@ Public API
     RenderSettings          what `configure` needs, all of it config-sourced
     get_profile(name)       pre-flight's profile/template-set check (FR-272/263)
     KieOutOfCredits         402: a whole-run condition, never a job condition (FR-167)
+    CodexUploadError        one file could not become a reference (a KieUploadError subclass)
+
+TWO PROVIDERS, ONE SEAM (D64). `RenderSettings.provider` picks which client `configure()` binds,
+and it is the ONLY line in the engine that knows there is a choice:
+
+    `kie`    Kie.ai, metered. Needs `KIE_API_KEY`, renders images AND video, results are CDN URLs.
+    `codex`  the operator's ChatGPT subscription through the local `npx openai-oauth@latest`
+             proxy. Needs NO key (the proxy holds the OAuth token), renders IMAGES ONLY — a video
+             body comes back as a stated FAIL, never an exception — costs $0 per job, returns a
+             `file://` URL to bytes written under `<scratch_dir>/.renders/`, and `upload_file()`
+             moves nothing: a reference is already a local file, so its own `file://` URI is the
+             URL. `outputs.packager._download()` reads that scheme without a socket.
+
+Everything downstream — the permit gate, `RenderOutcome`, the FR-203 ledger, FR-317's single
+resubmit, `meta.yaml` — is provider-blind and stays that way.
 
 Wiring: `configure()` binds a module-level client + gate instead of threading both through
 `generate/`, `carousel.py` and `reel.py` — the caller's mental model stays "render this", not
@@ -47,10 +63,20 @@ from typing import Any
 
 from hypesocials.models import RenderOutcome, RenderParams, RenderPriority, RenderRefs
 from hypesocials.render import profiles as _profiles
+from hypesocials.render.codex_images import CodexImageClient, CodexUploadError
+from hypesocials.render.codex_images import DEFAULT_BASE_URL as CODEX_BASE_URL
 from hypesocials.render.kie import KieClient, KieError, KieOutOfCredits, KieUploadError
 from hypesocials.render.profiles import ReferenceLimits, RenderProfile, UnknownProfileError
 
 logger = logging.getLogger(__name__)
+
+PROVIDER_KIE = "kie"
+PROVIDER_CODEX = "codex"
+
+#: Either provider client. A union rather than a Protocol because there are exactly two of them,
+#: both in this package, and the union is checkable: adding a third that forgets `upload()` is a
+#: type error at the assignment rather than an AttributeError mid-run.
+ProviderClient = KieClient | CodexImageClient
 
 
 class RenderError(RuntimeError):
@@ -69,6 +95,16 @@ SubmittedHook = Callable[[str, "str | None"], None]
 class RenderSettings:
     """Everything `configure()` needs, every value config-sourced (30 §2, FR-270)."""
 
+    #: WHO renders (D64, `config.models.render_provider`). `kie` is the metered Kie.ai path;
+    #: `codex` is the operator's ChatGPT subscription behind the local proxy — no key, images
+    #: only, $0 a job. An unknown value is a `RenderError` at `configure()`, never a fallback.
+    provider: str = PROVIDER_KIE
+    #: The codex proxy's base URL (`config.models.llm_base_url`) — ignored under `kie`.
+    base_url: str = CODEX_BASE_URL
+    #: The run directory. Under `codex` the finished bytes are written to `<scratch_dir>/.renders/`
+    #: and travel on as `file://` URLs, so the renders live and die with the run they belong to.
+    #: `None` falls back to the system temp folder, which is only right for tests and spikes.
+    scratch_dir: Path | None = None
     api_key_env: str = "KIE_API_KEY"  # the NAME of the variable; the value never lands in config
     max_inflight_render_jobs: int = 8
     poll_interval_s: float = 3.0
@@ -181,36 +217,54 @@ class RenderGate:
 
 
 _settings: RenderSettings | None = None
-_client: KieClient | None = None
+_client: ProviderClient | None = None
 _gate: RenderGate | None = None
 
 
 def configure(settings: RenderSettings, *, log: Any = None) -> None:
     """Binds the run's provider client and permit gate. Called once, by the runner.
 
-    `log` is the run's `outputs.LogWriter`; passing it is what puts every Kie submit, poll and
+    `log` is the run's `outputs.LogWriter`; passing it is what puts every submit, poll and
     terminal result into `run.log`/`events.jsonl` (FR-77), rather than a stdlib logger nobody reads.
 
-    Raises `RenderError` if the key variable is unset — pre-flight (FR-45/46) normally refuses
-    long before this, so reaching it here means the run skipped its own gate.
+    The provider branch is HERE and nowhere else (D64). Under `kie` the key variable must be set —
+    pre-flight (FR-45/46) normally refuses long before this, so reaching that error means the run
+    skipped its own gate. Under `codex` no environment variable is read AT ALL: the proxy holds
+    the operator's OAuth token and this process never sees a credential.
     """
     global _settings, _client, _gate
-    api_key = os.environ.get(settings.api_key_env, "").strip()
-    if not api_key:
-        raise RenderError(f"{settings.api_key_env} is not set — no render job can be submitted")
+    provider = (settings.provider or PROVIDER_KIE).strip().lower()
+    if provider == PROVIDER_CODEX:
+        client: ProviderClient = CodexImageClient(
+            base_url=settings.base_url,
+            http_max_attempts=settings.http_max_attempts,
+            scratch_dir=settings.scratch_dir,
+            log=log,
+        )
+    elif provider == PROVIDER_KIE:
+        api_key = os.environ.get(settings.api_key_env, "").strip()
+        if not api_key:
+            raise RenderError(f"{settings.api_key_env} is not set — no render job can be submitted")
+        client = KieClient(
+            api_key=api_key,
+            http_max_attempts=settings.http_max_attempts,
+            poll_interval_s=settings.poll_interval_s,
+            upload_path=settings.upload_path,
+            credit_usd=settings.credit_usd,
+            log=log,
+        )
+    else:
+        # No fallback to Kie: a typo'd provider that silently spends money is the one failure a
+        # seam like this must never have (the FR-295 posture, applied to providers).
+        raise RenderError(
+            f"unknown render provider {settings.provider!r}; expected "
+            f"{PROVIDER_KIE!r} or {PROVIDER_CODEX!r}")
     _settings = settings
     _gate = RenderGate(settings.max_inflight_render_jobs)
-    _client = KieClient(
-        api_key=api_key,
-        http_max_attempts=settings.http_max_attempts,
-        poll_interval_s=settings.poll_interval_s,
-        upload_path=settings.upload_path,
-        credit_usd=settings.credit_usd,
-        log=log,
-    )
+    _client = client
     logger.info(
-        "Render seam ready: max_inflight=%d poll=%.1fs profiles=%s",
-        settings.max_inflight_render_jobs, settings.poll_interval_s,
+        "Render seam ready: provider=%s max_inflight=%d poll=%.1fs profiles=%s",
+        provider, settings.max_inflight_render_jobs, settings.poll_interval_s,
         ",".join(_profiles.PROFILE_NAMES),
     )
 
@@ -256,11 +310,12 @@ async def run(
 
 
 async def upload_file(path: str | Path) -> str:
-    """Turn a local file into a public URL a renderer can reference (seam op 4, FR-244/162).
+    """Turn a local file into a URL a renderer can reference (seam op 4, FR-244/162).
 
     Raises `KieUploadError` for that one file — callers drop the reference and carry on; the job
-    still runs with whatever references survived. Treat the URL as SAME-RUN-ONLY: uploads carry a
-    24 h cache lifetime and a later run must re-upload rather than reuse a stored URL (20 §8b).
+    still runs with whatever references survived. Treat the URL as SAME-RUN-ONLY: a Kie upload
+    carries a 24 h cache lifetime and a later run must re-upload rather than reuse a stored URL
+    (20 §8b), and a codex `file://` URL points inside THIS run's folder.
     """
     _, client, _ = _require()
     return await client.upload(path)
@@ -280,14 +335,15 @@ def gate_stats() -> tuple[int, int, int]:
     return _gate.stats() if _gate is not None else (0, 0, 0)
 
 
-def _require() -> tuple[RenderSettings, KieClient, RenderGate]:
+def _require() -> tuple[RenderSettings, ProviderClient, RenderGate]:
     if _settings is None or _client is None or _gate is None:
         raise RenderError("render.configure() has not been called for this run")
     return _settings, _client, _gate
 
 
 __all__ = [
-    "KieError", "KieOutOfCredits", "KieUploadError", "ReferenceLimits", "RenderError",
-    "RenderGate", "RenderProfile", "RenderSettings", "UnknownProfileError", "aclose",
-    "configure", "gate_stats", "get_profile", "run", "upload_file",
+    "CodexUploadError", "KieError", "KieOutOfCredits", "KieUploadError", "PROVIDER_CODEX",
+    "PROVIDER_KIE", "ReferenceLimits", "RenderError", "RenderGate", "RenderProfile",
+    "RenderSettings", "UnknownProfileError", "aclose", "configure", "gate_stats", "get_profile",
+    "run", "upload_file",
 ]
