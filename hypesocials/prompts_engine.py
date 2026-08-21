@@ -3940,7 +3940,11 @@ unsanctioned logos, flagged names — presence is a defect):
 
 A mark named on a frame's `marks:` row and nowhere on that frame is
 `missing_mark`. A forbidden brand mark or an unsanctioned logo drawn on a frame
-is `forbidden_mark`. A person's name, @handle, profile picture or recognisable
+is `forbidden_mark` — but a mark on the REQUIRED list above is SANCTIONED for
+this whole set, so seeing it on a frame that did not order it is never this
+code and never yours: the deck chains its slides off the cover, so a cover's
+logo carrying onto later frames is expected. Only a mark on neither list, or a
+mark on the FORBIDDEN list, is `forbidden_mark`. A person's name, @handle, profile picture or recognisable
 creator identity is `identity_leak`. A REAL social platform's own furniture —
 its watermark, its username bar, its follower/like/view/comment counters, its
 play button, its progress bar, its app interface — is `platform_chrome`. A
