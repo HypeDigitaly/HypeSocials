@@ -50,7 +50,8 @@ a rule from a past failure - never launch `run.bat` inside a normal foreground o
    lands in the log, and `run.bat` must be called by FULL PATH - bare `run.bat` is not found from
    wrappers. File: `C:\Users\Pavli\Desktop\HypeDigitaly\GIT\HypeSocials\logs\autopilot\<STAMP>.cmd`
    with exactly these 4 lines (replace `<STAMP>`; add `--carousels N` and any pass-through flags
-   after `--yes` when given):
+   after `--yes` when given). The redirect goes FIRST on the last line on purpose: `exit=1>> file`
+   is read by cmd as "redirect handle 1", and the code prints empty (run 20260821_121514_q745):
    ```
    @echo off
    cd /d "C:\Users\Pavli\Desktop\HypeDigitaly\GIT\HypeSocials"
