@@ -155,7 +155,11 @@ class CodexImageClient:
             timeout=httpx.Timeout(_REQUEST_TIMEOUT_S, connect=_CONNECT_TIMEOUT_S))
         self._owns_http = client is None  # an injected client belongs to its injector (tests)
         self._attempts = max(1, int(http_max_attempts))
-        self._scratch_dir = Path(scratch_dir) if scratch_dir else None
+        # Resolved at construction: the runner hands over `output/<run>` RELATIVE to the cwd, and
+        # `Path.as_uri()` refuses a relative path (canary 20260821_112153_t91p died on exactly
+        # that ValueError at the first landed render). Absolute here, once, keeps every
+        # `file://` URL this client mints valid wherever it is later read.
+        self._scratch_dir = Path(scratch_dir).resolve() if scratch_dir else None
         # The run's `outputs.LogWriter`, bound by `render.configure()`. Absent in tests, so every
         # call site goes through `_event`, never through the attribute (FR-77).
         self._log = log
@@ -374,7 +378,7 @@ class CodexImageClient:
             atomic_write(target, blob)
         except OSError as exc:
             raise CodexRenderError(f"render could not be written to {target.parent}: {exc}") from exc
-        return target.as_uri()
+        return target.resolve().as_uri()
 
     # ----------------------------------------------------------------- run-log events (FR-77)
     def _note_resolution(self, resolution: Any) -> None:

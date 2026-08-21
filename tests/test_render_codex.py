@@ -457,3 +457,14 @@ async def test_an_unreadable_file_url_fails_exactly_like_a_dead_cdn_url(
         await packager._download(target.as_uri())
 
     assert caught.value.reason == "download_failed"
+
+
+def test_a_relative_scratch_dir_still_mints_an_absolute_file_url(tmp_path: Path, monkeypatch: Any) -> None:
+    """Canary 20260821_112153_t91p: the runner passes `output/<run>` RELATIVE to the cwd, and
+    `Path.as_uri()` raises `ValueError: relative path can't be expressed as a file URI` — the
+    first landed render killed the run. The client resolves the directory once at construction."""
+    monkeypatch.chdir(tmp_path)
+    codex = CodexImageClient(scratch_dir=Path("output") / "run_x")
+    url = codex._store("codex-abc", b"\x89PNG\r\n\x1a\nxx")
+    assert url.startswith("file:///")
+    assert (tmp_path / "output" / "run_x" / ".renders" / "codex-abc.png").exists()
