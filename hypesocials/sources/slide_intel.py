@@ -10,6 +10,9 @@ Public API:
     await enrich(posts, run_dir=..., call=..., engine=..., cfg=..., log=...) -> {post_id: SlideIntel}
     SlideIntel · SourceSlide · MarkBox · SLIDE_INTEL_ROLE · QUESTION_TEMPLATE
     MARK_KINDS · MARK_KIND_TOOL
+    PANEL_KINDS · PANEL_KIND_SCREENSHOT · PANEL_KIND_DEFAULT — FR-370's per-panel kind
+        (`screenshot | graphic | photo`), read with `SourceSlide.screenshot_box` by the LOCAL
+        post-render compositor and by nothing else
     detect_counter(chrome_lines, panel_texts, panel_count) -> CounterSpec | None  ·  CounterSpec
     RULE_DENOMINATOR / RULE_POSITIONAL / RULE_LEADING_OFFSET / RULE_CONSTANT_OFFSET — the four
         accept-rule names `CounterSpec.rule` carries into `meta.yaml.counter` (FR-313, D59)
@@ -39,6 +42,12 @@ Invariants enforced here, once, for every caller:
   nothing else — it never crops, never uploads, and still imports nothing from `render` or
   `generate`; a test pins that (`tests/test_slide_intel.py`). Full slides, panels and any other
   crop remain forbidden, which is what `_box()`'s span ceiling enforces at the source.
+  **D65/FR-370 does not widen this by one byte.** The screenshot box this module now returns is
+  never uploaded, never attached, never quoted into a prompt and never handed to `refs.py`: its
+  one consumer is `outputs.screenshot_paste`, a LOCAL compositor that runs AFTER the render has
+  landed and writes into a file already in the operator's own asset folder. Nothing about the
+  render payload changes, `refs._sanctioned` is untouched, and a test pins that this module and
+  the compositor both still import nothing from `render` or `generate`.
 - **One download per distinct slide, two readers.** `packager.store_source()` fetches each slide
   once into the run-level store; the vision call reads those local bytes, and the gallery shows
   the very same files after the CDN URL has expired (~hours). Nothing re-fetches.
@@ -165,6 +174,47 @@ _MAX_MARK_BOXES = 24
 #: which is exactly what FR-244's narrow carve-out does NOT sanction.
 _MARK_BOX_MAX_SPAN = 0.9
 
+#: v2.9.0/D65 (FR-370) — what KIND of picture one source panel is, which is the question the
+#: screenshot-paste feature turns on. The vocabulary is deliberately three words and no more:
+#:
+#: - `screenshot` — a captured REAL interface: a tweet/X post, a Discord or Slack conversation, a
+#:   GitHub page, a code editor or terminal, a real tool's or website's UI. This is the kind whose
+#:   pixels are worth reusing exactly, because it is precisely the kind a render model cannot
+#:   redraw: asked for "a tweet", gpt-image-2 invents a plausible-looking one with invented words,
+#:   an invented handle and an invented avatar — three fabrications where the source had a fact.
+#: - `graphic` — a designed layout (type on a ground, a chart somebody drew, an icon grid). The
+#:   DEFAULT, and the honest default: our own styles redraw these well, and a wrong `screenshot`
+#:   answer would paste a rectangle of somebody else's design onto our slide.
+#: - `photo` — a photograph of the physical world.
+PANEL_KINDS = ("screenshot", "graphic", "photo")
+PANEL_KIND_SCREENSHOT = "screenshot"
+#: The parser's answer for an absent, unknown or unparseable `panel_kind` — including every cached
+#: answer written before this key existed. `graphic` because it is the kind that changes NOTHING:
+#: a slide read as `graphic` renders exactly the way every slide rendered before D65 (§0.14c).
+PANEL_KIND_DEFAULT = "graphic"
+
+#: FR-370 — the FLOOR on a screenshot box's span per axis, and the ONLY bound it has.
+#:
+#: There is deliberately **no `_MARK_BOX_MAX_SPAN` ceiling here**, and the asymmetry with `_box()`
+#: above is the whole point. A mark box exists to be CROPPED AND UPLOADED, so a rectangle covering
+#: most of the panel is a misdetection that would smuggle the source slide itself past FR-244's
+#: narrow carve-out — hence the 0.9 ceiling there. A screenshot box is never uploaded anywhere: it
+#: is read by a LOCAL compositor (`outputs/screenshot_paste.py`) that writes into a file already
+#: sitting in the operator's own asset folder, after the render is paid for. And a screenshot
+#: legitimately DOES span its panel — a full-bleed tweet card is the ordinary case, not the
+#: pathological one — so a ceiling here would refuse exactly the detections the feature exists for.
+#:
+#: The floor is what a ceiling is there: a rectangle under 15% of the panel on either axis is not
+#: an interface, it is a favicon, an avatar or the model pointing at a button. Pasting that into a
+#: plate covering 84% x 58% of our frame would scale a thumbnail up to poster size.
+_SCREENSHOT_BOX_MIN_SPAN = 0.15
+
+#: How many CHROME boxes are kept per deck. They are not croppable and never will be — nothing
+#: reads this list but the FR-370 identity screen, which asks one geometric question: does a
+#: platform watermark or the creator's own signature sit ON the rectangle we were about to paste?
+#: Small because that question needs the marks a slide actually carries, not an inventory.
+_MAX_CHROME_BOXES = 12
+
 #: What a boxed mark IS (v2.2.0, FR-306 amendment). The vocabulary is the model's, the consequence
 #: is ours: only `tool` is croppable (FR-315), because only a tool logo is a thing one of our
 #: slides might legitimately draw.
@@ -240,13 +290,27 @@ _SLIDE: dict[str, Any] = {
                 "additionalProperties": False,
             },
         },
+        # v2.9.0/D65 (FR-370): WHAT this panel is a picture of, and — when it is a captured
+        # interface — where that interface sits. The pair exists for one purpose: a real
+        # screenshot is the one thing on a source slide that a render model cannot reproduce and
+        # must not try to. Asked for "a tweet about X", gpt-image-2 draws an invented tweet with
+        # an invented handle, invented words and an invented avatar; the honest answer is the
+        # source's own pixels, composited locally into a plate the render reserved (never
+        # uploaded, never a render reference — see `outputs/screenshot_paste.py`).
+        "panel_kind": {"type": "string", "enum": list(PANEL_KINDS)},
+        # `[x, y, w, h]` in the same fractional, origin-top-left vocabulary `mark_boxes` speaks,
+        # drawn TIGHT around the interface and EXCLUDING the creator's own chrome (the footer
+        # handle, the page counter) — those are the creator's signature and pasting them would
+        # publish it. An empty array is the answer for every non-screenshot panel and is what
+        # `_screenshot_box()` reads as "no box".
+        "screenshot_box": {"type": "array", "items": {"type": "number"}},
     },
     # Strict mode requires every declared property here (`llm._response_format` always sends
     # `strict: true`), so `mark_boxes` is REQUIRED of the model and OPTIONAL of the parser: an
     # answer that omits it — an older cached payload, a truncated row — is a slide with no boxes,
     # never a failed read (§0.14c).
     "required": ["slide", "onimage_text", "chrome_text", "visual_brief", "brand_marks",
-                 "mark_boxes"],
+                 "mark_boxes", "panel_kind", "screenshot_box"],
     "additionalProperties": False,
 }
 _SCHEMA: dict[str, Any] = {
@@ -334,6 +398,21 @@ class SourceSlide:
     visual_brief: str = ""  # English, content-not-style, drives the render prompt (FR-308)
     brand_marks: list[str] = field(default_factory=list)  # what the slide shows, for §0.12 safety
     image_file: str | None = None  # `slide_01.jpg` inside `source/<post_id>/`; None when unfetched
+    #: v2.9.0/D65 (FR-370) — one of `PANEL_KINDS`. `graphic` for everything that is not a captured
+    #: interface, which is the default and the pre-D65 behaviour: nothing in the engine looks at
+    #: this field unless it reads `screenshot` AND `run.screenshot_reuse` is on.
+    panel_kind: str = PANEL_KIND_DEFAULT
+    #: FR-370 — where the captured interface sits on THIS slide, as `(x, y, w, h)` fractions with
+    #: the origin top-left, or `None`. Set only when `panel_kind == PANEL_KIND_SCREENSHOT`: a box
+    #: on a panel the model called a graphic is a box on a design, and pasting somebody else's
+    #: design onto our slide is not what this feature is for.
+    #:
+    #: It never leaves the workstation. The one reader is the LOCAL compositor
+    #: (`outputs.screenshot_paste`), which cuts these pixels out of the already-downloaded source
+    #: slide and writes them into a render that is already on disk and already paid for. No render
+    #: payload, no upload, no CDN URL — the D41/D46/D48 boundary is untouched by it, and
+    #: `generate/refs.py`'s path guard still refuses everything under `source/` but `marks/`.
+    screenshot_box: tuple[float, float, float, float] | None = None
 
     @property
     def text(self) -> str:
@@ -370,6 +449,21 @@ class SlideIntel:
     #: (FR-306 amendment). Deck-level rather than per-slide because the cap is per deck and because
     #: the same mark usually recurs on every panel — FR-315 crops it once and the patch is reused.
     mark_boxes: list[MarkBox] = field(default_factory=list)
+    #: v2.9.0/D65 (FR-370) — the boxes the vision pass classified as CHROME: platform watermarks,
+    #: app badges, follow glyphs, the creator's own @handle lockup and personal signature mark.
+    #:
+    #: `_mark_boxes()` drops these at the parse boundary because they are not croppable and never
+    #: will be (D48's carve-out is tool logos and nothing else). They are collected here, in a
+    #: SEPARATE list that no crop path reads, for the FR-370 identity screen alone: before a
+    #: screenshot is pasted, the engine asks whether a watermark or the creator's signature sits
+    #: on the very rectangle it was about to reuse. A screenshot of the creator's OWN post is the
+    #: definitional identity leak — their handle, their avatar, their engagement counts, published
+    #: under our account — so that slide is skipped and rendered the ordinary way instead.
+    #:
+    #: Keeping them apart from `mark_boxes` is the safety property: `logo_crops.crop_marks` is
+    #: handed `mark_boxes` explicitly, so nothing in this list can reach the knife, the `marks/`
+    #: folder or an upload, whatever a future caller does.
+    chrome_boxes: list[MarkBox] = field(default_factory=list)
     #: v2.7.0/D63 — what language this deck's WORDS are in, as a two-letter ISO 639-1 code
     #: (`"de"`, `"cs"`, `"en"`), normalised through `topic_filter`'s shared alias table so that
     #: `"English"`, `"en-US"` and `"EN"` are one value (see `_language` for what that table does
@@ -421,6 +515,16 @@ class SlideIntel:
         a box carried over from a neighbouring panel would cut the wrong pixels.
         """
         return [box for box in self.mark_boxes if box.slide == position]
+
+    def chrome_on(self, position: int) -> list[MarkBox]:
+        """The CHROME boxes seen on that source slide — the FR-370 identity screen's geometry.
+
+        The sibling of `boxes_on` and deliberately a second method rather than a `kind` argument:
+        the two lists exist for opposite reasons. `boxes_on` answers "what may this deck crop and
+        upload"; this answers "what may this deck never republish". A caller that confused them
+        would be one keyword away from uploading a watermark.
+        """
+        return [box for box in self.chrome_boxes if box.slide == position]
 
     def relative_image(self, position: int) -> str | None:
         """`source/<post_id>/slide_NN.jpg` for the gallery and `panel_map`, or None (FR-75/FR-309).
@@ -1038,6 +1142,7 @@ def _apply(intel: SlideIntel, parsed: Mapping[str, Any], positions: Sequence[int
     """Merge the model's answers onto the slides, by POSITION, and count what never came back."""
     answered: set[int] = set()
     boxes: list[MarkBox] = []
+    chrome: list[MarkBox] = []
     # Deck-level and read before the per-slide walk, because it is not per-slide data and must not
     # depend on any row parsing successfully: a deck whose slide rows all came back malformed still
     # told us what language it is in, and that reading is what the copy stage's ladder asks for.
@@ -1063,7 +1168,20 @@ def _apply(intel: SlideIntel, parsed: Mapping[str, Any], positions: Sequence[int
         # an answer that mislabels one is caught by the range test rather than trusted because of
         # where it arrived. `slot` is the fallback for a row that names no slide at all.
         boxes.extend(_mark_boxes(row.get("mark_boxes"), len(intel.slides), slot, identity))
+        # D65/FR-370 — the same rows read a SECOND time, for the opposite reason. Nothing here is
+        # croppable: this is the list the screenshot-paste identity screen asks whether a
+        # watermark or the creator's own signature sits on the rectangle it was about to reuse.
+        chrome.extend(_chrome_boxes(row.get("mark_boxes"), len(intel.slides), slot, identity))
+        # D65/FR-370 — what KIND of picture this panel is, and where its interface sits. The box
+        # is admitted ONLY on a panel the model actually called a screenshot: a rectangle on a
+        # designed graphic is a rectangle on somebody's layout, and reusing that is not the
+        # feature. Both fields are fail-open — an absent, unknown or malformed answer leaves the
+        # slide `graphic` with no box, which is the pre-D65 behaviour exactly (§0.14c).
+        slide.panel_kind = _panel_kind(row.get("panel_kind"))
+        slide.screenshot_box = (_screenshot_box(row.get("screenshot_box"))
+                                if slide.panel_kind == PANEL_KIND_SCREENSHOT else None)
     intel.mark_boxes = boxes[:_MAX_MARK_BOXES]
+    intel.chrome_boxes = chrome[:_MAX_CHROME_BOXES]
     if missing := [position for position in positions if position not in answered]:
         _warn(log, "slide_intel_brief_missing",
               f"the analysis returned no answer for slide(s) {missing} of post {intel.post_id} — "
@@ -1169,6 +1287,12 @@ def _payload(intel: SlideIntel, post: SourcePost, cfg: Config | None) -> dict[st
             "visual_brief": slide.visual_brief,
             "brand_marks": list(slide.brand_marks),
             "vision_transcribed": slide.text_source == TEXT_SOURCE_VISION,
+            # D65/FR-370 — provenance for the screenshot paste, recorded whether or not one
+            # happened: "was this panel read as a captured interface, and where did the engine
+            # think that interface sat" is the first question a wrongly-pasted slide raises, and
+            # it should not need the vision pass re-run to answer.
+            "panel_kind": slide.panel_kind,
+            "screenshot_box": list(slide.screenshot_box) if slide.screenshot_box else None,
             "image_file": slide.image_file,
         } for slide in intel.slides],
         # Deck-level beside the per-slide `brand_marks` rows, because the cap is per deck and a
@@ -1178,6 +1302,13 @@ def _payload(intel: SlideIntel, post: SourcePost, cfg: Config | None) -> dict[st
         "mark_boxes": [{"name": box.name, "slide": box.slide, "box": list(box.box),
                         "kind": box.kind}
                        for box in intel.mark_boxes],
+        # D65/FR-370 — the chrome the deck showed, recorded beside the croppable marks and
+        # deliberately in its own key. Nothing crops from this list; it is the identity screen's
+        # evidence, and writing it down is what lets an operator answer "why did slide 4 not get
+        # its screenshot" without re-running anything.
+        "chrome_boxes": [{"name": box.name, "slide": box.slide, "box": list(box.box),
+                          "kind": box.kind}
+                         for box in intel.chrome_boxes],
         "vision": {
             "model_role": SLIDE_INTEL_ROLE,
             "model_id": cfg.models.analysis if cfg is not None else "",
@@ -1371,6 +1502,93 @@ def _box(value: Any) -> tuple[float, float, float, float] | None:
     return (x, y, width, height)
 
 
+def _chrome_boxes(value: Any, slide_count: int, default_slide: int,
+                  identity: frozenset[str]) -> list[MarkBox]:
+    """The boxes on THIS answer row that are CHROME — the complement of `_mark_boxes` (FR-370).
+
+    Same rows, same shapes, opposite purpose, and the two are written as two functions rather than
+    one with a flag on purpose: `_mark_boxes` produces rectangles that will be cropped out of the
+    source slide and UPLOADED to the render provider, and this produces rectangles that exist so
+    the engine can REFUSE to reuse pixels near them. A single parameterised parser would put those
+    two outcomes one boolean apart, and the failure mode of getting that boolean wrong is
+    publishing a creator's watermark.
+
+    What counts as chrome here is wider than the model's own `kind` label, because the label is
+    the model's opinion and the consequence is ours:
+
+    * anything the model classified `chrome` — a TikTok watermark, a follow glyph, an app badge;
+    * anything whose collapsed name is a PLATFORM (`_CHROME_MARKS`), whatever kind it was given;
+    * anything matching THIS POST's own identity keys (the creator's handle or display name) —
+      which is precisely the mark `_mark_boxes` drops without recording, and precisely the one the
+      identity screen most needs to see.
+
+    Fail-open per entry, like everything else in this module: a row that is not shaped like a box
+    is skipped silently, because a chrome box we failed to parse costs at most one paste that a
+    slide did not need (the screen also reads the slide's words, and a missing box only ever means
+    a paste happens that the text screen already allowed).
+    """
+    out: list[MarkBox] = []
+    for raw in _sequence(value):
+        if not isinstance(raw, Mapping):
+            continue
+        name = " ".join(str(raw.get("name") or "").split())[:_MARK_MAX]
+        slide = _int(raw.get("slide")) or default_slide
+        box = _box(raw.get("box"))
+        kind = str(raw.get("kind") or _DEFAULT_MARK_KIND).strip().casefold()
+        if not name or box is None or not 1 <= slide <= slide_count:
+            continue
+        key = collapse(mark_name(name))
+        if kind != "chrome" and key not in identity and key not in _CHROME_MARKS:
+            continue
+        out.append(MarkBox(name=name, slide=slide, box=box, kind="chrome"))
+    return out
+
+
+def _panel_kind(value: Any) -> str:
+    """One of `PANEL_KINDS`, defaulting to `graphic` for anything else at all (FR-370).
+
+    The default is doing real work, not tidying: `graphic` is the value under which this whole
+    feature is INERT. An older cached answer that predates the key, a truncated row, a model that
+    answered "a screenshot of a tweet" instead of `screenshot`, a `None` — every one of them reads
+    as a panel our own style redraws in the ordinary way, which is exactly what the engine did
+    before D65. The only value that changes anything is the one the model stated exactly.
+    """
+    kind = str(value or "").strip().casefold()
+    return kind if kind in PANEL_KINDS else PANEL_KIND_DEFAULT
+
+
+def _screenshot_box(value: Any) -> tuple[float, float, float, float] | None:
+    """`[x, y, w, h]` as clamped fractions of the source slide, or `None` (FR-370).
+
+    Deliberately NOT `_box()`, and the difference is one line: there is **no
+    `_MARK_BOX_MAX_SPAN` ceiling here**. A mark box becomes an upload, so a rectangle spanning the
+    panel is a misdetection that would carry the source slide itself past FR-244's narrow
+    carve-out. A screenshot box becomes a LOCAL COMPOSITE — `outputs.screenshot_paste` reads it,
+    cuts those pixels out of a file already on this workstation, and writes them into a render
+    already sitting in the operator's asset folder. Nothing about it is ever uploaded, referenced
+    or sent anywhere, so the reason for the ceiling does not exist, while the case the ceiling
+    would refuse (a full-bleed tweet card filling its panel) is the ordinary shape of the thing.
+
+    What IS refused is a rectangle under `_SCREENSHOT_BOX_MIN_SPAN` on either axis: an interface
+    is not 8% of a slide. Something that small is an avatar, a favicon or the model pointing at a
+    single button, and blowing it up into a plate covering 84% x 58% of our frame would ship a
+    pixelated smear the critics would then be told to sanction.
+
+    Clamped rather than rejected on range for the same reason `_box()` clamps: a model that says
+    `1.04` means the slide's edge, and a crop that stops at the edge is the right crop.
+    """
+    values = _sequence(value)
+    if len(values) != 4:
+        return None
+    try:
+        x, y, width, height = (min(1.0, max(0.0, float(item))) for item in values)
+    except (TypeError, ValueError):
+        return None
+    if width < _SCREENSHOT_BOX_MIN_SPAN or height < _SCREENSHOT_BOX_MIN_SPAN:
+        return None
+    return (x, y, width, height)
+
+
 def _unavailable(intel: SlideIntel, reason: str, log: Any) -> None:
     """The one degrade that covers a whole post: Virlo panels stand, tagged `vision_unavailable`."""
     intel.status = STATUS_UNAVAILABLE
@@ -1402,7 +1620,8 @@ def _event(log: Any, event_type: str, message: str, **data: Any) -> None:
 
 
 __all__ = [
-    "MARK_KINDS", "MARK_KIND_TOOL", "QUESTION_TEMPLATE", "RULE_CONSTANT_OFFSET",
+    "MARK_KINDS", "MARK_KIND_TOOL", "PANEL_KINDS", "PANEL_KIND_DEFAULT", "PANEL_KIND_SCREENSHOT",
+    "QUESTION_TEMPLATE", "RULE_CONSTANT_OFFSET",
     "RULE_DENOMINATOR", "RULE_LEADING_OFFSET", "RULE_POSITIONAL", "SLIDE_INTEL_ROLE",
     "STATUS_DISABLED", "STATUS_OK", "STATUS_UNAVAILABLE", "TEXT_SOURCE_NONE", "TEXT_SOURCE_VIRLO",
     "TEXT_SOURCE_VISION", "CounterSpec", "MarkBox", "SlideIntel", "SourceSlide",

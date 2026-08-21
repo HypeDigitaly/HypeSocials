@@ -104,6 +104,14 @@ run:
   # 2K. The engine default is 1 (single cover); pinned here because the cover is the frame every
   # body slide copies, so it is the one frame worth three tries.
   cover_candidates: 3
+  # D65 (2026-08-21, FR-370): exact-pixel screenshot reuse. When a source panel is a real captured
+  # interface - a tweet, a Discord thread, a GitHub page, a terminal, a tool's UI - the render is
+  # ordered to leave one flat plate empty (8%-92% wide, 20%-78% tall) and the engine composites that
+  # panel's OWN pixels into it after the frame lands. It fixes the one thing the render model cannot
+  # do: asked for "a tweet saying X" it invents the handle, the words and the avatar. Local, after
+  # the render, never uploaded - source bytes still never reach a render payload. A screenshot of the
+  # source creator's own post is skipped (identity screen). The engine default is false.
+  screenshot_reuse: true
   # 45 min (operator decision 2026-08-10, default is 25). This is a REEL-CAPABLE config, so the
   # deadline MUST exceed models.video_job_timeout_s (1800 s = 30 min) plus the topic-filter, copy
   # and image stages that run ahead of it - otherwise the run is abandoned before a slow reel can

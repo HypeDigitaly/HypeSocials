@@ -74,6 +74,7 @@ from hypesocials.models import (
     MetaStyle,
     TrendItem,
 )
+from hypesocials.outputs.screenshot_paste import plate_zone
 from hypesocials.render import get_profile
 # FR-304b: the `list_mode` READING belongs to the module that parses and validates it, so the one
 # consumer asks a predicate instead of re-deriving a threshold. One-way edge — `styles` imports
@@ -166,6 +167,37 @@ _COLOUR_RENDERING_ROW = (
     "Render every flat colour field as ONE uniform colour edge to edge — no mottling, speckle, "
     "noise, vignette or tonal drift inside it, and the SAME hex on every slide of this deck. "
     "A gradient exists only where the style declares one."
+)
+
+#: FR-370 (v2.9.0, D65) — the block that ORDERS the empty plate the compositor will fill, and the
+#: only thing the render model is ever told about the screenshot paste. It renders through the
+#: `{{screenshot_plate}}` slot on `carousel_slide.md` and ONLY on a slide the paste predicate
+#: selected (`generate.carousel._paste_slides`): gate on, source panel read as a captured
+#: interface, a valid box, the source file on disk, the identity screen passed. Every other
+#: slide's slot is empty, no plate is ordered, and that slide renders exactly as it did before
+#: D65 — which is why this block costs the other twenty-five twenty-sixths of the registry
+#: nothing at all.
+#:
+#: A MODULE CONSTANT rather than a line in the template, for the same reason `_COLOUR_RENDERING_ROW`
+#: above is one: the geometry it quotes has to be the geometry the compositor pastes into, byte
+#: for byte, and it is imported from the compositor (`plate_zone`) rather than typed here. A plate
+#: the render was told about at 8%-92% and the paste aimed at 10%-90% is a screenshot sitting on
+#: top of somebody's headline.
+#:
+#: **The precedence sentence is load-bearing.** `carousel_slide.md`'s CONSTRAINTS block states
+#: FR-340's rule unconditionally — no container is drawn empty — and a model reading both without
+#: a ranking resolves the conflict by drawing something inside the plate, which is the one outcome
+#: that ruins the paste. So the exception is stated HERE, where it is read only by the slides that
+#: actually order a plate, rather than in CONSTRAINTS where it would cost every carousel prompt in
+#: the run characters out of its style trio (`tests/test_prompt_fit.py`'s ceiling) to license a
+#: thing those slides never do.
+_SCREENSHOT_PLATE_BLOCK = (
+    "SCREENSHOT PLATE — reserve one EMPTY plate: a flat single-colour rounded rectangle in this "
+    f"deck's own surface colour, {plate_zone()}, with NOTHING drawn, lettered or textured inside "
+    "it — no words, no icon, no chart, no device frame, no placeholder. Compose everything else "
+    "around it. This ordered plate is the ONE exception to the no-empty-container rule in "
+    "CONSTRAINTS and outranks it: leaving this rectangle empty is correct, filling it is the "
+    "defect."
 )
 
 #: FR-261 condition 3 — which placeholders each ROLE may resolve, per `prompts/README.md`'s
@@ -286,7 +318,14 @@ _ALLOWLIST: dict[str, frozenset[str]] = {
         # mapped deck's slides was the one role never told where the deck's position badge goes
         # — or that this deck has none. No other role needs it: the image and reel roles resolve
         # `{{layout_zones}}` themselves and carry no counter, and the critics read the zone list.
-        "counter_rule"}),
+        "counter_rule",
+        # v2.9.0 (D65, FR-370) — the reserved screenshot plate, carousel slides ONLY and for the
+        # narrowest reason of all three: this is the one role that renders a slide mapped from a
+        # SOURCE PANEL, and a plate is only ever ordered because that panel was a captured
+        # interface whose own pixels the engine is about to composite in. No other role maps a
+        # panel, so no other role can have one; the image and reel roles would resolve the name
+        # to a block describing a rectangle nothing will ever fill.
+        "screenshot_plate"}),
     "carousel_anchor_instruction.md": frozenset(),
     # FR-306's slide-intelligence question is a GLOBAL template like the vision check: zero
     # placeholders — the images ARE the variable input, and the question must read identically
@@ -685,6 +724,7 @@ def build_context(
     slide_panel_source: str = "",
     tool_marks: str = "",
     slide_counter: str = "",
+    screenshot_plate: bool = False,
 ) -> dict[str, str]:
     """Build the ONE prompt context (FR-261). Every value is derived from typed domain objects.
 
@@ -775,6 +815,15 @@ def build_context(
             own zone declaration. The three have to agree — the TEXT block carries the badge's
             WORDS, `{{layout_zones}}` reaches the gauntlet's critic, and `{{counter_rule}}`
             reaches `carousel_slide.md`, which names no `{{layout_zones}}` slot at all.
+        screenshot_plate: D65/FR-370 — does THIS slide reserve the empty plate the engine will
+            composite a source screenshot into? A BOOLEAN, not a string, and deliberately: the
+            block's words are the engine's (`_SCREENSHOT_PLATE_BLOCK`, which quotes the
+            compositor's own geometry through `plate_zone()`), and the caller's business is the
+            DECISION — gate on, this panel read as a captured interface, a valid box, the source
+            file on disk, the identity screen passed. Letting a caller pass prose would let a
+            render be told about a rectangle at one address while the paste aimed at another.
+            False on every other slide, every image, every reel and every override brief, and
+            false is the pre-D65 world exactly: an empty slot, no block, no plate.
         reel_beats: `beats_for(duration_s)`'s real-second shot schedule, passed by `generate.reel`
             because it owns the configured duration. F24a deliberately gives it no placeholder of
             its own (`prompts/README.md` §"computed per call"): it rides in front of the motion
@@ -814,6 +863,13 @@ def build_context(
         # the treatment above: a brief that replaced the style's layout (FR-144) declares no zone
         # to quote and no house spine to fall back on. Never cuttable (`_TRUNCATION_ORDER`).
         "counter_rule": "" if override else _counter_rule(style, slide_counter),
+        # D65/FR-370 — the reserved plate, on the slides that take a paste and NOWHERE else. Not
+        # gated on `override`, unlike the three blocks above, and the difference is real: those
+        # describe a STYLE's layout, which an override brief replaced (FR-144), while this
+        # describes a rectangle the engine itself is going to composite into. The caller decides
+        # (it owns the predicate, the source file and the identity screen); this only spells the
+        # block. An override-brief deck binds no source post, so its caller never asks for one.
+        "screenshot_plate": _SCREENSHOT_PLATE_BLOCK if screenshot_plate else "",
         "style_dna": style_dna(style),
         "exclusions": _join(style.exclusions if style else (), "; "),
         # Conductor decision (W2 wire-in): an override brief has no style, but the reel director's
@@ -2605,7 +2661,7 @@ every sibling, and never emit a field that is not in this list.
     # "outdoor pool area"), and item 5 asks for FR-315's `mark_boxes`, which
     # `sources.slide_intel._SLIDE` REQUIRES on every slide row in strict mode.
     "slide_intel_question.md": """Each attached image is one slide of a source slideshow, attached in slide
-order. Report exactly five things about every slide. Report nothing else.
+order. Report exactly six things about every slide. Report nothing else.
 
 1. ON-IMAGE TEXT — transcribe every word that appears ON the slide, exactly as
    it is written: same language, same spelling, same capitalisation, same
@@ -2705,6 +2761,32 @@ order. Report exactly five things about every slide. Report nothing else.
    marks are wanted across the whole deck — give the most prominent ones, and
    prefer a `tool` mark over any other kind when you have to choose.
 
+6. PANEL KIND & SCREENSHOT BOX — what kind of picture this slide is, in
+   exactly one of these three words:
+   - `screenshot` — a captured REAL interface: a tweet or X post, a Discord or
+     Slack conversation, a GitHub page, a code editor or a terminal, a chat with
+     an assistant, a dashboard, a settings page, an app store listing, or any
+     other real software or website UI photographed or screen-captured as it is.
+   - `graphic` — a designed layout: type set on a background, a chart or diagram
+     somebody drew, an icon grid, a quote card, a title slide.
+   - `photo` — a photograph of the physical world: a person, a room, an object,
+     a place.
+   A drawn or illustrated picture OF an interface is `graphic`, not
+   `screenshot`: the word means a real capture of real software, and a mock-up
+   somebody designed is a design. When you are not sure, answer `graphic`.
+
+   When and ONLY when the kind is `screenshot`, also give `screenshot_box`: the
+   bounding box of the captured interface itself, in FRACTIONS of the image,
+   never pixels — [x, y, w, h], each number between 0 and 1, measured from the
+   TOP-LEFT corner, x and w along the width, y and h down the height. Draw it
+   TIGHT around the interface: the window, card, chat panel or page as it is
+   captured, and nothing else. LEAVE OUT the creator's own additions around it —
+   their headline above it, their arrows, circles or highlight marks drawn onto
+   it, their @handle or watermark, the page counter, the swipe cue and any
+   caption they typed under it. A screenshot that fills nearly the whole slide
+   gets a box that is nearly the whole slide; that is expected and correct.
+   Every other kind of slide gets an empty list here.
+
 Then, ONCE for the whole deck and beside `slides`, report `language`: the
 two-letter ISO 639-1 code of the language the slides' WORDS are written in
 ("de", "cs", "en"), the majority one when they mix, and an empty string when
@@ -2729,7 +2811,9 @@ below are only an example of the shape a box takes):
           "kind": "tool",
           "box": [0.12, 0.04, 0.09, 0.06]
         }
-      ]
+      ],
+      "panel_kind": "graphic",
+      "screenshot_box": []
     }
   ]
 }
@@ -3369,6 +3453,7 @@ STYLE_DNA (identical on every slide of this deck — reproduce it exactly):
   character and motif only where they leave a choice open, never layout or
   wording.
 
+{{screenshot_plate}}
 SLIDE CONTENT — what this slide shows, composed in the style above:
   {{render_prompt}}
 
@@ -3865,6 +3950,27 @@ same PLACE on every frame is not your question either; that belongs to the style
 critic.
 
 
+PASTED SCREENSHOTS — the one rectangle that is not rendered
+
+A frame's expected block may carry a `screenshot:` row naming a rectangle of the
+frame ("from 12% to 88% of the frame's width and 20% to 78% of its height").
+Those pixels were NOT drawn by the model. They are an exact copy of the source
+post's own captured interface — a tweet, a chat, a code editor, a dashboard —
+composited into the frame after it was rendered, deliberately and by design.
+
+INSIDE that rectangle, everything is sanctioned and nothing is a defect of
+yours. Text you were not given is not `invented_text`. An interface, a window
+bar, a like or reply count is not `platform_chrome`. A logo, a brand mark or a
+product name is not `forbidden_mark`. A username, an @handle, an avatar or a
+face is not `identity_leak`. Words in another language are not `translated`. Its
+words are never counted towards `missing_text` either, in any direction: the
+quoted lines are judged only on the rest of the frame.
+
+OUTSIDE that rectangle every rule in this brief stands exactly as written, and
+the same leak drawn beside the pasted picture is still a leak. If a frame has no
+`screenshot:` row, none of this applies to it at all.
+
+
 ASYMMETRIC STRICTNESS ON LEAKAGE
 
 For `identity_leak`, `forbidden_mark` and `platform_chrome`: when unsure, FAIL.
@@ -3919,7 +4025,9 @@ judgement call above.
 A frame whose body is `(none)` is the sharpest case of all three: beyond its
 listed counter and signature it carries no readable characters at all — no
 label, caption, code listing, interface text or product name. Any lettering
-there is `invented_text`.
+there is `invented_text`. The single exception is a `screenshot:` rectangle on
+that same frame: the lettering inside it is the source's own pasted pixels, and
+the rule applies to every part of the frame outside it.
 
 
 PAIR INTEGRITY (FR-329)
@@ -4125,6 +4233,12 @@ YOUR DEFECT CODES
   carries one. Frame 1 is exempt. A chip, badge or signature that no frame's
   contract row calls for is never a reason to fail the frames that omit it;
   frame 1 carrying one it was not ordered is frame 1's own defect.
+  A frame whose expected block carries a `screenshot:` row holds an exact copy of
+  the source's own captured interface inside the rectangle it names, pasted in
+  after the render: that rectangle occupies the frame's content region BY
+  MANDATE, and its palette, its type and its grid are the source's, never this
+  deck's — it is never a consistency, palette or layout defect, and the frame
+  around it is judged as strictly as every other.
 - `counter_placement` — the position badge sits somewhere else, or is styled
   differently, than on the FIRST frame that carries one, or is not in the
   chip/badge treatment the style describes. Whether the badge shows the right
@@ -4237,6 +4351,13 @@ Greeked bars, texture lettering and similar filler named there are the style
 working correctly. Never report them as `garbled`, and never as `empty_element`
 either — a filler bar the style above sanctions is ordered, not padding.
 
+A frame whose expected block carries a `screenshot:` row holds an exact copy of
+the source's own captured interface inside the rectangle it names, pasted in
+after the render. Judge only how that picture SITS in the frame — clipped by an
+edge, colliding with a text block, stretched out of shape. Never judge its own
+contents: small, soft or dense lettering inside it is the source's screenshot as
+it really is, and is never `garbled`, `truncated` or `contrast`.
+
 These marks were ordered as REAL logos somewhere in this set, in their own true
 brand colours, exempt from the style's palette:
 
@@ -4282,9 +4403,13 @@ YOUR DEFECT CODES
   lorem-style filler standing where words would go, or a repeating grid of such
   shapes padding the layout out. A device belongs to a line the frame was
   ordered to carry; where no line was quoted for it, that device is left out of
-  the picture rather than drawn blank. ONE exception, and only this one: a
-  single flat, unlettered rounded plate reserved for a screenshot the engine
-  pastes in after the render was ORDERED that way — it is never this defect.
+  the picture rather than drawn blank. ONE exception, and only this one: the
+  flat rounded plate on a frame whose expected block carries a `screenshot:`
+  row. The source's own picture is pasted into that plate, and any surface still
+  showing around the picture is the plate, not padding — never this defect. A
+  bare, unlettered plate on a frame with NO `screenshot:` row is not covered:
+  the paste that plate was reserved for did not happen, and it is exactly this
+  defect.
 - `composition` — the frame does not hold together: the focal element or a text
   block colliding with or overlapping another, a duplicated subject or a
   duplicated text block, an element crowding the very edge with no margin,

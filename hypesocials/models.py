@@ -139,6 +139,15 @@ class DegradationTag(str, Enum):
     # operator sees are therefore NOT byte-for-byte what the model returned, which is the whole
     # reason this is a tag: the deck ships, and the operator knows which card was repaired.
     ALPHA_FLATTENED = "alpha_flattened"
+    # FR-370 — a carousel slide ordered a reserved screenshot plate (its source panel was read as
+    # a captured interface, the box parsed, the source file was on disk and the identity screen
+    # passed), the render drew the empty rectangle it was told to, and the local composite that
+    # was supposed to fill it did not happen: the source file would not decode, the crop came back
+    # too small, the disk was full, the backup could not be written. The slide ships with the
+    # EMPTY PLATE, which is deliberately visible — the critics judge it as the defect it is and
+    # this tag puts it on the gallery card, because a paste that silently did not happen would
+    # leave a rounded hole in the middle of a paid frame with nothing anywhere saying why.
+    SCREENSHOT_PASTE_FAILED = "screenshot_paste_failed"
     # --- D56 / v2.4.0 (FR-334): matched style assignment ---
     # FR-334 — the ONE batched style-matcher call failed outright (transport error, unparseable
     # answer, degraded `ParsedResult`), so EVERY entry in the plan kept the FR-291 rotation pick it
@@ -1290,6 +1299,19 @@ PLACEHOLDERS: frozenset[str] = frozenset(
         #   Deliberately absent from `_TRUNCATION_ORDER` and `_STYLE_TRIO`: uncuttable, like the
         #   TEXT block whose badge it places. Empty under an override brief and on a style-less
         #   context, exactly as `list_treatment` and `layout_zones` are.
+        # --- v2.9.0 (D65, FR-370): the reserved screenshot plate. ---
+        "screenshot_plate",  # CAROUSEL SLIDES ONLY, and only the ones taking a paste. The block
+        #   that orders the render to leave ONE flat rounded rectangle empty — 8%-92% of the width
+        #   by 20%-78% of the height, the compositor's own geometry quoted through
+        #   `screenshot_paste.plate_zone()` — so that after the frame lands the engine can
+        #   composite the source panel's REAL captured interface into it, exact pixel for exact
+        #   pixel. It exists because a screenshot is the one thing on a source slide a render
+        #   model cannot reproduce and must not try to: asked for "a tweet saying X" it draws an
+        #   invented handle, invented words and an invented avatar onto a frame we are about to
+        #   publish. Empty on every slide that takes no paste, which is nearly all of them, so it
+        #   costs the rest of the registry nothing. Uncuttable (absent from `_TRUNCATION_ORDER`
+        #   and `_STYLE_TRIO`): a plate the model was told about at half length is a plate drawn
+        #   somewhere else, and the paste would land on top of the words.
         # --- v2.6.0 (D62, FR-351/FR-352): the cover judge's two slots. ---
         # Both are allowlisted for `cover_pick_system.md` ALONE, on the `style_candidates` terms
         # and for a sharper reason: `cover_contract` carries one style's whole DNA together with

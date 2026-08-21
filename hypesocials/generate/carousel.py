@@ -143,6 +143,12 @@ from hypesocials.outputs import AssetFolder, PackagingError
 # from the domain that wrote it. Both calls are SYNCHRONOUS Pillow work and go through
 # `asyncio.to_thread` at their one call site (`_alpha_guard`), exactly as `crop_marks` does below.
 from hypesocials.outputs import flatten_frame, inspect_frame
+# FR-370 (D65) — the exact-pixel screenshot paste. Same shape as the guard above: it runs on the
+# file the packager just wrote, it is SYNCHRONOUS Pillow work dispatched through
+# `asyncio.to_thread` at its one call site (`_paste`), and it is LOCAL — it reads the source slide
+# already on this disk and rewrites a render already paid for. Nothing about it goes near a render
+# payload, and `generate/refs.py`'s source-store guard is untouched by it.
+from hypesocials.outputs import PasteResult, paste_screenshot
 # `plan.py` owns the source-deck arithmetic (it is the stage that fixed this deck's length), so the
 # truncation test below asks it rather than re-deriving "how long was the source deck" here — two
 # implementations of that question are two decks that can disagree about which panels shipped.
@@ -151,7 +157,7 @@ from hypesocials.plan import source_panel_count
 # deck. Detection lives beside the chrome transcription it parses, and this module holds the one
 # CounterSpec per deck — two implementations of "did they number their slides" would be two decks
 # that disagree about whether ours carries a badge.
-from hypesocials.sources.slide_intel import CounterSpec, detect_counter
+from hypesocials.sources.slide_intel import PANEL_KIND_SCREENSHOT, CounterSpec, detect_counter
 # FR-315 (D48): the mark's own pixels. `crop_marks` is SYNCHRONOUS (Pillow + file I/O) and runs
 # off-thread here; it is the only Pillow user in the tree and it writes exclusively into the
 # post's own `source/<post_id>/marks/` folder, which is the one path `refs.upload_local` will
@@ -211,6 +217,13 @@ _NEIGHBOUR_ROLE = (
 #: FR-351: the sub-folder every fanned-out cover candidate is kept in, winner included. A folder
 #: rather than a name prefix so the deck's own `slide_*` glob — the one the gallery and the
 #: packager both walk — cannot pick a rejected cover up and show it as a delivered slide.
+#: FR-370 (D65) — `FrameContract.wordless_reason` for a slide that reserves a screenshot plate.
+#: It joins `copywrite`'s three drop reasons in the same field and says a different kind of thing:
+#: those mean "the source panel gave us nothing to letter", this means "the source panel's own
+#: picture IS the content and our render was ordered to stay out of its way". The critics read the
+#: distinction — a frame wordless by THIS mandate is correct with a screenshot in the middle of it.
+_WORDLESS_SCREENSHOT = "screenshot_paste"
+
 COVERS_DIR = "covers"
 #: FR-351's file stem inside `COVERS_DIR`, formatted with the candidate's 1-based submission id.
 #: The id is preserved through a failure (a deck whose candidate 2 died keeps `1` and `3`), so a
@@ -301,6 +314,10 @@ _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
 #: Below this an author identifier is too short to match on: a two-character handle collapsed into
 #: a sentence would hit half the English language and scrub briefs that never named anyone.
 _MIN_AUTHOR_IDENT = 4
+#: How much of a detected mark's name an FR-370 identity-skip line quotes. A log line explaining
+#: why a slide kept its own rendering should name the mark, not paste a 120-character detection
+#: string into the operator's console.
+_MARK_LOG_MAX = 60
 
 
 def _is_chrome(raw: str) -> bool:
@@ -357,6 +374,42 @@ def _is_author_mark(name: str, idents: Collection[str]) -> bool:
     return any(min(len(key), len(ident)) >= _MIN_AUTHOR_IDENT
                and (ident in key or key in ident)
                for ident in idents if ident)
+
+
+def _row_slide(row: Any) -> int:
+    """One panel-map row's OUR-slide number, or 0 — the join key the paste receipt writes on.
+
+    Defensive because a panel map is a plain list of plain dicts by contract (FR-73) and may have
+    been written by an older run, a degraded copy stage or a test: a row with no readable `slide`
+    joins to nothing, gets the "ordered no plate" answer, and keeps every other key it arrived
+    with.
+    """
+    try:
+        return int((row or {}).get("slide") or 0)
+    except (AttributeError, TypeError, ValueError):
+        return 0
+
+
+def _overlaps(first: Any, second: Any) -> bool:
+    """Do two fractional `(x, y, w, h)` rectangles share ANY area at all (FR-370)?
+
+    The identity screen's geometric arm, and deliberately "any area" rather than a share: a
+    platform watermark clipping the corner of a screenshot is still a watermark in the published
+    frame, and there is no fraction of somebody's signature that is acceptable to republish. Both
+    arguments are read defensively — a `None` box, a short tuple or a string is "no overlap",
+    because the alternative is a traceback inside a predicate whose whole job is to be cautious.
+    """
+    boxes = []
+    for value in (first, second):
+        items = list(value) if isinstance(value, (list, tuple)) else []
+        if len(items) != 4:
+            return False
+        try:
+            boxes.append(tuple(float(item) for item in items))
+        except (TypeError, ValueError):
+            return False
+    (ax, ay, aw, ah), (bx, by, bw, bh) = boxes
+    return (min(ax + aw, bx + bw) > max(ax, bx)) and (min(ay + ah, by + bh) > max(ay, by))
 
 
 def _incomplete_text(asset_id: str, delivered: Collection[int], texts: Sequence[Any],
@@ -440,6 +493,20 @@ class _Deck:
     #: the way `_sanctioned_marks` spells a mark so the two lists join without a second cleaner.
     #: A mark absent from here is not a failure — it renders from its name (FR-315d).
     patches: dict[str, str] = field(default_factory=dict)
+    #: FR-370 (v2.9.0/D65) — the slides that RESERVE a screenshot plate, decided once in
+    #: `__post_init__` and read by three places that must agree: the prompt (which orders the empty
+    #: plate and blanks the slide's words), the landing seam (which composites the source pixels
+    #: into it) and the frame contract (which tells the critics the plate's contents are
+    #: sanctioned). Deciding it once is the point — a predicate re-evaluated at render time could
+    #: order a plate the paste then declined, and an empty rounded rectangle in the middle of a
+    #: paid slide is the most visible defect this session can ship.
+    paste_slides: set[int] = field(default_factory=set)
+    #: FR-370 — what the paste actually DID, per slide: the frozen `PasteResult` from the last
+    #: composite attempt on that slide. Overwritten on every re-landing (FR-317's resubmit, the
+    #: alpha guard's repair, every gauntlet fix round), because the answer has to describe the
+    #: file that is on disk NOW — the critics judge that file, and the contract row is built from
+    #: `zone` on the way into the gate. A slide absent from here never ordered a plate.
+    pastes: dict[int, PasteResult] = field(default_factory=dict)
     anchored: bool = False
     anchor_url: str = ""
     #: FR-351 (v2.6.0/D62) — the cover best-of-N receipt that becomes `meta.yaml.cover_pick`:
@@ -540,6 +607,12 @@ class _Deck:
         # mirroring, so re-detecting it per slide could only produce a deck that counts itself in
         # two hands. The numbers are re-based per slide by `_counter()`.
         self.counter = self._counter_spec()
+        # FR-370 (D65): which slides reserve a screenshot plate — BEFORE the first prompt is
+        # assembled, because the prompt is where the plate is ordered and a slide's words are
+        # blanked. Everything the predicate reads (the gate, the vision pass's per-panel kind and
+        # box, the stored source files, the creator's identity) is already known and none of it
+        # changes while the deck renders.
+        self.paste_slides = self._paste_slides()
 
     # ------------------------------------------------------------------------------- ordering
 
@@ -689,6 +762,196 @@ class _Deck:
             f"uploaded from {len(boxes)} detected box(es)", asset_id=self.entry.asset_id,
             boxes=len(boxes), cropped=len(cropped), uploaded=len(self.patches),
             marks=sorted(cropped))
+
+    def _paste_slides(self) -> set[int]:
+        """FR-370's gate: which of OUR slides reserve a plate for the source's own screenshot.
+
+        Five conditions, ALL of them, and each one is a different kind of "no":
+
+        1. **`run.screenshot_reuse`** is on. Off is the engine default and the pre-D65 world byte
+           for byte — no plate is ordered, no words are blanked, no pixel is composited.
+        2. **This panel is a captured interface** (`panel_kind == screenshot`). A designed graphic
+           is the thing our styles redraw well; reusing somebody's layout is not the feature.
+        3. **The box parsed** (`screenshot_box`), which `slide_intel._screenshot_box()` already
+           floored at 15% of the panel per axis.
+        4. **The source slide is on disk.** The store downloads every analysed panel once
+           (`source/<post_id>/slide_NN.<ext>`); a 404 at that stage costs this slide its paste, and
+           ordering an empty plate we could never fill would be strictly worse than not ordering it.
+        5. **The identity screen passes** (`_identity_block` below) — the arm that decides what
+           this feature is ALLOWED to reuse, and the reason it needed a decision at all.
+
+        **The identity policy, stated plainly.** A screenshot of a THIRD PARTY's interface — a
+        tweet somebody else wrote, a GitHub page, a terminal, a tool's dashboard — is exactly what
+        this exists for, and its contents are sanctioned. A screenshot of the SOURCE CREATOR's own
+        post is the definitional identity leak: their handle, their avatar, their engagement
+        counts, republished under our account, which FR-312 spends a whole strip pass preventing in
+        the words and which no amount of care in the text would survive if the pixels carried it
+        anyway. There is no half measure available in v1 — blurring a region is its own feature —
+        so the answer is the conservative one: that slide takes no plate and renders the ordinary
+        way, with its words, in our style. One `screenshot_paste_skipped_identity` line says so.
+
+        Fail-open in every branch, like `_crop_patches` beside it: no intelligence, no run folder,
+        no source store, an unreadable field — each costs the deck its pastes and nothing else.
+        """
+        if not bool(getattr(self.env.config.run, "screenshot_reuse", False)):
+            return set()
+        intel = self._intel()
+        run_dir = str(getattr(self.env, "run_dir", "") or "")
+        folder = str(getattr(intel, "folder", "") or "") if intel is not None else ""
+        if intel is None or not run_dir or not folder:
+            return set()
+        idents = _author_forms(self.source_post)
+        wanted: set[int] = set()
+        for number in range(1, len(self.texts) + 1):
+            slide = intel.slide(number)
+            if slide is None or getattr(slide, "panel_kind", "") != PANEL_KIND_SCREENSHOT:
+                continue
+            if getattr(slide, "screenshot_box", None) is None:
+                continue
+            if not self._source_slide_file(number):
+                self.env.log.warn(
+                    "screenshot_paste_no_source_file",
+                    f"{self.entry.asset_id} slide {number}: source panel {number} was read as a "
+                    "screenshot but its slide image is not in this run's source store, so no "
+                    "plate is reserved and the slide renders normally (FR-370)",
+                    asset_id=self.entry.asset_id, slide=number)
+                continue
+            if reason := self._identity_block(intel, slide, number, idents):
+                self.env.log.warn(
+                    "screenshot_paste_skipped_identity",
+                    f"{self.entry.asset_id} slide {number}: the source panel's screenshot carries "
+                    f"the creator's own identity ({reason}), so it is NOT reused — publishing "
+                    "their handle, avatar or counters under our account is the leak FR-312 exists "
+                    "to prevent. The slide renders its words in our style instead (FR-370)",
+                    asset_id=self.entry.asset_id, slide=number, detail=reason)
+                continue
+            wanted.add(number)
+        if wanted:
+            self.env.log.event(
+                "screenshot_plates_reserved",
+                f"{self.entry.asset_id}: slide(s) {sorted(wanted)} reserve a screenshot plate; "
+                "their source panels' own pixels are composited in after each render lands "
+                "(FR-370)", asset_id=self.entry.asset_id, slides=sorted(wanted))
+        return wanted
+
+    def _identity_block(self, intel: Any, slide: Any, number: int,
+                        idents: frozenset[str]) -> str:
+        """Why this screenshot may NOT be reused — or `""` when it may (FR-370/FR-312).
+
+        Two arms, because the creator signs a slide in two different media and each needs its own
+        test:
+
+        * **Words.** Their handle or display name, however spelled, inside the panel's own text,
+          inside the chrome transcribed beside it, or naming one of its brand marks. Matching is
+          COLLAPSED on both sides (`mark_names.collapse`) so `@emirailab`, `Emir AI Lab` and
+          `EMIR AI LAB` are one key, and it is floored at `_MIN_AUTHOR_IDENT` because a
+          three-letter handle found inside a sentence is a coincidence, not a signature.
+        * **Geometry.** A CHROME box — a platform watermark, an app badge, a follow glyph, the
+          creator's own lockup — overlapping the rectangle we were about to reuse. `slide_intel`
+          keeps those boxes in a list of their own (`chrome_boxes`) precisely for this question;
+          nothing crops from it, and an overlap of any area at all is enough. A watermark half
+          inside the crop is still a watermark in the published frame.
+
+        Deliberately CONSERVATIVE on the words arm: the creator's footer handle is transcribed
+        into `chrome_text` on most slides of most decks, so this refuses a class of paste that
+        would probably have been safe (the question asks for a box excluding that footer). That
+        trade is the right way round — a refused paste costs a slide its exact pixels and renders
+        the way every slide rendered before D65, while a wrong paste republishes somebody's
+        identity from our account.
+        """
+        marks = list(getattr(slide, "brand_marks", ()) or ())
+        if idents:
+            haystack = " ".join((str(getattr(slide, "text", "") or ""),
+                                 str(getattr(slide, "chrome_text", "") or "")))
+            folded = collapse(haystack)
+            hit = next((ident for ident in idents
+                        if len(ident) >= _MIN_AUTHOR_IDENT and ident in folded), "")
+            if hit:
+                return f"the creator's identity {hit!r} appears in the panel's own text or chrome"
+            if named := next((name for name in marks if _is_author_mark(str(name), idents)), ""):
+                return f"the panel shows the creator's own mark {str(named)[:_MARK_LOG_MAX]!r}"
+        box = getattr(slide, "screenshot_box", None)
+        chrome = list(getattr(intel, "chrome_on", lambda _position: [])(number))
+        overlap = next((mark for mark in chrome if _overlaps(box, mark.box)), None)
+        if overlap is not None:
+            return (f"platform or creator chrome ({str(overlap.name)[:_MARK_LOG_MAX]!r}) sits on "
+                    "the screenshot itself")
+        return ""
+
+    def _source_slide_file(self, number: int) -> Path | None:
+        """The stored source panel behind OUR slide *number*, or `None` (FR-370/FR-309).
+
+        Built from the intelligence's own bookkeeping — `SlideIntel.folder` plus that slide's
+        `image_file`, which is the name the store actually wrote (`.webp` on most live decks, not
+        the `.jpg` a hardcoded suffix would look for). Asking the record rather than globbing is
+        what keeps this and the gallery's `source_image` href pointing at one file.
+
+        The path is only ever OPENED, and only by the local compositor. It is never uploaded, never
+        referenced and never named in a payload: `generate/refs.py` still refuses everything under
+        `source/` that is not a `marks/` patch, and this does not go through `refs` at all.
+        """
+        intel = self._intel()
+        slide = intel.slide(number) if intel is not None else None
+        name = str(getattr(slide, "image_file", "") or "") if slide is not None else ""
+        run_dir = str(getattr(self.env, "run_dir", "") or "")
+        folder = str(getattr(intel, "folder", "") or "") if intel is not None else ""
+        if not name or not run_dir or not folder:
+            return None
+        path = Path(run_dir) / folder / name
+        return path if path.is_file() else None
+
+    async def _paste(self, number: int) -> None:
+        """FR-370: composite this slide's source screenshot into the plate the render reserved.
+
+        Called from the ONE landing seam (`_store`), which is what makes it cover every route a
+        frame can reach the operator's folder by: the first pass, FR-317's resubmit of a timed-out
+        job, FR-351's chosen cover, FR-95's replacement anchor, FR-365's alpha repair and every
+        gauntlet fix re-render. Each of those lands through `store_render` and therefore through
+        here, so a re-rendered frame is re-pasted with the same pixels and **the critics always
+        judge the composited frame** — never the empty plate underneath it.
+
+        Everything expensive is on a worker thread (two decodes, a scale, an encode). Nothing here
+        raises: `paste_screenshot` answers with a `PasteResult` for every failure it can meet, and
+        a failure ships the EMPTY PLATE tagged `screenshot_paste_failed` — visibly wrong, judged as
+        wrong by the craft critic, and honest about it. Hiding it would mean silently un-ordering a
+        plate the render already drew.
+        """
+        if number not in self.paste_slides:
+            return
+        path, source = self.paths.get(number), self._source_slide_file(number)
+        intel = self._intel()
+        slide = intel.slide(number) if intel is not None else None
+        box = getattr(slide, "screenshot_box", None) if slide is not None else None
+        if path is None:
+            return  # nothing landed, so there is no frame to composite into and nothing to report
+        if source is None or box is None:
+            # The plate WAS ordered — everything below is about a frame that already carries an
+            # empty rounded rectangle — and the inputs went missing between the gate and the
+            # landing (a source file deleted, a record rewritten). That is a failed paste, not a
+            # paste that never happened, and it earns the same tag: a silent return here would
+            # leave a hole in a paid slide with nothing anywhere saying why.
+            result = PasteResult(ok=False, reason=("the source slide or its box was no longer "
+                                                   "available when the frame landed"))
+        else:
+            result = await asyncio.to_thread(paste_screenshot, path, source, box)
+        self.pastes[number] = result
+        if result.ok:
+            self.env.log.event(
+                "screenshot_pasted",
+                f"{self.entry.asset_id} slide {number}: source panel {number}'s own captured "
+                f"interface was composited into the reserved plate ({result.zone}); the raw "
+                f"render is kept at {result.raw_backup} (FR-370)",
+                asset_id=self.entry.asset_id, slide=number, zone=result.zone,
+                source_image=result.source_image, raw_backup=result.raw_backup)
+            return
+        self.folder.mark(DegradationTag.SCREENSHOT_PASTE_FAILED)
+        self.env.log.warn(
+            "screenshot_paste_failed",
+            f"{self.entry.asset_id} slide {number}: the reserved plate could not be filled "
+            f"({result.reason}), so the slide ships with an EMPTY plate and the critics judge it "
+            "as the defect it is (FR-370)",
+            asset_id=self.entry.asset_id, slide=number, detail=result.reason,
+            source_image=result.source_image)
 
     def _allowed_marks(self) -> frozenset[str]:
         """FR-315's crop allowlist: every mark THIS deck may legitimately draw, collapsed.
@@ -1179,6 +1442,29 @@ class _Deck:
             # workstation rather than the render, and both keep the partial deck that ships.
             return self._note(f"slide {number}: {exc.reason}", error=True, lost=lost)
         self.delivered.add(number)
+        # FR-370 (D65): the screenshot paste sits HERE — inside the one landing seam, BEFORE the
+        # alpha guard below it. Three reasons, and the order matters more than it looks:
+        #
+        # 1. **Exactly once per landed frame.** The guard may RE-RENDER (its one FR-317-shaped
+        #    resubmit), and that replacement lands through `_store` again — so a paste placed
+        #    before it runs once on the frame that stays and once on the frame that was replaced,
+        #    while a paste placed AFTER it would run again on the outer call and composite a second
+        #    time over its own work, overwriting `plates/slide_NN_raw` with an already-pasted file.
+        #    The backup would then no longer be the raw render it exists to preserve.
+        # 2. **The halo verdict is unchanged by it.** The plate spans 8%-92% x 20%-78% of the
+        #    frame and the guard measures a 2% edge ring, so the composite cannot touch a pixel it
+        #    reads; `screenshot_paste` preserves the frame's mode and alpha band deliberately, so
+        #    an RGBA render is still RGBA and a halo is still detected exactly as it would have
+        #    been on the raw file.
+        # 3. **The critics judge what ships.** Both orderings satisfy that, but only this one
+        #    guarantees that a frame the guard replaced is re-pasted rather than shipped with the
+        #    plate the model drew empty.
+        #
+        # The one honest cost: on a frame that is BOTH haloed and pasted, the flatten's ground
+        # colour is sampled from a centre that now shows the screenshot. That is a rare defect
+        # inside a rare defect, and the alternative — a second paste and a corrupted backup on
+        # every alpha repair — is worse and would happen more often.
+        await self._paste(number)
         return await self._alpha_guard(number, priority=priority)
 
     async def _alpha_guard(self, number: int, *, priority: RenderPriority) -> bool:
@@ -1546,13 +1832,20 @@ class _Deck:
         facts = contracts.panel_facts(self.env, self.entry)
         frames = [
             contracts.frame_contract(
-                number, self.texts[number - 1] if 1 <= number <= len(self.texts) else "",
+                number, self._contract_text(number),
                 style=self.style, counter=self._counter(number),
+                # D65/FR-370 — where the source's own screenshot was composited on THIS frame,
+                # and empty on every frame where none was. It is filled from `self.pastes` and
+                # ONLY when that paste actually succeeded: a plate that could not be filled
+                # sanctions nothing, and the empty rectangle left behind is a defect the critics
+                # are supposed to report rather than a region they are told to excuse.
+                screenshot_zone=self._paste_zone(number),
                 # M12: the deck is signed on the anchor alone, so the signature is slide 1's own
                 # and every other frame lists none — an unlisted wordmark reads as invented text,
                 # and a listed one nobody ordered reads as a missing string.
                 signature=self.wordmark if number == 1 else "",
-                wordless_reason=facts.get(number, {}).get("wordless_reason", ""),
+                wordless_reason=(_WORDLESS_SCREENSHOT if number in self.paste_slides
+                                 else facts.get(number, {}).get("wordless_reason", "")),
                 truncation_suspect=bool(facts.get(number, {}).get("truncation_suspect")))
             for number in numbers]
         sanctioned = [name for number in numbers for name in self._sanctioned_marks(number)]
@@ -1568,6 +1861,31 @@ class _Deck:
                 creator_forms=contracts.creator_forms(self.source_post),
                 unsanctioned_marks=self._unsanctioned_marks(numbers),
                 sanctioned=sanctioned))
+
+    def _contract_text(self, number: int) -> str:
+        """The strings THIS frame was ordered to letter — `""` on a plate slide (FR-370).
+
+        The contract has to describe what the RENDER was asked for, not what the copy stage mapped,
+        and on a plate slide those two deliberately differ: `_prompt` blanks the words because the
+        source's own screenshot carries them, so demanding them back off the picture would report
+        `missing_text` on every one of them and buy a re-render that put a second copy of the words
+        above the screenshot showing them. The mapped bytes are not lost — `self.texts`, the panel
+        map and `meta.yaml` all still carry them, which is what makes the deck auditable.
+        """
+        if number in self.paste_slides:
+            return ""
+        return self.texts[number - 1] if 1 <= number <= len(self.texts) else ""
+
+    def _paste_zone(self, number: int) -> str:
+        """This frame's SANCTIONED screenshot rectangle, or `""` (FR-370).
+
+        Only ever non-empty when a paste on this exact frame SUCCEEDED, which is why it is read
+        from `self.pastes` (what happened) rather than from `self.paste_slides` (what was ordered).
+        The distinction is the whole safety property of the critic sanction: an ordered plate that
+        was never filled must stay judgeable as the empty rectangle it is.
+        """
+        result = self.pastes.get(number)
+        return result.zone if result is not None and result.ok else ""
 
     def _unsanctioned_marks(self, numbers: Sequence[int]) -> list[str]:
         """Every brand mark the source panels showed that D-A REFUSED to sanction (FR-330).
@@ -1850,6 +2168,17 @@ class _Deck:
         env = self.env
         copyset = self.copy
         text = self.texts[number - 1]
+        plate = number in self.paste_slides
+        if plate:
+            # FR-370: on a plate slide the SCREENSHOT is the content, so this slide is ordered
+            # WORDLESS. The source panel's words were on the interface itself and the interface is
+            # about to be pasted in at its own exact pixels — re-setting those same words in the
+            # deck's typeface above the picture of them would print the slide twice. This blanks
+            # the RENDER's copy only: `self.texts`, the panel map, the caption and every receipt
+            # keep the mapped bytes, and the frame contract states the mandate
+            # (`wordless_reason="screenshot_paste"`) so the critics know the frame was ordered
+            # empty of text rather than having lost it.
+            text = ""
         if copyset is not None and not text.strip():
             # FR-304: a wordless source panel renders wordless. `prompts_engine._onimage_text`
             # falls back to `copy.headline` when a carousel slide's text is empty (`slide_text or
@@ -1898,7 +2227,12 @@ class _Deck:
                 slide_panel_source=self._panel_source_line(number),
                 # D-A: the real logos THIS panel showed, filtered and cleaned. Empty is the norm
                 # and means the pre-D-A rule — every mark stays a generic unlettered shape.
-                tool_marks=", ".join(self._sanctioned_marks(number)))
+                tool_marks=", ".join(self._sanctioned_marks(number)),
+                # D65/FR-370: order the empty plate, on this slide alone. The block's words and
+                # its geometry are the engine's (they quote the compositor's own `PLATE`), so all
+                # this passes is the decision — which `_paste_slides()` made before the deck
+                # started rendering.
+                screenshot_plate=plate)
             context["style_dna"] = self.dna  # FR-189: the one block that never varies
             context["render_prompt"] = self._guided(context["render_prompt"], number)
             prompt = env.engine.render(
@@ -1973,6 +2307,12 @@ class _Deck:
             # which one anchors the deck and in whose words. `None` on every deck that never fanned
             # out, which is the whole pre-D62 world and every `cover_candidates: 1` run after it.
             "cover_pick": self.cover_pick,
+            # FR-370 (v2.9.0, D65): the paste receipt, written ONTO the existing panel-map rows
+            # rather than into a structure of its own — the row already names the source slide the
+            # crop came from (`source_image`), so a second path key would be two answers to one
+            # question. `_paste_meta()` returns the record's own rows unchanged on every deck that
+            # ordered no plate, so nothing about a pre-D65 meta.yaml moves.
+            "panel_map": self._paste_meta(),
             # FR-328 (spec §6): the gate's own receipt, on EVERY terminal path it touched — pass,
             # blocked, degraded, budget stop, deadline stop. `None` when the gate never ran.
             "gauntlet": contracts.report_meta(self.report),
@@ -2091,6 +2431,49 @@ class _Deck:
             vision_check=fields["vision_check_result"].value)
         return self.folder.finish(**fields)
 
+    def _paste_meta(self) -> list[dict[str, Any]]:
+        """FR-370's four receipt keys, written onto this deck's panel-map rows (FR-73).
+
+        Returns the record's OWN rows, untouched, on every deck that ordered no plate — which is
+        every deck in a run with `screenshot_reuse: false`, every override brief and every unbound
+        deck. A deck that DID order one gets all four keys on every one of its rows, so the gallery
+        and a Phase-2 reader see one schema across a card rather than two:
+
+        * `pasted` — did this slide end up carrying the source's exact pixels;
+        * `paste_box` — the `screenshot_box` the crop was cut with, as `[x, y, w, h]` fractions,
+          or `null` on a row that ordered no plate;
+        * `paste_ok` — False exactly when a plate WAS ordered and the composite failed. True
+          elsewhere, including on rows that never ordered one: nothing failed there;
+        * `paste_reason` — the short prose behind a False, empty otherwise.
+
+        There is deliberately no fifth key naming the source file: `source_image` already does,
+        written by `generate._panel_map` from the same slide-intelligence record the paste read.
+
+        The rows are COPIED, never mutated in place: `AssetRecord.panel_map` is shared with the
+        copy stage's provenance in some paths, and a packaging step is not entitled to edit data
+        another creative may be reading.
+        """
+        rows = list(getattr(self.folder.record, "panel_map", ()) or ())
+        if not self.paste_slides and not self.pastes:
+            return [dict(row) for row in rows]
+        intel = self._intel()
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            number = _row_slide(row)
+            result = self.pastes.get(number)
+            slide = intel.slide(number) if intel is not None and number else None
+            box = getattr(slide, "screenshot_box", None) if number in self.paste_slides else None
+            out.append({
+                **dict(row),
+                "pasted": bool(result is not None and result.ok),
+                "paste_box": [round(value, 4) for value in box] if box else None,
+                # A row that ordered nothing has nothing to have failed at.
+                "paste_ok": bool(number not in self.paste_slides
+                                 or (result is not None and result.ok)),
+                "paste_reason": (result.reason if result is not None and not result.ok else ""),
+            })
+        return out
+
     def _route_ids(self) -> list[str]:
         """The configured id of every gpt-image-2 route this deck's slides really used (FR-241).
 
@@ -2188,6 +2571,19 @@ class _Deck:
         slide = intel.slide(number) if intel is not None else None
         brief = str(getattr(slide, "visual_brief", "") or "")
         if not brief.strip():
+            return ""
+        if number in self.paste_slides:
+            # FR-370, and it is FR-316's rule applied to the sharper case. This slide's content is
+            # a rectangle the render is ordered to leave EMPTY so the source's own screenshot can
+            # be composited into it. The brief describes exactly what that screenshot shows — "a
+            # tweet card with an avatar and three reply counts" — which is precisely the input
+            # that would make the model draw an invented one inside the plate.
+            self.env.log.event(
+                "visual_brief_dropped_plate",
+                f"{self.entry.asset_id} slide {number}: the panel's own screenshot is composited "
+                "into a reserved plate, so its visual brief is not sent — the render may not draw "
+                "what it is about to be handed (FR-370/FR-316)",
+                verbose_only=True, asset_id=self.entry.asset_id, slide=number)
             return ""
         text = self.texts[number - 1] if 1 <= number <= len(self.texts) else ""
         if not text.strip():  # FR-316: a wordless slide gets a content-free brief

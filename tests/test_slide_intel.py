@@ -222,7 +222,12 @@ async def test_each_slide_downloads_once_one_call_reads_them_all_and_source_yaml
         # truncation FLAG, which is contract data for the brief critic and never a blanking licence.
         "vision_text_original": "", "truncation_suspect": False,
         "chrome_text": "", "visual_brief": "hero image, heading centred", "brand_marks": [],
-        "vision_transcribed": False, "image_file": "slide_01.jpg"}
+        "vision_transcribed": False,
+        # D65/FR-370 provenance: what KIND of picture this panel was read as, and where its
+        # captured interface sat. `graphic` with a null box is the answer for every panel that is
+        # not a screenshot, and it is what a pre-D65 answer parses to.
+        "panel_kind": "graphic", "screenshot_box": None,
+        "image_file": "slide_01.jpg"}
     # the transcription keeps the line break it was given — verbatim means the shape too
     assert stored["slides"][1]["vision_text"] == "Druhý panel\nna dvou řádcích"
     assert stored["slides"][1]["vision_transcribed"] is True
@@ -646,7 +651,11 @@ def test_the_language_key_is_declared_top_level_and_required_but_never_per_slide
     assert set(schema["required"]) == {"slides", "language"}
     assert "language" not in slide_intel._SLIDE["properties"]
     assert set(slide_intel._SLIDE["required"]) == {
-        "slide", "onimage_text", "chrome_text", "visual_brief", "brand_marks", "mark_boxes"}
+        "slide", "onimage_text", "chrome_text", "visual_brief", "brand_marks", "mark_boxes",
+        # D65/FR-370: the per-panel kind and the screenshot's own box. Required of the MODEL
+        # (strict mode requires every declared property) and optional of the parser — an older
+        # cached answer reads as a `graphic` with no box, which is the pre-D65 behaviour.
+        "panel_kind", "screenshot_box"}
 
 
 # --------------------------------------------------------------------------- the hard boundary
@@ -683,7 +692,7 @@ def test_the_question_template_is_a_real_file_that_renders_with_no_placeholders(
     assert all(cue in lowered for cue in ("@handle", "url", "counter", "swipe"))
     assert set(slide_intel._SLIDE["required"]) == {
         "slide", "onimage_text", "chrome_text", "visual_brief", "brand_marks",
-        "mark_boxes"}
+        "mark_boxes", "panel_kind", "screenshot_box"}
     # v2.2.0: every mark row must say WHAT it is, and only `tool` is ever croppable. Required of
     # the model (strict mode requires every declared property) and optional of the parser, so the
     # schema could land a wave before the question learns to fill it.

@@ -89,6 +89,24 @@ all twenty-six again (the thinnest is `neon-glass-dark` at 303 characters of sla
     paper-editorial-carousel             1,527     1,807     351
     aurora-white-deck                    1,528     1,816     361
 
+**Wave 5's screenshot plate costs this table ONE character (FR-370, 2026-08-21).** The
+`{{screenshot_plate}}` slot was added to `carousel_slide.md` on a line of its own with NO label
+in front of it, deliberately: a labelled slot (`SCREENSHOT PLATE (ignore if empty): `) measured
+38 characters on EVERY slide of every style and put 18 of the 26 outside the measurement target
+immediately. Unlabelled, an unfilled slot is one blank line, so the table above moves by exactly
+that: every `slackB` is 1 lower and every `cutA` is unchanged except `big-number-editorial`
+(1,533 → 1,537, the trim's own rounding). The worst style is still `hypelead-brand-card` at 1,540
+against the 1,600 ceiling, and `measure_prompt_fit.py` still reads
+**`0 of 26 styles outside target`**.
+
+The block itself — 503 characters with its geometry and its precedence sentence — renders ONLY on
+a slide that actually reserves a plate, and that slide is CHEAPER than an ordinary one, not dearer.
+Measured on the worst style at tier A, raw assembly: an ordinary slide is 26,196 characters; the
+same slide as a paste slide is 24,444 WITH the block and 23,941 without it. The saving is
+structural rather than lucky — a plate slide's words are blanked (the screenshot carries them), so
+its TEXT block, its FR-186 accent echo, its `{{list_treatment}}` and its visual brief are all
+empty. The trio trim on that slide goes from 1,540 to 0.
+
 `slackB` is the characters left AFTER the every-legible-character marker at tier B — the quantity
 the four Wave-1 failures had driven negative. It is measured here rather than asserted because the
 assertion that matters is the marker's PRESENCE, which the tier-B test makes by name.

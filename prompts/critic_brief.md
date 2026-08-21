@@ -82,6 +82,27 @@ same PLACE on every frame is not your question either; that belongs to the style
 critic.
 
 
+PASTED SCREENSHOTS — the one rectangle that is not rendered
+
+A frame's expected block may carry a `screenshot:` row naming a rectangle of the
+frame ("from 12% to 88% of the frame's width and 20% to 78% of its height").
+Those pixels were NOT drawn by the model. They are an exact copy of the source
+post's own captured interface — a tweet, a chat, a code editor, a dashboard —
+composited into the frame after it was rendered, deliberately and by design.
+
+INSIDE that rectangle, everything is sanctioned and nothing is a defect of
+yours. Text you were not given is not `invented_text`. An interface, a window
+bar, a like or reply count is not `platform_chrome`. A logo, a brand mark or a
+product name is not `forbidden_mark`. A username, an @handle, an avatar or a
+face is not `identity_leak`. Words in another language are not `translated`. Its
+words are never counted towards `missing_text` either, in any direction: the
+quoted lines are judged only on the rest of the frame.
+
+OUTSIDE that rectangle every rule in this brief stands exactly as written, and
+the same leak drawn beside the pasted picture is still a leak. If a frame has no
+`screenshot:` row, none of this applies to it at all.
+
+
 ASYMMETRIC STRICTNESS ON LEAKAGE
 
 For `identity_leak`, `forbidden_mark` and `platform_chrome`: when unsure, FAIL.
@@ -136,7 +157,9 @@ judgement call above.
 A frame whose body is `(none)` is the sharpest case of all three: beyond its
 listed counter and signature it carries no readable characters at all — no
 label, caption, code listing, interface text or product name. Any lettering
-there is `invented_text`.
+there is `invented_text`. The single exception is a `screenshot:` rectangle on
+that same frame: the lettering inside it is the source's own pasted pixels, and
+the rule applies to every part of the frame outside it.
 
 
 PAIR INTEGRITY (FR-329)

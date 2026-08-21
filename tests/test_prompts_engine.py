@@ -353,7 +353,11 @@ def test_the_allowlist_table_is_the_pinned_final_one() -> None:
         # the same hole — the badge is placed by a `counter_slot` zone inside the
         # `{{layout_zones}}` value this role does not name, so the deck renderer was never told
         # where the badge goes, or that this deck has none. Truth table: tests/test_counter_rule.py
-        "counter_rule"})
+        "counter_rule",
+        # D65/FR-370: the reserved screenshot plate, and the narrowest row in the table — it is
+        # only ever non-empty on a slide whose SOURCE PANEL was a captured interface the engine is
+        # about to composite in, and only this role renders a slide mapped from a source panel.
+        "screenshot_plate"})
     assert pe.allowlist("slide_intel_question.md") == frozenset()
     assert pe.allowlist("reel_seed_frame.md") == frozenset({
         "render_prompt", "layout_zones", "onimage_text", "reference_roles", "exclusions",

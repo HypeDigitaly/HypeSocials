@@ -40,6 +40,13 @@ Greeked bars, texture lettering and similar filler named there are the style
 working correctly. Never report them as `garbled`, and never as `empty_element`
 either — a filler bar the style above sanctions is ordered, not padding.
 
+A frame whose expected block carries a `screenshot:` row holds an exact copy of
+the source's own captured interface inside the rectangle it names, pasted in
+after the render. Judge only how that picture SITS in the frame — clipped by an
+edge, colliding with a text block, stretched out of shape. Never judge its own
+contents: small, soft or dense lettering inside it is the source's screenshot as
+it really is, and is never `garbled`, `truncated` or `contrast`.
+
 These marks were ordered as REAL logos somewhere in this set, in their own true
 brand colours, exempt from the style's palette:
 
@@ -85,9 +92,13 @@ YOUR DEFECT CODES
   lorem-style filler standing where words would go, or a repeating grid of such
   shapes padding the layout out. A device belongs to a line the frame was
   ordered to carry; where no line was quoted for it, that device is left out of
-  the picture rather than drawn blank. ONE exception, and only this one: a
-  single flat, unlettered rounded plate reserved for a screenshot the engine
-  pastes in after the render was ORDERED that way — it is never this defect.
+  the picture rather than drawn blank. ONE exception, and only this one: the
+  flat rounded plate on a frame whose expected block carries a `screenshot:`
+  row. The source's own picture is pasted into that plate, and any surface still
+  showing around the picture is the plate, not padding — never this defect. A
+  bare, unlettered plate on a frame with NO `screenshot:` row is not covered:
+  the paste that plate was reserved for did not happen, and it is exactly this
+  defect.
 - `composition` — the frame does not hold together: the focal element or a text
   block colliding with or overlapping another, a duplicated subject or a
   duplicated text block, an element crowding the very edge with no margin,

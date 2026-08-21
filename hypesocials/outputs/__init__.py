@@ -40,6 +40,19 @@ D65 (FR-365) adds the alpha-halo guard, the SECOND sanctioned Pillow use in the 
     flatten_frame   last resort: composite a haloed frame onto a ground sampled from itself
     AlphaVerdict / FlattenResult
                     the two frozen answers; `clean` and `ok` are the only fields a caller gates on
+
+D65 (FR-370) adds the exact-pixel screenshot paste, the THIRD sanctioned Pillow use and the one
+that composites: after a carousel slide lands, the source panel's own captured interface is cut
+out of the already-downloaded source slide and written into the empty plate the render reserved.
+LOCAL, POST-RENDER, OUTPUT-SIDE — it never uploads, never touches a render payload and imports
+nothing from `render` or `generate`. Synchronous, like the two above, and belongs on a thread:
+
+    paste_screenshot
+                    composite one crop into one landed frame -> PasteResult (never raises)
+    plate_zone      the reserved rectangle as prose, quoted by the prompt and by the contract
+    PLATE / PLATES_DIR
+                    the geometry both readers share, and the never-published backup folder
+    PasteResult     the frozen answer; `ok` is the only field a caller gates on
 """
 
 from hypesocials.outputs.logwriter import LogWriter
@@ -59,6 +72,14 @@ from hypesocials.outputs.alpha_halo import (
     inspect_frame,
 )
 from hypesocials.outputs.gallery import write_gallery
+from hypesocials.outputs.screenshot_paste import (
+    PLATE,
+    PLATES_DIR,
+    PasteResult,
+    paste_screenshot,
+    plate_zone,
+    raw_backup_name,
+)
 from hypesocials.outputs.packager import (
     BLOCKED_FILE,
     GAUNTLET_REPORT_FILE,
@@ -87,6 +108,12 @@ __all__ = [
     "FlattenResult",
     "flatten_frame",
     "inspect_frame",
+    "PLATE",
+    "PLATES_DIR",
+    "PasteResult",
+    "paste_screenshot",
+    "plate_zone",
+    "raw_backup_name",
     "LogWriter",
     "Ledger",
     "days_since_use",

@@ -1,5 +1,5 @@
 Each attached image is one slide of a source slideshow, attached in slide
-order. Report exactly five things about every slide. Report nothing else.
+order. Report exactly six things about every slide. Report nothing else.
 
 1. ON-IMAGE TEXT — transcribe every word that appears ON the slide, exactly as
    it is written: same language, same spelling, same capitalisation, same
@@ -99,6 +99,32 @@ order. Report exactly five things about every slide. Report nothing else.
    marks are wanted across the whole deck — give the most prominent ones, and
    prefer a `tool` mark over any other kind when you have to choose.
 
+6. PANEL KIND & SCREENSHOT BOX — what kind of picture this slide is, in
+   exactly one of these three words:
+   - `screenshot` — a captured REAL interface: a tweet or X post, a Discord or
+     Slack conversation, a GitHub page, a code editor or a terminal, a chat with
+     an assistant, a dashboard, a settings page, an app store listing, or any
+     other real software or website UI photographed or screen-captured as it is.
+   - `graphic` — a designed layout: type set on a background, a chart or diagram
+     somebody drew, an icon grid, a quote card, a title slide.
+   - `photo` — a photograph of the physical world: a person, a room, an object,
+     a place.
+   A drawn or illustrated picture OF an interface is `graphic`, not
+   `screenshot`: the word means a real capture of real software, and a mock-up
+   somebody designed is a design. When you are not sure, answer `graphic`.
+
+   When and ONLY when the kind is `screenshot`, also give `screenshot_box`: the
+   bounding box of the captured interface itself, in FRACTIONS of the image,
+   never pixels — [x, y, w, h], each number between 0 and 1, measured from the
+   TOP-LEFT corner, x and w along the width, y and h down the height. Draw it
+   TIGHT around the interface: the window, card, chat panel or page as it is
+   captured, and nothing else. LEAVE OUT the creator's own additions around it —
+   their headline above it, their arrows, circles or highlight marks drawn onto
+   it, their @handle or watermark, the page counter, the swipe cue and any
+   caption they typed under it. A screenshot that fills nearly the whole slide
+   gets a box that is nearly the whole slide; that is expected and correct.
+   Every other kind of slide gets an empty list here.
+
 Then, ONCE for the whole deck and beside `slides`, report `language`: the
 two-letter ISO 639-1 code of the language the slides' WORDS are written in
 ("de", "cs", "en"), the majority one when they mix, and an empty string when
@@ -123,7 +149,9 @@ below are only an example of the shape a box takes):
           "kind": "tool",
           "box": [0.12, 0.04, 0.09, 0.06]
         }
-      ]
+      ],
+      "panel_kind": "graphic",
+      "screenshot_box": []
     }
   ]
 }

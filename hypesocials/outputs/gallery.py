@@ -46,6 +46,12 @@ Invariants:
   Neither is ever read off the document's `copy_mode`/`copy_language`: those answer for the DECK,
   and a mixed deck is the normal shape. A document with neither key on any row is a pre-D54 or
   pre-D63 run and prints exactly what it always did.
+- **A pasted screenshot is a per-ROW fact too** (FR-370, D65): a row's `pasted` flag means OUR
+  slide carries the source panel's own captured interface at its exact pixels, composited in
+  locally after the render landed. The `ours` chip says `screenshot` and links the pre-paste
+  render kept under `plates/` — never published, and the answer to "what did the model draw under
+  there". Read per row for the same reason `compressed` and `translated` are: one deck holds
+  pasted and rendered slides side by side, and a document-level flag would label both.
 - **`meta.yaml` is the only file this module opens** (module contract): `source_post`,
   `panel_map`, `source_panel_count`, `source_language` and `degradations` are read as
   written. `source.yaml` in the
@@ -81,6 +87,10 @@ from hypesocials.outputs.packager import (
     has_marker,
     read_meta,
 )
+# D65/FR-370 — the ONE spelling of `plates/slide_NN_raw.<ext>`, imported rather than re-derived:
+# the module that WRITES the backup owns its name, and a second derivation here is how a card ends
+# up linking a file that exists nowhere.
+from hypesocials.outputs.screenshot_paste import raw_backup_name
 from hypesocials.util import atomic_write, read_text
 
 GALLERY_FILE = "gallery.html"
@@ -458,7 +468,7 @@ def _panels_html(folder: Path, meta: _Meta, rows: list[dict[str, Any]]) -> str:
         pin = f"slide {slide or '?'} ← source panel {position or '?'}"
         tiles.append(f'<div class="pair"><div class="pin">{html.escape(pin)}</div>'
                      f'{_source_side(row, source_language)}'
-                     f'{_our_side(folder, ours.get(slide), used)}</div>')
+                     f'{_our_side(folder, ours.get(slide), used, row)}</div>')
     # Anything the deck delivered that no row claimed (a stray slide, an older meta) still shows:
     # media on disk is never hidden by a mapping that did not mention it.
     return (f'<div class="pairs">{"".join(tiles)}</div>{_panel_note(meta, rows)}'
@@ -508,14 +518,36 @@ def _source_side(row: dict[str, Any], source_language: str = "") -> str:
     return f'<div class="side">{"".join(parts)}</div>'
 
 
-def _our_side(folder: Path, item: Path | None, used: set[str]) -> str:
-    """OUR slide for that same index, or a stated gap when it never landed (FR-20/95)."""
+def _our_side(folder: Path, item: Path | None, used: set[str],
+              row: dict[str, Any] | None = None) -> str:
+    """OUR slide for that same index, or a stated gap when it never landed (FR-20/95).
+
+    The chip says `ours` on every ordinary slide and `ours · screenshot` on a slide whose source
+    panel was a captured interface the engine composited in at its exact pixels (D65/FR-370) —
+    read from the ROW's own `pasted` flag, never from the document's degradations, because the
+    paste is a per-slide fact and a deck can hold pasted and rendered slides side by side.
+
+    The chip links the RAW render kept under `plates/`, which is the whole reason that backup
+    exists: "what did the model draw under there" is the first question a plate that landed
+    off-centre raises, and one click is the honest way to answer it. The link is drawn only when
+    the file is actually on disk, so a run whose backup failed shows the chip without a dead href.
+    A row that ordered a plate and did NOT get it carries no chip at all: the frame is then the
+    empty plate the critics judged, and the card's `screenshot_paste_failed` badge is what says so.
+    """
     if item is None:
         return ('<div class="side"><span class="tag">ours</span>'
                 '<div class="gap">slide not delivered</div></div>')
     used.add(item.name)
     src = _href(folder.name, item.name)
-    return (f'<div class="side"><span class="tag">ours</span>'
+    tag = "ours"
+    if (row or {}).get("pasted"):
+        # Not added to `used`: that set filters `_media_html`'s NON-recursive globs of the asset
+        # folder, and `plates/` is a subfolder those globs never reach (nor may they — FR-72 keeps
+        # it out of the publishable set beside `covers/` and `source/`).
+        raw = raw_backup_name(item.name)
+        tag = (f'ours · <a href="{_href(folder.name, raw)}">screenshot</a>'
+               if (folder / raw).is_file() else "ours · screenshot")
+    return (f'<div class="side"><span class="tag">{tag}</span>'
             f'<a href="{src}"><img loading="lazy" src="{src}" alt="{html.escape(item.name)}">'
             "</a></div>")
 

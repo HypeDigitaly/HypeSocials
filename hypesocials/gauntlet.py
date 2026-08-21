@@ -364,6 +364,21 @@ class FrameContract:
     counter: str = ""  # "" when the deck has no counter
     signature: str = ""  # "" except a signed anchor (the wordmark text)
     is_list: bool = False  # list/table frame -> FR-329 pair integrity applies
+    #: D65/FR-370 — where this frame carries EXACT SOURCE PIXELS, as prose ("from 12% to 88% of
+    #: the frame's width and 20% to 78% of its height"), or `""` on every frame that carries none.
+    #:
+    #: It is a SANCTION, and the narrowest one in the contract. The engine composited the source
+    #: panel's own captured interface into that rectangle after the render landed, so everything
+    #: inside it — text nobody quoted, platform chrome, logos, @handles, faces, engagement counts
+    #: — is there BY DESIGN and is not a defect of any kind. Outside it every rule still stands,
+    #: unchanged, which is why the prose names the actual pasted rectangle rather than the plate
+    #: it sits in: a tall screenshot centred in a wide plate leaves surface on either side, and
+    #: that surface is still judged.
+    #:
+    #: Non-empty ONLY where the paste actually succeeded. A plate that was ordered and could not
+    #: be filled leaves an empty rounded rectangle on a paid slide, and that is a craft defect the
+    #: critics are meant to find (FR-370's `screenshot_paste_failed` tag is the other half of it).
+    screenshot_zone: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -1175,6 +1190,16 @@ def _expected_blocks(contract: DeckContract, numbers: Sequence[int]) -> str:
     that is wordless BY MANDATE says `(none)` and names why, which is the one thing a picture
     cannot tell a critic: an empty frame and a frame whose words failed to render look identical.
 
+    The `screenshot:` row (D65/FR-370) is the third of these per-frame facts and the one a picture
+    can least tell a critic: the rectangle it names is not rendered at all, it is a local composite
+    of the SOURCE's own captured interface, pasted in after the frame landed. Everything inside it
+    — words nobody quoted, platform chrome, a logo, an @handle, a face — is there by design.
+    Without the row a critic reads it as the deck's own worst leak; with it, the rules outside the
+    rectangle stay exactly as strict as they were. Written ONLY on frames whose paste SUCCEEDED,
+    and it goes through this same `{{expected_blocks}}` channel rather than a placeholder of its
+    own precisely because it is per-frame — a deck-wide slot would sanction the same rectangle on
+    frames that never took a paste.
+
     The `marks:` row (D65/FR-366) is the same idea for logos, and it is written ONLY on the frames
     that have one. The `{{required_marks}}` block elsewhere in every critic prompt is a deck-wide
     UNION and has to stay one — it is the exemption list, the reason a real logo's brand colours
@@ -1199,6 +1224,10 @@ def _expected_blocks(contract: DeckContract, numbers: Sequence[int]) -> str:
                     else f"  signature: {_NONE}")
         if marks := contract.marks(number):
             rows.append(f"  marks: {', '.join(marks)}")
+        if frame.screenshot_zone:
+            rows.append(f"  screenshot: {frame.screenshot_zone} carries EXACT PIXELS of the "
+                        "source's own screenshot, pasted in after the render — everything inside "
+                        "that rectangle is sanctioned")
         if frame.is_list:
             rows.append("  list frame: label/value pairs must stay together (FR-329)")
         if frame.truncation_suspect:

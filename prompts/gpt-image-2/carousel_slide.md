@@ -24,6 +24,7 @@ STYLE_DNA (identical on every slide of this deck — reproduce it exactly):
   character and motif only where they leave a choice open, never layout or
   wording.
 
+{{screenshot_plate}}
 SLIDE CONTENT — what this slide shows, composed in the style above:
   {{render_prompt}}
 

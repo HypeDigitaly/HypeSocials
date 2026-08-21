@@ -1818,3 +1818,74 @@ def test_fr346_a_creative_with_no_copy_provenance_at_all_defaults_to_source(
     built = generate._record(entry, env)
 
     assert built.copy_language == "source" and built.source_language == ""
+
+
+# ---------------------------------------------------- FR-370 (D65): the pasted screenshot chip
+
+
+def test_fr370_a_pasted_slide_says_so_and_links_the_raw_render(tmp_path: Path) -> None:
+    """The paste is a per-ROW fact, so the chip is per row and the deck-level keys are not read.
+
+    A deck holds pasted and rendered slides side by side — panel 2 was a captured interface, panels
+    1 and 3 were designed graphics — so a document-level flag would label all three. The chip also
+    links `plates/slide_NN_raw.jpg`, the pre-paste render, because "what did the model draw under
+    there" is the first question an off-centre plate raises and one click is the honest answer.
+    """
+    store_source(tmp_path)
+    document = meta(
+        source_post=source_post(), source_panel_count=3, slide_count=3,
+        panel_map=[row(1, 1, text="Panel one"),
+                   {**row(2, 2, text="Panel two"), "pasted": True, "paste_ok": True,
+                    "paste_box": [0.05, 0.15, 0.88, 0.7], "paste_reason": ""},
+                   row(3, 3, text="Panel three")])
+    folder = asset(tmp_path, document, media=("slide_01.jpg", "slide_02.jpg", "slide_03.jpg"))
+    (folder / "plates").mkdir()
+    (folder / "plates" / "slide_02_raw.jpg").write_bytes(JPEG)
+
+    html_text = page(tmp_path)
+
+    assert './0001_carousel_linkedin/plates/slide_02_raw.jpg">screenshot</a>' in html_text
+    assert html_text.count(">screenshot</a>") == 1, "one chip, on the one pasted row"
+    assert html_text.count(">ours<") == 2, "the other two rows keep the plain chip"
+    # FR-72: the backup is never published, so it is not fetched as media by the page either.
+    assert "plates/slide_02_raw.jpg" not in media_srcs(html_text)
+
+
+def test_fr370_a_pasted_row_without_its_backup_still_shows_the_chip(tmp_path: Path) -> None:
+    """A backup that failed to write is not a dead link on the card — the chip stays, plain.
+
+    The paste itself refuses to run without its backup, so this is the older-run and
+    hand-edited-meta case; either way a gallery that emitted an href to a file it had just checked
+    for would be the one thing FR-75 forbids outright.
+    """
+    store_source(tmp_path)
+    document = meta(
+        source_post=source_post(), source_panel_count=1, slide_count=1,
+        panel_map=[{**row(1, 1, text="Panel one"), "pasted": True, "paste_ok": True}])
+    asset(tmp_path, document, media=("slide_01.jpg",))
+
+    html_text = page(tmp_path)
+
+    assert "ours · screenshot</span>" in html_text
+    assert "plates/" not in html_text
+
+
+def test_fr370_a_failed_paste_shows_no_chip_and_badges_the_card(tmp_path: Path) -> None:
+    """The empty plate shipped, so the card says so in the vocabulary every tag already uses.
+
+    No chip, because nothing was pasted; a badge, because `screenshot_paste_failed` is a
+    degradation like every other and the gallery renders the whole enum in one loop (FR-73).
+    """
+    store_source(tmp_path)
+    document = meta(
+        source_post=source_post(), source_panel_count=1, slide_count=1,
+        degradations=["screenshot_paste_failed"],
+        panel_map=[{**row(1, 1, text="Panel one"), "pasted": False, "paste_ok": False,
+                    "paste_reason": "source slide slide_01.jpg is not on disk"}])
+    asset(tmp_path, document, media=("slide_01.jpg",))
+
+    html_text = page(tmp_path)
+
+    assert "screenshot</a>" not in html_text and "· screenshot" not in html_text
+    # Badges print the tag with its underscores opened out, like every other one in the loop.
+    assert '<span class="badge warn">screenshot paste failed</span>' in html_text

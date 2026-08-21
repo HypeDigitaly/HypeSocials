@@ -250,6 +250,24 @@ class RunConfig:
     # only, never a wizard step (NFR-16); shown on the confirm screen and the launch summary. An
     # unknown word is refused by `_coerce`'s Literal check at load, like the key above.
     copy_language_mode: Literal["source", "target"] = "source"
+    # v2.9.0 (D65/FR-370): exact-pixel screenshot reuse on BOUND carousel decks. When a source
+    # panel is a captured real interface — a tweet, a Discord thread, a GitHub page, a terminal, a
+    # tool's UI — the slide's render is ordered to leave one flat plate EMPTY (8%-92% of the width
+    # by 20%-78% of the height) and the engine composites that panel's own pixels into it after
+    # the frame lands. It is the answer to the one thing a render model cannot do: asked for "a
+    # tweet saying X" it invents the handle, the words and the avatar, on a frame we then publish.
+    #
+    # The compositing is LOCAL, POST-RENDER and OUTPUT-SIDE — source bytes still never reach a
+    # render payload (D41/D46/D48 unchanged, `refs._sanctioned` untouched). Per slide the gate
+    # additionally requires a parsed box, the source file on disk, and the IDENTITY SCREEN: a
+    # screenshot of the source creator's OWN post is skipped, because republishing their handle,
+    # avatar and engagement counts under our account is the leak FR-312 exists to prevent.
+    #
+    # `false` is the ENGINE default and the pre-D65 behaviour byte for byte (the D58 shape: a
+    # default that re-behaves configs nobody opted into is wrong). The three brand configs pin
+    # `true`. Scope is bound, panel-mapped carousels: images, reels, override briefs and unbound
+    # decks never read it.
+    screenshot_reuse: bool = False
     reel_overlay_text: Literal["seed_frame", "in_model", "none"] = "seed_frame"
     reel_audio: bool = True
     reel_duration_s: int = 5  # 4–30; out of range is CLAMPED at pre-flight, never rejected here

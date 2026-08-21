@@ -104,6 +104,12 @@ YOUR DEFECT CODES
   carries one. Frame 1 is exempt. A chip, badge or signature that no frame's
   contract row calls for is never a reason to fail the frames that omit it;
   frame 1 carrying one it was not ordered is frame 1's own defect.
+  A frame whose expected block carries a `screenshot:` row holds an exact copy of
+  the source's own captured interface inside the rectangle it names, pasted in
+  after the render: that rectangle occupies the frame's content region BY
+  MANDATE, and its palette, its type and its grid are the source's, never this
+  deck's — it is never a consistency, palette or layout defect, and the frame
+  around it is judged as strictly as every other.
 - `counter_placement` — the position badge sits somewhere else, or is styled
   differently, than on the FIRST frame that carries one, or is not in the
   chip/badge treatment the style describes. Whether the badge shows the right

@@ -91,6 +91,28 @@ run:
                                    # source post of that topic (FR-99/FR-291), so six siblings
                                    # are six different-looking posts, not six near-duplicates.
   carousel_anchor: true            # slide 1 renders first and references slides 2-N
+  screenshot_reuse: false          # true | false (v2.9.0/D65/FR-370) - exact-pixel screenshot
+                                   # reuse on BOUND carousel decks. When a source panel is a REAL
+                                   # captured interface (a tweet, a Discord or Slack thread, a
+                                   # GitHub page, a terminal, a tool's UI), that slide's render is
+                                   # ordered to leave ONE flat rounded plate empty - 8%-92% of the
+                                   # width by 20%-78% of the height - and after the frame lands the
+                                   # engine composites the panel's OWN pixels into it. The words on
+                                   # that slide are not re-set: the screenshot carries them.
+                                   # Why: a render model cannot draw a real screenshot. Asked for
+                                   # "a tweet saying X" it invents the handle, the words, the
+                                   # avatar and the engagement counts, on a frame about to be
+                                   # published. The fix is the source's own pixels.
+                                   # The compositing is LOCAL, POST-RENDER and OUTPUT-SIDE: source
+                                   # bytes still never reach a render payload (D41/D46/D48 stand),
+                                   # the raw render is kept under <asset>/plates/, and a failed
+                                   # composite ships the empty plate tagged screenshot_paste_failed
+                                   # rather than hiding it. A screenshot of the SOURCE CREATOR's
+                                   # own post is never reused (identity screen): republishing their
+                                   # handle, avatar and counters under our account is exactly the
+                                   # leak FR-312 prevents in the words. The three brand configs pin
+                                   # true; this default stays false so a config that never opted in
+                                   # behaves exactly as it did before D65.
   cover_candidates: 1              # 1 | 2 | 3 (v2.6.0/D62/FR-351) - how many slide-1 renders a
                                    # chained deck orders before one is chosen as the anchor. 1 is
                                    # the single-cover path (engine default, pre-D62 behaviour).

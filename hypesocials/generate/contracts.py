@@ -130,6 +130,7 @@ def frame_contract(
     signature: str = "",
     wordless_reason: str = "",
     truncation_suspect: bool = False,
+    screenshot_zone: str = "",
 ) -> FrameContract:
     """ONE frame's row: the verbatim lines it was ordered to carry, and the four facts about them.
 
@@ -142,6 +143,12 @@ def frame_contract(
     `is_list` is asked of the STYLE, through `styles.is_list_panel` — the same predicate that
     decided whether this frame's render prompt carried the list treatment (FR-304b/FR-329), so a
     critic can never be told to check pair integrity on a frame that was never set as a list.
+
+    `screenshot_zone` (D65/FR-370) is prose naming the rectangle on this frame that holds EXACT
+    SOURCE PIXELS — the source panel's own captured interface, composited in locally after the
+    render landed. It is passed through untouched, and the caller may only pass it for a paste
+    that SUCCEEDED: it sanctions everything inside that rectangle, so a plate that was ordered and
+    left empty must never carry one.
     """
     lines = [line for line in str(text or "").splitlines() if line.strip()]
     return FrameContract(
@@ -155,6 +162,7 @@ def frame_contract(
         counter=str(counter or ""),
         signature=str(signature or ""),
         is_list=bool(style is not None and is_list_panel(style, str(text or ""))),
+        screenshot_zone=str(screenshot_zone or ""),
     )
 
 
