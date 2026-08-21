@@ -62,28 +62,28 @@ a rule from a past failure - never launch `run.bat` inside a normal foreground o
    (Bash alternative: `cmd //c start //b "" cmd //c "C:/Users/Pavli/Desktop/HypeDigitaly/GIT/HypeSocials/logs/autopilot/<STAMP>.cmd"`.)
    Then confirm within 10 s that the console log exists and has its first lines:
    `ls -la logs/autopilot/<STAMP>.console.log && head -5 logs/autopilot/<STAMP>.console.log`
-4. Wait with the **Monitor tool** (persistent is NOT needed; set `timeout_ms` to 4,500,000 = 75 min).
-   The script polls every 60 s and emits only the lines you act on; it exits on the end marker:
+4. Wait with FOREGROUND blocking calls - NOT the Monitor tool and NOT `run_in_background`.
+   WHY (measured 2026-08-21, run 20260821_115013): in headless `claude -p` mode the session ends
+   its turn the moment a Monitor is armed, the process exits with code 0, and no notification ever
+   wakes it - the engine kept running detached, but nobody reviewed it. A foreground Bash call
+   blocks the turn, so the session stays alive. One call may block at most 10 minutes, so wait in
+   9-minute slices and REPEAT the same call until it prints `ENGINE_FINISHED`. Run this exact
+   command with the Bash tool and `timeout: 590000` (replace `$STAMP`); call it again each time it
+   prints `STILL_RUNNING`, up to 9 times (81 minutes):
    ```
    LOG="C:/Users/Pavli/Desktop/HypeDigitaly/GIT/HypeSocials/logs/autopilot/$STAMP.console.log"
-   seen=0
-   while true; do
-     if [ -f "$LOG" ]; then
-       total=$(wc -l < "$LOG")
-       if [ "$total" -gt "$seen" ]; then
-         tail -n +$((seen+1)) "$LOG" | grep -E --line-buffered "^\[[0-9]+/10\]|^exit=|Traceback|ERROR|refus|exit code"
-         seen=$total
-       fi
-       grep -q "^exit=" "$LOG" && break
+   end=$(( $(date +%s) + 540 ))
+   while [ $(date +%s) -lt $end ]; do
+     if [ -f "$LOG" ] && grep -q "^exit=" "$LOG"; then
+       grep -E "^\[[0-9]+/10\]|^exit=|run failed|Traceback|refus|TOTAL" "$LOG"
+       echo "ENGINE_FINISHED $(grep '^exit=' "$LOG")"; exit 0
      fi
-     sleep 60
+     sleep 30
    done
-   echo "ENGINE_FINISHED $(grep '^exit=' "$LOG")"
+   echo "STILL_RUNNING last stage: $(grep -E '^\[[0-9]+/10\]' "$LOG" | tail -1)"
    ```
-   The Monitor tool gives you one notification per emitted line. Keep idle between notifications -
-   do NOT re-run the loop, do NOT open the log more than once a minute.
-   If the Monitor times out at 75 min with no `exit=` line: treat it as a crash (Step 4c), and do not
-   kill the engine - it may still be packaging.
+   Between slices do nothing else - no log reading, no other work. If nine slices pass with no
+   `exit=` line: treat it as a crash (Step 4c) and do not kill the engine - it may still be packaging.
 5. After `exit=`, read the run id: `RUN=$(cat output/latest.txt)`. If `RUN` equals `PREV`, the engine
    never created a run folder (it died in pre-flight) - go to Step 5.
 
@@ -173,7 +173,7 @@ One section per deck, in asset order. Keep it short; the human reads this first.
 4c. NEEDS_HUMAN. Write `logs/autopilot/NEEDS_HUMAN_<RUN or STAMP>.md` (and name it in the log row)
 when ANY of these is true:
 - the console log has a `Traceback` (paste the last 30 lines of it into the file),
-- the Monitor hit the 75 min ceiling without `exit=`,
+- nine 9-minute wait slices passed without an `exit=` line,
 - a deck defect looks like a CODE bug, not a render fluke (same defect code on 3+ decks, a
   `panel_map` row whose `source_text` is empty with no `drop_reason`, a counter detected that
   contradicts the source slides, a `cover_pick.degraded: true` on every deck),
