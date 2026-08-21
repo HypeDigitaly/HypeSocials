@@ -557,6 +557,16 @@ def assign(entries: Sequence[PlanEntry], selection: Selection, config: Config) -
     # resource inside a run exactly as it is across runs (§0.10), so two carousels on one topic
     # take its first and second unused post rather than quoting the same slides twice.
     burnt: set[str] = set(selection.burnt_posts)
+    # FR-369 (v2.9.0, D65). `False` on every ordinary run, and every branch it guards below is
+    # written so that reading it as False leaves this function byte-identical to its pre-D65 self.
+    # Under the style test the material must be a CONSTANT: seventeen decks that each quoted a
+    # different post would differ in their words, their panel count and their counter as well as in
+    # their style, and no one could then say which of those the picture in front of them came from.
+    # So the first carousel group picks exactly as it always did — the strongest bindable topic,
+    # its top-ranked fresh post — and that one `(topic, post)` pair is then handed to every later
+    # carousel group unchanged.
+    style_test = bool(config.run.style_test)
+    pinned: tuple[TrendItem, SourcePost] | None = None
     floor = _supply_floor(entries, config)
     available, off_language = _carousel_supply(pool, config, burnt, floor)
     result = Assignment(
@@ -579,7 +589,16 @@ def assign(entries: Sequence[PlanEntry], selection: Selection, config: Config) -
         platform = members[0].platform
         binder = ((lambda trend: fresh_source_post(trend, config, burnt, platform=platform))
                   if fmt == "carousel" else None)
-        trend, post, reason = _pick(pool, rank, uses, fmt, max_reuses, binder=binder)
+        if style_test and fmt == "carousel" and pinned is not None:
+            # The pin bypasses `_pick` outright rather than teaching it a mode. `_pick` answers a
+            # supply question — which topic still has capacity, which of its posts is still unused
+            # — and under the style test there is no supply question left to ask: the answer was
+            # decided by the first group and every later group is told it. Going through the picker
+            # would only give it the chance to say no (the post is now bound, its topic's rank may
+            # have moved) to a pairing that is not negotiable.
+            trend, post, reason = pinned[0], pinned[1], "reuse"
+        else:
+            trend, post, reason = _pick(pool, rank, uses, fmt, max_reuses, binder=binder)
         if trend is None:
             for entry in members:
                 entry.status = PlanEntryStatus.SKIPPED
@@ -605,15 +624,28 @@ def assign(entries: Sequence[PlanEntry], selection: Selection, config: Config) -
                 entry.slide_count = deck_length(post, config, entry.platform)
             entry.asset_id = _asset_id(entry, trend.name)
         if post is not None:
-            burnt.add(post.post_id)  # spent for the rest of this run, as well as for the window
+            if not style_test:
+                # FR-369 skips the burn, and only this line stands between the mode and itself: a
+                # burnt post is unbindable for the rest of the run (§0.10), so the very first deck
+                # would spend the material the other sixteen are supposed to share. The window's
+                # own burnt ids are still honoured — the mode picks a FRESH post like any run, it
+                # simply refuses to spend it — and history is not written either (`runner._package`
+                # under the same flag), so the post is exactly as unused tomorrow as it was today.
+                burnt.add(post.post_id)  # spent for the rest of this run, as well as the window
             result.carousel_posts_bound += 1
+            if style_test and pinned is None:
+                pinned = (trend, post)  # every later carousel group is told this pair
         result.decisions.append(AssignmentDecision(
             group, [entry.asset_id for entry in members], fmt, trend.history_key, reason,
             use_index=use_index, source_post_id=post.post_id if post else "",
             detail=f"{trend.name} · strength {trend.strength:.3f} · "
                    f"{'slideshow' if trend.is_slideshow else 'video'} source · use #{use_index}"
                    + (f" · post {post.post_id} · {members[0].slide_count} slide(s) of "
-                      f"{source_panel_count(post)} source panel(s)" if post else "")))
+                      f"{source_panel_count(post)} source panel(s)" if post else "")
+                   # FR-369's audit trail: the decision line is where an operator reads WHY two
+                   # decks quote one post, and without this the run.log would look like the
+                   # duplicate binding §0.10 exists to forbid.
+                   + (" · style_test: post pinned" if style_test and post is not None else "")))
     return result
 
 

@@ -1348,6 +1348,95 @@ async def test_the_contract_reaches_the_critics_as_enumerated_line_blocks(tmp_pa
     assert dict(engine.contexts)["critic_brief.md"]["forbidden_terms"] == "Acme"
 
 
+async def test_fr366_a_mark_is_demanded_on_its_own_frame_and_exempted_across_the_deck(
+    tmp_path: Path,
+) -> None:
+    """D65/FR-366: the union SANCTIONS, the per-frame rows ACCUSE, and they are not the same list.
+
+    `required_marks` has to stay deck-wide — it is why a real logo's brand colours are not a
+    palette defect and its own lettering is not invented text, on whichever frame it turns up. But
+    read as a demand it says every frame owes every mark, and that is how the 08-21 audit came to
+    report `missing_mark` on slides 02, 03 and 07 of a deck whose source showed that logo on slide
+    05 alone — after which the fix round drew one there to satisfy it.
+    """
+    contract = gauntlet.DeckContract(
+        frames=[gauntlet.FrameContract(number=1, body_lines=["FIRST"]),
+                gauntlet.FrameContract(number=2, body_lines=["SECOND"])],
+        required_marks=["Notion", "Figma"], frame_marks={1: ["Notion"], 2: ["Figma"]},
+        platform="linkedin")
+    call = _Call([{"brief": _clean(2), "system": _clean(2), "craft": _clean(2)}])
+    engine = _Engine()
+    await gauntlet.run_deck(_frames(tmp_path, 2), contract, _Rerender(tmp_path=tmp_path),
+                            cfg=_cfg(rounds_max=1), call=call, log=_Log(), engine=engine)
+
+    context = dict(engine.contexts)["critic_brief.md"]
+    assert context["required_marks"] == "Notion, Figma", "the exemption list stays the union"
+    first, second = context["expected_blocks"].split("\n\n")
+    assert "marks: Notion" in first and "marks: Figma" not in first
+    assert "marks: Figma" in second and "marks: Notion" not in second
+
+
+async def test_a_frame_that_was_ordered_no_mark_carries_no_marks_row_at_all(
+    tmp_path: Path,
+) -> None:
+    """The silent half of FR-366: no row means no demand, and the templates say so in words.
+
+    An empty `marks:` row would read to a critic as a mark it could not name rather than as a
+    frame that owes none — and it would cost a line of prompt on every wordless slide in the run.
+    """
+    contract = gauntlet.DeckContract(
+        frames=[gauntlet.FrameContract(number=1, body_lines=["FIRST"])],
+        required_marks=["Notion"], frame_marks={}, platform="linkedin")
+    call = _Call([{"brief": _clean(1), "system": _clean(1), "craft": _clean(1)}])
+    engine = _Engine()
+    await gauntlet.run_deck(_frames(tmp_path, 1), contract, _Rerender(tmp_path=tmp_path),
+                            cfg=_cfg(rounds_max=1), call=call, log=_Log(), engine=engine)
+
+    assert "marks:" not in dict(engine.contexts)["critic_brief.md"]["expected_blocks"]
+
+
+#: D65/FR-367, pinned as text because it is text that does the work. Each row is
+#: `(template, a phrase that MUST be there, a phrase that must NOT be)` — the "must not" side is
+#: the withdrawn wording, so a future edit that quietly restores it fails here rather than in a
+#: paid run. `""` on either side means "nothing to assert in that direction".
+_REBALANCE: tuple[tuple[str, str, str], ...] = (
+    # The brief critic's when-unsure bar for everything that is not leakage. The leakage paragraph
+    # above it keeps its own when-unsure-FAIL, which the next row pins.
+    ("critic_brief.md", "For every other code, when unsure, PASS.",
+     "For everything else, report what you can actually see."),
+    ("critic_brief.md", "when unsure, FAIL", ""),
+    # `platform_chrome` is tier 1 and blocks a deck past `fail_action: degrade`, so it may only
+    # cover a REAL platform's own furniture. A stylised illustration was blocking whole decks.
+    ("critic_brief.md", "A REAL social platform's own furniture", "an invented app UI"),
+    # The three content checks the audit went through unflagged: 15 fabricated benchmark numbers,
+    # one sentence rendered six times, and a numbered ladder with a step missing.
+    ("critic_brief.md", "1. NUMERALS.", ""),
+    ("critic_brief.md", "2. DUPLICATION.", ""),
+    ("critic_brief.md", "3. ORDINALS.", ""),
+    # And the per-frame marks rule the row above builds on.
+    ("critic_brief.md", "carries a `marks:` row naming it", ""),
+    # The style critic's pedantry damping: about two thirds of the audit's standing defects were
+    # band heights and card widths, spent out of the same re-render budget the content needed.
+    ("critic_system.md", "MEASUREMENTS ARE NOT YOUR SUBJECT.", ""),
+    ("critic_system.md", "Never spend this deck's", ""),
+    # A line that simply stops is truncation too, with nothing visibly sliced.
+    ("critic_craft.md", "Or grammatically: a line that simply", ""),
+)
+
+
+@pytest.mark.parametrize(("role", "present", "absent"), _REBALANCE)
+def test_fr367_the_critic_rebalance_ships_in_both_copies_of_every_template(
+    role: str, present: str, absent: str,
+) -> None:
+    """FR-183: a prompt lives in TWO places, and a rule that reaches only one of them is a rule
+    that silently disappears the moment a template file is unreadable — the one moment nobody is
+    reading the prompt. `test_template_parity` proves the two copies agree; this proves WHAT they
+    agree on, in the words D65 decided."""
+    for text in ((PROMPTS / role).read_text(encoding="utf-8"), pe._BUILT_INS[role]):
+        assert present in text, f"{role}: the FR-367 rule is missing"
+        assert not absent or absent not in text, f"{role}: the withdrawn wording is still here"
+
+
 async def test_each_critic_gets_exactly_the_context_its_shipped_template_names(
     tmp_path: Path,
 ) -> None:
@@ -1558,7 +1647,10 @@ def test_the_fix_suffix_never_carries_a_critics_own_words() -> None:
                             detail='the slide says "BUY NOW FROM ACME"')],
         contract=gauntlet.DeckContract(forbidden_terms=["Acme"]))
     assert "BUY NOW" not in suffix and "Acme" not in suffix
-    assert "render no words there that the TEXT block does not quote" in suffix
+    assert "render no words there the TEXT block does not quote" in suffix
+    # D65/FR-367: the same remedy now names the two invention shapes the 08-21 audit shipped
+    # unflagged — a fabricated number and one sentence printed six times.
+    assert "each quoted line once" in suffix and "every numeral exactly as quoted" in suffix
 
 
 def test_a_repeated_code_is_remedied_once_and_the_order_is_the_sheets_order() -> None:

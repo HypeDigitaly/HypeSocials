@@ -262,9 +262,23 @@ _MAX_MARKS = 4
 #: What is never sanctioned, however the panel showed it: the creator's signature and the
 #: platform's own furniture. Every render template bans platform UI outright, so a "TikTok
 #: watermark" on this line would put two instructions in the same prompt at war.
+#:
+#: These are SUBSTRING tests against the raw box label, which is safe only because every entry is
+#: long and distinctive enough that no product brand contains it by accident. `bluesky` joined the
+#: list in v2.9.0 (D65/FR-366) beside the platforms that were already here.
 _CHROME_WORDS = ("watermark", "handle", "username", "user name", "profile", "avatar", "follow",
                  "swipe", "tiktok", "instagram", "facebook", "youtube", "snapchat", "linkedin",
-                 "pinterest", "threads", "twitter", "reddit", "whatsapp", "telegram")
+                 "pinterest", "threads", "twitter", "reddit", "bluesky", "whatsapp", "telegram")
+#: D65/FR-366: the platform names too SHORT to test as substrings. X renamed itself to ONE LETTER,
+#: and `"x" in folded` sanctions nothing and forbids everything — it matches Xero, Linux, Webflow,
+#: "text", "box", every mark whose name or descriptor happens to contain the letter. So these are
+#: matched against the PEELED BRAND NAME, whole and exact: `mark_name` has already cut the trailing
+#: location clause and peeled the descriptors, so "X.com wordmark, top left" reduces to "X.com" and
+#: "X logo" to "X" — while "Xero logo", "Linux penguin icon" and "Framer X logo" reduce to names
+#: that are not on this list and are sanctioned as the brands they are. The 2026-08-21 audit had
+#: "X.com wordmark" demanded as a REQUIRED mark on three decks because no substring in the list
+#: above could see it.
+_CHROME_NAMES = frozenset({"x", "x.com", "t.co"})  # `twitter.com` needs no row: `twitter` is above
 
 #: FR-315: how many cropped MARK PATCH references one slide may carry. Four is `_MAX_MARKS` —
 #: a slide never sanctions more marks than that, so it can never want more patches — and the
@@ -290,9 +304,59 @@ _MIN_AUTHOR_IDENT = 4
 
 
 def _is_chrome(raw: str) -> bool:
-    """True for a mark that is the creator's or the platform's furniture, not a product logo."""
+    """True for a mark that is the creator's or the platform's furniture, not a product logo.
+
+    Two tests, and the split between them is the whole point (D65/FR-366). `_CHROME_WORDS` are
+    long, distinctive names and are matched anywhere in the label, because "TikTok" inside
+    "TikTok watermark, top left" is the same platform whatever prose surrounds it. `_CHROME_NAMES`
+    are the very short platform names — X is one letter — and matching those anywhere would forbid
+    every mark ever named, so they are compared against the PEELED name, whole and exact.
+    """
     folded = str(raw or "").casefold()
-    return "@" in folded or any(word in folded for word in _CHROME_WORDS)
+    if "@" in folded or any(word in folded for word in _CHROME_WORDS):
+        return True
+    return mark_name(str(raw or "")).casefold() in _CHROME_NAMES
+
+
+def _author_forms(post: Any) -> frozenset[str]:
+    """This source post's own identity keys, spelled the way a mark name is spelled (D65/FR-366).
+
+    The same two fields and the same two functions as `slide_intel._identity`: `author` and
+    `author_name`, each put through `mark_name` and then `collapse`. One vocabulary on both sides
+    is what makes the comparison below possible at all — before D65 this side collapsed the RAW
+    author string while the mark side collapsed the PEELED name, which is the asymmetry
+    `sources/mark_names` was extracted to make impossible to re-introduce.
+    """
+    return frozenset(key for value in (getattr(post, "author", ""),
+                                       getattr(post, "author_name", ""))
+                     if (key := collapse(mark_name(str(value or "")))))
+
+
+def _is_author_mark(name: str, idents: Collection[str]) -> bool:
+    """Is this mark the SOURCE CREATOR's own signature, however the two were written?
+
+    THE BUG THIS FUNCTION EXISTS TO END (D65/FR-366). The test used to be one-directional —
+    `if author and author in collapse(name)` — which asks whether the whole handle appears inside
+    the mark's name. Handles carry suffixes that marks do not: the handle is `devrush_01`
+    (collapsed `devrush01`) and the mark on the panel is `DevRush` (collapsed `devrush`), and
+    `"devrush01" in "devrush"` is False. So the creator's own wordmark sailed through the sanction
+    gate and became a REQUIRED mark the critic then demanded on every frame, while the very same
+    identity was ALSO on the forbidden list as a handle — a contract at war with itself that
+    blocked two good decks twice each in the 2026-08-21 audit.
+
+    Containment is therefore tested BOTH ways: the identity inside the mark ("DevRush Labs" for
+    handle `devrush`) and the mark inside the identity (`DevRush` for handle `devrush_01`). The
+    length guard applies to the SHORTER of the two, because that is the side doing the matching:
+    a three-letter mark found inside a long handle, or a three-letter handle found inside a long
+    brand, is a coincidence rather than a signature — "AI" would kill every AI-named tool on the
+    panel. `_MIN_AUTHOR_IDENT` is the same floor `_scrub_creator` uses on visual briefs.
+    """
+    key = collapse(mark_name(str(name or "")))
+    if not key:
+        return False
+    return any(min(len(key), len(ident)) >= _MIN_AUTHOR_IDENT
+               and (ident in key or key in ident)
+               for ident in idents if ident)
 
 
 def _incomplete_text(asset_id: str, delivered: Collection[int], texts: Sequence[Any],
@@ -1464,6 +1528,20 @@ class _Deck:
         FORBIDDEN side (FR-330) is the expensive half and is built from three sources — the
         competitor list this deck's prompts already suppress, the source creator's identity in every
         spelling the payload offers (FR-312), and every mark the sanction gate refused.
+
+        **The REQUIRED side is narrower than the sanction list (D65/FR-366), and it is PER FRAME.**
+        A sanctioned mark only becomes a required one when this deck actually cropped its pixels
+        (`_patched_marks` joins the sanction list to `self.patches`), and it is required only on
+        the frames whose own source panel carried it. Both halves fix the same defect. A mark with
+        no patch reached the renderer as a NAME in a "tool marks" line — an optional hint, not an
+        order — so demanding it back off the picture was demanding something nobody bought; and the
+        deck-wide UNION told the critic that every frame owed every mark, so the 2026-08-21 audit
+        has `missing_mark` on slides 02, 03 and 07 of a deck whose source showed that logo on
+        slide 05 alone. The re-render then INVENTED the mark to satisfy the demand, which is the
+        one outcome FR-315 exists to prevent. A mark that is sanctioned but unpatched is now
+        NEITHER required NOR forbidden — neutral — and the FORBIDDEN side still reads the FULL
+        sanction list, so nothing that was legal to draw becomes a leakage defect for lacking
+        pixels.
         """
         facts = contracts.panel_facts(self.env, self.entry)
         frames = [
@@ -1478,10 +1556,13 @@ class _Deck:
                 truncation_suspect=bool(facts.get(number, {}).get("truncation_suspect")))
             for number in numbers]
         sanctioned = [name for number in numbers for name in self._sanctioned_marks(number)]
+        frame_marks = {number: self._patched_marks(number) for number in numbers}
         return contracts.deck_contract(
             frames, entry=self.entry, style=self.style, wordmark=self.wordmark,
             counter=self._counter(1),
-            required_marks=list(dict.fromkeys(sanctioned)),
+            required_marks=list(dict.fromkeys(name for number in numbers
+                                              for name in frame_marks[number])),
+            frame_marks={number: names for number, names in frame_marks.items() if names},
             forbidden=contracts.forbidden_terms(
                 competitors=self._competitors,
                 creator_forms=contracts.creator_forms(self.source_post),
@@ -1702,6 +1783,23 @@ class _Deck:
             if url:
                 return Reference(url, _NEIGHBOUR_ROLE.format(number=near))
         return None
+
+    def _patched_marks(self, number: int) -> list[str]:
+        """This slide's sanctioned marks that this deck actually CROPPED — D65/FR-366's join.
+
+        The sanction list says what a slide MAY draw; `self.patches` says what it was given the
+        pixels to draw. Only the intersection is a mark the gauntlet may demand back off the
+        finished frame (`_contract`), because a mark that rode as a bare name in the prompt's tool
+        line was a hint the render model was free to leave out — and telling a critic to fail its
+        absence is how the 08-21 audit's re-renders came to INVENT an Anthropic mark on three
+        slides that never carried one.
+
+        Spelled through the same `collapse(mark_name(...))` pair the patch table is keyed with, so
+        this method and `_patch_refs` below can never disagree about whether a mark has pixels: the
+        gauntlet is told a mark is required exactly when the renderer was handed its patch.
+        """
+        return [name for name in self._sanctioned_marks(number)
+                if collapse(mark_name(name)) in self.patches]
 
     def _patch_refs(self, number: int) -> list[Reference]:
         """FR-315: this slide's sanctioned marks that have pixels, as MARK PATCH references.
@@ -2199,7 +2297,10 @@ class _Deck:
           panel's contents, and a competitor logo drawn in full colour is the one outcome the
           blocklist exists to prevent;
         * the source AUTHOR's own identity — a creator's mark is their signature, and reproducing
-          it is passing their brand off inside ours (FR-292 signs our decks, not theirs);
+          it is passing their brand off inside ours (FR-292 signs our decks, not theirs). Tested
+          BOTH ways since D65/FR-366 (`_is_author_mark`): the old one-directional test asked only
+          whether the whole handle sat inside the mark, so handle `devrush_01` never matched mark
+          `DevRush` and the creator's own wordmark became a REQUIRED mark;
         * anything CHROME-shaped — watermarks, @handles, platform marks. The render templates ban
           platform UI in every frame whatever this line says, so sanctioning it would only put the
           two instructions at war.
@@ -2215,14 +2316,14 @@ class _Deck:
         # logo drawn in full brand colour on our slide.
         blocked = tuple(word for word in (c.strip().casefold() for c in self._competitors)
                         if len(word) >= 2)
-        author = collapse(str(getattr(self.source_post, "author", "") or ""))
+        idents = _author_forms(self.source_post)
         out: list[str] = []
         for raw in list(getattr(slide, "brand_marks", ()) or ())[:_MAX_MARKS_READ]:
             name = mark_name(str(raw or ""))
             folded = name.casefold()
             if not name or _is_chrome(str(raw)) or any(word in folded for word in blocked):
                 continue
-            if author and author in collapse(name):
+            if _is_author_mark(name, idents):
                 continue
             if folded not in {existing.casefold() for existing in out}:
                 out.append(name)

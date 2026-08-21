@@ -2282,13 +2282,63 @@ async def test_a_panels_own_product_logo_is_sanctioned_and_everything_else_is_no
         "a panel that showed no mark sanctions none — the line stays empty (ignore-if-empty)"
 
 
+async def test_fr366_a_handle_with_a_suffix_still_kills_the_creators_own_wordmark(
+    tmp_path: Path,
+) -> None:
+    """D65/FR-366: the author test runs BOTH ways, and this deck is why.
+
+    The handle is `devrush_01` and the mark on the panel is `DevRush`. The old one-directional
+    test asked whether the whole handle sat inside the mark — `"devrush01" in "devrush"` is False —
+    so the creator's own wordmark passed the sanction gate and became a REQUIRED mark while the
+    same identity sat on the FORBIDDEN list as a handle. That contract is at war with itself and
+    it blocked two otherwise good decks twice each in the 08-21 audit.
+    """
+    entry = make_entry(slides=2, source_post_id="post-a")
+    trends = make_trends(panels=2)
+    trends["t1"].posts[0].author = "devrush_01"
+    env = make_env(tmp_path, entry, texts=["one", "two"], trends=trends)
+    give_intel(env, panels=2, marks=[["DevRush logo", "Notion logo"], []])
+    submit = FakeSubmit()
+
+    await render_carousel(entry, env, make_folder(tmp_path, entry), submit=submit)
+
+    assert marks_line(submit.slide(1).prompt) == "Notion", \
+        "the creator's own mark is their signature, whichever side carries the suffix"
+
+
+async def test_fr366_the_one_letter_platform_is_chrome_but_never_as_a_substring(
+    tmp_path: Path,
+) -> None:
+    """D65/FR-366: X renamed itself to one letter, and one letter cannot be a substring test.
+
+    "X.com wordmark" was demanded as a REQUIRED mark on three decks of the 08-21 audit because no
+    entry in the chrome list could see it. Adding `"x"` to that list as a substring would have
+    forbidden every mark whose name or descriptor contains the letter — Xero, Linux, Framer X — so
+    the short platform names are compared against the PEELED brand name, whole and exact.
+    """
+    entry = make_entry(slides=2, source_post_id="post-a")
+    env = make_env(tmp_path, entry, texts=["one", "two"], trends=make_trends(panels=2))
+    give_intel(env, panels=2, marks=[
+        ["X.com wordmark", "X logo", "Xero logo", "Framer X logo", "Linux penguin icon"], []])
+    submit = FakeSubmit()
+
+    await render_carousel(entry, env, make_folder(tmp_path, entry), submit=submit)
+
+    assert marks_line(submit.slide(1).prompt) == "Xero, Framer X, Linux penguin", \
+        "the platform is chrome; a brand that merely contains the letter is still a brand"
+
+
 async def test_the_sanctioned_marks_travel_into_the_gauntlet_contract_both_ways(
     tmp_path: Path,
 ) -> None:
-    """FR-330, both directions. Ordering a Notion logo and then failing the frame for drawing one
-    spends the whole fix budget undoing FR-315, so a sanctioned mark is REQUIRED; everything the
-    D-A gate refused — a competitor, the creator's own mark, platform chrome — is FORBIDDEN, and
-    its presence is the leakage the `brief` critic exists to catch.
+    """FR-330, both directions, as D65/FR-366 left them.
+
+    A mark the D-A gate REFUSED — a competitor, the creator's own mark, platform chrome — is
+    FORBIDDEN, and its presence is the leakage the `brief` critic exists to catch. A mark the gate
+    ALLOWED but this deck never cropped is NEUTRAL: not required (nobody bought its pixels, and
+    demanding it back off the frame is what made the 08-21 fix rounds invent logos) and not
+    forbidden either (it was legal to draw, and the forbidden side still reads the FULL sanction
+    list, not the patched subset).
     """
     entry = make_entry(slides=2, source_post_id="post-a")
     env = make_env(tmp_path, entry, texts=["one", "two"], trends=make_trends(panels=2))
@@ -2300,9 +2350,47 @@ async def test_the_sanctioned_marks_travel_into_the_gauntlet_contract_both_ways(
     deck = env.llm_call.prompt_for("brief", 1)
     required = deck.split("REQUIRED marks", 1)[-1].split("FORBIDDEN", 1)[0]
     forbidden = deck.split("FORBIDDEN terms and marks", 1)[-1]
-    assert "Notion" in required and "Figma" in required
+    assert required.strip().endswith("(none)"), \
+        "no box, no crop, no patch — so nothing was ORDERED as a real logo (D65/FR-366)"
+    assert "Notion" not in forbidden and "Figma" not in forbidden, \
+        "a sanctioned mark with no patch is neutral, never leakage"
     assert "Instagram" not in required, "platform chrome is never sanctioned"
     assert "Instagram" in forbidden, "and what the gate refused is what the critic looks for"
+
+
+async def test_fr366_only_a_mark_with_a_cropped_patch_is_required_and_only_on_its_own_frame(
+    tmp_path: Path, uploads: SimpleNamespace,
+) -> None:
+    """D65/FR-366, the whole fix in one deck: the demand is patched-only AND per frame.
+
+    The source shows Notion on panel 1 (boxed, so it is cropped and uploaded) and Figma on panel 2
+    (named by the vision pass, never boxed, so no pixels were ever bought). The audit's failure
+    mode was a deck-wide UNION of the sanction list: every frame owed every mark, so slides whose
+    panels carried no logo came back `missing_mark` and the fix round drew one to satisfy it.
+
+    What the contract must now say: Notion is required, on frame 1 only; Figma is required nowhere.
+    """
+    entry = make_entry(slides=2, source_post_id="post-a")
+    env = make_env(tmp_path, entry, texts=["one", "two"], trends=make_trends(panels=2))
+    give_source_slides(tmp_path, 2)
+    give_intel(env, panels=2, marks=[["Notion logo"], ["Figma icon"]],
+               boxes=[MarkBox("Notion logo", 1, (0.2, 0.2, 0.3, 0.15))])
+    env.llm_call = CriticStub()
+
+    await render_carousel(entry, env, make_folder(tmp_path, entry), submit=FakeSubmit())
+
+    assert [path.name for path in uploads.paths] == ["notion-logo.png"]
+    deck = env.llm_call.prompt_for("brief", 1)
+    required = deck.split("REQUIRED marks", 1)[-1].split("FORBIDDEN", 1)[0]
+    assert "Notion" in required and "Figma" not in required, \
+        "the deck-wide exemption list is the patched marks, never the whole sanction list"
+    # One contract block each, cut at the blank line the blocks are joined with: the prose around
+    # the REQUIRED slot talks ABOUT `marks:` rows, and only the rows themselves are the demand.
+    blocks = deck.split("frame 1 (slide 1):", 1)[-1].split("frame 2 (slide 2):")
+    first, second = blocks[0].split("\n\n", 1)[0], blocks[1].split("\n\n", 1)[0]
+    assert "marks: Notion" in first, "frame 1's own panel carried it, so frame 1 owes it"
+    assert "marks:" not in second, \
+        "frame 2's panel carried no patched mark, so it is ordered none and owes none"
 
 
 async def test_a_deck_without_intelligence_sanctions_no_mark(tmp_path: Path) -> None:

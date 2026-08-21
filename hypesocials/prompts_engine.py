@@ -314,7 +314,11 @@ _ALLOWLIST: dict[str, frozenset[str]] = {
     #  - `required_marks` reaches all three, for three different verdicts: brief asks whether the
     #    mark is THERE (FR-330's REQUIRED side), system judges its PLACEMENT consistency across
     #    the deck (FR-315b, `style_consistency`), craft judges whether it is DRAWN correctly
-    #    (`logo_fidelity`). One list, three questions.
+    #    (`logo_fidelity`). One list, three questions. Since D65/FR-366 this value is the DECK-WIDE
+    #    union — the exemption list, the reason a real logo's own colours are not a palette defect
+    #    on any frame — and the per-frame DEMAND rides `expected_blocks` as a `marks:` row instead
+    #    (`gauntlet._expected_blocks`). Handing brief the union as a demand is what put
+    #    `missing_mark` on three frames of the 08-21 audit whose panels carried no logo at all.
     #  - `forbidden_terms` reaches BRIEF alone: leakage is its verdict, and neither a style nor a
     #    craft judgement has any use for a list of competitor and creator strings.
     #  - `style_dna` reaches brief and system — system because the style contract IS its subject,
@@ -3837,7 +3841,10 @@ the contract does not show it that way and does not flag the frame
 
 MARKS — BOTH DIRECTIONS
 
-REQUIRED marks (these were ordered as real logos; absence is a defect):
+REQUIRED marks — ordered as real logos somewhere in this set. A frame owes one
+only when its own contract block carries a `marks:` row naming it; a frame with
+no such row was ordered none, and nothing is missing there whatever this list
+says:
 
 {{required_marks}}
 
@@ -3846,14 +3853,16 @@ unsanctioned logos, flagged names — presence is a defect):
 
 {{forbidden_terms}}
 
-A required mark that is nowhere on a frame that should carry it is
+A mark named on a frame's `marks:` row and nowhere on that frame is
 `missing_mark`. A forbidden brand mark or an unsanctioned logo drawn on a frame
 is `forbidden_mark`. A person's name, @handle, profile picture or recognisable
-creator identity is `identity_leak`. Social-platform interface furniture —
-watermarks, usernames, follower/like/view/comment counters, play buttons,
-progress bars, an invented app UI — is `platform_chrome`. Whether a required
-mark sits in the same PLACE on every frame is not your question; that belongs to
-the style critic.
+creator identity is `identity_leak`. A REAL social platform's own furniture —
+its watermark, its username bar, its follower/like/view/comment counters, its
+play button, its progress bar, its app interface — is `platform_chrome`. A
+stylised or made-up interface belonging to no real platform is NOT this code and
+not yours at all; the craft critic owns it. Whether a required mark sits in the
+same PLACE on every frame is not your question either; that belongs to the style
+critic.
 
 
 ASYMMETRIC STRICTNESS ON LEAKAGE
@@ -3864,7 +3873,9 @@ frame is the most expensive error this pipeline can make. Report it with
 `confidence: high` when you can read or recognise it, `confidence: low` when you
 strongly suspect it — but report it.
 
-For everything else, report what you can actually see.
+For every other code, when unsure, PASS. Report a real but marginal
+observation with `confidence: low` rather than inflating it: a guess reported
+`high` buys a re-render of a frame that was fine.
 
 
 CARVE-OUTS — these are NOT defects
@@ -3884,6 +3895,31 @@ CARVE-OUTS — these are NOT defects
 4. Legible text inside a campaign brief's own product photograph — words printed
    on a real product, its packaging or its screen, as photographed. That is part
    of the object, not copy this frame invented.
+
+
+CONTENT FIDELITY
+
+These three are `high` confidence when you see them, and they outrank every
+judgement call above.
+
+1. NUMERALS. Every numeral readable on the frame must appear in that frame's
+   quoted lines, and every numeral in those lines must appear unaltered — same
+   digits, same decimal point, same unit, same sign. A changed figure ("1.5%"
+   set as "13.8%") is `invented_text`; a quoted figure the frame drops is
+   `missing_text`. A table, chart, axis, score or metric row carrying numbers
+   the contract does not quote is `invented_text`, however plausible they look.
+   The counter is exempt: it has its own row and its own code.
+2. DUPLICATION. A quoted line printed more than once on one frame, or one
+   sentence repeated under two different labels, headings or cards, is
+   `invented_text` — the contract ordered it once.
+3. ORDINALS. When the whole set is attached and its headlines are numbered, the
+   numbers must run without a gap, in order. A step that never appears is
+   `missing_text` on the frame where the run breaks.
+
+A frame whose body is `(none)` is the sharpest case of all three: beyond its
+listed counter and signature it carries no readable characters at all — no
+label, caption, code listing, interface text or product name. Any lettering
+there is `invented_text`.
 
 
 PAIR INTEGRITY (FR-329)
@@ -3920,7 +3956,7 @@ YOUR DEFECT CODES
 - `pair_break` — a list/table row binding broken (see PAIR INTEGRITY).
 - `missing_mark` — a required mark is absent.
 - `forbidden_mark` — a forbidden or unsanctioned brand mark is drawn.
-- `platform_chrome` — social-platform UI, watermark, handle or engagement counter.
+- `platform_chrome` — a real platform's own UI, watermark, handle or counter.
 - `identity_leak` — a person's name, handle, face or identity.
 - `counter_value` — wrong or invented position badge.
 - `signature` — wordmark missing where required, or present where forbidden.
@@ -4049,8 +4085,20 @@ obviously different typeface or weight, a card that moved to the other side of
 the frame, a badge that jumped corners. If you have to compare crops side by
 side to see it, it is not a defect.
 
+MEASUREMENTS ARE NOT YOUR SUBJECT. The style block is written in prose and a
+render model interprets it; a band that is 15% deep where it says 12%, a card a
+little wider or narrower, a margin, a rule's weight, a shape that starts a few
+per cent off the described point, a type size a step out — all of that PASSES.
+Fail geometry only when it is flagrant: the wrong zone entirely, the element
+absent, the proportion so far out that a viewer sees it as an accident.
+
 When unsure, PASS. Report a genuine but marginal difference with
 `confidence: low` rather than inflating it.
+
+And know where you sit: a frame that carries the wrong words, invented numbers
+or a leaked identity is a far more expensive failure than a frame that is a few
+per cent off its grid, and another critic owns that. Never spend this deck's
+re-render rounds on a difference you had to measure.
 
 
 YOUR DEFECT CODES
@@ -4189,8 +4237,8 @@ Greeked bars, texture lettering and similar filler named there are the style
 working correctly. Never report them as `garbled`, and never as `empty_element`
 either — a filler bar the style above sanctions is ordered, not padding.
 
-These marks were ordered as REAL logos, in their own true brand colours, exempt
-from the style's palette:
+These marks were ordered as REAL logos somewhere in this set, in their own true
+brand colours, exempt from the style's palette:
 
 {{required_marks}}
 
@@ -4213,12 +4261,16 @@ YOUR DEFECT CODES
   motion-blurred type, words printed over other words, collapsed or missing
   diacritics, letters overlapping each other. Report it even when a clean copy of
   the same words also appears elsewhere in the frame.
-- `truncated` — lettering physically CUT: a string running off the edge of the
-  frame, or clipped by the box, card, chip or plate that overflows around it, so
-  that letters are sliced or lost. A string that ENDS in "…" is content, not
-  truncation — check the contract above; where the frame is flagged
-  `truncation_suspect`, that ellipsis was ordered. A string that merely sits
-  close to an edge is not truncation.
+- `truncated` — lettering CUT. Either physically: a string running off the edge
+  of the frame, or clipped by the box, card, chip or plate that overflows around
+  it, so that letters are sliced or lost. Or grammatically: a line that simply
+  STOPS — mid-word, or mid-clause on a hanging "and", "to", "of", "the" — with
+  nothing sliced and nothing following it. Report a stopped line `high`: the
+  render dropped the rest of the string. A string that ENDS in "…" is content,
+  not truncation — check the contract above; where the frame is flagged
+  `truncation_suspect`, that ellipsis was ordered. A string the contract itself
+  quotes ending that way was ordered that way. A string that merely sits close
+  to an edge is not truncation.
 - `contrast` — lettering you cannot read at a glance because of what is behind
   it: dark type on a dark ground, pale type on a pale one, type lost inside a
   photograph or a busy texture, or type set so small it dissolves at thumbnail
@@ -4368,7 +4420,7 @@ platform_chrome | * | Draw no social-platform interface in the {zone} area: no w
 platform_chrome | full_frame | Draw no social-platform interface anywhere: no watermark, username, @handle, profile picture, follower, like, view or comment counter, play button or progress bar.
 forbidden_mark | * | Draw no brand, company, competitor or platform logo or wordmark in the {zone} area other than a mark the TOOL MARKS line names; anything else of that kind is an unlettered generic shape.
 forbidden_mark | full_frame | Draw no brand, company, competitor or platform logo or wordmark anywhere except a mark the TOOL MARKS line names; anything else of that kind is an unlettered generic shape.
-invented_text | * | The {zone} area carried lettering that the TEXT block does not quote[ — about {chars} characters]; render no words there that the TEXT block does not quote.
+invented_text | * | The {zone} area carried lettering the TEXT block does not quote[ — about {chars} characters]; render no words there the TEXT block does not quote, each quoted line once, and every numeral exactly as quoted.
 invented_text | full_frame | This frame carried lettering the TEXT block does not quote[ — about {chars} characters]; every legible character comes from the TEXT block, a sanctioned tool mark's own lettering excepted.
 invented_text | card | The card in this frame carried lettering that the TEXT block does not quote[ — about {chars} characters]; label its contents with greeked bars and unlettered shapes instead.
 signature | * | Render the wordmark exactly as the TEXT block quotes it, once, in the {zone} area, and no other signature or logotype anywhere in the frame.
@@ -4396,8 +4448,8 @@ contrast | * | Make the {zone} lettering read at a glance on a phone: set it on 
 contrast | full_frame | Make every string read at a glance on a phone: set the type on the plate, card or clear ground STYLE_DNA describes, at a size that survives thumbnail scale.
 garbled | * | Draw the {zone} lettering once, cleanly: well-formed letterforms with correct accents, no doubled, ghosted, overstruck, smeared or overlapping type, and no second copy of the same words.
 garbled | full_frame | Draw every string once, cleanly: well-formed letterforms with correct accents, no doubled, ghosted, overstruck, smeared or overlapping type, and no second copy of the same words.
-truncated | * | Keep the {zone} lettering whole inside the frame: hold every string within the central 80% of the picture, clear of every edge, and size its box to the text rather than clipping it.
-truncated | full_frame | Keep all lettering whole inside the frame: hold every string within the central 80% of the picture, clear of every edge, and size each box to its text rather than clipping it.
+truncated | * | Render every quoted string through to its last word and keep the {zone} lettering whole: hold each string within the central 80% of the picture, clear of every edge, and size its box to the text rather than clipping it.
+truncated | full_frame | Render every quoted string through to its last word and keep all lettering whole: hold each string within the central 80% of the picture, clear of every edge, and size each box to its text rather than clipping it.
 logo_fidelity | * | Draw the sanctioned tool mark exactly as the real logo is drawn — same shapes, proportions, glyph and letterforms — with no redesign, no re-lettering and no invented substitute.
 empty_element | * | Draw no empty container in the {zone} area: a card, button, circle, bar or chip row exists only around a quoted string, and where nothing is quoted the device is left out.
 empty_element | card | Draw a card only around a string the TEXT block quotes: one card per quoted line, no empty card, no grid of blanks, no filler bar standing in for words.

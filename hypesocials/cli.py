@@ -59,6 +59,20 @@ _COPY_MODES = ("verbatim", "auto", "compress")
 #: platform's configured language. Same `choices` discipline as above — a misspelled mode dies at
 #: the boundary rather than loading clean and running the other mode.
 _COPY_LANGUAGES = ("source", "target")
+#: FR-369 (v2.9.0, D65): the floor `--style-test` raises `run.run_deadline_min` to. A style test is
+#: one full carousel deck PER STYLE — seventeen decks on the shipped selection — and each of them
+#: carries its own render wave, its own FR-317 resubmit budget and up to `gauntlet.rounds_max` critic
+#: roundtrips. The 60-minute production deadline sizes ONE normal batch of six; against seventeen it
+#: would abandon the diagnostic somewhere in the middle, which is the one outcome that makes the
+#: whole run worthless (a half-finished matrix answers nothing about the styles it never reached).
+#: A floor, never an assignment: a config that already allows more keeps its own number.
+_STYLE_TEST_DEADLINE_MIN = 240
+#: FR-369: what the gallery title gains under `--style-test`. An em-dash suffix rather than a
+#: prefix, so the operator's own configured title still reads first in a directory of tabs, and a
+#: separate constant rather than an inline literal because the idempotence check below compares
+#: against it — `apply_overrides` is called twice on the menu path (once to pre-fill the prompts,
+#: once after they are answered) and a title reading " — STYLE TEST — STYLE TEST" is a bug.
+_STYLE_TEST_TITLE = " — STYLE TEST"
 
 
 class Action(str, Enum):
@@ -83,6 +97,13 @@ class Options:
     styles: list[str] | None = None  # `--styles` (FR-314): the meta-style keys this run may use.
     #   `None` = the flag was not passed, which is NOT the same as `[]` — an empty selection means
     #   "every style", so only a real list may overwrite what the config file chose.
+    #: `--style-test` (v2.9.0, D65/FR-369): the diagnostic mode that renders ONE full carousel deck
+    #: per style in `--styles`, every deck on the SAME pinned source post, so the only variable
+    #: between the decks is the style itself. A plain bool and not a tri-state like `gauntlet`
+    #: above: there is no config file half to be silent about, because `run.style_test` is CLI-only
+    #: by design (a file that sets it is warned about and ignored — `config._validate`). Absent, it
+    #: is False and NOTHING in the engine behaves differently from the pre-D65 path.
+    style_test: bool = False
     budget_usd: float | None = None
     notion: str | None = None
     #: `--copy-mode` (v2.3.0, D54/FR-333; `auto` added in v2.6.0, D62/FR-353): `verbatim` | `auto`
@@ -128,6 +149,15 @@ def parse_args(argv: Sequence[str] | None = None) -> Options:
     """Parse flags per 30 §5. Exits 2 with one line on an unknown or malformed flag (FR-63/69)."""
     parser = _parser()
     ns = parser.parse_args(list(argv) if argv is not None else None)
+    # FR-369: the style test's matrix IS the `--styles` list, in the order it was typed — one deck
+    # per key, entry order walking that list 1:1. Without the flag there is no matrix at all: the
+    # mode would fall back on `styles.enabled` from the file, whose order is not something the
+    # operator chose and whose length silently decides how many decks (and how much render time)
+    # the run orders. That is a different run than the one anybody meant, so it is refused at the
+    # boundary — exit 2, before any config load, $0 — rather than guessed at (FR-63/FR-285).
+    if ns.style_test and not ns.styles:
+        parser.error("--style-test needs --styles: the style list IS the test matrix, one deck "
+                     "per key in the order given (FR-369)")
     counts = {name: value for name, value in
               (("image", ns.images), ("carousel", ns.carousels), ("reel", ns.reels))
               if value is not None}
@@ -137,6 +167,7 @@ def parse_args(argv: Sequence[str] | None = None) -> Options:
         counts=counts,
         platforms=ns.platforms,  # already the checked, deduped list (`_platforms`)
         styles=ns.styles,  # deduped here, checked against the registry at pre-flight (FR-314)
+        style_test=bool(ns.style_test),  # FR-369; `--styles` is guaranteed non-empty above
         budget_usd=ns.budget,
         notion=ns.notion,
         copy_mode=ns.copy_mode,  # already one of `_COPY_MODES`, or None when the flag was absent
@@ -176,6 +207,15 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--styles", type=_styles, metavar="LIST",
                         help="comma-separated meta-style keys from prompts/styles.yaml to rotate "
                              "over this run; omit for all of them (FR-314)")
+    # v2.9.0 (D65/FR-369). Deliberately NOT in the `--quick`/`--yes` gate group and not an
+    # `Action`: it is still an ordinary run that still passes the Confirm gate and still spends —
+    # it only rewrites what the run is FOR. It sits next to `--styles` because it is unusable
+    # without it and the refusal in `parse_args` says so.
+    parser.add_argument("--style-test", dest="style_test", action="store_true",
+                        help="diagnostic: one full carousel deck per key in --styles, every deck "
+                             "on the same pinned source post, so the style is the only thing that "
+                             "differs; skips trend history and leaves output/latest where it is "
+                             "(FR-369). Requires --styles")
     parser.add_argument("--budget", type=float, metavar="USD", help="override the spend cap")
     parser.add_argument("--notion", choices=_NOTION, help="Notion influence level (D7)")
     parser.add_argument("--copy-mode", dest="copy_mode", choices=_COPY_MODES,
@@ -339,6 +379,82 @@ def apply_overrides(config: Config, opts: Options) -> list[str]:
     # `--verbose` deliberately applies NOTHING here (FR-299). Verbosity is a console tier, not a
     # config value: the runner reads `opts.verbose` beside `config.output.console_verbosity`, so
     # the loaded config keeps saying what the file said and run.log/events.jsonl never move.
+    #
+    # LAST, on purpose (FR-369): the style test is not one more independent override, it is a whole
+    # run shape, and every key it writes must beat the individual flag that may also have written
+    # it. `--images 3 --style-test` is a contradiction — a style test renders carousels only — and
+    # the documented answer is the table in 30 §5, not whichever flag argparse happened to see
+    # first.
+    if opts.style_test:
+        applied.extend(_style_test_overrides(config, opts))
+    return applied
+
+
+def _style_test_overrides(config: Config, opts: Options) -> list[str]:
+    """FR-369's override table, applied as ONE package, for this run only (FR-61).
+
+    The mode exists to answer a single question — *what does each style actually look like on real
+    material?* — and every override below removes one variable that would otherwise blur the
+    answer:
+
+    - **formats** become carousels only, one per style. An image or a reel would spend the budget
+      on a format that cannot show a deck's style discipline (a counter, a cover, a swipe).
+    - **platforms** collapse to one. Two platforms mean two aspect ratios and two panel floors, so
+      the same style would render differently on two decks for reasons that are not the style.
+    - **max_trend_reuses_per_run** rises to the deck count, because every deck binds the SAME
+      pinned topic (`plan.assign`) and the reuse bound would otherwise skip all but the first few.
+    - **cover_candidates** drops to 1: best-of-3 (FR-351) picks the strongest cover, which is
+      exactly the flattery a diagnostic must not have — the test wants the style's typical frame.
+    - **gauntlet.fail_action** becomes `degrade` so a deck that trips a cosmetic critic still ships
+      and can still be looked at. A blocked deck is a hole in the matrix, and the matrix is the
+      deliverable.
+    - **run_deadline_min** takes a 240-minute floor (see `_STYLE_TEST_DEADLINE_MIN`).
+    - **the gallery title** gains " — STYLE TEST" so the page cannot be mistaken for a production
+      run three weeks later, when the folder name means nothing to anyone.
+
+    Every override emits its own note whether or not it changed anything, so the launch summary
+    prints the whole mode rather than the accidental subset that happened to differ from the file.
+    `run.style_test` itself is set here and nowhere else — it is the single flag `plan.assign` and
+    `runner` read, and this is the only writer of it.
+
+    Args:
+        config: the loaded config, mutated in place for this process only.
+        opts: the parsed invocation; `opts.styles` is guaranteed non-empty by `parse_args`.
+
+    Returns:
+        One `applied` note per override, in the order 30 §5's table lists them.
+    """
+    keys = list(opts.styles or ())
+    config.run.style_test = True
+    applied = [f"run.style_test=true ({len(keys)} style(s))"]
+
+    # The bound is the config loader's own (`run.max_trend_reuses_per_run`, 1–50), read rather than
+    # retyped: a `--styles` list longer than the ceiling must not write a number into the config
+    # that the file-side validator would have refused. Beyond the ceiling the surplus decks skip
+    # with FR-8's ordinary `no_trend_available`, which is a truthful outcome and not a crash.
+    _, reuse_ceiling, _ = _CONFIG_BOUNDS["run.max_trend_reuses_per_run"]
+    _, deadline_ceiling, _ = _CONFIG_BOUNDS["run.run_deadline_min"]
+
+    config.run.formats = {"image": 0, "carousel": len(keys), "reel": 0}
+    applied.append(f"run.formats=image:0,carousel:{len(keys)},reel:0")
+    # `--platforms` has already replaced the list by the time this runs, so taking element 0 covers
+    # both halves of the rule at once: the one platform the flag named, or the first the file lists.
+    platform = config.run.platforms[0] if config.run.platforms else PLATFORMS[0]
+    config.run.platforms = [platform]
+    config.run.languages.setdefault(platform, "en")
+    applied.append(f"run.platforms={platform}")
+    config.run.max_trend_reuses_per_run = min(len(keys), int(reuse_ceiling))
+    applied.append(f"run.max_trend_reuses_per_run={config.run.max_trend_reuses_per_run}")
+    config.run.cover_candidates = 1
+    applied.append("run.cover_candidates=1")
+    config.run.gauntlet.fail_action = "degrade"
+    applied.append("run.gauntlet.fail_action=degrade")
+    config.run.run_deadline_min = min(
+        max(int(config.run.run_deadline_min), _STYLE_TEST_DEADLINE_MIN), int(deadline_ceiling))
+    applied.append(f"run.run_deadline_min={config.run.run_deadline_min}")
+    if not config.output.gallery.title.endswith(_STYLE_TEST_TITLE):
+        config.output.gallery.title += _STYLE_TEST_TITLE
+    applied.append(f"output.gallery.title={config.output.gallery.title}")
     return applied
 
 

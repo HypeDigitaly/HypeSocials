@@ -267,6 +267,19 @@ class RunConfig:
     # FR-317 resubmit, and the fix rounds the quality gate orders on top. All four shipped configs
     # pin this explicitly, so the raise reaches real runs and not only a config that omits the key.
     run_deadline_min: int = 60
+    # v2.9.0 (D65/FR-369): the `--style-test` diagnostic mode — one full carousel deck per key in
+    # `--styles`, every deck bound to the SAME source post, so the assigned style is the only
+    # variable between them; trend history is not written and `output/latest` is not moved.
+    #
+    # CLI-ONLY, and the field lives here anyway because the mode has to be readable from a `Config`
+    # object: `plan.assign` pins the post off it and `runner` skips history off it, and neither
+    # takes `Options`. `cli._style_test_overrides` is the ONLY writer. A config FILE that sets the
+    # key is warned about and reset to False by `_validate`, because the key alone is half a mode:
+    # the other seven overrides (carousel-only formats, one platform, the reuse bound, one cover
+    # candidate, degrade, the deadline floor, the gallery title) arrive as one package from the
+    # flag, and a file that switched on only the history skip would silently stop a production run
+    # from ever learning the posts it published.
+    style_test: bool = False
 
 
 @dataclass(slots=True)
@@ -1365,6 +1378,17 @@ def _validate(cfg: Config, ctx: _Ctx) -> None:
             "the analyze/copy/image stages")
     if throughput := carousel_throughput_warning(cfg):
         ctx.warn(throughput)  # same grade as its reel neighbour above: advisory, never a refusal
+    if cfg.run.style_test:
+        # Reachable ONLY from a config file: `cli.apply_overrides` sets this key long after the
+        # load, so anything true at this point was written on disk. Warned AND reset, rather than
+        # honoured, because FR-369 is a package of eight overrides applied together and this key is
+        # only the switch the rest of the engine reads — a file carrying it alone would skip trend
+        # history and leave `output/latest` unmoved on an otherwise ordinary production run, which
+        # is exactly the silent state the next day's autopilot cannot see and cannot recover from.
+        cfg.run.style_test = False
+        ctx.warn("run.style_test is CLI-only (FR-369) and was ignored — the diagnostic mode is the "
+                 "whole `--style-test` package (carousels only, one platform, one cover candidate, "
+                 "no history write); pass --style-test --styles <keys> to run it")
 
 
 #: FR-317: an image job may run its timeout TWICE — once as itself, once as its single automatic

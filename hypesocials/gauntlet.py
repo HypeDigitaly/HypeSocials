@@ -253,9 +253,13 @@ _REMEDIES: dict[str, str] = {
     "missing_text": ("Render every string the TEXT block quotes, in full, in the {zone} area, "
                      "whole and legible; give a long one more lines, tighter leading or a wider "
                      "block."),
-    "invented_text": ("The {zone} area carried lettering that the TEXT block does not quote"
-                      "[ — about {chars} characters]; render no words there that the TEXT block "
-                      "does not quote."),
+    # D65/FR-367: the two invention shapes the 08-21 audit shipped unflagged — a fabricated
+    # benchmark number and one sentence printed six times — get their own clause, because "no
+    # words the TEXT block does not quote" reads as a rule about WORDS and a render model does not
+    # hear a digit or a repeat as a word.
+    "invented_text": ("The {zone} area carried lettering the TEXT block does not quote"
+                      "[ — about {chars} characters]; render no words there the TEXT block does "
+                      "not quote, each quoted line once, and every numeral exactly as quoted."),
     "translated": ("Render every quoted string in its own original language, character for "
                    "character; translate nothing."),
     "pair_break": ("Set the quoted lines as one column of rows in the {zone} area: each quoted "
@@ -288,9 +292,12 @@ _REMEDIES: dict[str, str] = {
     "garbled": ("Draw the {zone} lettering once, cleanly: well-formed letterforms with correct "
                 "accents, no doubled, ghosted, overstruck or overlapping type, and no second copy "
                 "of the same words."),
-    "truncated": ("Keep the {zone} lettering whole inside the frame: hold every string within the "
-                  "central 80% of the picture, clear of every edge, and size its box to the text "
-                  "rather than clipping it."),
+    # D65/FR-367: `truncated` now covers the line that simply STOPS as well as the line that is
+    # sliced, so the remedy has to name both — a string cut off mid-clause is not fixed by a wider
+    # box, it is fixed by rendering the rest of it.
+    "truncated": ("Render every quoted string through to its last word and keep the {zone} "
+                  "lettering whole: hold each string within the central 80% of the picture, clear "
+                  "of every edge, and size its box to the text rather than clipping it."),
     "contrast": ("Make the {zone} lettering read at a glance on a phone: set it on the plate, "
                  "card or clear ground STYLE_DNA describes, at a size that survives thumbnail "
                  "scale."),
@@ -365,6 +372,15 @@ class DeckContract:
 
     frames: list[FrameContract] = field(default_factory=list)
     required_marks: list[str] = field(default_factory=list)  # FR-315/FR-330 REQUIRED side
+    #: D65/FR-366 — `slide number -> the marks THAT frame's own source panel carried`, and only
+    #: the ones this run actually cropped a patch for. `required_marks` above is the union of these
+    #: values and stays the deck-wide exemption list the style and craft critics read (a real logo
+    #: is exempt from the palette and judged on fidelity wherever it appears). This map is the
+    #: DEMAND, and it is per frame because that is how the critics judge: a deck-wide union told
+    #: the brief critic that every frame owed every mark, so the 08-21 audit reported `missing_mark`
+    #: on three slides whose source panels showed no logo at all — and the fix loop then drew one.
+    #: A frame absent from this map was ordered no mark; its absence is never a defect.
+    frame_marks: dict[int, list[str]] = field(default_factory=dict)
     #: Creator identity forms, competitor names, unsanctioned brand marks, §0.12 flag names.
     forbidden_terms: list[str] = field(default_factory=list)
     style_dna: str = ""
@@ -376,6 +392,10 @@ class DeckContract:
     def frame(self, number: int) -> FrameContract:
         """This frame's contract; an unlisted frame gets an empty one rather than an exception."""
         return next((f for f in self.frames if f.number == number), FrameContract(number=number))
+
+    def marks(self, number: int) -> list[str]:
+        """The marks THIS frame was ordered to carry — `[]` for a frame that was ordered none."""
+        return [str(name) for name in self.frame_marks.get(number, ()) if str(name).strip()]
 
 
 @dataclass(frozen=True, slots=True)
@@ -1154,6 +1174,15 @@ def _expected_blocks(contract: DeckContract, numbers: Sequence[int]) -> str:
     it (what the operator reads), so the two numbering systems never have to be inferred. A frame
     that is wordless BY MANDATE says `(none)` and names why, which is the one thing a picture
     cannot tell a critic: an empty frame and a frame whose words failed to render look identical.
+
+    The `marks:` row (D65/FR-366) is the same idea for logos, and it is written ONLY on the frames
+    that have one. The `{{required_marks}}` block elsewhere in every critic prompt is a deck-wide
+    UNION and has to stay one — it is the exemption list, the reason a real logo's brand colours
+    are not a palette defect and its lettering is not invented text, wherever it appears. But a
+    union read as a DEMAND says every frame owes every mark, and that is precisely how the 08-21
+    audit came to report `missing_mark` on slides whose source panels carried no logo, and how the
+    fix loop came to draw one there. This row states the demand per frame; a frame with no row was
+    ordered no mark, which the templates say in so many words.
     """
     blocks: list[str] = []
     for slot, number in enumerate(numbers, start=1):
@@ -1168,6 +1197,8 @@ def _expected_blocks(contract: DeckContract, numbers: Sequence[int]) -> str:
         rows.append(f'  counter: "{frame.counter}"' if frame.counter else f"  counter: {_NONE}")
         rows.append(f'  signature: "{frame.signature}"' if frame.signature
                     else f"  signature: {_NONE}")
+        if marks := contract.marks(number):
+            rows.append(f"  marks: {', '.join(marks)}")
         if frame.is_list:
             rows.append("  list frame: label/value pairs must stay together (FR-329)")
         if frame.truncation_suspect:

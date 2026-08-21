@@ -14,6 +14,10 @@ each creative wears, written down in words:
                     enabled=config.branding.enabled)
     style = style_for(registry, entry.style_key)                  # at assembly
 
+`assign_styles_fixed(live, config.styles.enabled)` is the sixth call and the odd one out: the
+FR-369 `--style-test` diagnostic replaces the rotation with a 1:1 walk of the `--styles` list, so
+deck N wears the Nth style the operator typed. It is never reached on an ordinary run.
+
 A style is authored once in `prompts/styles.yaml` and ASSIGNED, where the pre-pivot vision brief
 was re-derived per trend by an LLM from whatever pictures that trend happened to carry. That is
 the whole point of the pivot: the look is ours, the topic is theirs.
@@ -1052,6 +1056,53 @@ def assign_styles(entries: Sequence[PlanEntry], registry: StyleRegistry, brand: 
                                 seed=seed).key
 
 
+def assign_styles_fixed(entries: Sequence[PlanEntry], keys: Sequence[str]) -> list[tuple[str, str]]:
+    """FR-369: walk `keys` 1:1 in plan order — the style test's matrix, and nothing else.
+
+    Pure and total. It reads no registry, no brand, no format affinity and no run id, it makes no
+    call, and it raises nothing: entry *i* in plan order gets `keys[i]`, full stop. That bluntness
+    is the whole feature. The style test asks "what does each of these seventeen styles look like
+    on one real post", and the only way an answer is readable is if deck 03 is *the third key the
+    operator typed* — not the third key that survived a filter, not the third that happened to be
+    affine, and not the third the file happened to list.
+
+    **Why this is not `styles.rotation: "fixed"`.** That knob (D52, `rotation_seed`) pins the
+    rotation OFFSET at 0 and then runs `_scan` exactly as always: `_scan` walks the pool in
+    REGISTRY FILE order, not in `--styles` order, and it silently steps past any candidate that is
+    not affine to the entry's format. So `rotation: fixed` answers a different question ("start the
+    normal rotation at the top") and it can quietly skip a style, repeat a style once the pool is
+    shorter than the plan, and reorder the whole matrix relative to what was typed — three ways for
+    a diagnostic to produce a grid whose labels do not match its pictures. There is no shared code
+    to reuse here, because the thing being removed IS the shared code.
+
+    Skipping affinity is deliberate and safe in this direction: `cli._style_test_overrides` makes
+    the plan carousels-only, and `styles.validate` has already refused at pre-flight (exit 2, $0)
+    any `--styles` key that is unknown or leaves the carousel pool empty. A key that is somehow
+    non-affine anyway still renders as itself and shows the operator exactly the mismatch they
+    would otherwise never see — which, in a diagnostic, is information rather than a defect.
+
+    Args:
+        entries: the live entries to dress. Sorted by `entry.order` here, so a caller that hands
+            them over in report order or dict order still gets plan order, and `entry.order`'s gaps
+            (trims, drops) are irrelevant — POSITION in the sorted list is the index, not the value.
+        keys: the style keys in the exact order `--styles` named them. Shorter than `entries`
+            wraps by modulo, which cannot happen through the CLI (the deck count IS `len(keys)`)
+            and is defined anyway so no entry can come out of here style-less. Empty leaves every
+            entry untouched.
+
+    Returns:
+        `(asset_id, style_key)` in the order assigned — the console's `style test:` line reads this
+        rather than re-deriving the mapping, so what is printed cannot drift from what was set.
+    """
+    if not keys:
+        return []
+    assigned: list[tuple[str, str]] = []
+    for index, entry in enumerate(sorted(entries, key=lambda item: item.order)):
+        entry.style_key = keys[index % len(keys)]
+        assigned.append((entry.asset_id, entry.style_key))
+    return assigned
+
+
 def rotation_seed(run_id: str, rotation: str = "seeded") -> int:
     """The rotation's per-run OFFSET into the pool — a pure function of the run id (v2.2.0).
 
@@ -1146,5 +1197,6 @@ def style_for(reg: StyleRegistry, key: str) -> MetaStyle:
 
 
 __all__ = ["StyleRegistry", "StyleRegistryError", "assign_branding", "assign_styles",
-           "brand_ok", "fmt_affine", "is_list_panel", "load_registry", "match_profile_for",
-           "rotation_seed", "selected", "style_for", "usable_styles", "validate"]
+           "assign_styles_fixed", "brand_ok", "fmt_affine", "is_list_panel", "load_registry",
+           "match_profile_for", "rotation_seed", "selected", "style_for", "usable_styles",
+           "validate"]

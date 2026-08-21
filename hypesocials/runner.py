@@ -545,7 +545,17 @@ async def _assign_visuals(session: _Session, live: Sequence[PlanEntry],
     """
     branding = session.config.branding
     styled = [entry for entry in live if entry.brief_influence != "override"]
-    if session.registry is not None and styled:
+    # FR-369 (D65): the diagnostic mode owns this whole stage. It replaces BOTH algorithms — the
+    # FR-291 rotation and the FR-334 matched overlay — because both of them exist to CHOOSE a
+    # style, and choosing is the one thing a style test must not do: the answer is already written
+    # in the `--styles` list, and a run that improved on it would silently stop being the matrix
+    # the operator asked for. `style_test_map` is empty on every ordinary run and every branch
+    # below reads that as "carry on exactly as before".
+    style_test = bool(session.config.run.style_test)
+    style_test_map: list[tuple[str, str]] = []
+    if style_test and styled:
+        style_test_map = styles.assign_styles_fixed(styled, session.config.styles.enabled)
+    elif session.registry is not None and styled:
         styles.assign_styles(styled, session.registry, branding.brand,
                              enabled=session.config.styles.enabled,  # FR-314 selector
                              branding_enabled=branding.enabled,  # FR-318 master switch
@@ -564,6 +574,13 @@ async def _assign_visuals(session: _Session, live: Sequence[PlanEntry],
     # and therefore keep this baseline value rather than acquiring a matched one they never saw.
     for entry in live:
         entry.style_origin = "rotation"
+        if style_test:
+            # `style_origin` deliberately stays `"rotation"` (FR-337 gives that field a closed
+            # vocabulary read by meta.yaml, the gallery and the FR-355 concentration line, and a
+            # sixth value would mean touching all three for a mode nobody publishes from). The
+            # REASON is where the truth goes: `style_test` is greppable across meta.yaml and says
+            # in one word why this deck wears this style and why no matcher was consulted.
+            entry.style_reason = "style_test"
     watch = Stopwatch()
     # Four conditions, and each one is a way the overlay can have nothing to do rather than a
     # failure: the operator did not ask for it; the plan is pure override briefs (nothing is
@@ -571,8 +588,14 @@ async def _assign_visuals(session: _Session, live: Sequence[PlanEntry],
     # is no LLM client, which is a $0 preview tier and not a degradation. `_halt` is checked LAST
     # and only when the call would otherwise go out, so an interrupted run orders no new spend
     # (FR-108/FR-201) and an uninterrupted one pays nothing for the question.
+    # `not style_test` is a FIFTH condition of exactly the same kind as the four above: under
+    # FR-369 the overlay has nothing to do, because the assignment it would overwrite is the
+    # operator's own list. Refusing the call also keeps the diagnostic cheap and, more to the
+    # point, keeps it a diagnostic — a matcher that moved one deck onto a better-fitting style
+    # would leave the matrix with two decks on one style and a hole where the other one was.
     matched_mode = (session.config.styles.assignment == "matched" and bool(styled)
-                    and session.registry is not None and session.llm is not None)
+                    and session.registry is not None and session.llm is not None
+                    and not style_test)
     matches = (await _match_styles(session, styled, topics)
                if matched_mode and not _halt(session, "style matching") else {})
 
@@ -585,6 +608,8 @@ async def _assign_visuals(session: _Session, live: Sequence[PlanEntry],
     _stage(session, "ASSIGN", f"{len(live)} creative(s) <- {topic_count} topic(s), "
                               f"{used} style(s), {branded} branded",
            elapsed_s=watch.elapsed_s if matched_mode else 0.0)
+    for line in _style_test_block(style_test_map):  # FR-369, above the per-creative receipts
+        session.say(line)
     for entry in sorted(live, key=lambda e: e.order):
         topic = topics.get(entry.trend_key or "")
         subject = topic.name if topic is not None else (entry.brief_name or "-")
@@ -701,6 +726,62 @@ async def _match_styles(session: _Session, styled: Sequence[PlanEntry],
         entry.style_origin = answer.origin or "rotation"
         entry.style_wanted = answer.wanted_archetype
     return matches
+
+
+def _style_test_block(assigned: Sequence[tuple[str, str]]) -> list[str]:
+    """FR-369's ASSIGN line: the whole test matrix on as few lines as 78 columns allow.
+
+    `style test: 01->anime-noir-statement, 02->platform-showcase-card, ...` — ordinal to style key,
+    in the order `styles.assign_styles_fixed` actually assigned them. It reads that function's
+    return value rather than re-walking the entries, so the printed matrix cannot drift from the
+    assigned one; a diagnostic whose label disagrees with its picture is worse than no label.
+
+    This is a duplicate of information the per-creative receipts below it also carry, and that is
+    the point: seventeen receipts spread over seventeen screens do not answer "did the matrix come
+    out in the right order", and this line does, in one glance, before any of them.
+
+    The separator is the two-character `->`. FR-155's glyph rule forbids `→` outright (the house
+    rules block above), and a console byte that renders as a box on legacy conhost is not a
+    receipt. 30 §5's prose writes the arrow glyph; the console writes what is safe to print.
+
+    Pure, and `[]` for an empty matrix — every ordinary run passes an empty list and prints
+    nothing, so this whole surface is invisible unless `--style-test` was asked for.
+
+    Args:
+        assigned: `(asset_id, style_key)` pairs in assignment order, as returned by
+            `styles.assign_styles_fixed`. The ordinal printed is the asset id's own trailing
+            segment (FR-71's `…_07`), which is the handle the operator already uses everywhere
+            else on the console, in the gallery and in meta.yaml.
+
+    Returns:
+        One or more `say()`-ready lines, each within FR-286's 78 columns, or `[]`.
+    """
+    if not assigned:
+        return []
+    # Greedy fill rather than one line per deck: seventeen decks would otherwise push every other
+    # ASSIGN surface off a screen, and the matrix is meant to be read as a whole. Continuation
+    # lines hang under the label so the list reads as one paragraph, and each break keeps its
+    # trailing comma — that comma is what says "there is more of this below".
+    label = "          style test: "
+    indent = " " * len(label)
+    # `fit` is applied to each PAIR and never to the assembled line: it normalises whitespace, so
+    # running it over a finished line would eat the hanging indent that makes the continuation
+    # readable. Per-pair is also where the only real overflow risk lives — one style key longer
+    # than the whole column budget, which no greedy fill can wrap (FR-286).
+    pairs = [fit(f"{asset_id.rsplit('_', 1)[-1]}->{key}", 78 - len(indent) - 1)
+             for asset_id, key in assigned]
+    lines: list[str] = []
+    current = label
+    for index, pair in enumerate(pairs):
+        piece = pair + ("," if index < len(pairs) - 1 else "")
+        fresh = current in (label, indent)  # nothing on this line yet: no separating space
+        if not fresh and len(current) + 1 + len(piece) > 78:
+            lines.append(current)
+            current = indent + piece
+        else:
+            current += piece if fresh else f" {piece}"
+    lines.append(current)
+    return lines
 
 
 def _match_receipt(entry: PlanEntry) -> str:
@@ -1768,16 +1849,27 @@ async def _package(session: _Session, entries: Sequence[PlanEntry], plan_estimat
     session.packaged = True  # D64: every shipped frame is in its asset folder by now (`_cleanup`)
     _log_template_attribution(session)
     credits_line = _credits_exhausted_line(session, entries, report)  # FR-248, before the counts
+    # FR-369: a style test leaves NO trace in shared state. The two writes below are the only
+    # things a run does outside its own folder, and both of them would sabotage the next real run:
+    # `record_use` would burn the pinned post — one post, quoted seventeen times — for the whole
+    # 30-day window, so the next morning's unattended batch would find its best material gone and
+    # never learn why; `set_latest` would point `output/latest` at a folder full of deliberate
+    # duplicates, which is what `--publish latest` resolves against (60-publishing FR-210). The
+    # gallery, meta.yaml, run.log and events.jsonl are all written exactly as usual — the run is
+    # fully auditable, it is just not remembered. Same posture as FR-253's preview folders.
+    style_test = bool(session.config.run.style_test)
     write_gallery(session.run_dir, title=session.config.output.gallery.title, log=session.log)
-    if report.packaged_trends:  # FR-82: only topics that actually produced a packaged creative
+    if report.packaged_trends and not style_test:  # FR-82: only topics that packaged a creative
         await record_use(LOGS_DIR, _posts_used(session, report, attached, entries), session.run_id,
                          history_days=session.config.run.trend_history_days, log=session.log)
     # FR-254: `latest` points at the newest run that actually DELIVERED something. SUCCESS is the
     # only status that qualifies, and v2.2.0's BLOCKED explicitly does not (D49): a run whose every
     # deck was refused by the quality gate must leave the previous run's pointer standing, or the
     # operator's `output/latest/` shortcut opens onto a folder with nothing publishable in it.
-    if any(entry.status is PlanEntryStatus.SUCCESS for entry in entries):
+    if not style_test and any(entry.status is PlanEntryStatus.SUCCESS for entry in entries):
         await set_latest(session.config.output.dir, session.run_id, log=session.log)
+    if style_test:  # said out loud, so nobody later wonders why the pointer did not move
+        session.say("          style test: no history written, output/latest unchanged (FR-369)")
 
     # FR-202 reads the FR-73 tags, not the plan alone: a partial carousel ships SUCCESS with no
     # `skip_reason` (the deck DID ship — `carousel.package()` marks `incomplete` instead).

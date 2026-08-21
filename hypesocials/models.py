@@ -1218,13 +1218,15 @@ PLACEHOLDERS: frozenset[str] = frozenset(
         # render-prompt text, so the "fresh context" a critic gets is fresh of everything EXCEPT the
         # only referent a style judgement could possibly have. `gauntlet_fix.md` names none of
         # these; it resolves nothing at all.
-        "expected_blocks",  # the per-frame enumerated line blocks — `L1:`/`L2:`… plus `counter:`
-        #   and `signature:` rows, `(none)` for a frame that is wordless BY MANDATE. This is the
-        #   referent for every "missing" and every "invented" verdict, and the one thing that can
-        #   tell a wordless frame apart from a frame whose words failed to render: the picture
-        #   cannot, the contract can.
+        "expected_blocks",  # the per-frame enumerated line blocks — `L1:`/`L2:`… plus `counter:`,
+        #   `signature:` and (D65/FR-366) `marks:` rows, `(none)` for a frame that is wordless BY
+        #   MANDATE. This is the referent for every "missing" and every "invented" verdict, and the
+        #   one thing that can tell a wordless frame apart from a frame whose words failed to
+        #   render: the picture cannot, the contract can.
         "required_marks",  # FR-330's REQUIRED side: the FR-315 sanctioned tool marks this deck
-        #   ordered as real logos. Absent from a frame = `missing_mark`.
+        #   ordered as real logos AND actually cropped patches for (D65/FR-366). Deck-wide, and it
+        #   is the EXEMPTION list — which frame owes which mark is the `marks:` row above, because
+        #   a union read as a demand accuses frames whose source panels carried no logo.
         "forbidden_terms",  # FR-330's FORBIDDEN side, and the expensive one: creator identity
         #   forms, competitor names, unsanctioned brand marks, §0.12 flag names. Present in a
         #   frame = `forbidden_mark`/`identity_leak`, and the critics are told to fail when unsure.

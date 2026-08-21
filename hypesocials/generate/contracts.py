@@ -211,6 +211,7 @@ def deck_contract(
     wordmark: str = "",
     counter: str = "",
     required_marks: Iterable[str] = (),
+    frame_marks: Mapping[int, Sequence[str]] | None = None,
     forbidden: Iterable[str] = (),
 ) -> DeckContract:
     """The deck-wide half of the referent: marks, forbidden strings, the style, the platform.
@@ -230,13 +231,31 @@ def deck_contract(
     which is why `critic_system.md` may not fail a carousel frame for a zone that reached no render
     channel. On an image or a reel every zone here was in the prompt verbatim.
 
-    `required_marks` is the union of what the D-A sanction gate allowed across the frames being
-    judged (FR-315/FR-330's REQUIRED side); `forbidden` comes from `forbidden_terms()` above.
+    `required_marks` is the deck-wide EXEMPTION list — every mark any judged frame was ordered to
+    carry (FR-315/FR-330's REQUIRED side) — and `forbidden` comes from `forbidden_terms()` above.
+
+    `frame_marks` is the DEMAND, per frame, and it is new in v2.9.0 (D65/FR-366). The caller passes
+    `{slide number -> the marks THAT panel carried and this run actually cropped}`; the union of
+    its values is what `required_marks` should be. The two are separate because the critics use
+    them for opposite purposes: the union sanctions (a real logo's own colours are not a palette
+    defect and its own lettering is not invented text, on any frame), while the per-frame rows
+    accuse. Handing the accusation the union is what put `missing_mark` on three frames of the
+    08-21 audit whose source panels showed no logo — and the fix round then invented one. Callers
+    that order no marks at all (the image and reel creatives) pass neither and get an empty map,
+    which reads to every critic as "this frame was ordered no mark".
+
+    Every value is cleaned exactly the way `required_marks` is (stripped, `_TERM_MAX`, `_MAX_MARKS`
+    per frame), so one spelling and one ceiling govern both sides; a frame whose list cleans to
+    nothing is dropped rather than emitted as an empty row.
     """
+    rows = {int(number): [name.strip()[:_TERM_MAX]
+                          for name in (str(raw) for raw in names) if name.strip()][:_MAX_MARKS]
+            for number, names in (frame_marks or {}).items()}
     return DeckContract(
         frames=list(frames),
         required_marks=[str(name).strip()[:_TERM_MAX]
                         for name in required_marks if str(name).strip()][:_MAX_MARKS],
+        frame_marks={number: names for number, names in rows.items() if names},
         forbidden_terms=list(forbidden),
         style_dna=style_dna(style),
         layout_zones=style_zones(style, wordmark=wordmark, slide_counter=counter),
