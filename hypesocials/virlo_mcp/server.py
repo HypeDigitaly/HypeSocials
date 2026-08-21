@@ -303,6 +303,14 @@ def _norm_video(video: dict[str, Any]) -> dict[str, Any]:
         "has_face_visible": intelligence.get("has_face_visible"),
         "has_text_overlay": intelligence.get("has_text_overlay"),
         "visual_complexity": intelligence.get("visual_complexity"),
+        # What language the post's own words are in, and whether it mixes more than one. Virlo
+        # sends both free on every enriched row (measured on the captured page: 68 of 100 video
+        # rows carry a code, among them one `hi` and one `ko`), which is the whole reason the
+        # output-language ladder never pays for a detection call. Read per row and absent-safe
+        # like every other `intelligence` field: `None` until `intelligence_status == "ready"`,
+        # and `None` means Virlo did not say — never "English".
+        "language_detected": intelligence.get("language_detected"),
+        "is_multilingual": intelligence.get("is_multilingual"),
         "intelligence_status": video.get("intelligence_status"),
     }
 
@@ -340,6 +348,14 @@ def _norm_slideshow(show: dict[str, Any]) -> dict[str, Any]:
         "hook_type": intelligence.get("hook_type"),
         "visual_hook_type": intelligence.get("visual_hook_type"),
         "emotional_tone": intelligence.get("emotional_tone"),
+        # The same two language fields as `_norm_video`, per row and absent-safe. They matter more
+        # here than on the video side: a slideshow row is what gets BOUND to a carousel and quoted
+        # panel by panel, so this is the field that decides whether the deck ships its own language
+        # or a translation. The captured page carries a code on 82 of 100 slideshow rows (two of
+        # them `th`) and flags exactly one row multilingual — that row still reports `en`, so the
+        # code names the dominant language rather than promising it is the only one.
+        "language_detected": intelligence.get("language_detected"),
+        "is_multilingual": intelligence.get("is_multilingual"),
         "intelligence_status": show.get("intelligence_status"),
     }
 

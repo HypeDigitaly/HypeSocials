@@ -185,6 +185,18 @@ Confirm — the cost estimate and the final yes/no come next. Nothing has
   Nothing else is affected: images, reels, briefs of your own, and decks
   with no source post behind them ignore this answer entirely.
 
+  This step is about LENGTH. There is a second, separate answer about
+  LANGUAGE, and the wizard does not ask it: `copy_language_mode` in the
+  config file, or `--copy-language source|target` on the command line.
+  `source` ships every post in the language it was written in. `target`
+  sends a bound deck whose post is in another language through one
+  translate call, so it comes out in the language this config writes —
+  nothing is shortened there, and a post already in that language is
+  quoted word for word either way. The confirm screen states which one
+  is in force, on the line right under the copy mode: `copy language:
+  target - bound decks translated to en`. Images, reels and your own
+  briefs always ship their source language, whatever it says.
+
   A good value: the pre-filled one — it is this config's own setting.
 
   If you get it wrong: the gallery puts every slide beside the source

@@ -1520,3 +1520,150 @@ def test_fr351_the_two_new_lines_are_exactly_what_the_expected_total_grows_by(cf
     for order in (0, 1):
         grew = on.per_entry_usd[order] - off.per_entry_usd[order]
         assert grew == pytest.approx(covers / 2 + picks / 2, rel=1e-6)
+
+
+# --------------------------------------------- FR-343/FR-345 (v2.7.0, D63): the translate call
+#
+# The LANGUAGE axis is the first estimator line whose QUANTITY depends on something no config key
+# holds: whether the post a deck is bound to is already written in the platform's language. The
+# module answers that in two tiers and both are tested below — every non-override carousel priced
+# when the caller knows nothing (the Confirm gate runs before Collect, D11's over-stating), and
+# only the decks that really have to change language once the runner re-prices with bound posts.
+
+
+def test_fr345_source_mode_prices_no_translate_line_at_all(cfg: Config) -> None:
+    """The engine default is `source` (D58 shape), and a run that never asked for translation must
+    read EXACTLY as it did before D63 — not a $0 translate line, not a widened allowance, not one
+    micro-dollar of movement anywhere. A $0 line for work that will not happen reads like a rate
+    that failed to load, which is the argument every other conditional line in this module makes.
+    """
+    plan = [entry(0, "carousel", trend_key="t1", source_post_id="p1"),
+            entry(1, "carousel", trend_key="t1", source_post_id="p2")]
+
+    est = estimate(cfg, plan)
+
+    assert cfg.run.copy_language_mode == "source", "the engine default, unchanged by D63"
+    assert lines(est, "translate_call") == []
+    assert one(est, "copy_retry_allowance").quantity == 2, "one group, two retries, untouched"
+    assert one(est, "copy_split_allowance").quantity == 2, "one per sibling, untouched"
+
+
+def test_fr345_target_mode_prices_one_call_per_carousel_when_no_post_is_bound_yet(
+    cfg: Config,
+) -> None:
+    """The Confirm gate's quote (D11): the gate runs BEFORE Collect, no post exists, so every
+    non-override carousel is priced for a translate call it may or may not make. Over-stating is
+    the safe direction; understating is the one unacceptable estimator error, and the vision pass
+    can still supply a language at INTEL time that turns an "unknown" into a real call.
+    """
+    cfg.run.copy_language_mode = "target"
+    plan = [entry(order, "carousel", trend_key="t1", source_post_id=f"p{order}")
+            for order in range(9)]
+
+    est = estimate(cfg, plan)
+
+    calls = lines(est, "translate_call")
+    assert len(calls) == 9, "one call per deck — never grouped, the work order is one post's panels"
+    assert all(line.quantity == 1 for line in calls)
+    assert all(line.label.startswith("translate (1 call per deck) · ") for line in calls)
+    assert calls[0].entry_orders == (0,), "attributed to its own deck, for FR-28's trim arithmetic"
+
+
+def test_fr345_images_reels_and_override_decks_are_never_quoted_a_translation(
+    cfg: Config,
+) -> None:
+    """Translation reaches bound carousel decks and nothing else (plan 9d), so nothing else pays
+    for it. Pre-flight warns the operator that those creatives ship their source language (FR-345)
+    — that is the honest place for the news, and a priced line here would be money the run cannot
+    spend on them."""
+    cfg.run.copy_language_mode = "target"
+    priced_reels(cfg)
+    plan = [entry(0, trend_key="t1"),                                            # image
+            entry(1, "reel", trend_key="t1"),                                    # reel
+            entry(2, "carousel", brief_name="ai-audit", brief_influence="override"),
+            entry(3, "carousel", trend_key="t1", source_post_id="p3")]           # the only one
+
+    calls = lines(estimate(cfg, plan), "translate_call")
+
+    assert [line.entry_orders for line in calls] == [(3,)]
+
+
+def test_fr345_a_bound_post_already_in_the_platform_language_is_not_priced(cfg: Config) -> None:
+    """The runner's re-price, right after `_select` (§3's second arm).
+
+    An English post on an English platform is quoted verbatim and makes NO call, so once the posts
+    are bound the quote sheds those decks. An UNKNOWN language stays priced: unknown means "the
+    ladder may still answer at COPY time" (the vision pass has not run yet), not "no call".
+    """
+    cfg.run.copy_language_mode = "target"
+    plan = [entry(0, "carousel", trend_key="t1", source_post_id="already-en"),
+            entry(1, "carousel", trend_key="t1", source_post_id="german"),
+            entry(2, "carousel", trend_key="t1", source_post_id="never-read")]
+
+    est = estimate(cfg, plan, post_languages={"already-en": "en", "german": "de"})
+
+    assert [line.entry_orders for line in lines(est, "translate_call")] == [(1,), (2,)]
+    assert all("-> en" in line.label for line in lines(est, "translate_call")), \
+        "the direction is on the line"
+
+
+def test_fr345_the_translate_line_is_sized_off_the_decks_own_panel_count(cfg: Config) -> None:
+    """The work order prints every admitted panel IN FULL and with no per-line budget (§4b), so a
+    longer deck is a dearer call — and the answer carries all of them back, since a translation may
+    legitimately be LONGER than its source. A flat per-deck price would understate the long decks
+    and overstate the short ones; this line does neither."""
+    cfg.run.copy_language_mode = "target"
+
+    def line_for(slides: int) -> budget.EstimateLine:
+        return one(estimate(cfg, [entry(0, "carousel", trend_key="t1", source_post_id="p1",
+                                        slide_count=slides)]), "translate_call")
+
+    twelve, three = line_for(12), line_for(3)
+    assert twelve.unit_price is not None and three.unit_price is not None
+    assert twelve.unit_price > three.unit_price, "twelve panels in and back beats three"
+    assert "(7 panels -> en)" in line_for(7).label, "the label states what it priced"
+
+
+def test_fr107_the_retry_and_split_allowances_widen_by_the_translating_decks(cfg: Config) -> None:
+    """FR-107's two allowances are per CALL, and D63 adds calls.
+
+    The truncation+parse pair applies to a translate call like any other copy-role call, and it is
+    priced at the DEARER of the widest group call and the widest translate call — a translate
+    prompt carries a 9,815-char template plus every source panel in full, so pricing the pair at
+    the group's size would understate exactly the call most likely to truncate. The split
+    allowance gains one unit per translating deck for a reason of its own: under `auto` or
+    `compress` a translated deck can fire a SECOND per-creative call, the compress fit-back of
+    §4e. Both stay allowances — neither may touch `expected_usd`.
+    """
+    plan = [entry(0, "carousel", trend_key="t1", source_post_id="p0"),
+            entry(1, "carousel", trend_key="t1", source_post_id="p1")]
+    off = estimate(cfg, plan)
+    cfg.run.copy_language_mode = "target"
+    on = estimate(cfg, plan)
+
+    assert one(off, "copy_retry_allowance").quantity == 2
+    assert one(on, "copy_retry_allowance").quantity == 6, "2 x (1 group + 2 translating decks)"
+    assert "(6)" in one(on, "copy_retry_allowance").label
+    assert one(off, "copy_split_allowance").quantity == 2
+    assert one(on, "copy_split_allowance").quantity == 4, "one fit-back per translating deck"
+
+    wide_off, wide_on = one(off, "copy_retry_allowance"), one(on, "copy_retry_allowance")
+    assert wide_off.unit_price is not None and wide_on.unit_price is not None
+    assert wide_on.unit_price > wide_off.unit_price, "priced at the dearer of the two call shapes"
+    assert all(line.allowance for line in (wide_on, one(on, "copy_split_allowance")))
+    translate = sum(line.amount_usd for line in lines(on, "translate_call"))
+    assert on.expected_usd == pytest.approx(off.expected_usd + translate), \
+        "the expected total grows by the translate CALLS and by nothing else"
+
+
+def test_fr345_the_translate_completion_never_exceeds_the_configured_copy_ceiling(
+    cfg: Config,
+) -> None:
+    """`max_tokens.copy` is what the call is ALLOWED to emit (30 §2), so a 20-panel deck cannot be
+    quoted for more output than the model can produce — quoting past the ceiling would inflate
+    every long deck by tokens the provider will never bill."""
+    ceiling = cfg.max_tokens_for("copy")
+
+    assert budget._translate_completion(cfg, 2) < ceiling, "a short deck is sized off its panels"
+    assert budget._translate_completion(cfg, 500) == ceiling
+    assert budget._translate_completion(cfg, 0) == budget._TRANSLATE_COMPLETION_FIXED

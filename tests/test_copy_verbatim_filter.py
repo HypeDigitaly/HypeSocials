@@ -1079,7 +1079,12 @@ async def test_the_panel_map_row_says_creator_stripped_and_keeps_the_pre_strip_p
                        # the walk quotes and never compresses, so the key is False by
                        # construction — but it is WRITTEN, because both walks emit one row
                        # schema and the FR-73 reader may never have to ask which one it got.
-                       "compressed": False}
+                       "compressed": False,
+                       # D63 (v2.7.0): the tenth, on exactly the same terms. This run kept its
+                       # source language (the engine default), so nothing on any row is a
+                       # translation — and the key is still written, because one row schema
+                       # always is the contract every reader of `panel_map` relies on.
+                       "translated": False}
 
 
 async def test_the_caption_loses_the_creators_name_at_word_boundaries() -> None:

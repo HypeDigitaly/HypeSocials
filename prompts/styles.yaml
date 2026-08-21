@@ -34,6 +34,14 @@
 # `match_profile`s are mutually exclusive by archetype (FR-341's handoff table) — the 2026-08-20
 # run put six of nine decks on `icon-ledger-carousel` because it was the only enabled style whose
 # profile claimed numbered decks at all, which is a supply fault, not a matcher fault.
+# The SAME fault moved one style along on 2026-08-21 (`20260821_010802_0wfg`, five of nine on
+# `big-number-editorial`, three of them `medium`): its profile claimed ANY one-item-per-panel deck,
+# so an unnumbered statement, a one-tool-per-panel review and a short corporate row all landed on
+# a numeral poster. It now claims ONLY panels that OPEN on their own ordinal, and it names the
+# three styles that take the rest (`photo-poster-statement`, `neon-glass-dark`,
+# `aurora-white-deck`), each of which was widened to CLAIM what it is handed. Narrowing by
+# deletion is the wrong edit every time: a matcher reading a narrowed line still has to place
+# that source somewhere, so the successors are named in writing.
 # Two of them shipped a GROUND keyed to the slide number and it never rendered: under anchor
 # chaining slides 2-N take the cover as their primary reference and copy its field, so a
 # carousel-affine style declares ONE ground for the whole deck (SESSION M, 2026-08-21 —
@@ -1876,11 +1884,14 @@ styles:
 
   - key: big-number-editorial
     match_profile: >-
-      Suits countdown decks and numbered step decks in a plain non-technical voice — sources whose
-      panels each open on one number and one short instruction, one item a panel. Hands a
-      many-rows-on-one-frame round-up to `icon-ledger-carousel`, a numbered process in a technical
-      "how I built it" voice to `build-log-mono`, and before-and-after comparisons to
-      `contrast-verdict-deck`.
+      Suits countdown decks and numbered step decks in a plain non-technical voice, and only
+      those: every panel OPENS ON ITS OWN ORDINAL, the number or "step 04" being that panel's
+      first token, with one short instruction under it. A panel that opens on a word is not this
+      style's source and belongs elsewhere: an unnumbered one-statement panel to
+      `photo-poster-statement`, one tool or product a panel at review length to `neon-glass-dark`,
+      a short claim over two to four corporate rows to `aurora-white-deck`, many rows on one frame
+      to `icon-ledger-carousel`, a numbered process in a technical "how I built it" voice to
+      `build-log-mono`, and before-and-after comparisons to `contrast-verdict-deck`.
     render_prompt: >-
       Editorial number poster on one flat near-white field, the same on every slide of the deck,
       with one soft teal-black wash bleeding in from the right edge. The numeral IS the first token
@@ -2080,11 +2091,12 @@ styles:
 
   - key: photo-poster-statement
     match_profile: >-
-      Suits one-line manifesto hooks, blunt verdicts and challenge statements whose whole payload is
-      a single short sentence a panel, said loudly over a photograph. It is the OPPOSITE of
-      photoreal-ambient-caption and quiet-luxury-night-photoreal, which set a small quiet caption
-      over a room and forbid big type; wrong for lists, tool round-ups and any panel carrying more
-      than one sentence.
+      Suits sources whose panels are one short UNNUMBERED statement each, carrying no ordinal and
+      no rows: one-line manifesto hooks, blunt verdicts, challenge lines and single-sentence tips,
+      said loudly over a photograph. A panel that opens on its own number goes to
+      `big-number-editorial`, and a small quiet caption over a room goes to
+      `photoreal-ambient-caption` or `quiet-luxury-night-photoreal`, which forbid big type; wrong
+      for lists, tool round-ups and any panel carrying more than one sentence.
     render_prompt: >-
       Full-bleed street photograph at night, shot handheld with the shutter dragged: a lone figure
       seen from behind and the traffic smear into directional blur, headlight trails streak across
@@ -2271,11 +2283,12 @@ styles:
 
   - key: neon-glass-dark
     match_profile: >-
-      Suits product and SaaS feature tours, capability rundowns and "what this tool does" decks
-      whose panels each name one capability — the glass hero object gives an abstract feature a
-      thing to be. Object-led, so it takes no screenshots and no diagrams: a browser mock-up goes
-      to platform-showcase-card, a window, prompt box and chat transcript to terminal-mockup-deck,
-      a hub-and-node explainer to circuit-atlas-dark.
+      Suits product and SaaS feature tours, capability rundowns and one-tool-per-panel review
+      decks: sources whose panels each name ONE tool, product or capability and then describe it
+      at review length, with no ordinal opening the panel. Object-led, so it takes no screenshots
+      and no diagrams: a browser mock-up goes to `platform-showcase-card`, a window, prompt box
+      and chat transcript to `terminal-mockup-deck`, a hub-and-node explainer to
+      `circuit-atlas-dark`, and a panel opening on its own number to `big-number-editorial`.
     render_prompt: >-
       Dark glass product slide: a near-black field falling into a deep teal-black corner in one
       smooth gradient, lit like a studio. ONE glossy 3D hero object floats on the centre axis,
@@ -2457,11 +2470,13 @@ styles:
 
   - key: aurora-white-deck
     match_profile: >-
-      Suits corporate and business explainers whose panels are one short claim plus two to four
-      brief rows - service breakdowns, process overviews, benefit summaries and client-facing
-      recaps in a calm professional voice. A many-rowed tool round-up goes to
-      icon-ledger-carousel and a single numbered step per panel goes to big-number-editorial;
-      wrong for jokes, photographic lifestyle sources and dark technical diagrams.
+      Suits corporate and business explainers whose panels are one short claim over two to four
+      brief UNNUMBERED rows - service breakdowns, process overviews, benefit summaries and
+      client-facing recaps in a calm professional voice, each row short enough to sit on its own
+      card. A many-rowed tool round-up goes to `icon-ledger-carousel`, a panel opening on its own
+      ordinal goes to `big-number-editorial` and one loud statement over a photograph goes to
+      `photo-poster-statement`; wrong for jokes, photographic lifestyle sources and dark technical
+      diagrams.
     render_prompt: >-
       Bright corporate deck slide on a near-white field, a pale teal wash bleeding inward from the
       four edges and the centre left clean white. A bold near-black headline crosses the upper

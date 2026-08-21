@@ -1504,3 +1504,317 @@ def test_fr351_the_pick_reason_is_escaped_like_every_other_model_authored_string
     assert "<script>" not in html_text
     assert "Cover pick: best contrast &lt;script&gt;" in html_text
     assert "&amp; the widest margins" in html_text
+
+
+# ------------------------------------------------- FR-346 (v2.7.0, D63): translation provenance
+#
+# A translated deck reaches this page with the same two absences a compressed one has — no
+# `ref_label` on any row and nothing in `copy_source_refs`, because the walk clears them (a label
+# pointing at bytes we did not ship would be a false receipt) — plus two facts no deck before it
+# carried: `copy_language: target` with a `source_language` code at the top of `meta.yaml`, and
+# `translated: true` on the rows whose text is the model's translation.
+#
+# The axes are ORTHOGONAL and the tests below keep proving it: `copy_mode` answers how LONG the
+# words are, `copy_language` answers what TONGUE they are in, and under copy mode auto one row can
+# be both. Every reading is per ROW for the same reason D62 made compression per row — a mixed
+# deck is the normal shape, and a deck-level answer would mislabel half of it.
+
+
+def translated_row(slide: int, position: int, *, text: str = "", original: str = "",
+                   brief: str = "", image: str | None = "", compressed: bool = False,
+                   translated: bool = True) -> dict[str, Any]:
+    """One `panel_map` row as `copywrite._translated_deck` writes it (D63/FR-343).
+
+    `ref_label` empty (nothing was quoted), `translated` True where the translation shipped, and
+    `source_text_original` carrying the SOURCE panel the model read. `compressed=True` is the auto
+    -mode row that was translated and THEN fitted to the style's budget — the one row shape that
+    has to carry both answers at once.
+    """
+    built = row(slide, position, text=text, label="", brief=brief, image=image)
+    built["ref_label"] = ""
+    built["translated"] = translated
+    built["compressed"] = compressed
+    built["source_text_original"] = original or text
+    return built
+
+
+def translated_deck(run: Path, **overrides: Any) -> Path:
+    """The standard three-panel deck, written as a TARGET-language run writes it."""
+    store_source(run)
+    document = meta(
+        source_post=source_post(), source_panel_count=3, slide_count=3,
+        copy_source_post_id="7412998877",
+        copy_source_refs={},  # the walk clears every label — nothing here was quoted
+        copy_mode="verbatim", copy_language="target", source_language="de",
+        panel_map=[
+            translated_row(1, 1, text="Ship it, then measure.",
+                           original="Liefere es aus, dann miss nach.",
+                           brief="hero image, heading centred"),
+            translated_row(2, 2, text="Measure it, then cut.",
+                           original="Miss nach, dann kuerze.",
+                           brief="two-column table, four rows"),
+            translated_row(3, 3, text="Cut it, then ship again.",
+                           original="Kuerze es, dann liefere erneut.",
+                           brief="line chart, three series")])
+    document.update(overrides)
+    return asset(run, document, media=("slide_01.jpg", "slide_02.jpg", "slide_03.jpg"))
+
+
+def test_fr346_a_translated_decks_header_says_which_language_the_panels_were_read_from(
+    tmp_path: Path,
+) -> None:
+    """The card's language answer, beside the length answer and never instead of it.
+
+    "These are not this post's words" is context for the creator's own caption directly under it —
+    the same argument that put D54's compression note there — and it is the one thing that makes
+    the side-by-side strip legible: the source tiles are in German and ours are not, which without
+    this line reads as a rendering that ignored its source.
+    """
+    translated_deck(tmp_path)
+
+    html_text = page(tmp_path)
+
+    head = html_text.split('<div class="pairs">')[0]
+    assert ("Copy: translated from de to the platform's language — our slides are this deck's "
+            "panels translated, never shortened (D63)") in head
+    assert head.index("Source deck:") < head.index("Copy: translated from de")
+    assert head.index("Copy: translated from de") < head.index("Original caption:")
+    assert "Copy: compressed from" not in head, "nothing was compressed on this deck"
+
+
+def test_fr346_each_translated_tile_says_which_language_it_came_out_of(tmp_path: Path) -> None:
+    """The per-slide answer, in the slot that has always carried this row's provenance.
+
+    On a verbatim row that chip reads `source · P1.panel.3`, on a compressed row `compressed from
+    N chars`; a translated row has no label to name and carries the language instead. Same chip,
+    same CSS, one question: how did this row's text come to be.
+    """
+    translated_deck(tmp_path)
+
+    html_text = page(tmp_path)
+
+    chips = re.findall(r'<span class="tag">source[^<]*</span>', html_text)
+    assert chips == ['<span class="tag">source · translated from de</span>'] * 3
+    assert "P1.panel." not in html_text, "a translated slide quotes no label to print"
+
+
+def test_fr346_a_row_that_was_translated_and_then_compressed_prints_both_chips(
+    tmp_path: Path,
+) -> None:
+    """Copy mode auto's mixed deck, on both axes at once (FR-353 + FR-343).
+
+    Row 1 was translated and then fitted to the style's budget, row 2 was translated and fitted
+    inside it, row 3 kept its source language entirely (its panel was already English). Three
+    different rows, three different chips, and the compression is named FIRST because that is the
+    order the two transforms happened in.
+    """
+    store_source(tmp_path)
+    document = meta(
+        source_post=source_post(), source_panel_count=3, slide_count=3,
+        copy_source_post_id="7412998877", copy_source_refs={},
+        copy_mode="auto", copy_language="target", source_language="de",
+        panel_map=[
+            translated_row(1, 1, text="Ship it.", original="Liefere es aus, " * 20,
+                           compressed=True),
+            translated_row(2, 2, text="Measure it.", original="Miss nach."),
+            translated_row(3, 3, text="Already English here.", translated=False)])
+    asset(tmp_path, document, media=("slide_01.jpg", "slide_02.jpg", "slide_03.jpg"))
+
+    html_text = page(tmp_path)
+
+    chips = re.findall(r'<span class="tag">source[^<]*</span>', html_text)
+    assert chips == [
+        f'<span class="tag">source · compressed from {len("Liefere es aus, " * 20)} chars · '
+        "translated from de</span>",
+        '<span class="tag">source · translated from de</span>',
+        '<span class="tag">source</span>']
+    head = html_text.split('<div class="pairs">')[0]
+    assert "Copy: compressed from" in head and "Copy: translated from de" in head, \
+        "the card states both transforms too — one is not a qualifier on the other"
+
+
+def test_fr346_the_receipt_of_a_translated_deck_never_claims_it_quoted_the_post(
+    tmp_path: Path,
+) -> None:
+    """The trap D54 already fell into once, one axis over.
+
+    A translated deck arrives with a bound post id and no refs, which is exactly the shape the
+    "nothing was quoted" branch prints `Quoted post: <id>` over — and "quoted" over a deck whose
+    slides are in a language that post never used is the worst sentence this card could print.
+    """
+    translated_deck(tmp_path)
+
+    html_text = page(tmp_path)
+
+    assert ("Translated from post: 7412998877 (written in de) — see the panel map below for the "
+            "panel each slide was translated from") in html_text
+    assert "Quoted post" not in html_text and "Quotes " not in html_text
+    assert "Compressed from post" not in html_text
+
+
+def test_fr346_a_translated_and_compressed_receipt_names_both_in_one_line(
+    tmp_path: Path,
+) -> None:
+    """One receipt for one deck, never two lines arguing about which transform happened."""
+    translated_deck(tmp_path, copy_mode="auto",
+                    panel_map=[translated_row(1, 1, text="Ship it.", original="Liefere es aus.",
+                                              compressed=True)])
+
+    html_text = page(tmp_path)
+
+    assert ("Translated from post: 7412998877 (written in de) — see the panel map below for the "
+            "panel each slide was translated from; the panels over the style's budget were then "
+            "compressed") in html_text
+
+
+def test_fr346_a_pre_d63_document_renders_exactly_as_it_did_before(tmp_path: Path) -> None:
+    """NFR-22's tolerance, the same one `_any_compressed` owes pre-D54 documents.
+
+    An older `meta.yaml` has no `copy_language`, no `source_language` and no `translated` key on
+    any row. Every language surface must answer "there is nothing to say here" — not "translated
+    from ", not an empty chip suffix, and above all not a `Translated from post` receipt over a
+    deck that quoted its post verbatim.
+    """
+    store_source(tmp_path)
+    legacy = row(1, 1, text="Panel one", brief="hero image")
+    asset(tmp_path, meta(source_post=source_post(), source_panel_count=1, slide_count=1,
+                         copy_source_post_id="7412998877",
+                         copy_source_refs={"slide_1": "P1.panel.1"},
+                         panel_map=[legacy]), media=("slide_01.jpg",))
+
+    document = yaml.safe_load((tmp_path / "0001_carousel_linkedin"
+                               / packager.META_FILE).read_text(encoding="utf-8"))
+    html_text = page(tmp_path)
+
+    assert "copy_language" not in document and "translated" not in document["panel_map"][0]
+    assert "translated" not in html_text
+    assert "Copy: translated" not in html_text
+    assert '<span class="tag">source · P1.panel.1</span>' in html_text
+
+
+def test_fr346_the_two_new_degradation_tags_ride_the_existing_badge_loop(
+    tmp_path: Path,
+) -> None:
+    """FR-73's single vocabulary: the badge loop walks `DegradationTag`, so a new tag needs no
+    schema change and no new branch. Asserted rather than assumed, because "the loop already
+    handles it" is the sentence under every tag that turned out not to render."""
+    translated_deck(tmp_path, degradations=["copy_not_translated", "translate_length_drift"])
+
+    html_text = page(tmp_path)
+
+    assert '<span class="badge warn">copy not translated</span>' in html_text
+    assert '<span class="badge warn">translate length drift</span>' in html_text
+    assert {DegradationTag.COPY_NOT_TRANSLATED.value,
+            DegradationTag.TRANSLATE_LENGTH_DRIFT.value} <= {tag.value for tag in DegradationTag}
+
+
+def test_fr346_the_language_facts_reach_the_page_from_the_writer_that_actually_writes_them(
+    tmp_path: Path,
+) -> None:
+    """The loop the fabricated documents above cannot close: FIELD NAMES, end to end (D63).
+
+    `CopyProvenance.copy_language`/`.source_language` -> `generate._record` -> `AssetRecord` ->
+    `packager`'s serializer -> `meta.yaml` -> this page, plus the per-row `translated` flag, which
+    reaches the document only because `generate._panel_map` copies the copy stage's row key by key
+    instead of rebuilding it from a fixed list. A rename anywhere along that chain would leave
+    every hand-written test here internally consistent and the real page silent.
+    """
+    from datetime import datetime, timezone
+
+    from hypesocials import generate
+    from hypesocials.config import Config
+    from hypesocials.copywrite import CopyProvenance
+    from hypesocials.models import PlanEntry, SourcePost, TrendItem
+
+    store_source(tmp_path, slides=2)
+    entry = PlanEntry(order=0, asset_id="0001_carousel_linkedin", creative_format="carousel",
+                      platform="linkedin", language="en", aspect_ratio="1:1",
+                      trend_key="t1", style_key="flat-card", slide_count=2,
+                      source_post_id="7412998877")
+    env = generate.Env(
+        config=Config(), run_dir=tmp_path, engine=None, budget=None, log=None, ledger=None,
+        trends={"t1": TrendItem(
+            history_key="t1", monitor_id="m1", name="AI tool stacks", topic_key="ai-tool-stacks",
+            posts=[SourcePost(post_id="7412998877", url=PERMALINK, author="creator",
+                              views=1_240_000, is_slideshow=True, panel_count=2,
+                              caption="die fuenf Tools, die ich wirklich nutze",
+                              published_at=datetime(2026, 8, 1, 9, 30, tzinfo=timezone.utc))])},
+        copy_provenance={entry.asset_id: CopyProvenance(
+            post_id="7412998877", refs={}, source_panel_count=2,
+            copy_language="target", source_language="de",
+            panel_map=[{"slide": 1, "source_position": 1, "source_text": "Panel one",
+                        "source_text_original": "Tafel eins", "ref_label": "",
+                        "compressed": False, "translated": True},
+                       {"slide": 2, "source_position": 2, "source_text": "Panel two",
+                        "source_text_original": "Tafel zwei", "ref_label": "",
+                        "compressed": False, "translated": True}])},
+        slide_intel={})
+    folder = packager.AssetFolder(tmp_path, generate._record(entry, env))
+    (folder.path / "slide_01.jpg").write_bytes(JPEG)
+    (folder.path / "slide_02.jpg").write_bytes(JPEG)
+    folder.finish()
+
+    document = yaml.safe_load((folder.path / packager.META_FILE).read_text(encoding="utf-8"))
+    html_text = page(tmp_path)
+
+    assert document["copy_language"] == "target" and document["source_language"] == "de"
+    assert [r["translated"] for r in document["panel_map"]] == [True, True], \
+        "`_panel_map` copies the whole row — a fixed key list would have dropped this"
+    assert "Copy: translated from de to the platform's language" in html_text
+    assert "Translated from post: 7412998877 (written in de)" in html_text
+    assert '<span class="tag">source · translated from de</span>' in html_text
+
+
+def test_fr346_a_source_mode_record_still_says_source_and_prints_nothing_new(
+    tmp_path: Path,
+) -> None:
+    """The regression half of the writer test above: a deck that translated nothing writes
+    `copy_language: source`, and `source_language` still records what language it IS in — that is
+    the whole point of recording the ladder's answer in BOTH modes (FR-73 as amended)."""
+    from hypesocials import generate
+    from hypesocials.config import Config
+    from hypesocials.copywrite import CopyProvenance
+    from hypesocials.models import PlanEntry
+
+    entry = PlanEntry(order=0, asset_id="0001_carousel_linkedin", creative_format="carousel",
+                      platform="linkedin", language="en", aspect_ratio="1:1", slide_count=1,
+                      source_post_id="7412998877")
+    env = generate.Env(config=Config(), run_dir=tmp_path, engine=None, budget=None, log=None,
+                       ledger=None, trends={},
+                       copy_provenance={entry.asset_id: CopyProvenance(
+                           post_id="7412998877", source_language="en",
+                           panel_map=[{"slide": 1, "source_position": 1,
+                                       "source_text": "Panel one", "ref_label": "P1.panel.1",
+                                       "compressed": False, "translated": False}])},
+                       slide_intel={})
+    folder = packager.AssetFolder(tmp_path, generate._record(entry, env))
+    (folder.path / "slide_01.jpg").write_bytes(JPEG)
+    folder.finish()
+
+    document = yaml.safe_load((folder.path / packager.META_FILE).read_text(encoding="utf-8"))
+    html_text = page(tmp_path)
+
+    assert document["copy_language"] == "source" and document["source_language"] == "en"
+    assert document["panel_map"][0]["translated"] is False
+    assert "Copy: translated" not in html_text
+    assert "Translated from post" not in html_text
+
+
+def test_fr346_a_creative_with_no_copy_provenance_at_all_defaults_to_source(
+    tmp_path: Path,
+) -> None:
+    """An override brief, an image, a degrade path that produced no provenance: `_record` writes
+    the dataclass defaults rather than reaching for a run-level key, so a target-mode run's image
+    says `source` — which is true, since translation never reached it (FR-345)."""
+    from hypesocials import generate
+    from hypesocials.config import Config
+    from hypesocials.models import PlanEntry
+
+    entry = PlanEntry(order=0, asset_id="0001_image_linkedin", creative_format="image",
+                      platform="linkedin", language="en", aspect_ratio="1:1")
+    env = generate.Env(config=Config(), run_dir=tmp_path, engine=None, budget=None, log=None,
+                       ledger=None, trends={}, copy_provenance={}, slide_intel={})
+
+    built = generate._record(entry, env)
+
+    assert built.copy_language == "source" and built.source_language == ""

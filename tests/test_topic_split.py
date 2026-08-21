@@ -382,13 +382,16 @@ def test_the_documented_field_map_is_the_one_the_code_actually_applies() -> None
                           "text_overlays": "text_overlay_content", "panel_texts": "panel_texts",
                           "description": "summary", "panel_count": "panel_count",
                           "image_urls": "image_urls",
-                          "intelligence_status": "intelligence_status"}, documented
+                          "intelligence_status": "intelligence_status",
+                          "language": "language_detected",
+                          "multilingual": "is_multilingual"}, documented
     raw = {"id": "p-1", "url": "https://virlo.test/p/1", "author_username": "@writer",
            "description": "MARKER-CREATOR-CAPTION", "summary": "MARKER-VIRLO-SUMMARY",
            "hook_text": "MARKER-HOOK", "text_overlay_content": "MARKER-OVERLAY",
            "panel_texts": ["MARKER-PANEL-1", "MARKER-PANEL-2"], "panel_count": 2,
            "image_urls": ["https://cdn.virlo.test/1.jpg", "https://cdn.virlo.test/2.jpg"],
            "intelligence_status": "ready",
+           "language_detected": "English", "is_multilingual": 1,
            "views": 4_900_000, "publish_date": _fresh(2)}
 
     post = virlo._source_post(raw, MONITOR, 0, is_slideshow=True)
@@ -397,7 +400,14 @@ def test_the_documented_field_map_is_the_one_the_code_actually_applies() -> None
     # carries one of each), so the documented mapping lands as a one-element list; `panel_texts`
     # is a list on both sides and the two scalars stay scalars.
     wrapped = {"hooks", "text_overlays"}
+    # The two D63 language rows are the ONLY ones the adapter transforms rather than copies, which
+    # is why they leave the identity loop and get their own assertion below. A language code is a
+    # fact ABOUT the post's strings, never one of them, so nothing verbatim is at stake in folding
+    # its spelling; every other row here is quotable material and must arrive byte for byte.
+    transformed = {"language", "multilingual"}
     for attribute, source in documented.items():
+        if attribute in transformed:
+            continue
         expected = raw[source]
         assert getattr(post, attribute) == ([expected] if attribute in wrapped else expected), \
             attribute
@@ -411,6 +421,11 @@ def test_the_documented_field_map_is_the_one_the_code_actually_applies() -> None
     # many slides a source deck had while it was rendering one.
     assert post.panel_count == 2 and post.intelligence_status == "ready"
     assert post.image_urls == ["https://cdn.virlo.test/1.jpg", "https://cdn.virlo.test/2.jpg"]
+    # The two fields the adapter gained in v2.7.0 (D63/FR-293), and the transform each applies:
+    # Virlo's `"English"` folds to the one two-letter spelling every rung of the language ladder
+    # compares against, and its truthy `1` becomes a plain bool. Both are read FROM the row, not
+    # guessed — a row that says nothing yields `""` and `False`, which is the other test above.
+    assert post.language == "en" and post.multilingual is True
     # DOCUMENTED-ABSENT (v2.2.0): Virlo exposes no display name anywhere — its nested `author`
     # object carries `username`, `verified`, `followers`, `country` and `avatar_url`, and the MCP
     # wrapper forwards two of those. So this row maps from nothing and the field is `""` on every

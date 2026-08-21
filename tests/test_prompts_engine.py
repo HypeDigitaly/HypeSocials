@@ -69,6 +69,18 @@ caption source: Seven tools, one bill.
 1. (at most 90 characters) The first panel, at the length a real slideshow page carries.
 3. (at most 90 characters) The third panel, which is where the argument turns."""
 
+#: D63/FR-343's `{{translate_panels}}` block, in the shape `copywrite._translate_block` writes it —
+#: the same per-creative section and source-position numbering as the compress block, with the
+#: from→to language line in place of the mirror rule and NO per-line budget: a translated line may
+#: not be shortened, so no ceiling is ever stated to that call (the no-shortening guarantee is
+#: structural, not a sentence). Copy-only and caller-written, like `compress_panels` above.
+TRANSLATE_PANELS = """One section per creative, each carrying that creative's OWN source deck.
+
+CREATIVE a1 — translate to: en (English); source language: de
+caption source: Sieben Tools, eine Rechnung.
+1. Das erste Panel, in der Länge einer echten Slideshow-Seite.
+3. Das dritte Panel, an dem das Argument kippt."""
+
 #: D56/FR-335's `{{style_candidates}}`, in the shape `style_match._candidate_block` writes it — the
 #: VOCABULARY block: every style any entry in this run may wear, described once by its key, the
 #: formats `styles.fmt_affine` says it can actually take, and the one `match_profile_for` line
@@ -404,13 +416,24 @@ def test_the_allowlist_table_is_the_pinned_final_one() -> None:
     # `style_match_system.md` and v2.6.0's `cover_pick_system.md`. No transitional rows are left
     # behind. Pinned as a roster and not only as a count, because a count alone passes for a row
     # deleted and a different one added in the same edit.
+    # D63/FR-343/344 — the copy role's THIRD contract. Same standing context as its two siblings,
+    # `translate_panels` swapped in for `compress_panels`/`source_hooks`, and neither sibling may
+    # name it (the compress role's own rule 2 forbids translating; the selection role retypes
+    # nothing).
+    assert pe.allowlist("copy_translate_system.md") == frozenset({
+        "niche_descriptor", "brand_context", "trend_texts", "translate_panels", "sibling_list",
+        "text_budgets", "platform_conventions", "brief_directives"})
+    assert "translate_panels" not in pe.allowlist("copy_compress_system.md")
+    assert "translate_panels" not in pe.allowlist("copywriter_system.md")
+    assert "compress_panels" not in pe.allowlist("copy_translate_system.md")
     assert set(pe._ALLOWLIST) == {
         "topic_filter_system.md", "style_match_system.md", "cover_pick_system.md",
         "slide_intel_question.md", "copywriter_system.md", "copy_compress_system.md",
+        "copy_translate_system.md",
         "image_post.md", "carousel_slide.md", "carousel_anchor_instruction.md",
         "reel_seed_frame.md", "reel_director.md",
         "critic_brief.md", "critic_system.md", "critic_craft.md", "gauntlet_fix.md"}
-    assert len(pe._ALLOWLIST) == 15
+    assert len(pe._ALLOWLIST) == 16
 
 
 def test_the_competitor_screens_two_slots_are_allowlisted_for_that_role_and_nowhere_else() -> None:
@@ -456,6 +479,7 @@ def test_every_shipped_live_template_stays_inside_its_role_allowlist_and_renders
         seed_frame_ref="@Image1", audio_cue="silent")
     context["audience_profile"] = "solo founders shipping AI tools"  # screen-only, see topic_filter
     context["compress_panels"] = COMPRESS_PANELS  # copy-only, see copywrite._call_compress
+    context["translate_panels"] = TRANSLATE_PANELS  # copy-only, see copywrite._call_translate
     context["style_candidates"] = STYLE_CANDIDATES  # match-only, see style_match._candidate_block
     context["match_entries"] = MATCH_ENTRIES        # match-only, see style_match._entry_block
     context["cover_contract"] = COVER_CONTRACT      # cover-only, see cover_pick._contract_block
@@ -480,6 +504,7 @@ def test_every_live_built_in_default_renders_from_a_normal_context(tmp_path) -> 
         competitor_strings=("Acme",), reference_roles=["Image 1 — style"])
     context["audience_profile"] = "solo founders shipping AI tools"  # screen-only, see topic_filter
     context["compress_panels"] = COMPRESS_PANELS  # copy-only, see copywrite._call_compress
+    context["translate_panels"] = TRANSLATE_PANELS  # copy-only, see copywrite._call_translate
     context["style_candidates"] = STYLE_CANDIDATES  # match-only, see style_match._candidate_block
     context["match_entries"] = MATCH_ENTRIES        # match-only, see style_match._entry_block
     context["cover_contract"] = COVER_CONTRACT      # cover-only, see cover_pick._contract_block

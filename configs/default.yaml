@@ -146,6 +146,41 @@ run:
                                    # rows that fit keep their bytes and ref label, a deck with
                                    # nothing over budget makes NO call and is byte-identical to
                                    # verbatim. Per-run override: `run.bat --copy-mode auto`.
+  copy_language_mode: source       # source | target (v2.7.0/D63/FR-345) - the LANGUAGE axis
+                                   # beside the LENGTH axis above, and the two are independent:
+                                   # a run can compress and translate, or do either on its own.
+                                   # `source` keeps every post's own words in the post's own
+                                   # language. That is the pre-D63 behaviour byte for byte, it
+                                   # is the ENGINE default for the D58 reason - a default that
+                                   # re-behaves configs nobody opted into is wrong - and it also
+                                   # switches ON the two language SCREENS: the topic filter skips
+                                   # an off-language topic (FR-294) and ASSIGN refuses to bind an
+                                   # off-language post to a deck (FR-345), because under this
+                                   # value an off-language post can only ship off-language pixels.
+                                   # `target` turns both screens off and lets those topics in:
+                                   # a BOUND carousel deck whose source post is in another
+                                   # language goes through ONE translate call of its own
+                                   # (prompts/copy_translate_system.md, on the standard `copy`
+                                   # role and inside the pre-flight estimate) into the language
+                                   # `run.languages` gives that platform. Translation NEVER
+                                   # shortens - every fact, number, name and line break survives
+                                   # and a translated line may be longer than its source; the
+                                   # auto/compress budget test above runs AFTER it, on the
+                                   # translated words. A post already in the platform's language
+                                   # is quoted byte for byte under both values, no call and no
+                                   # cost. A post whose language nobody knows (Virlo sent none
+                                   # and the vision pass read none) ships verbatim with a warning
+                                   # rather than being guessed at.
+                                   # CAROUSELS ONLY, and only BOUND ones - images, reels,
+                                   # override briefs and decks with no source post behind them
+                                   # ship their source language whatever this says, and pre-flight
+                                   # warns when a `target` run holds any of them. A failed
+                                   # translate call falls back to the verbatim mapped deck, tagged
+                                   # `copy_degraded` + `copy_not_translated`.
+                                   # The three shipped brand configs pin `target`. Per-run
+                                   # override: `run.bat --copy-language target`. There is no
+                                   # wizard step for it (NFR-16 keeps the six) - the confirm
+                                   # screen and the launch summary state the mode instead.
   reel_overlay_text: seed_frame    # seed_frame | in_model | none
   reel_audio: true                 # Seedance generate_audio; false ships a silent clip
   reel_duration_s: 5               # 4-30 (Seedance verified range); out-of-range is CLAMPED at pre-flight

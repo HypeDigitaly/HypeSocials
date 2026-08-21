@@ -83,6 +83,22 @@ class DegradationTag(str, Enum):
     # by eye. Never set when fewer than two candidates landed — there was nothing to choose, so
     # nothing degraded.
     COVER_PICK_DEGRADED = "cover_pick_degraded"
+    # --- D63 / v2.7.0 (FR-343/FR-346): output language ---
+    # FR-343 — translation was WANTED for this deck (`run.copy_language_mode: target`, a bound
+    # panel-mapped carousel, a known source language other than the platform's) and the deck
+    # shipped its SOURCE language anyway: the translate call returned nothing and the creative fell
+    # back to the FR-304 verbatim mapped deck (beside `copy_degraded`), or it ended on a path that
+    # never translates (`_refused`). Audit signal and console-loud like `copy_degraded`; the
+    # creative ships. Never set under `source` mode, on a post already in the platform's language,
+    # or when the language is unknown — those are not failures to translate, they are decisions
+    # not to, and each has its own warning.
+    COPY_NOT_TRANSLATED = "copy_not_translated"
+    # FR-343 — a shipped translated slide measured under half or over twice its source panel's
+    # length. Translation may legitimately be longer than its source (the one copy boundary where
+    # that is allowed), so this is an AUDIT of the ratio, not a gate on it: the line ships, the
+    # warning names the slide and both lengths, and the operator knows which card to read twice
+    # (A20 polarity, exactly as `copy_not_verbatim`).
+    TRANSLATE_LENGTH_DRIFT = "translate_length_drift"
     # --- D56 / v2.4.0 (FR-334): matched style assignment ---
     # FR-334 — the ONE batched style-matcher call failed outright (transport error, unparseable
     # answer, degraded `ParsedResult`), so EVERY entry in the plan kept the FR-291 rotation pick it
@@ -205,6 +221,25 @@ class SourcePost:
     #: its own, because rows enriched before a monitor's `data_intelligence_enabled` flipped still
     #: carry populated intelligence while the agent reports `false`.
     intelligence_status: str = ""
+    # --- language (v2.7.0, D63/FR-293/FR-343): what tongue this post's own words are in.
+    #: The two-letter ISO 639-1 code of the language THIS POST is written in, normalised at the
+    #: adapter by `topic_filter.language_code`, so `"English"`, `"en-US"` and `"EN"` all arrive as
+    #: `en` and no consumer ever has to re-parse a spelling. `""` means Virlo did not say — never
+    #: "English", and never a reason on its own to drop a post. Virlo sends it free on every
+    #: enriched row (`intelligence.language_detected`), which is the whole reason the output
+    #: language decision costs nothing: the D63 translate ladder in `copywrite` reads THIS field
+    #: first and only falls back to the vision pass's deck-level reading, and the `source`-mode
+    #: bind screen in `plan` reads it to skip a post whose language is known and is not one this
+    #: run writes in. NEVER a render input: it decides whether a translation is wanted and what
+    #: gets recorded as provenance, and no code path turns it into a word on a slide.
+    language: str = ""
+    #: Virlo's `intelligence.is_multilingual` — this post mixes more than one language in its own
+    #: words. It qualifies `language` rather than replacing it: on the captured corpus the single
+    #: flagged row still reports `en`, so the code names the DOMINANT language rather than
+    #: promising it is the only one, and a reader deciding how much to trust `language` wants both.
+    #: `False` covers "one language" and "Virlo did not say" alike, because neither changes any
+    #: decision here — a multilingual post is still bound and still quoted verbatim.
+    multilingual: bool = False
 
 
 @dataclass(slots=True)
@@ -535,6 +570,40 @@ class CopyCompressed:
 
 
 @dataclass(slots=True)
+class CopyTranslated:
+    """The TRANSLATE call's per-creative answer (D63/FR-343) — `CopyCompressed` plus the language.
+
+    The fourth answer shape and the copy role's third contract. It has `CopyCompressed`'s fields
+    on purpose — the same cover headline, caption, hashtags, position-indexed `slide_texts` and two
+    free-text notes — because the call is shaped the same way (`copywrite._translate_block` hands
+    the model the bound post's OWN admitted panels numbered by source position) and the engine
+    resolves it the same way (by INDEX, padded or truncated to the plan's deck length, a line for a
+    dropped position discarded). What differs is the instruction behind the shape, and it is the
+    opposite of compress on the one axis that matters: `slide_texts[i - 1]` is a TRANSLATION of
+    source panel *i* into the platform's configured language that may NOT be shortened — no
+    character ceiling is ever stated to this call, and a translated line is allowed to be longer
+    than its source. `headline` alone keeps a budget (it is ours, FR-101); `caption` is translated
+    AND humanised on the compress caption's terms.
+
+    `source_language` is the one new field: the model's reading of the language the printed
+    panels are written in, as a two-letter ISO 639-1 code. It is not a translation input — the
+    engine already decided the deck was foreign before it paid for the call — it is the
+    already-target BACKSTOP's evidence: when it names the TARGET language and a returned line is
+    not byte-identical to its source panel, the engine ships the source bytes and warns, because
+    the model has just admitted it rewrote a panel that needed no translation.
+    """
+
+    asset_id: str
+    headline: str = ""  # the deck's cover headline in the target language — headline budget applies
+    caption: str = ""  # translated AND humanised; engine falls back if it carries a social mark
+    hashtags: list[str] = field(default_factory=list)  # blocklist-checked, whole-token drops
+    slide_texts: list[str] = field(default_factory=list)  # slide i = translation of source panel i
+    through_line: str = ""  # free text — never pixels
+    narrative_arc: str = ""  # free text — carousel arc
+    source_language: str = ""  # ISO 639-1 code the model read off the panels (backstop evidence)
+
+
+@dataclass(slots=True)
 class CopySet:
     """Copy for ONE creative, produced by the per-(trend x language) call of FR-99. On-image
     text arrives already trimmed at the last word boundary under the FR-101 budget — mid-word
@@ -611,6 +680,21 @@ class AssetRecord:
     # "compressed from N chars" off each `panel_map` row's `source_text_original` length, and by
     # the FR-297c provenance block, which prints the compress receipt instead of the quoted bytes.
     copy_mode: str = "verbatim"
+    # FR-73/FR-346 (v2.7.0, D63) — the LANGUAGE receipt, orthogonal to `copy_mode` above (which
+    # stays the LENGTH receipt): `source` on every asset whose slides are in the post's own
+    # language — every `run.copy_language_mode: source` run, every image/reel/override brief, a
+    # post already in the platform's language, an unknown language, and a translate call that
+    # failed and fell back to the verbatim mapped deck — and `target` ONLY when a translation
+    # actually shipped on the deck (`copywrite._translated`). A translated deck that compressed
+    # nothing is therefore `copy_mode: verbatim, copy_language: target`, and the gallery labels the
+    # two axes separately.
+    copy_language: str = "source"
+    # FR-73/FR-346 (v2.7.0, D63) — the language ladder's answer for the bound post (Virlo's
+    # `language_detected`, else the vision pass's deck-level reading, else `""` = unknown), as a
+    # two-letter ISO 639-1 code, recorded on every bound carousel where it is known in BOTH modes —
+    # so `meta.yaml` can say what language a deck that was NOT translated is in. `""` on every
+    # asset that binds no post.
+    source_language: str = ""
     # FR-73 (v2.1.0) — the slideshow receipt, beside the refs it explains. `copy_source_post_id`
     # says WHICH post; these three say what that post WAS and how its deck maps onto ours, which is
     # what FR-309's three-part gallery card needs to lay the source strip beside our slides.
@@ -920,6 +1004,14 @@ GLOBAL_TEMPLATES: tuple[str, ...] = (
     # versus compress a string), the operator chooses between them per run, and giving the second
     # its own file is what lets either be hot-edited (FR-181) without disturbing the other.
     "copy_compress_system.md",
+    # v2.7.0 (D63, FR-343/FR-344): the carousel TRANSLATE call — the THIRD template on the `copy`
+    # role, beside the two above, and global for the same reason they are: it must read identically
+    # for every deck it translates. It is its own file rather than a mode flag on the compress
+    # template because the two contracts contradict each other on purpose — compress shortens to a
+    # stated ceiling in the source language, translate changes the language and may NOT shorten (no
+    # ceiling is ever stated to it) — and giving each its own file is what lets either be hot-edited
+    # (FR-181) without the other's rules bleeding in.
+    "copy_translate_system.md",
     # v2.4.0 (D56, FR-334/FR-335): the style matcher. Global on the same grounds as
     # `topic_filter_system.md`, which it is modelled on — it belongs to the `analysis` role rather
     # than to any render profile, and it must read identically for every entry it assigns, because
@@ -1102,6 +1194,16 @@ PLACEHOLDERS: frozenset[str] = frozenset(
         #   `_unresolvable_names()` checks this vocabulary FIRST — a template naming a slot absent
         #   from it is refused as unusable, the role falls back silently to its FR-183 built-in
         #   twin, and every operator hot-edit of the file (FR-181) stops reaching a model.
+        # --- v2.7.0 (D63, FR-343/FR-344): the translate call's one slot. ---
+        "translate_panels",  # the bound deck's OWN admitted panel strings, numbered by SOURCE
+        #   position with NO per-line budget and the from→to language line, written onto the built
+        #   context by `copywrite._call_translate` AFTER `build_context` returns — the same
+        #   after-the-fact shape `compress_panels` uses, by the same module, for the same reason
+        #   (the module that resolves the answer owns the block the question was asked with).
+        #   `copy_translate_system.md` ALONE allowlists it: a render role handed it would letter a
+        #   wall of foreign panel prose, the compress role would be handed a licence to change the
+        #   language its own rule 2 forbids it to touch, and the selection role a block to retype.
+        #   Declared HERE for the `_unresolvable_names()` reason recorded above `compress_panels`.
         # --- v2.4.0 (D56, FR-334/FR-335): the style matcher's two slots. ---
         # Both are allowlisted for `style_match_system.md` ALONE, and that exclusivity is the
         # enforcement that matters: a render role handed `{{style_candidates}}` would receive a

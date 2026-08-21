@@ -1252,3 +1252,160 @@ def test_fr342_the_three_shipped_brand_configs_pin_2k_on_the_three_platforms_the
 
     assert load_config("default", configs_dir=CONFIGS_DIR).image_resolution("linkedin") == "1k", \
         "the ENGINE default never re-prices a config that did not opt in (D58 shape)"
+
+
+# ---- D63 ----------------------------- FR-345: `run.copy_language_mode` + `--copy-language`
+
+
+def test_fr345_copy_language_mode_defaults_to_source_and_parses_both_words_from_the_file(
+    tmp_path: Path,
+) -> None:
+    """The engine default is `source`, and it is a DEFAULT rather than a preference.
+
+    `source` is the pre-D63 behaviour byte for byte: every creative ships its source post's own
+    words in that post's own language, no translate call is ever issued, and both language screens
+    (the FR-294 topic skip and FR-345's own bind-time screen) stay ON. That is the D58 shape
+    applied to a second key — a default that starts paying for LLM calls, or that starts letting
+    German posts into an English plan, would re-behave every config that never opted in.
+
+    Neither word is truthy or falsey, so the YAML 1.1 trap that catches `notion_influence: off`
+    cannot reach this key either.
+    """
+    assert Config().run.copy_language_mode == "source", "the dataclass default"
+    assert load(tmp_path, "run: {}\n").run.copy_language_mode == "source", "an absent key"
+
+    for word in ("source", "target"):
+        cfg = load(tmp_path, f"run:\n  copy_language_mode: {word}\n")
+        assert cfg.run.copy_language_mode == word
+        assert isinstance(cfg.run.copy_language_mode, str)
+
+
+def test_fr345_a_bad_copy_language_mode_refuses_the_load_naming_the_key_and_both_words(
+    tmp_path: Path,
+) -> None:
+    """A `Literal` validated at LOAD, exactly like `carousel_copy_mode` beside it (FR-51/69).
+
+    The typos this key invites are all plausible English for what it does — `translate` is what
+    the operator wants, `english` is the language they want it in, and `true` is the boolean they
+    expect a feature switch to be. None of them is a value, and none of them is guessed at: the
+    load refuses in one line naming the key and the two words, exit 2 and $0, before a run id
+    exists. A nearest-match would be worse than a refusal here, because the two modes differ in
+    what the run SPENDS as well as in what it says.
+    """
+    for spelling in ("translate", "english", "true"):
+        line = refusal(tmp_path, f"run:\n  copy_language_mode: {spelling}\n")
+        assert "run.copy_language_mode" in line
+        assert "source | target" in line, "the refusal has to name what IS accepted"
+
+
+def test_fr345_the_copy_language_flag_overrides_the_file_for_one_run_and_says_so() -> None:
+    """`--copy-language` is the per-run twin of the key (FR-61: the flag wins, the file stands).
+
+    Both directions matter and both are exercised. Turning translation ON for one run is the
+    cheap experiment; turning it OFF on a brand config that pins `target` is the one that has to
+    work under pressure, because that is what an operator reaches for when a translated deck came
+    back wrong and the next run must ship the source's own words instead.
+
+    The applied-note is asserted for the same reason the copy-mode one is: the run header prints
+    that list into `run.log`, and a flag that silently changed a deck's language would leave no
+    trace of why last Tuesday's decks read differently.
+    """
+    cfg = load_config("default", configs_dir=CONFIGS_DIR)
+
+    applied = cli.apply_overrides(cfg, cli.parse_args(["--copy-language", "target"]))
+
+    assert cfg.run.copy_language_mode == "target", "flag over file (FR-61)"
+    assert "run.copy_language_mode=target" in applied
+
+    pinned = load_config("hypedigitaly", configs_dir=CONFIGS_DIR)
+    assert "run.copy_language_mode=source" in cli.apply_overrides(
+        pinned, cli.parse_args(["--copy-language", "source"]))
+    assert pinned.run.copy_language_mode == "source"
+
+    untouched = load_config("hypedigitaly", configs_dir=CONFIGS_DIR)
+    assert cli.apply_overrides(untouched, cli.parse_args([])) == []
+    assert untouched.run.copy_language_mode == "target", "a flagless run keeps the file's pin"
+    assert cli.parse_args([]).copy_language is None, (
+        "not passed is not the same as `source` — a plain default here would silently "
+        "turn the brand configs' translation off on every flagless run")
+
+
+def test_fr345_the_copy_language_flag_refuses_a_typo_at_the_flag_boundary(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Same vocabulary at the flag as in the file, enforced BEFORE any config is loaded.
+
+    argparse's own `choices` exits 2 with one line (FR-63/69), which is what makes a mistyped
+    mode cost $0 rather than a plan built on the mode nobody asked for.
+    """
+    with pytest.raises(SystemExit) as caught:
+        cli.parse_args(["--copy-language", "czech"])
+
+    assert caught.value.code == 2
+    assert "--copy-language" in capsys.readouterr().err
+
+
+def test_fr345_the_two_copy_axes_are_orthogonal_at_both_doors() -> None:
+    """Length and language are two questions, and neither flag may answer the other.
+
+    `--copy-mode` says how LONG a slide's words may be; `--copy-language` says which LANGUAGE they
+    arrive in. A run can compress and translate, translate and quote, or neither. They are typed
+    as separate tuples in `cli` and applied by separate branches, and this pins that — a shared
+    `dest` or a shared vocabulary would make one flag silently move the other.
+    """
+    cfg = load_config("default", configs_dir=CONFIGS_DIR)
+
+    applied = cli.apply_overrides(
+        cfg, cli.parse_args(["--copy-mode", "compress", "--copy-language", "target"]))
+
+    assert (cfg.run.carousel_copy_mode, cfg.run.copy_language_mode) == ("compress", "target")
+    assert "run.carousel_copy_mode=compress" in applied
+    assert "run.copy_language_mode=target" in applied
+    assert cli._COPY_LANGUAGES == ("source", "target"), "engine default first, as --help reads it"
+    assert set(cli._COPY_LANGUAGES).isdisjoint(cli._COPY_MODES), \
+        "no word may be legal for both flags — that is how a typo lands in the wrong axis"
+
+
+def test_fr345_the_three_brand_configs_pin_target_and_the_engine_default_stays_source() -> None:
+    """The shipped posture, read off the files that actually ship (the FR-353 test's twin).
+
+    The three brand configs opt in because their monitors collect English posts and their decks
+    are the one place a translation is well-formed — a bound deck's panels map one to one, so
+    "translate these exact lines" has an answer. `hypedigitaly-cs.yaml` is the sharpest case: it
+    declares `cs` on all three platforms while reading an English-only monitor, so under `source`
+    every bound deck it ships is English text in a Czech language slot. `target` is what finally
+    makes that config's own `languages` reach its decks.
+
+    `configs/default.yaml` stays `source`, which is also the ENGINE default: translation is paid
+    LLM work and a config that never opted in must never start buying it.
+    """
+    for name in ("hypedigitaly", "hypedigitaly-cs", "hypedigitaly-fresh"):
+        cfg = load_config(name, configs_dir=CONFIGS_DIR)
+        assert cfg.run.copy_language_mode == "target", f"{name} should ship D63's target mode"
+    assert load_config("default", configs_dir=CONFIGS_DIR).run.copy_language_mode == "source", \
+        "the engine default is what default.yaml documents; target is a brand-config choice"
+
+    cs = load_config("hypedigitaly-cs", configs_dir=CONFIGS_DIR)
+    assert {cs.language_for(name) for name in cs.run.platforms} == {"cs"}, \
+        "the cs config translates INTO Czech — the flip is symmetric, not English-only"
+
+
+def test_fr345_the_cs_configs_comment_states_the_real_scope_of_the_translation() -> None:
+    """A comment guard, because this one told the operator the opposite of what ships.
+
+    `hypedigitaly-cs.yaml` used to say "Images, reels and override briefs are still written Czech
+    by the copy model as before" beside `copy_language_mode: target`. Half of that is false and it
+    is the expensive half: a BOUND image and a BOUND reel QUOTE their post's own words (§1.7.5 —
+    the engine never rewrites a quote), so on an English-only monitor they ship English, in a
+    config whose whole point is Czech output. Only an override brief and the post-less degrade
+    path are written by the copy model, and only a bound CAROUSEL deck is translated (FR-343).
+
+    An operator reads this file to decide what a run will produce. A comment that promises Czech
+    images is a comment that gets a correct pre-flight warning dismissed as noise.
+    """
+    text = (CONFIGS_DIR / "hypedigitaly-cs.yaml").read_text(encoding="utf-8")
+
+    assert "Images, reels and override briefs are still written Czech" not in text
+    assert "Scope is BOUND CAROUSEL DECKS only (FR-343)." in text
+    assert "a bound image or a bound" in text and "quotes its own post's words" in text
+    assert "﻿" not in text, "the file stays BOM-free — the loader and git both read it"

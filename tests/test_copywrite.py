@@ -113,12 +113,14 @@ def compressed(**overrides: Any) -> dict[str, Any]:
 
 def post(number: int, *, views: int = 1_000, caption: str = "", hooks: tuple[str, ...] = (),
          overlays: tuple[str, ...] = (), panels: tuple[str, ...] = (),
-         description: str = "") -> SourcePost:
+         description: str = "", language: str = "") -> SourcePost:
+    """One ranked source post. `language` is D63's rung 1 — Virlo's own `language_detected`,
+    normalised at the adapter, and empty on every pre-D63 row (which is what "unknown" means)."""
     return SourcePost(post_id=f"p{number}", url=f"https://virlo.test/p/{number}",
                       author=f"@creator{number}", views=views,
                       caption=caption or f"Post {number} caption, as its author wrote it.",
                       hooks=list(hooks) or [f"Hook {number}"], text_overlays=list(overlays),
-                      panel_texts=list(panels), description=description)
+                      panel_texts=list(panels), description=description, language=language)
 
 
 def make_trend(*posts: SourcePost, key: str = "t1", name: str = "AI tool stacks") -> TrendItem:
@@ -595,18 +597,19 @@ async def test_a_bound_decks_slides_are_mapped_from_the_source_panels_position_f
         {"slide": 1, "source_position": 1, "source_text": "Panel one line",
          "source_text_original": "Panel one line", "ref_label": "P1.panel.1", "drop_reason": "",
          "creator_stripped": False, "chrome_counter_stripped": False,
-         "truncation_suspect": False, "compressed": False},
+         "truncation_suspect": False, "compressed": False, "translated": False},
         {"slide": 2, "source_position": 2, "source_text": "Panel two line",
          "source_text_original": "Panel two line", "ref_label": "P1.panel.2", "drop_reason": "",
          "creator_stripped": False, "chrome_counter_stripped": False,
-         "truncation_suspect": False, "compressed": False},
+         "truncation_suspect": False, "compressed": False, "translated": False},
         {"slide": 3, "source_position": 3, "source_text": "", "source_text_original": "",
          "ref_label": "", "drop_reason": "empty", "creator_stripped": False,
-         "chrome_counter_stripped": False, "truncation_suspect": False, "compressed": False},
+         "chrome_counter_stripped": False, "truncation_suspect": False, "compressed": False,
+         "translated": False},
         {"slide": 4, "source_position": 4, "source_text": "Panel four line",
          "source_text_original": "Panel four line", "ref_label": "P1.panel.4", "drop_reason": "",
          "creator_stripped": False, "chrome_counter_stripped": False,
-         "truncation_suspect": False, "compressed": False},
+         "truncation_suspect": False, "compressed": False, "translated": False},
     ], "one row per OUR slide, empty ones included — the row IS the alignment (FR-309)"
 
 
@@ -690,7 +693,11 @@ async def test_a_panel_past_the_sanity_ceiling_keeps_position_and_cites_it() -> 
         # chrome strip was silent here and the row says so.
         "chrome_counter_stripped": False,
         # D54 (v2.3.0): the ninth. This run is verbatim mode, so nothing on any row compressed.
-        "compressed": False}
+        "compressed": False,
+        # D63 (v2.7.0): the tenth, and False on this walk by construction — the verbatim mapping
+        # quotes the source's own bytes in the source's own language. Asserted rather than
+        # filtered out for the same "one row schema always" reason `compressed` is.
+        "translated": False}
     assert len(log.warned("panel_over_budget")) == 1
     warning = log.warned("panel_over_budget")[0]
     assert "slide 2 (1600 characters, sanity ceiling 1500)" in warning
@@ -1956,3 +1963,999 @@ async def test_compress_mode_still_lists_every_admitted_panel_and_writes_the_pre
     offers = {plan_entry.asset_id: _offer(plan_entry, trend, auto_style())}
     assert copywrite._compress_block([plan_entry], offers) == copywrite._compress_block(
         [plan_entry], offers, only=None), "the default and the explicit `None` are one path"
+
+
+# ------------------------------------------- D63/FR-343: translate mode — the LANGUAGE axis
+#
+# The third copy contract, and the one whose whole point is a NEGATIVE: it may not shorten. Auto
+# and compress are about how long a slide's words are; this is about what tongue they are in, and
+# the two are orthogonal on purpose — a translated deck that compressed nothing reports
+# `copy_mode: verbatim, copy_language: target`.
+#
+# Three claims carry the mode and every test below serves one of them:
+#
+# 1. **No ceiling reaches the translate call.** No `(at most` in the rendered prompt, no `budget`
+#    parameter on `_translate_field`, no `text_trimmed` from a slide, and a 1,010-character answer
+#    ships all 1,010 characters onto a style whose slide budget is 180.
+# 2. **Translate runs BEFORE the auto budget test.** `_rows_over_budget` measures the TRANSLATED
+#    strings, so a German panel that overflows and translates short is left alone while a short
+#    German panel whose English runs long is the one that pays for a compress call.
+# 3. **Every decision NOT to translate is silent and free.** An unknown language, a post already
+#    in the target language and a `source`-mode run all produce byte-identical output, and only a
+#    translation that was WANTED and did not happen is tagged (`copy_not_translated`).
+
+
+class SchemaCall(StubCall):
+    """A `StubCall` whose canned answer depends on WHICH SCHEMA the engine sent.
+
+    The translate pipeline is the first path in this module that issues two calls for ONE creative
+    — translate, then (under auto or compress) a follow-up compress on the translated strings — so
+    an answer table keyed by asset id alone cannot express it. Keying by schema name is how a test
+    says "this is the translation, and that is the compression of it".
+
+    `fails` names the schemas that answer nothing at all, which is how the two independent failure
+    paths are exercised separately: a dead translate call falls to the verbatim mapped deck, while
+    a dead follow-up compress leaves the deck translated and long.
+    """
+
+    def __init__(self, by_schema: dict[str, dict[str, Any]], *,
+                 fails: tuple[str, ...] = ()) -> None:
+        super().__init__({})
+        self.by_schema = dict(by_schema)
+        self.fails = frozenset(fails)
+
+    async def __call__(self, role, messages, json_schema, images=None):  # type: ignore[override]
+        name = str(json_schema.get("name", ""))
+        self.answers = dict(self.by_schema.get(name, {}))
+        self.fail_when = (lambda ids: True) if name in self.fails else None
+        return await super().__call__(role, messages, json_schema, images)
+
+
+def translated(**overrides: Any) -> dict[str, Any]:
+    """One `CopyTranslated` answer — the D63 contract's shape (FR-343/FR-344).
+
+    `CopyCompressed`'s fields plus `source_language`, and `slide_texts` is POSITION-INDEXED for
+    the same reason: element *k* is the TRANSLATION of source panel *k+1*, and a blank element
+    means "that source panel had nothing to translate". The engine reads it by index and never as
+    a queue, so the alignment is the engine's, never the model's.
+    """
+    payload: dict[str, Any] = {
+        "headline": "Eleven tools, three kept", "caption": "The three that survived the test.",
+        "hashtags": ["#ai", "#tools"], "slide_texts": [], "through_line": "what survived",
+        "narrative_arc": "", "source_language": "de"}
+    payload.update(overrides)
+    return payload
+
+
+def foreign_deck(asset_id: str = "d1", *, post_id: str = "p1", slides: int = 2,
+                 order: int = 0, **overrides: Any) -> PlanEntry:
+    """A bound carousel pointed at `post_id` — `deck_entry` pins p1 and cannot take a second."""
+    plan_entry = deck_entry(asset_id, slides=slides, **overrides)
+    plan_entry.source_post_id = post_id
+    plan_entry.order = order
+    return plan_entry
+
+
+def german_trend(*panels: str, key: str = "t1", language: str = "de",
+                 caption: str = "Elf Werkzeuge getestet, drei sind geblieben.") -> TrendItem:
+    """A topic whose top post is a German slideshow — the translate path's only input."""
+    return make_trend(post(1, panels=panels, caption=caption, language=language), key=key)
+
+
+async def translate(entries: Any, call: StubCall, *, log: Any = None, **over: Any) -> Any:
+    """`write_copy` in target-language mode — the one line every test in this section shares."""
+    return await copywrite.write_copy(entries if isinstance(entries, list) else [entries],
+                                      call=call, log=log, copy_language_mode="target", **over)
+
+
+#: A source panel at the length run `20260820_001158_2ard` measured on real slideshow pages, in
+#: German, and its English translation at very nearly the same length. Both are far over the
+#: 180-character slide budget the style below declares, which is exactly the point: a translated
+#: slide has no budget, so both numbers are irrelevant to what ships.
+GERMAN_WALL = ("Wir haben elf KI Werkzeuge getestet und nur drei davon haben den Alltag "
+               "wirklich veraendert. " * 12)[:1048]
+ENGLISH_WALL = ("We tested eleven AI tools and only three of them actually changed the "
+                "working day. " * 13)[:1010]
+
+
+def wall_style(**overrides: Any) -> MetaStyle:
+    """A deck style declaring a 180-character slide budget — the registry's own tight end."""
+    return make_style(max_onimage_chars={"headline": 90, "subline": 60, "slide": 180},
+                      **overrides)
+
+
+def test_translate_field_takes_no_budget_at_all() -> None:
+    """The signature IS the contract (FR-343). `_compress_field` takes a budget and trims to it;
+    this function has no budget to trim to, and a future edit that "helpfully" added one would
+    turn the translate call into the shortening brief the whole mode exists not to be."""
+    import inspect
+
+    parameters = inspect.signature(copywrite._translate_field).parameters
+
+    assert "budget" not in parameters, "a translated line has no ceiling — FR-343's whole point"
+    assert set(parameters) == {"text", "brands", "entry", "run", "where", "blanked_into"}
+    assert "budget" in inspect.signature(copywrite._compress_field).parameters, \
+        "the control: the compress sibling DOES take one, which is what makes the absence a rule"
+
+
+async def test_a_translated_line_ships_every_character_it_came_back_with() -> None:
+    """FR-343's acceptance criterion: 1,048 characters of German in, 1,010 of English out, onto a
+    style whose slide budget is 180 — and all 1,010 ship.
+
+    Nothing about this deck is trimmed, and nothing about it claims byte identity either: the row
+    quotes no label, `refs` is empty, `copy_language` is `target` and `source_language` records
+    what the ladder read. `copy_mode` stays `verbatim` because the LENGTH contract did not change
+    — the two axes are orthogonal, and a reader who conflates them would think this deck was
+    compressed.
+    """
+    log = Recorder()
+    assert len(GERMAN_WALL) == 1048 and len(ENGLISH_WALL) == 1010
+    trend = german_trend(GERMAN_WALL, "Kurze zweite Seite.")
+    call = SchemaCall({"copy_translated": {"d1": translated(
+        slide_texts=[ENGLISH_WALL, "A short second page."])}})
+
+    result = await translate(foreign_deck(slides=2), call, log=log,
+                             **context(trends={"t1": trend}, styles={STYLE_KEY: wall_style()}))
+
+    copyset, provenance = result.copy["d1"], result.provenance["d1"]
+    assert copyset.slide_texts == [ENGLISH_WALL, "A short second page."]
+    assert len(copyset.slide_texts[0]) == 1010, "every character, against a 180-character budget"
+    assert DegradationTag.TEXT_TRIMMED not in result.tags.get("d1", ())
+    assert log.warned("text_trimmed") == [], "no slide budget was ever applied to measure against"
+    rows = provenance.panel_map
+    assert [row["translated"] for row in rows] == [True, True]
+    assert all(row["ref_label"] == "" for row in rows), "FR-302: a translated slide quotes nothing"
+    assert [row["compressed"] for row in rows] == [False, False], "the LENGTH axis did not move"
+    assert rows[0]["source_text_original"] == GERMAN_WALL, "the panel it was translated from"
+    assert provenance.refs == {}
+    assert provenance.copy_language == "target" and provenance.source_language == "de"
+    assert provenance.copy_mode == "verbatim"
+    assert DegradationTag.COPY_NOT_VERBATIM not in result.tags.get("d1", ()), \
+        "`quoted` is empty on this path, so `_verify`'s substring half self-skips"
+    assert DegradationTag.COPY_NOT_TRANSLATED not in result.tags.get("d1", ())
+
+
+async def test_the_target_language_is_spelled_one_way_on_both_lines_of_the_translate_prompt(
+) -> None:
+    """`en-US` in a config may not become two different languages inside one prompt.
+
+    The work order at the top prints `translate to: <code>` through `language_code`; the sibling
+    clause at the bottom prints the target again. Passing `entry.language` raw to the second one
+    produced `translate to: en (English)` above and `to en-US` below on any config whose platform
+    language carries a regional tag — one prompt naming the destination twice, differently, with
+    nothing to tell the model which spelling is the real one.
+    """
+    trend = german_trend("Erste Seite mit Woertern.", "Zweite Seite mit Woertern.")
+    call = SchemaCall({"copy_translated": {"d1": translated(
+        slide_texts=["First page with words.", "Second page with words."])}})
+    regional = foreign_deck(slides=2)
+    regional.language = "en-US"
+
+    await translate(regional, call,
+                    **context(trends={"t1": trend}, styles={STYLE_KEY: wall_style()}))
+
+    prompt = call.prompts[0]
+    line = next(row for row in prompt.splitlines() if row.startswith("- d1"))
+    assert "CREATIVE d1 — translate to: en (English); source language: de" in prompt
+    assert "translate post P1's panels from de to en;" in line
+    assert "en-US" not in prompt, "one language, one spelling, on every line of the page"
+
+
+async def test_the_translate_prompt_states_no_ceiling_and_names_both_languages() -> None:
+    """The prompt is where the no-shortening guarantee is actually made, so it is asserted
+    literally: not one `(at most` anywhere on the page.
+
+    `_call_translate` passes `carousel_copy_mode="verbatim"` for exactly this reason — that is the
+    `_budget_line` branch which states the headline ceiling and says a panel string carries none.
+    The sibling line names both languages (the ladder's reading and the platform's configured
+    target) and the panel block lists the admitted positions, numbered by SOURCE POSITION, with no
+    number in front of them.
+    """
+    trend = german_trend("Erste Seite mit Woertern.", "", "Dritte Seite mit Woertern.")
+    call = SchemaCall({"copy_translated": {"d1": translated(
+        slide_texts=["First page with words.", "", "Third page with words."])}})
+
+    await translate(foreign_deck(slides=3), call,
+                    **context(trends={"t1": trend}, styles={STYLE_KEY: wall_style()}))
+
+    prompt = call.prompts[0]
+    assert call.schemas[0]["name"] == "copy_translated"
+    assert "You translate a deck that already has its words." in prompt
+    assert "(at most" not in prompt, "a per-line ceiling turns a translation into a summary"
+    line = next(l for l in prompt.splitlines() if l.startswith("- d1"))
+    assert "translate post P1's panels from de to en" in line
+    assert "never shorten, never summarise" in line
+    assert "quote post P1" not in line and "as-selected" not in line, \
+        "the verbatim clause is REPLACED, not appended"
+    assert "CREATIVE d1 — translate to: en (English); source language: de" in prompt
+    assert "\n1. Erste Seite mit Woertern." in prompt
+    assert "\n3. Dritte Seite mit Woertern." in prompt
+    assert "caption source: Elf Werkzeuge getestet, drei sind geblieben." in prompt
+    # The unlisted-position claim is asserted on the BLOCK rather than on the rendered page: the
+    # template's own rules are a numbered list, so `\n2. ` appears in the prose whatever the deck
+    # looks like, and asserting it against the whole prompt would pin the template's wording.
+    plan_entry = foreign_deck(slides=3)
+    block = copywrite._translate_block(
+        plan_entry, _offer(plan_entry, trend, wall_style()),
+        copywrite._Run(call=None, engine=PromptEngine(),  # type: ignore[arg-type]
+                       budgets=TextBudgets(), styles={}, conventions={}, onimage_languages={},
+                       niche_descriptor="", brand_context="", competitors=(), strip_brands={}))
+    numbered = [line for line in block.splitlines() if line.split(".", 1)[0].isdigit()]
+    assert numbered == ["1. Erste Seite mit Woertern.", "3. Dritte Seite mit Woertern."], \
+        "only ADMITTED positions, numbered by SOURCE position, and never a budget on the line"
+
+
+async def test_translate_runs_before_the_auto_budget_test_and_auto_measures_the_english() -> None:
+    """FR-343's ordering rule, proved by making the two orders disagree.
+
+    German panel 1 is 50 characters (over the 40-character budget) and its English is 6; German
+    panel 2 is 5 characters (under it) and its English is 65. Measuring the SOURCE would compress
+    panel 1 and leave panel 2 long — the wrong deck. Measuring the TRANSLATION, which is what
+    `_translate_and_fit` does, asks for panel 2 alone.
+
+    So the prompts arrive in a fixed order (translate, then compress), the compress block lists the
+    ENGLISH text of position 2 and nothing else, and the shipped deck is mixed per row: position 2
+    compressed AND translated, position 1 translated only.
+    """
+    trend = german_trend("Ein ziemlich langer deutscher Satz ueber Werkzeuge.", "Kurz.")
+    long_english = "A much longer English sentence about the workflow that overflows."
+    call = SchemaCall({
+        "copy_translated": {"d1": translated(slide_texts=["Tools.", long_english])},
+        "copy_compressed": {"d1": compressed(slide_texts=["", "A short English line."])}})
+
+    result = await copywrite.write_copy(
+        [foreign_deck(slides=2)], call=call, copy_language_mode="target",
+        carousel_copy_mode="auto",
+        **context(trends={"t1": trend}, styles={STYLE_KEY: auto_style()}))
+
+    assert [schema["name"] for schema in call.schemas] == ["copy_translated", "copy_compressed"], \
+        "translate FIRST, then fit — the reverse order would budget the German"
+    assert "You translate a deck that already has its words." in call.prompts[0]
+    assert "You compress words a deck already has." in call.prompts[1]
+    fit = call.prompts[1]
+    assert "\n2. (at most 40 characters) " + long_english in fit, "the ENGLISH, not the German"
+    assert "\n1. (at most" not in fit, "position 1 translated SHORT and is not paid for twice"
+    assert "Ein ziemlich langer deutscher Satz" not in fit
+
+    copyset, provenance = result.copy["d1"], result.provenance["d1"]
+    rows = provenance.panel_map
+    assert copyset.slide_texts == ["Tools.", "A short English line."]
+    assert [row["compressed"] for row in rows] == [False, True]
+    assert [row["translated"] for row in rows] == [True, True]
+    assert all(row["ref_label"] == "" for row in rows), "translated rows quote no label, either half"
+    assert provenance.refs == {}
+    assert provenance.copy_mode == "auto" and provenance.copy_language == "target"
+    assert rows[1]["source_text_original"] == "Kurz.", "the SOURCE panel, not its translation"
+
+
+async def test_the_already_target_backstop_ships_the_source_bytes_and_says_so() -> None:
+    """9f — the model says these panels are already in the target language and then rewrites one.
+
+    The engine's ladder had already decided this deck was foreign before it paid for the call, so
+    the two readings disagree and the honest answer is the one that publishes nothing nobody
+    asked for: the SOURCE bytes ship, the row says `translated: False`, and one warning per
+    creative tells the operator the two readings disagreed.
+    """
+    log = Recorder()
+    trend = german_trend("The page as its author wrote it.", "A second page.")
+    call = SchemaCall({"copy_translated": {"d1": translated(
+        source_language="en",
+        slide_texts=["A tidier page than its author wrote.", "A second page."])}})
+
+    result = await translate(foreign_deck(slides=2), call, log=log,
+                             **context(trends={"t1": trend}, styles={STYLE_KEY: wall_style()}))
+
+    rows = result.provenance["d1"].panel_map
+    assert result.copy["d1"].slide_texts[0] == "The page as its author wrote it."
+    assert rows[0]["translated"] is False, "nothing was translated onto this row"
+    already = log.warned("translate_already_target")
+    assert len(already) == 1 and "slide 1" in already[0]
+    assert "ship their SOURCE bytes instead" in already[0]
+    assert "slide 2" not in already[0], "byte-identical lines are not a finding"
+
+
+async def test_a_deck_whose_every_row_kept_its_source_bytes_says_copy_language_source() -> None:
+    """`copy_language` is read off the ROWS, never off the fact that a call was paid for.
+
+    The shape: the already-target backstop fires on EVERY position. The model answered that these
+    panels are already written in the platform's language and then handed back different words, so
+    every row shipped its source bytes with `translated: False` — and the deck the operator
+    receives is word for word the deck a `--copy-language source` run would have made. Calling
+    that `target` would tell the gallery, `meta.yaml` and the previews that the words were
+    translated when nothing was.
+
+    `copy_not_translated` on top of it is the INTENDED audit signal and not a false positive: a
+    translation was wanted, a call was paid for, and the pixels are in the source language. The
+    two readings disagreed — the engine's ladder said foreign, the model said already-target — and
+    `translate_already_target` names that disagreement on the same creative.
+    """
+    log = Recorder()
+    trend = german_trend("The page as its author wrote it.", "A second page as written.")
+    call = SchemaCall({"copy_translated": {"d1": translated(
+        source_language="en",
+        slide_texts=["A tidier first page.", "A tidier second page."])}})
+
+    result = await translate(foreign_deck(slides=2), call, log=log,
+                             **context(trends={"t1": trend}, styles={STYLE_KEY: wall_style()}))
+
+    provenance = result.provenance["d1"]
+    assert result.copy["d1"].slide_texts == ["The page as its author wrote it.",
+                                             "A second page as written."]
+    assert all(row["translated"] is False for row in provenance.panel_map)
+    assert provenance.copy_language == "source", "nothing on any row was translated"
+    assert provenance.source_language == "de", "the ladder's answer is recorded either way"
+    assert DegradationTag.COPY_NOT_TRANSLATED in result.tags["d1"]
+    assert len(log.warned("translate_already_target")) == 1
+    assert len(log.warned("copy_not_translated")) == 1
+
+
+async def test_a_source_dropped_position_keeps_its_own_drop_reason_through_the_compress_splice(
+) -> None:
+    """The reason a slide is wordless has to be the SOURCE's reason, on every path (FR-304/319).
+
+    Under `target` + `auto` the follow-up compress call re-walks `_mapped_deck` over an offer whose
+    `panels` are the TRANSLATED strings. A position the source lost — this one carries an @handle
+    and may never become pixels — arrives at that walk as `""` and re-reads as the blandest reason
+    there is, `empty`. The row would then tell `generate/contracts.py` (and through it the frame
+    contract the render model reads, and the gallery the operator reads) that the slide is bare
+    because the source had no words, when in truth the source had words this engine refuses to
+    render. So the source walk's verdict is carried across and wins.
+    """
+    trend = german_trend("Folge mir @jemand fuer mehr", "Kurz.",
+                         "Ein ziemlich langer deutscher Satz ueber Werkzeuge und Ablaeufe.")
+    long_english = "A much longer English sentence about the workflow that overflows."
+    call = SchemaCall({
+        "copy_translated": {"d1": translated(slide_texts=["", "Tools.", long_english])},
+        "copy_compressed": {"d1": compressed(slide_texts=["", "", "A short English line."])}})
+
+    result = await copywrite.write_copy(
+        [foreign_deck(slides=3)], call=call, copy_language_mode="target",
+        carousel_copy_mode="auto",
+        **context(trends={"t1": trend}, styles={STYLE_KEY: auto_style()}))
+
+    rows = result.provenance["d1"].panel_map
+    assert [schema["name"] for schema in call.schemas] == ["copy_translated", "copy_compressed"]
+    assert rows[0]["drop_reason"] == "contains_handle_or_url", \
+        "the SOURCE panel's verdict, not the translated offer's re-reading of an empty string"
+    assert rows[0]["source_text"] == "" and rows[0]["translated"] is False
+    assert rows[0]["source_text_original"] == "Folge mir @jemand fuer mehr", "provenance intact"
+    assert [row["drop_reason"] for row in rows[1:]] == ["", ""], "the admitted rows drop nothing"
+    assert [row["compressed"] for row in rows] == [False, False, True]
+    assert result.copy["d1"].slide_texts == ["", "Tools.", "A short English line."]
+
+
+async def test_an_unknown_source_language_ships_verbatim_warns_once_and_tags_nothing() -> None:
+    """An unknown language is a decision NOT to translate, never a failure to (FR-343).
+
+    Virlo sent no language and the vision pass read none, so there is nothing to translate FROM
+    and the engine refuses to guess from the bytes. The deck is byte-identical to what a `source`
+    run makes of the same inputs, the operator gets one line naming the post, and the creative
+    carries no tag at all — `copy_not_translated` means "we meant to and could not", which is a
+    different fact.
+    """
+    log = Recorder()
+    trend = german_trend("Erste Seite mit Woertern.", "Zweite Seite.", language="")
+    scene: dict[str, Any] = dict(trends={"t1": trend}, styles={STYLE_KEY: wall_style()})
+    live = StubCall({"d1": selection(headline_ref="", caption_ref="P1.caption")})
+    control = StubCall({"d1": selection(headline_ref="", caption_ref="P1.caption")})
+
+    unknown = await translate(foreign_deck(slides=2), live, log=log, **context(**scene))
+    source_mode = await copywrite.write_copy([foreign_deck(slides=2)], call=control,
+                                             **context(**scene))
+
+    assert [schema["name"] for schema in live.schemas] == ["copy_selection"], "no translate call"
+    assert unknown.copy["d1"] == source_mode.copy["d1"]
+    assert unknown.provenance["d1"] == source_mode.provenance["d1"]
+    assert unknown.provenance["d1"].source_language == ""
+    assert unknown.provenance["d1"].copy_language == "source"
+    assert unknown.tags == source_mode.tags == {}
+    warned = log.warned("translate_language_unknown")
+    assert len(warned) == 1 and "post p1 carries no language" in warned[0]
+    assert "does not guess at a language" in warned[0]
+
+
+async def test_a_post_already_in_the_target_language_costs_no_call_and_still_records_it() -> None:
+    """The commonest `target`-mode deck of all: an English post on an English platform slot.
+
+    There is nothing to translate, so nothing is paid for and nothing changes — the run is byte
+    for byte a `source`-mode run. What DOES change is the receipt: `source_language` says `en`,
+    which is how meta.yaml can state the language of a deck that was never translated.
+    """
+    trend = make_trend(post(1, panels=("Panel one line", "Panel two line"),
+                            caption="A caption long enough to be a caption at all.",
+                            language="en"))
+    scene: dict[str, Any] = dict(trends={"t1": trend}, styles={STYLE_KEY: wall_style()})
+    live = StubCall({"d1": selection(headline_ref="", caption_ref="P1.caption")})
+    control = StubCall({"d1": selection(headline_ref="", caption_ref="P1.caption")})
+
+    target = await translate(foreign_deck(slides=2), live, **context(**scene))
+    source_mode = await copywrite.write_copy([foreign_deck(slides=2)], call=control,
+                                             **context(**scene))
+
+    assert [schema["name"] for schema in live.schemas] == ["copy_selection"]
+    assert target.copy["d1"] == source_mode.copy["d1"]
+    assert target.provenance["d1"] == source_mode.provenance["d1"]
+    assert target.provenance["d1"].source_language == "en"
+    assert target.provenance["d1"].copy_language == "source"
+    assert target.tags == {}
+
+
+async def test_every_translating_creative_takes_its_own_call_and_the_rest_share_one() -> None:
+    """One section per creative is the contract, so translating decks are NEVER grouped (plan 9g).
+
+    Two German decks and one image on one topic: two translate calls, each naming one asset, plus
+    exactly one selection call for the image. Grouping the two decks would put two content
+    authorities on one page for a model that has just been told each section's panels decide what
+    its slides say.
+    """
+    trend = make_trend(post(1, panels=("Erste Seite.", "Zweite Seite."), language="de",
+                            caption="Elf Werkzeuge getestet, drei sind geblieben."),
+                       post(2, panels=("Dritte Seite.", "Vierte Seite."), language="de",
+                            caption="Ein zweiter Beitrag, schlicht geschrieben."),
+                       post(3, hooks=("An image hook",),
+                            caption="A third caption, plainly written."))
+    entries = [foreign_deck("d1", post_id="p1", slides=2, order=0),
+               foreign_deck("d2", post_id="p2", slides=2, order=1),
+               entry("i1", 2, source_post_id="p3")]
+    call = SchemaCall({
+        "copy_translated": {"d1": translated(slide_texts=["First page.", "Second page."]),
+                            "d2": translated(slide_texts=["Third page.", "Fourth page."])},
+        "copy_selection": {"i1": selection(headline_ref="P3.hook.1", caption_ref="P3.caption")}})
+
+    result = await translate(entries, call,
+                             **context(trends={"t1": trend}, styles={STYLE_KEY: wall_style()}))
+
+    assert sorted(call.calls) == [["d1"], ["d2"], ["i1"]], "never two decks on one page"
+    assert sorted(schema["name"] for schema in call.schemas) == [
+        "copy_selection", "copy_translated", "copy_translated"]
+    assert result.copy["d1"].slide_texts == ["First page.", "Second page."]
+    assert result.copy["d2"].slide_texts == ["Third page.", "Fourth page."]
+    assert result.copy["i1"].headline == "An image hook", "the image still SELECTS, verbatim"
+    assert result.provenance["i1"].copy_language == "source", "images never translate (FR-345)"
+    assert result.provenance["d1"].copy_language == "target"
+    assert result.provenance["d2"].copy_language == "target"
+
+
+async def test_the_follow_up_under_compress_mode_sends_the_compress_sentence_not_autos() -> None:
+    """`--copy-mode compress` + `--copy-language target`: the SECOND call must sound like compress.
+
+    Under compress mode every admitted position is being compressed by definition, so the list of
+    "rows to compress after translation" is simply every admitted row. Handing that list on as
+    `only` would print an identical panel block and then swap the sibling line for auto's —
+    "compress post P1's panels 1, 2 (the ones over 40 characters)" on a deck where panel 1 is
+    six characters long and is being compressed anyway. The model reads that clause and is being
+    told something untrue about why it is shortening a line.
+
+    So `only` is the AUTO signal at the wire and nothing else: compress mode passes `None`, which
+    is the sentence a compress-mode run has always sent. The splice still knows the positions —
+    they travel on `_Translation.fit`, not on the prompt.
+    """
+    trend = german_trend("Kurz.", "Ein ziemlich langer deutscher Satz ueber Werkzeuge.")
+    long_english = "A much longer English sentence about the workflow that overflows."
+    call = SchemaCall({
+        "copy_translated": {"d1": translated(slide_texts=["Short.", long_english])},
+        "copy_compressed": {"d1": compressed(slide_texts=["Short.", "A short English line."])}})
+
+    result = await copywrite.write_copy(
+        [foreign_deck(slides=2)], call=call, copy_language_mode="target",
+        carousel_copy_mode="compress",
+        **context(trends={"t1": trend}, styles={STYLE_KEY: auto_style()}))
+
+    fit = call.prompts[1]
+    assert [schema["name"] for schema in call.schemas] == ["copy_translated", "copy_compressed"]
+    assert "compress post P1's panels to 40 characters per slide" in fit
+    assert "the ones over" not in fit, "auto's clause has no business on a compress-mode call"
+    assert "answer \"\" for every position not printed" not in fit, "that is auto's rule too"
+    assert result.provenance["d1"].copy_mode == "compress"
+    assert result.copy["d1"].slide_texts == ["Short.", "A short English line."]
+
+
+async def test_a_failed_translate_call_ships_the_verbatim_deck_and_says_copy_not_translated(
+) -> None:
+    """The fail-open tier, and it costs the deck nothing but its language.
+
+    `_mapped_fallback` is the same degrade path a failed selection or compress call takes: the
+    FR-304 mapping needs no model, so every admitted panel still renders, in its own position, in
+    German. Two tags travel together and they are two different facts — `copy_degraded` says an
+    LLM call died (FR-248 counts it), `copy_not_translated` says the thing that died was the
+    translation, which is what the console and the gallery badge read.
+    """
+    log = Recorder()
+    trend = german_trend("Erste Seite mit Woertern.", "Zweite Seite mit Woertern.")
+    call = SchemaCall({"copy_translated": {"d1": translated(slide_texts=["never seen"])}},
+                      fails=("copy_translated",))
+
+    result = await translate(foreign_deck(slides=2), call, log=log,
+                             **context(trends={"t1": trend}, styles={STYLE_KEY: wall_style()}))
+
+    provenance = result.provenance["d1"]
+    assert result.copy["d1"].slide_texts == ["Erste Seite mit Woertern.",
+                                             "Zweite Seite mit Woertern."], "German, in full"
+    assert DegradationTag.COPY_DEGRADED in result.tags["d1"]
+    assert DegradationTag.COPY_NOT_TRANSLATED in result.tags["d1"]
+    assert provenance.copy_language == "source", "the bytes are the post's own — say so"
+    assert provenance.source_language == "de"
+    assert provenance.copy_mode == "verbatim"
+    assert all(row["translated"] is False for row in provenance.panel_map)
+    assert provenance.refs["slide_1"] == "P1.panel.1", "the labels are back — these ARE quotes"
+    assert "shipped in its source language instead" in log.warned("copy_not_translated")[0]
+    assert log.warned("copy_degraded"), "a dead call is still a dead call"
+    assert call.calls == [["d1"]], "no second call, no split, no extra spend"
+
+
+async def test_a_failed_follow_up_compress_leaves_the_deck_translated_and_long() -> None:
+    """The expensive half succeeded, so the deck keeps it (FR-343/FR-353).
+
+    A dead follow-up compress is not a dead translation: every panel is in the target language and
+    in its own position, and only the FIT to the style's slide budget is missing. That is the
+    pre-D62 outcome — long slides — and it is tagged `copy_degraded` because a call died, never
+    `copy_not_translated`, because the translation is exactly what did ship.
+    """
+    log = Recorder()
+    trend = german_trend("Kurz.", "Ein ziemlich langer deutscher Satz ueber Werkzeuge.")
+    long_english = "A much longer English sentence about the workflow that overflows."
+    call = SchemaCall({"copy_translated": {"d1": translated(
+        slide_texts=["Short.", long_english])}}, fails=("copy_compressed",))
+
+    result = await copywrite.write_copy(
+        [foreign_deck(slides=2)], call=call, log=log, copy_language_mode="target",
+        carousel_copy_mode="auto",
+        **context(trends={"t1": trend}, styles={STYLE_KEY: auto_style()}))
+
+    provenance = result.provenance["d1"]
+    assert result.copy["d1"].slide_texts == ["Short.", long_english], "English, uncompressed"
+    assert DegradationTag.COPY_DEGRADED in result.tags["d1"]
+    assert DegradationTag.COPY_NOT_TRANSLATED not in result.tags["d1"], \
+        "the translation is precisely what DID ship"
+    assert provenance.copy_language == "target" and provenance.copy_mode == "verbatim"
+    assert [row["translated"] for row in provenance.panel_map] == [True, True]
+    failed = log.warned("translate_compress_failed")
+    assert len(failed) == 1 and "ships translated and UNCOMPRESSED" in failed[0]
+
+
+async def test_a_line_that_drifts_far_from_its_sources_length_warns_and_ships() -> None:
+    """A20's polarity on the one axis this contract cannot gate (FR-343).
+
+    A translation legitimately changes length, so there is no ceiling to fail and no floor to
+    refuse — but a 400-character panel answered with 40 characters is a summary, and a summary is
+    the thing this contract forbids. The line ships, the warning names the slide and both lengths,
+    and the creative is tagged so the operator knows which card to read twice.
+    """
+    log = Recorder()
+    long_german = ("Ein deutscher Absatz ueber Werkzeuge und Ablaeufe. " * 8)[:400]
+    trend = german_trend(long_german)
+    call = SchemaCall({"copy_translated": {"d1": translated(
+        slide_texts=["Tools and workflows, in brief."])}})
+
+    result = await translate(foreign_deck(slides=1), call, log=log,
+                             **context(trends={"t1": trend}, styles={STYLE_KEY: wall_style()}))
+
+    assert len(long_german) == 400
+    assert result.copy["d1"].slide_texts == ["Tools and workflows, in brief."], "it SHIPS"
+    assert DegradationTag.TRANSLATE_LENGTH_DRIFT in result.tags["d1"]
+    drift = log.warned("translate_length_drift")
+    assert len(drift) == 1 and "slide 1 (400 characters in, 30 out" in drift[0]
+    assert "audit rather than a gate" in drift[0]
+
+
+async def test_an_empty_answer_goes_wordless_and_an_answer_for_a_dropped_panel_is_discarded(
+) -> None:
+    """The two halves of FR-304's alignment, restated for the translate walk.
+
+    An ADMITTED panel answered with nothing renders wordless in its own position — the slide is
+    bare beside a source slide that has words, which is worth a warning and never worth pulling
+    the next line forward onto. A DROPPED position answered anyway is thrown away: translation
+    fills no vacuums, exactly as compression does not, and words of ours on a slide theirs left
+    blank are the `invented_text` defect the post-render gate blocks whole decks for.
+    """
+    log = Recorder()
+    trend = german_trend("Erste Seite mit Woertern.", "", "Dritte Seite mit Woertern.")
+    call = SchemaCall({"copy_translated": {"d1": translated(
+        slide_texts=["", "A slide the source never had", "Third page with words."])}})
+
+    result = await translate(foreign_deck(slides=3), call, log=log,
+                             **context(trends={"t1": trend}, styles={STYLE_KEY: wall_style()}))
+
+    rows = result.provenance["d1"].panel_map
+    assert result.copy["d1"].slide_texts == ["", "", "Third page with words."]
+    assert [row["source_position"] for row in rows] == [1, 2, 3], "position kept, nothing slid up"
+    assert [row["translated"] for row in rows] == [False, False, True]
+    assert rows[1]["drop_reason"] == "empty" and rows[1]["source_text"] == ""
+    silent = log.warned("translate_no_text")
+    assert len(silent) == 1 and "slide 1" in silent[0]
+    invented = log.warned("translate_invented_text")
+    assert len(invented) == 1 and "slide 2" in invented[0]
+    assert "A slide the source never had" in invented[0], "the operator sees what was discarded"
+
+
+async def test_a_competitor_name_in_a_translated_line_is_stripped_fail_closed() -> None:
+    """§1.5 layer 1 runs on what came BACK, unguarded, and before anything else — the compress
+    path's rule, on the translate path, for the same reason: a model translating a panel can write
+    a name it read in the fenced trend texts, so the blocklist is applied to the line it returned
+    and not only to the panel it was translating."""
+    log = Recorder()
+    trend = german_trend("Eine Seite ueber das Planen von Beitraegen.", "Eine zweite Seite.")
+    call = SchemaCall({"copy_translated": {"d1": translated(
+        slide_texts=["Nitro schedules the posts", "A second page."])}})
+
+    result = await translate(foreign_deck(slides=2), call, log=log, competitors=["Nitro"],
+                             **context(trends={"t1": trend}, styles={STYLE_KEY: wall_style()}))
+
+    assert "Nitro" not in result.copy["d1"].slide_texts[0]
+    assert DegradationTag.COMPETITOR_STRIPPED in result.tags["d1"]
+    assert "the strip runs on both sides" in log.warned("competitor_stripped")[0]
+    assert DegradationTag.COPY_NOT_VERBATIM not in result.tags["d1"], \
+        "a translated deck claims no byte identity, so the substring audit has nothing to report"
+
+
+async def test_a_translated_line_carrying_a_handle_is_BLANKED_and_warned() -> None:
+    """FR-319 re-applied on the way OUT, because a translated line is the model's own bytes.
+
+    The line is removed WHOLE rather than edited: a translated sentence with its @handle cut out
+    is a sentence nobody wrote and nobody proof-read. The source panel here is clean, so this can
+    only be the model copying a mark it read elsewhere on the page.
+    """
+    log = Recorder()
+    trend = german_trend("Eine saubere Seite ueber den Ablauf.", "Eine zweite saubere Seite.")
+    call = SchemaCall({"copy_translated": {"d1": translated(
+        slide_texts=["The workflow, via @growthdaily", "A second clean line."])}})
+
+    result = await translate(foreign_deck(slides=2), call, log=log,
+                             **context(trends={"t1": trend}, styles={STYLE_KEY: wall_style()}))
+
+    rows = result.provenance["d1"].panel_map
+    assert result.copy["d1"].slide_texts == ["", "A second clean line."]
+    assert rows[0]["drop_reason"] == "", "the SOURCE panel was fine — this is not a source drop"
+    assert rows[0]["translated"] is False and rows[0]["source_text"] == ""
+    assert rows[0]["source_text_original"] == "Eine saubere Seite ueber den Ablauf."
+    scrub = log.warned("translate_scrub")
+    assert len(scrub) == 1 and "slide 1 (carries an @handle)" in scrub[0]
+    assert "BLANKED" in scrub[0]
+    assert log.warned("translate_no_text") == [], \
+        "the model answered; the ENGINE rejected it, and that is one finding, not two"
+
+
+async def test_an_english_deck_and_a_german_one_in_one_group_take_different_contracts() -> None:
+    """The mixed group, end to end — the shape every real `target`-mode run will actually have.
+
+    Both creatives are bound panel-mapped decks on one topic, so they land in one group and one
+    partition pass. The English one is already in the target language: it takes the ordinary
+    selection call, quotes its panels under their real labels, and its receipt says `source`. The
+    German one takes a translate call of its own, quotes nothing, and its receipt says `target`.
+    Nothing about either creative is affected by the other.
+    """
+    trend = make_trend(post(1, panels=("Panel one line", "Panel two line"), language="en",
+                            caption="A caption long enough to be a caption at all."),
+                       post(2, panels=("Erste Seite.", "Zweite Seite."), language="de",
+                            caption="Elf Werkzeuge getestet, drei sind geblieben."))
+    entries = [foreign_deck("c1", post_id="p1", slides=2, order=0),
+               foreign_deck("d1", post_id="p2", slides=2, order=1)]
+    call = SchemaCall({
+        "copy_selection": {"c1": selection(headline_ref="", caption_ref="P1.caption")},
+        "copy_translated": {"d1": translated(slide_texts=["First page.", "Second page."])}})
+
+    result = await translate(entries, call,
+                             **context(trends={"t1": trend}, styles={STYLE_KEY: wall_style()}))
+
+    english, german = result.provenance["c1"], result.provenance["d1"]
+    assert sorted(call.calls) == [["c1"], ["d1"]]
+    assert result.copy["c1"].slide_texts == ["Panel one line", "Panel two line"], "byte-verbatim"
+    assert english.copy_language == "source" and english.source_language == "en"
+    assert english.refs["slide_1"] == "P1.panel.1", "a quoted deck keeps its labels"
+    assert all(row["translated"] is False for row in english.panel_map)
+    assert result.copy["d1"].slide_texts == ["First page.", "Second page."]
+    assert german.copy_language == "target" and german.source_language == "de"
+    assert german.refs == {} and all(row["translated"] for row in german.panel_map)
+    assert result.tags == {}, "neither creative lost anything"
+
+
+async def test_the_language_ladder_prefers_virlos_answer_and_falls_back_to_the_vision_pass(
+) -> None:
+    """The first two rungs, in order (§2). Rung 1 is Virlo's `SourcePost.language` and it is free;
+    rung 2 is the vision pass's ONE deck-level reading, keyed by post because the reading is a
+    property of the source deck. The first non-empty answer wins, and a disagreement is not a vote
+    — rung 1's `de` beats rung 2's `en` and the deck translates."""
+    trend_unknown = german_trend("Erste Seite.", "Zweite Seite.", language="")
+    trend_known = german_trend("Erste Seite.", "Zweite Seite.", language="de")
+    scene: dict[str, Any] = dict(styles={STYLE_KEY: wall_style()})
+    second_rung = SchemaCall({"copy_translated": {"d1": translated(
+        slide_texts=["First page.", "Second page."])}})
+    first_rung = SchemaCall({"copy_translated": {"d1": translated(
+        slide_texts=["First page.", "Second page."])}})
+
+    from_vision = await translate(foreign_deck(slides=2), second_rung,
+                                  post_languages={"p1": "de"},
+                                  **context(trends={"t1": trend_unknown}, **scene))
+    from_virlo = await translate(foreign_deck(slides=2), first_rung,
+                                 post_languages={"p1": "en"},
+                                 **context(trends={"t1": trend_known}, **scene))
+
+    assert second_rung.schemas[0]["name"] == "copy_translated", "rung 2 answered, so it translates"
+    assert from_vision.provenance["d1"].source_language == "de"
+    assert from_vision.provenance["d1"].copy_language == "target"
+    assert first_rung.schemas[0]["name"] == "copy_translated", "rung 1 wins and it says foreign"
+    assert from_virlo.provenance["d1"].source_language == "de", \
+        "Virlo's answer is not overruled by the vision pass's"
+
+
+async def test_rung_three_is_the_topic_screens_own_reading_when_both_post_rungs_are_silent(
+) -> None:
+    """The gap the D63 review found, closed: the FILTER already read this topic's language.
+
+    Under `target` the screen's LANG skip is switched OFF on purpose — a foreign topic is let in
+    because translation now exists — so a topic the screen graded `de` sails through Select. If
+    Virlo's post row carries no `language_detected` and the vision pass read nothing off the
+    slides, the ladder used to run out at rung 2 and the deck shipped GERMAN pixels on an English
+    platform slot with a `translate_language_unknown` warning beside it. The screen's verdict is a
+    reading this run already paid a model for; declining to use it is not caution, it is throwing
+    evidence away.
+
+    It is the LAST rung because it is a judgement about a TOPIC's strings, and one topic can hold
+    posts in two languages — the gap `plan.off_language_post` exists for.
+    """
+    trend = german_trend("Erste Seite.", "Zweite Seite.", language="")
+    call = SchemaCall({"copy_translated": {"d1": translated(
+        slide_texts=["First page.", "Second page."])}})
+
+    result = await translate(foreign_deck(slides=2), call,
+                             topic_languages={"t1": "de"},
+                             **context(trends={"t1": trend}, styles={STYLE_KEY: wall_style()}))
+
+    assert call.schemas[0]["name"] == "copy_translated", "rung 3 answered, so the deck translates"
+    assert result.provenance["d1"].source_language == "de"
+    assert result.provenance["d1"].copy_language == "target"
+    assert result.copy["d1"].slide_texts == ["First page.", "Second page."]
+
+
+async def test_rung_one_still_wins_over_rung_three_and_an_unrelated_topic_key_is_ignored(
+) -> None:
+    """Order is the whole ladder, and rung 3 is keyed by TOPIC — both halves pinned here.
+
+    Virlo's per-POST answer beats the screen's per-TOPIC one whenever both exist: the post is what
+    gets quoted, the topic is only where it was found. And a `topic_languages` map that does not
+    hold this creative's own `trend_key` is not an answer for it — a lookup that fell through to
+    "some other topic said German" would translate a deck on evidence about different words.
+    """
+    known = german_trend("Erste Seite.", "Zweite Seite.", language="de")
+    unknown = german_trend("Erste Seite.", "Zweite Seite.", language="")
+    scene: dict[str, Any] = dict(styles={STYLE_KEY: wall_style()})
+    over_ruled = SchemaCall({"copy_translated": {"d1": translated(
+        slide_texts=["First page.", "Second page."])}})
+    log = Recorder()
+    stranger = StubCall({"d1": selection(headline_ref="", caption_ref="P1.caption")})
+
+    beats = await translate(foreign_deck(slides=2), over_ruled,
+                            topic_languages={"t1": "fr"},
+                            **context(trends={"t1": known}, **scene))
+    missed = await translate(foreign_deck(slides=2), stranger, log=log,
+                             topic_languages={"some-other-topic": "de"},
+                             **context(trends={"t1": unknown}, **scene))
+
+    assert beats.provenance["d1"].source_language == "de", "rung 1 is the post's own reading"
+    assert [schema["name"] for schema in stranger.schemas] == ["copy_selection"], \
+        "no rung answered for THIS topic, so no translate call was made"
+    assert missed.provenance["d1"].source_language == ""
+    assert missed.provenance["d1"].copy_language == "source"
+    assert len(log.warned("translate_language_unknown")) == 1
+
+
+# ------------------------------------------------------ FR-313: the BARE-NUMERAL page counter
+#
+# Run `20260820_234620_j867` is the fixture. Its bound deck put the source's page number on a line
+# of its own — `01` … `07`, no separator, no total — on all seven panels, and every one of them
+# shipped into `panel_map.source_text` and into the gauntlet's expected-line contract while
+# `counter.detected` recorded `false`, because no paired form was ever present to detect.
+#
+# The shape is the weakest one this engine models, so it needs corroboration: `counter_line`
+# accepts a lone numeral ONLY when the caller says which slide it came from and the numeral equals
+# that slide's own position. `_offer_for` is the only place in the engine that knows.
+
+#: The j867 panel, verbatim from that run's `meta.yaml`, with `NN` standing in for its counter.
+J867_PANEL = ("Jason AI\nby Reply\n{}\nPersonal Assistant\nPAID\nFREE\nChatGPT\nNanoClaw\n"
+              "@oleg.talk")
+
+
+async def test_a_bare_numeral_equal_to_its_slide_number_is_chrome_and_is_dropped() -> None:
+    """FR-313 on the j867 panels: all seven `01`…`07` lines go, and everything else stays.
+
+    The line lands in `chrome_counter_panels` and on each row's `chrome_counter_stripped`, exactly
+    as a paired `01 / 06` counter does — it is the same finding wearing a weaker shape, and it may
+    never ride `creator_stripped`, whose meaning is "our creative nearly named another account".
+    `source_text_original` keeps the counter, because provenance records what the source said and
+    never what we admitted.
+    """
+    log = Recorder()
+    panels = tuple(J867_PANEL.format(f"{number:02d}") for number in range(1, 8))
+    trend = make_trend(post(1, panels=panels,
+                            caption="The AI assistants I actually pay for."))
+    plan_entry = deck_entry(slides=7)
+
+    offer = _offer(plan_entry, trend, deck_style(), log=log)
+
+    assert offer.chrome_counter_panels == frozenset(range(1, 8)), "all seven, one per slide"
+    assert all("\n01\n" not in text and "\n07\n" not in text for text in offer.panels)
+    assert offer.panels[0].startswith("Jason AI\nby Reply\nPersonal Assistant")
+    assert offer.panels_original[0] == panels[0], "the counter survives in the ORIGINAL bytes"
+    warned = log.warned("panel_counter_stripped")
+    assert len(warned) == 1 and "was DROPPED from 7 panel(s)" in warned[0]
+
+    call = StubCall({"d1": selection(headline_ref="", caption_ref="P1.caption")})
+    result = await copywrite.write_copy(
+        [deck_entry(slides=7)], call=call,
+        **context(trends={"t1": trend}, styles={STYLE_KEY: deck_style()}))
+
+    rows = result.provenance["d1"].panel_map
+    assert all(row["chrome_counter_stripped"] is True for row in rows)
+    assert all(row["creator_stripped"] is False for row in rows), "a page number is nobody's brand"
+    assert rows[0]["source_text_original"] == panels[0]
+
+
+def test_a_numeral_that_opens_a_sentence_is_content_and_keeps_every_byte() -> None:
+    """The safety half of FR-313, and the reason the rule needs the position at all: a `5` on a
+    slide can be the whole point of the slide. Only a line that is NOTHING BUT the numeral, and
+    only when it equals its own slide's position, is chrome — `"5 tools I use"` is a headline."""
+    panels = ("A first page of words.", "A second page.", "A third page.", "A fourth page.",
+              "5 tools I use\nto ship faster")
+    trend = make_trend(post(1, panels=panels, caption="The tools I actually use."))
+
+    offer = _offer(deck_entry(slides=5), trend, deck_style())
+
+    assert offer.chrome_counter_panels == frozenset(), "nothing here is a bare numeral line"
+    assert offer.panels[4] == "5 tools I use\nto ship faster", "every byte"
+
+
+def test_a_bare_numeral_on_the_wrong_slide_is_content_and_an_unknown_position_never_strips(
+) -> None:
+    """`_strip_counter_lines` forwards the position and `0` switches the shape off entirely.
+
+    `07` on slide 1 is content — a spec, a count, a price — and only the caller that knows the
+    line came from slide 7 may read it as that slide's page number. Every caller that does not
+    know leaves `position` at its default, which is what keeps the weakest shape from firing on a
+    string nobody can place.
+    """
+    assert copywrite._strip_counter_lines("Tools\n03\nper week", position=3) == (
+        "Tools\nper week", ["03"])
+    assert copywrite._strip_counter_lines("Tools\n03\nper week", position=1) == (
+        "Tools\n03\nper week", [])
+    assert copywrite._strip_counter_lines("Tools\n03\nper week") == (
+        "Tools\n03\nper week", []), "an unknown position can never admit a bare numeral"
+    assert copywrite._strip_counter_lines("Tools\n01 / 06\nper week") == (
+        "Tools\nper week", ["01 / 06"]), "the PAIRED shape never needed a position"
+
+
+def test_a_lone_bare_numeral_on_one_slide_is_content_and_the_deck_keeps_it() -> None:
+    """FR-313 rule 2's CORROBORATION, mirrored at admission (D63 review fix).
+
+    `slide_intel.detect_counter` accepts the bare shape under rule 2 alone, and rule 2 needs two
+    slides carrying their own position before it will call a deck counted. The admission strip had
+    no such bar: `_offer_for` handed the ordinal down on every panel, so ONE panel whose whole text
+    is the numeral `1` on slide 1 was emptied at admission and rendered as a wordless slide beside
+    a source slide that had a word on it. That is the FR-304 failure the counter strip exists to
+    prevent, arriving from the other direction.
+
+    A countdown deck, a `1` that is the answer, a slide whose entire point is a number: one match
+    is a slide about a number, two matches are a convention. So the survey runs over the whole deck
+    before a byte is stripped, and a single hit switches the shape off for every panel.
+    """
+    panels = ("1", "A second page of words.", "A third page of words.")
+    trend = make_trend(post(1, panels=panels, caption="The countdown starts here."))
+
+    offer = _offer(deck_entry(slides=3), trend, deck_style())
+
+    assert offer.chrome_counter_panels == frozenset(), "one slide is not a counting convention"
+    assert offer.panels[0] == "1", "the whole panel survives — it would be wordless otherwise"
+
+
+def test_two_slides_that_each_carry_their_own_number_corroborate_and_both_lose_it() -> None:
+    """The bar is two, and two is enough: the shortest deck that can carry a convention does.
+
+    `MIN_DECK_SLIDES` is 2, so a two-slide deck reading `1` / `2` is the smallest case where the
+    numerals agree with their positions on more than one slide — the same evidence `detect_counter`
+    calls RULE_POSITIONAL. Both counters go, both panels keep their words, and each row records the
+    strip on `chrome_counter_stripped` exactly as a paired `01 / 06` would.
+    """
+    log = Recorder()
+    trend = make_trend(post(1, panels=("1\nAlpha", "2\nBeta"),
+                            caption="Two pages and a page number on each."))
+
+    offer = _offer(deck_entry(slides=2), trend, deck_style(), log=log)
+
+    assert offer.chrome_counter_panels == frozenset({1, 2})
+    assert offer.panels == ("Alpha", "Beta"), "the words stay, the furniture goes"
+    assert offer.panels_original == ("1\nAlpha", "2\nBeta"), "provenance keeps the source's bytes"
+    assert len(log.warned("panel_counter_stripped")) == 1
+
+
+def test_the_corroboration_survey_reads_positions_and_not_merely_bare_numerals() -> None:
+    """Two bare numerals are not two matches unless each one equals ITS OWN slide's position.
+
+    A deck whose slide 1 says `7` and whose slide 2 says `9` carries two lone numerals and no
+    counting convention at all — they are prices, counts, scores. The survey compares each numeral
+    against the position it sits on, which is the same comparison `counter_line` makes and the
+    reason `bare_numeral_position` exists as a public helper: a caller has to be able to ask which
+    slide a numeral would be chrome for before it decides whether to strip anything.
+    """
+    trend = make_trend(post(1, panels=("7\nAlpha", "9\nBeta"),
+                            caption="Two numbers and no page counter anywhere."))
+
+    offer = _offer(deck_entry(slides=2), trend, deck_style())
+
+    assert offer.chrome_counter_panels == frozenset()
+    assert offer.panels == ("7\nAlpha", "9\nBeta"), "neither numeral names its own slide"
+
+
+async def test_every_row_of_a_verbatim_and_a_compressed_deck_says_translated_false() -> None:
+    """One row schema always (FR-73 as amended), and the new key obeys it on every walk.
+
+    `translated` is written on the verbatim walk, on the compress walk and on the auto rows that
+    inherit from the verbatim one, so no reader of `panel_map` — the gallery, `generate._record`,
+    the FR-309 card — has to ask whether the key exists before reading it. A `source`-language run
+    is every run that has ever happened before D63, and all of them answer False.
+    """
+    trend = compress_deck("Panel one line", "", "Panel three line")
+    verbatim_call = StubCall({"d1": selection(headline_ref="", caption_ref="P1.caption")})
+    compress_call = StubCall({"d1": compressed(slide_texts=["One", "", "Three"])})
+    scene: dict[str, Any] = dict(trends={"t1": trend}, styles={STYLE_KEY: deck_style()})
+
+    quoted = await copywrite.write_copy([deck_entry(slides=3)], call=verbatim_call,
+                                        **context(**scene))
+    shortened = await compress(deck_entry(slides=3), compress_call, **context(**scene))
+
+    assert all(row["translated"] is False for row in quoted.provenance["d1"].panel_map)
+    assert all(row["translated"] is False for row in shortened.provenance["d1"].panel_map)
+    assert all("translated" in row for row in shortened.provenance["d1"].panel_map), \
+        "written, not merely absent-and-falsy — a reader may never have to ask"
+
+
+async def test_a_runaway_translation_is_BLANKED_at_the_sanity_fence_and_never_cut() -> None:
+    """The ONE length gate that survives on this path, and it is a fence rather than a budget.
+
+    `PANEL_SANITY_CHARS` is the same ceiling a SOURCE panel faces on the way in: past it the
+    string is a transcription accident, not a slide. Applied to what comes BACK it catches the
+    model that ran away, and it BLANKS rather than trims — cutting a translated line mid-thought
+    is exactly the shortening this contract exists to forbid, and it would earn `text_trimmed`
+    for a rule the translate call was never given.
+    """
+    log = Recorder()
+    runaway = "A sentence that will not stop. " * 60  # ~1,860 characters
+    assert len(runaway) > copywrite.PANEL_SANITY_CHARS
+    trend = german_trend("Erste Seite mit Woertern.", "Zweite Seite mit Woertern.")
+    call = SchemaCall({"copy_translated": {"d1": translated(
+        slide_texts=[runaway, "Second page with words."])}})
+
+    result = await translate(foreign_deck(slides=2), call, log=log,
+                             **context(trends={"t1": trend}, styles={STYLE_KEY: wall_style()}))
+
+    rows = result.provenance["d1"].panel_map
+    assert result.copy["d1"].slide_texts == ["", "Second page with words."]
+    assert rows[0]["translated"] is False and rows[0]["drop_reason"] == "", \
+        "the SOURCE panel was fine — this is the ANSWER being unusable, not a source drop"
+    assert DegradationTag.TEXT_TRIMMED not in result.tags.get("d1", ()), \
+        "blanked, never cut — a trimmed translation is the shortening this mode forbids"
+    over = log.warned("translate_over_sanity")
+    assert len(over) == 1 and "past the 1500-character sanity ceiling" in over[0]
+    assert "removed whole rather than cut" in over[0]
+    assert log.warned("translate_no_text") == [], \
+        "one finding, one warning: the model DID answer, and the honest cause is above"
+
+
+async def test_a_translate_answer_longer_than_the_deck_is_truncated_and_says_so() -> None:
+    """The deck's length is the PLAN's — fixed at ASSIGN, priced at the Confirm gate (§0.4').
+
+    A model that answers for eight positions on a two-slide deck cannot buy the six slides nobody
+    paid for, so the extras are discarded and the operator is told how many went. The same rule
+    the compress and auto walks enforce, in this walk's own vocabulary.
+    """
+    log = Recorder()
+    trend = german_trend("Erste Seite mit Woertern.", "Zweite Seite mit Woertern.")
+    call = SchemaCall({"copy_translated": {"d1": translated(
+        slide_texts=["First page.", "Second page.", "A third", "A fourth"])}})
+
+    result = await translate(foreign_deck(slides=2), call, log=log,
+                             **context(trends={"t1": trend}, styles={STYLE_KEY: wall_style()}))
+
+    assert result.copy["d1"].slide_texts == ["First page.", "Second page."]
+    assert len(result.provenance["d1"].panel_map) == 2
+    truncated = log.warned("translate_list_truncated")
+    assert len(truncated) == 1
+    assert "returned 4 slide texts for a 2-slide deck" in truncated[0]

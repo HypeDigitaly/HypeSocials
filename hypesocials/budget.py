@@ -1,6 +1,8 @@
 """Budget — the run's one money module: what it will cost, what may be spent, what it did cost.
 
-Public API: `estimate(config, entries)` (10 FR-107, 30 NFR-18/FR-282) · `job_projection(config,
+Public API: `estimate(config, entries, post_languages=None)` (10 FR-107, 30 NFR-18/FR-282;
+D63's optional `post_id -> language` mapping only sharpens FR-343's translate line and is absent
+on every pre-Collect caller) · `job_projection(config,
 entry, job)` (the expected cost of ONE submission) · `trim(config, entries, cap_usd)`
 (FR-28/FR-106) · `Budget(cap_usd)` with `fits`/`commit`/`reserve`/`release`/`reconcile`/`summary`
 (FR-106 a/b/c, FR-84/85) · `critic_price_gap(config)` (pre-flight's "can the gauntlet be priced at
@@ -110,6 +112,35 @@ _STYLE_MATCH_ASSUMED_POOL = 24
 _COVER_PICK_PROMPT_TOKENS = 1600
 _COVER_PICK_CONTRACT_TOKENS = 700
 _COVER_PICK_COMPLETION_TOKENS = 80
+#: FR-343's translate call (D63 §4), role `copy` and ONE call per translating deck — never
+#: grouped, because the work order is one specific post's panels. The arithmetic is written down
+#: for the same reason the style matcher's and the cover pick's are — a constant nobody can
+#: explain rots:
+#: - the FIXED side is `prompts/copy_translate_system.md`, measured at 9,815 chars on 2026-08-21
+#:   -> ~2,454 tokens at `_CHARS_PER_TOKEN`. On top of it ride the answer schema for
+#:   `CopyTranslated`, the carrier turn, and the same standing blocks the selection call carries
+#:   (`trend_texts`, `text_budgets`, `platform_conventions`, `brief_directives`, the niche
+#:   descriptor) — the bundle `_COPY_PROMPT_TOKENS` quotes at 600 for the selection role. 2,454 +
+#:   600 + scaffolding, quoted at 3,200.
+#: - one PANEL block per admitted source panel, printed IN FULL and with no per-line budget (§4b:
+#:   a translation may not be given a length ceiling). `copywrite.PANEL_SANITY_CHARS` refuses a
+#:   panel over 1,500 chars before it can ever reach the block, so 1,500 chars -> 375 tokens is a
+#:   HARD per-panel ceiling rather than an average. Quoted at 400.
+#: - the ANSWER carries every one of those panels back, and rule 1 allows a translation to be
+#:   LONGER than its source; quoted at 500 per panel over a 300-token fixed floor (caption,
+#:   hashtags, headline, `through_line`, `narrative_arc`, `source_language`, JSON scaffolding),
+#:   the whole thing capped by `max_tokens.copy` because that is what the call is allowed to emit.
+#: Over-stating is the safe direction (D11); understating is the one unacceptable estimator
+#: error, so these three numbers only ever move against a measurement.
+_TRANSLATE_PROMPT_TOKENS = 3200
+_TRANSLATE_TOKENS_PER_PANEL = 400
+_TRANSLATE_COMPLETION_PER_PANEL = 500
+_TRANSLATE_COMPLETION_FIXED = 300
+#: `run.copy_language_mode`'s translating value (FR-345). Compared as a plain string rather than
+#: imported from `copywrite`, for the same reason every other stage word in this module is: the
+#: estimator prices a plan out of config arithmetic alone (NFR-18) and has no import edge to the
+#: stage modules whose spend it quotes.
+_TRANSLATE_MODE = "target"
 _IMAGE_TOKEN_DIVISOR = 750  # provider px -> vision-token rule
 _IMAGE_TOKEN_MAX_PX = 1568  # providers resize above this, so token cost stops growing
 _TIER_LONG_EDGE: dict[str, int] = {"1k": 1024, "2k": 2048, "4k": 4096}
@@ -353,7 +384,8 @@ def _line(code: str, label: str, category: SpendCategory, unit: str, quantity: f
 # --------------------------------------------------------------------------- the estimator
 
 
-def estimate(config: Config, entries: Sequence[PlanEntry]) -> Estimate:
+def estimate(config: Config, entries: Sequence[PlanEntry], *,
+             post_languages: Mapping[str, str] | None = None) -> Estimate:
     """Price a whole plan locally, enumerating every FR-107 conditional contributor.
 
     Covered bullet by bullet (10 §9, FR-107 as amended v2.1.0): the batched topic-filter screen at
@@ -367,7 +399,9 @@ def estimate(config: Config, entries: Sequence[PlanEntry]) -> Estimate:
     the carousel anchor-failure N+1 contingency; **FR-351's cover best-of-N — the `cover_candidates
     − 1` EXTRA slide-1 renders on every chained deck (expected spend, not an allowance: they are
     bought on the happy path of every run) and one `analysis` pick call per deck, quoted at its own
-    platform's native image tier**; critic image tokens at
+    platform's native image tier**; **FR-343's translate call — one `copy` call per bound carousel
+    deck that has to change language under `run.copy_language_mode: target` (D63, and nothing at
+    all under the `source` default)**; critic image tokens at
     native render resolution; a reasoning allowance on every Luna call plus FR-99's split
     per-creative calls; the FR-127 + FR-41 retry allowance on every LLM call; per-platform
     resolution; **carousel slides at each entry's own ASSIGN-fixed deck length** (§0.4′: the bound
@@ -376,9 +410,23 @@ def estimate(config: Config, entries: Sequence[PlanEntry]) -> Estimate:
     the configured duration, at the configured
     resolution and with **no** motion-reference seconds (withdrawn, v2.0.0/D41).
 
+    **FR-343's translate call (D63) is the one line whose QUANTITY depends on data this module
+    cannot read out of the config**, which is what `post_languages` is for. Under
+    `run.copy_language_mode: target` a bound carousel deck pays one extra `copy` call unless its
+    source post is already written in the platform's language — and only the bound POST knows
+    that. Called with no mapping (the Confirm gate, which runs before Collect) every non-override
+    carousel is priced, because that is the worst case the plan can produce and understating is
+    the one unacceptable estimator error (D11). Called WITH one (`runner`'s re-price right after
+    `_select`, where the posts are bound and Virlo's own `language_detected` is on every row) the
+    decks that need no translation drop off the quote, which is the same "provisional until
+    ASSIGN, real afterwards" contract `_slide_intel_lines` already documents for its own line.
+
     Args:
         config: the loaded run config — the only price source (FR-282); no network (NFR-18).
         entries: the expanded plan, in plan order.
+        post_languages: `post_id -> ISO 639-1 code`, when the caller knows them. Optional and
+            keyword-only: every pre-Collect caller (the Confirm gate, `trim`, the menu, the
+            previews) legitimately has nothing to pass, and passing nothing prices the worst case.
 
     Returns:
         An `Estimate`. Reels stay unpriced and BLOCKING while their rate is unset — they appear in
@@ -390,7 +438,7 @@ def estimate(config: Config, entries: Sequence[PlanEntry]) -> Estimate:
     lines: list[EstimateLine] = []
     for entry in entries:
         _entry_lines(config, entry, lines)
-    _llm_lines(config, entries, lines)
+    _llm_lines(config, entries, lines, post_languages=post_languages)
     _gauntlet_lines(config, entries, lines)
 
     per_entry = {entry.order: 0.0 for entry in entries}
@@ -796,7 +844,8 @@ def _cover_pick_lines(config: Config, planned: Sequence[PlanEntry],
                        SpendCategory.LLM, "retry", 2, wide, orders, allowance=True))
 
 
-def _llm_lines(config: Config, entries: Sequence[PlanEntry], lines: list[EstimateLine]) -> None:
+def _llm_lines(config: Config, entries: Sequence[PlanEntry], lines: list[EstimateLine], *,
+               post_languages: Mapping[str, str] | None = None) -> None:
     """The topic-filter screen (one batched call) and the copy calls (one per FR-99 group).
 
     The copy line is counted per distinct `trend_key`, which is what FR-99 bills. Before Collect no
@@ -804,6 +853,17 @@ def _llm_lines(config: Config, entries: Sequence[PlanEntry], lines: list[Estimat
     distinct topic per atomic group, because that is the most `plan.assign()` can produce (v1.6.5
     estimator fidelity fix). Over-stating is the safe direction; under-stating is the one
     unacceptable estimator error (D11).
+
+    **The (topic x language) grouping has ONE exception since D63, and it is priced separately:
+    FR-343's translate call.** Under `run.copy_language_mode: target` a bound panel-mapped carousel
+    whose source post is written in some other language is translated by its OWN call — one per
+    creative, never shared with a sibling, because the work order is that one post's panels printed
+    in full (§4b). So a target-mode run bills the grouped selection calls below AND one
+    `translate_call` line per translating deck, and `_translating` decides which decks those are:
+    every non-override carousel when the caller passed no `post_languages` (the Confirm gate runs
+    before Collect and no post is bound yet, so the worst case is the only honest quote), and only
+    the decks whose bound post speaks a different language once the runner re-prices with the
+    posts it actually bound.
 
     **D54 compress mode needs no line and no factor here, and that is measured rather than
     assumed.** Every copy call is already billed at the FULL `max_tokens.copy` completion ceiling
@@ -867,25 +927,108 @@ def _llm_lines(config: Config, entries: Sequence[PlanEntry], lines: list[Estimat
         lines.append(_line("copy_call",
                            f"copy call · {subject} ({language}, {siblings_of(members)} siblings)",
                            SpendCategory.LLM, "call", 1, priced, [e.order for e in members]))
+    # FR-343's translate calls (D63), printed after the grouped selection calls because that is
+    # the order they fire in: the deck is translated first and the auto/compress budget test runs
+    # on the TRANSLATED strings (§0/plan decision 4). One line per deck — this call is never
+    # grouped, since its work order is one specific post's panels printed in full.
+    translating = _translating(config, planned, post_languages)
+    widest_translate = 0
+    for entry in translating:
+        panels = _deck_slides(config, entry)
+        tokens = _TRANSLATE_PROMPT_TOKENS + brand + panels * _TRANSLATE_TOKENS_PER_PANEL
+        widest_translate = max(widest_translate, tokens)
+        out = _translate_completion(config, panels)
+        priced = _llm_call_price(config, "copy", tokens, out, round(out * effort))
+        lines.append(_line("translate_call",
+                           f"translate (1 call per deck) · {entry.asset_id} "
+                           f"({panels} panels -> {entry.language})",
+                           SpendCategory.LLM, "call", 1, priced, (entry.order,)))
     # Both retries apply to EVERY role — and 30 §2 sizes `max_tokens.copy` for the grouped FR-99
     # call precisely so FR-127's retry is not the normal path — so copy carries the same two wide
     # calls, priced at the widest group: the worst case this config can actually produce.
+    #
+    # D63 folds the translate calls into the SAME allowance rather than opening a second one: the
+    # two retries are per CALL and a translate call is a copy-role call like any other, so what
+    # changes is the count (`2 x (groups + translating decks)`) and the size it is priced at (the
+    # dearer of the widest group call and the widest translate call — a translate prompt carries a
+    # 9,815-char template and every source panel in full, so it is normally the dearer of the two,
+    # and pricing the pair at the group's size would understate exactly the call most likely to
+    # truncate). In `source` mode there are no translating decks and both numbers are untouched.
     wide_out = _widened_cap(completion)
     wide_tokens = (_COPY_PROMPT_TOKENS + brand
                    + max(siblings_of(m) for m in groups.values()) * _COPY_TOKENS_PER_SIBLING)
-    wide = _llm_call_price(config, "copy", wide_tokens, wide_out, round(wide_out * effort))
+    wide = _llm_call_price(config, "copy", max(wide_tokens, widest_translate), wide_out,
+                           round(wide_out * effort))
     lines.append(_line("copy_retry_allowance",
-                       f"copy truncation + parse retry allowance ({2 * len(groups)})",
-                       SpendCategory.LLM, "retry", 2 * len(groups), wide,
+                       "copy truncation + parse retry allowance "
+                       f"({2 * (len(groups) + len(translating))})",
+                       SpendCategory.LLM, "retry", 2 * (len(groups) + len(translating)), wide,
                        [e.order for e in planned], allowance=True))
     # FR-107: FR-99's split per-creative calls are a real conditional contributor — carried as a
     # worst-case allowance of one call per sibling, not as expected spend.
-    split_calls = sum(siblings_of(members) for members in groups.values())
+    #
+    # D63 widens it by ONE unit per translating deck, and for a reason of its own rather than by
+    # analogy: a translating deck under `carousel_copy_mode` auto or compress can fire a SECOND
+    # per-creative call — `copywrite._translate_and_fit` sends the translated rows that overflow
+    # the style's budget through the ordinary compress call (§4e) — and that fit-back is exactly
+    # what this allowance is shaped to hold: one extra copy-role call about one creative. It stays
+    # an allowance because it is conditional (a deck whose translation fits orders nothing) and
+    # because a failed fit ships the uncompressed translation rather than paying twice.
+    split_calls = sum(siblings_of(members) for members in groups.values()) + len(translating)
     split = _llm_call_price(config, "copy", _COPY_PROMPT_TOKENS + brand + _COPY_TOKENS_PER_SIBLING,
                             completion, reasoning)
     lines.append(_line("copy_split_allowance",
                        f"split per-creative copy allowance ({split_calls})", SpendCategory.LLM,
                        "call", split_calls, split, [e.order for e in planned], allowance=True))
+
+
+def _translating(config: Config, planned: Sequence[PlanEntry],
+                 post_languages: Mapping[str, str] | None) -> list[PlanEntry]:
+    """Which entries pay FR-343's per-deck translate call — the estimator's half of §3's predicate.
+
+    Three tests, and only the third can be answered wrongly here:
+
+    1. `run.copy_language_mode` is `target`. The engine default is `source` (D58 shape: a default
+       that re-prices configs nobody opted in is wrong), so a run that never asked for translation
+       sees this whole line disappear from its estimate rather than appear at $0.
+    2. The creative is a CAROUSEL and not an override brief — `copywrite._translate_wanted` scopes
+       translation to panel-mapped decks (plan 9d), so an image, a reel and an override deck never
+       translate and are never quoted for it. Pre-flight warns the operator about exactly that
+       (FR-345), which is the honest place for the news; a $0 line here would be noise.
+    3. The bound post already speaks the platform's language. This is the one the estimator cannot
+       always know: `PlanEntry` carries the post ID but nothing about the post, and at the Confirm
+       gate — which runs before Collect — there is no post at all. With no `post_languages` every
+       non-override carousel is therefore priced (D11: over-stating is the safe direction, and the
+       vision pass may still supply a language that makes the call happen). With a mapping, a post
+       whose KNOWN language equals `entry.language` drops off; an unknown language stays priced,
+       because unknown means "the ladder may still answer at COPY time", not "no call".
+    """
+    if str(config.run.copy_language_mode or "").strip() != _TRANSLATE_MODE:
+        return []
+    known = {str(post_id): str(code or "").strip()
+             for post_id, code in (post_languages or {}).items()}
+    out: list[PlanEntry] = []
+    for entry in planned:
+        if entry.creative_format != "carousel" or entry.brief_influence == "override":
+            continue
+        language = known.get(str(entry.source_post_id or "").strip(), "")
+        if language and language == entry.language:
+            continue  # already in the platform's language — quoted verbatim, no call (§3)
+        out.append(entry)
+    return out
+
+
+def _translate_completion(config: Config, panels: int) -> int:
+    """One translate answer's output size, bounded by `max_tokens.copy` (30 §2).
+
+    Sized per PANEL because that is what the answer is — every admitted source panel comes back
+    translated, and FR-343's rule 1 lets a translation run LONGER than its source, which is the
+    one copy path where a string may legitimately grow. The fixed floor covers the fields that
+    are not panels (caption, hashtags, headline, `through_line`, `narrative_arc`,
+    `source_language`) so a two-panel deck is not quoted as if it answered with two strings only.
+    """
+    return min(config.max_tokens_for("copy"),
+               _TRANSLATE_COMPLETION_FIXED + max(panels, 0) * _TRANSLATE_COMPLETION_PER_PANEL)
 
 
 # --------------------------------------------------------------------------- the gauntlet

@@ -67,6 +67,11 @@ run:
   # frame would actually overflow. `--copy-mode verbatim` / `--copy-mode compress` still override
   # it for one run.
   carousel_copy_mode: auto
+  # D63 (2026-08-21, FR-345): translate instead of skipping. Under `source` an off-language topic is
+  # dropped by the filter and an off-language post refused at ASSIGN - run 4a0q lost a deck to a German
+  # post that way. `target` lets both in and sends the BOUND deck through one translate call into `en`,
+  # never shortened; English posts stay byte-verbatim and free. Images, reels and briefs stay as-is.
+  copy_language_mode: target
   # D62 (2026-08-21, FR-351): three identical cover renders per chained deck, one vision pick
   # (style contract -> legibility at thumbnail size -> stopping power); the winner is the anchor,
   # all three are kept under <asset>/covers/. About +$0.10 renders and +$0.08 vision per deck at

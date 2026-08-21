@@ -31,10 +31,20 @@ Since v2.2.0 the screen also answers two questions the pixels depend on and the 
 decide: what language the topic's own posts are in, and whether the topic is for the audience this
 run writes for (`{{audience_profile}}`). The model REPORTS both; `_apply` decides, against
 `run.languages` and the configured niche, and turns "not a language we write" or "not our audience"
-into a `skip` with its own code (`LANG` / `AUDIENCE`, beside the pre-existing `PROMO`). Verbatim
-copy is why the language half exists at all: there is no translation step anywhere in this pipeline,
-so an off-language topic ships off-language pixels or nothing. Both checks fail OPEN — an absent or
-unreadable field keeps the topic.
+into a `skip` with its own code (`LANG` / `AUDIENCE`, beside the pre-existing `PROMO`). Both checks
+fail OPEN — an absent or unreadable field keeps the topic.
+
+**The language skip is MODE-GATED since v2.7.0 (D63/FR-345), and this paragraph used to say the
+opposite.** Until D63 there was no translation step anywhere in the pipeline, so an off-language
+topic could only ship off-language pixels and dropping it was the whole answer. There is one now,
+for BOUND CAROUSEL DECKS: under `run.copy_language_mode: target` a deck whose source post is in
+another language goes through one translate call at COPY (FR-343) and renders in the language this
+run writes. So the screen skips an off-language topic ONLY while `copy_language_mode` is `source`
+— the mode that keeps every post's own words. Under `target` the model's `language` is still read,
+normalised and recorded on every verdict, and nothing is skipped for it: the topic is let in and
+the bind screen (`plan.off_language_post`, off under `target` too) and the translate path take
+over. Recording the code either way is deliberate — the console reports it, and a mode flipped
+between runs must not change what the run KNOWS, only what it does about it.
 
 Do not: call this before Confirm (it costs money — previews print the layer-1 verdicts only, $0,
 labelled as such, FR-139); key verdicts on anything the source controls; import this module from
@@ -122,10 +132,28 @@ _FUZZY_MIN_CHARS = 5
 #: (D6), so a value that resolves to neither is off-language whatever it spells — a German topic
 #: whose panels we would have to render verbatim in German is exactly what this check exists to
 #: drop before any spend. Only the sentinels below (an honest "I could not tell") fail open.
+#:
+#: v2.7.0 (D63) widens the table past the two languages this run WRITES, to the languages a source
+#: post is likely to be IN. The first-two-letters fallback in `language_code` is a decent guess for
+#: a code and a bad one for a name — `"German"` folded to `"ge"`, which is not a language code at
+#: all, and after D63 that string is no longer only a skip reason: it lands on `SourcePost.language`,
+#: rides the ladder into the translate call and is printed to the operator as the source language.
+#: A table row beats a guess, so the languages the vision pass or Virlo actually answer with are
+#: spelled out here in English AND in their own name. Nothing about the SKIP changes — `de` is as
+#: off-language as `ge` was under `copy_language_mode: source`; what changes is that the code we
+#: name it by is the real one.
 _LANGUAGE_ALIASES: dict[str, str] = {
     "en": "en", "eng": "en", "english": "en", "enus": "en", "engb": "en", "american": "en",
     "cs": "cs", "cz": "cs", "cze": "cs", "ces": "cs", "czech": "cs", "cestina": "cs",
     "čeština": "cs", "česky": "cs", "cesky": "cs",
+    "de": "de", "deu": "de", "ger": "de", "german": "de", "deutsch": "de",
+    "fr": "fr", "fra": "fr", "fre": "fr", "french": "fr", "français": "fr", "francais": "fr",
+    "es": "es", "esp": "es", "spa": "es", "spanish": "es", "español": "es", "espanol": "es",
+    "it": "it", "ita": "it", "italian": "it", "italiano": "it",
+    "pt": "pt", "por": "pt", "portuguese": "pt", "português": "pt", "portugues": "pt",
+    "pl": "pl", "pol": "pl", "polish": "pl", "polski": "pl",
+    "nl": "nl", "nld": "nl", "dut": "nl", "dutch": "nl", "nederlands": "nl",
+    "sk": "sk", "slk": "sk", "slo": "sk", "slovak": "sk", "slovenčina": "sk", "slovencina": "sk",
 }
 #: Answers that mean "I could not tell" — treated as no answer at all, which keeps the topic
 #: (fail-open, §1.5): an unreadable language is a reason to look again, never a reason to spend
@@ -510,11 +538,16 @@ def _apply(current: Verdict, row: Mapping[str, Any], topic: TrendItem,
     and this function decides what that means, because the decision is config-shaped (`run.languages`,
     `niche.audience`) and a model must never be the thing that knows the policy:
 
-    - **off-language** — the topic's own strings are in a language this run does not write. The
-      copy is verbatim (§1.7), so a German topic's panels would ship as German pixels under an
-      English caption; there is no translation path and there must not be one.
+    - **off-language** — the topic's own strings are in a language this run does not write, AND
+      this run keeps source language (`run.copy_language_mode: source`). Under that mode the copy
+      is quoted byte for byte (§1.7), so a German topic's panels would ship as German pixels under
+      an English caption and there is nothing to be done about it downstream. **Mode-gated since
+      v2.7.0 (D63/FR-345):** under `target` a translation path exists for bound carousel decks
+      (FR-343), so the skip is OFF and the topic is let in to be bound and translated. The
+      language is read and recorded on the verdict under BOTH modes — only the skip moves.
     - **audience mismatch** — the topic is a fit for nobody we write for. Cheaper to drop here than
-      to render six slides of it.
+      to render six slides of it. Not mode-gated: translating a topic written for the wrong people
+      produces a well-worded creative for the wrong people.
 
     Both are `skip`, which is already the strongest verdict, so they simply win. Both fail OPEN on
     a missing or unparseable field: the screen's job is to remove what it can prove is wrong.
@@ -538,10 +571,11 @@ def _apply(current: Verdict, row: Mapping[str, Any], topic: TrendItem,
     said = str(row.get("reason") or "").strip()
     if said and (stands or not current.reason):
         current.reason = said
-    current.language = _language_code(row.get("language"))
+    current.language = language_code(row.get("language"))
     current.audience_fit = _flag(row.get("audience_fit"), default=True)
-    targets = _target_languages(cfg)
-    if current.language and targets and current.language not in targets:
+    targets = target_languages(cfg)
+    keeps_source = str(cfg.run.copy_language_mode) == "source"  # FR-345: `target` translates
+    if keeps_source and current.language and targets and current.language not in targets:
         _force_skip(current, SKIP_LANGUAGE, topic,
                     f"off-language: the source posts are {current.language} and this run writes "
                     f"{'/'.join(sorted(targets))} verbatim (FR-294)")
@@ -564,25 +598,37 @@ def _force_skip(current: Verdict, code: str, topic: TrendItem, reason: str) -> N
     current.reason = reason
 
 
-def _target_languages(cfg: Config) -> set[str]:
+def target_languages(cfg: Config) -> set[str]:
     """Every language this run may put on a creative — captions and on-image text alike.
 
     Both `run.languages` and `run.onimage_text_language` count: a topic is usable when SOMETHING
     the run writes is in its language, and the two maps are per platform, so the union is the honest
     target set for a screen that runs once, before any topic is bound to a platform.
+
+    PUBLIC since v2.7.0 (D63): the bind screen in `plan` asks the same question about a single
+    post that this module asks about a whole topic, and two answers to "what do we write in" is
+    exactly how a run ends up skipping a topic at Select and binding an off-language post at
+    ASSIGN. `_target_languages` stays as an alias so no existing caller or test had to move.
     """
     codes = {str(value).strip().lower() for value in cfg.run.languages.values()}
     codes |= {str(value).strip().lower() for value in cfg.run.onimage_text_language.values()}
     return {code for code in codes if code}
 
 
-def _language_code(value: Any) -> str:
-    """A model's language answer as a two-letter code, or `""` when it did not really answer.
+def language_code(value: Any) -> str:
+    """A language answer as a two-letter code, or `""` when nothing was really answered.
 
     `"English"`, `"en-US"` and `"EN"` are one code; `"unknown"` and `""` are no answer at all
     (fail-open). Anything else falls back to its first two letters, which is enough to make it
     differ from every target code — an unrecognized language IS off-language, and naming it
     approximately in the operator's reason line beats dropping the distinction.
+
+    PUBLIC since v2.7.0 (D63) and no longer only a model's answer: the Virlo adapter normalises
+    `intelligence.language_detected` through this same function on the way into
+    `SourcePost.language`, and the slide-intelligence pass normalises its deck-level reading the
+    same way. One spelling rule for every rung of the language ladder is the point — a code that
+    compares `"English"` against `"en"` is a bug that only shows up on a foreign topic, which is
+    the run nobody tests. `_language_code` stays as an alias so no existing caller or test moved.
     """
     text = str(value or "").strip().lower()
     if text in _LANGUAGE_UNKNOWN:
@@ -687,5 +733,14 @@ def _dedup(values: Sequence[str]) -> list[str]:
     return out
 
 
+#: Rename shims for the two helpers that went public in v2.7.0 (D63), pinned by the SESSION N
+#: design contract. Nothing outside this file names them TODAY (measured at the rename: zero
+#: references across `hypesocials/` and `tests/`), so they carry no traffic — they exist because
+#: the rest of the D63 wave is being written against the pre-rename names, and a shim that costs
+#: two lines is cheaper than a wave-wide coordination. New code uses the public names; when the
+#: wave has landed these two lines are deletable with a grep.
+_language_code = language_code
+_target_languages = target_languages
+
 __all__ = ["SKIP_AUDIENCE", "SKIP_LANGUAGE", "SKIP_PROMO", "Verdict", "apply_blocklist", "collapse",
-           "fuzzy_strip", "screen"]
+           "fuzzy_strip", "language_code", "screen", "target_languages"]

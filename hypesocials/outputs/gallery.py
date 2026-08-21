@@ -39,8 +39,16 @@ Invariants:
   exercise. The trigger is a non-empty `panel_map`; an override-brief carousel (§0.14d, empty
   map, null `source_post`) and every image and reel keep the single-card layout unchanged — the
   fallback IS today's card.
+- **LENGTH and LANGUAGE are two axes, both read per ROW** (FR-354 + FR-346, D62/D63): `compressed`
+  says these words are shorter than the panel they came from, `translated` says they are in
+  another tongue than it, and under `copy_mode: auto` one row can carry both — so the card states
+  both and the source chip prints both, compression first, in the order the transforms happened.
+  Neither is ever read off the document's `copy_mode`/`copy_language`: those answer for the DECK,
+  and a mixed deck is the normal shape. A document with neither key on any row is a pre-D54 or
+  pre-D63 run and prints exactly what it always did.
 - **`meta.yaml` is the only file this module opens** (module contract): `source_post`,
-  `panel_map`, `source_panel_count` and `degradations` are read as written. `source.yaml` in the
+  `panel_map`, `source_panel_count`, `source_language` and `degradations` are read as
+  written. `source.yaml` in the
   source store is provenance for humans and for `sources/slide_intel`, never a second input here
   — two readers of one archive is two chances to disagree about what the run did.
 - **Source panels are LOCAL relative paths** (FR-75 as amended): `./source/<post_id>/slide_NN.jpg`,
@@ -124,6 +132,32 @@ def _any_compressed(meta: _Meta) -> bool:
     `meta.yaml` renders exactly as it did before (NFR-22).
     """
     return any(bool(row.get("compressed")) for row in _panel_rows(meta))
+
+
+def _any_translated(meta: _Meta) -> bool:
+    """Did ANY row of this deck ship the copy model's TRANSLATION instead of the post's own words?
+
+    The `_any_compressed` reading, on the language axis (D63/FR-346, v2.7.0), and per ROW for the
+    same reason: a translated deck under `copy_mode: auto` can hold a row that was translated and
+    then compressed, a row that was only translated, and a row whose source panel was dropped
+    before either could touch it. Asking the document's `copy_language` instead would answer for
+    the deck and leave every tile unlabelled.
+
+    A pre-D63 `meta.yaml` has no `translated` key on any row and answers False, so every older run
+    renders exactly as it did before this function existed (NFR-22) — the same tolerance
+    `_any_compressed` owes pre-D54 documents.
+    """
+    return any(bool(row.get("translated")) for row in _panel_rows(meta))
+
+
+def _source_language(meta: _Meta) -> str:
+    """The ISO 639-1 code this deck's panels were read out of, or `""` (FR-346).
+
+    Read from the document rather than guessed from the words, and empty on everything that never
+    bound a post, on every pre-D63 `meta.yaml`, and on a bound deck whose language the ladder
+    could not name — three different documents that all mean "do not print a language here".
+    """
+    return " ".join(str(meta.get("source_language") or "").split())
 
 
 class _Log(Protocol):
@@ -351,6 +385,18 @@ def _provenance_html(meta: _Meta) -> str:
     if longest := _compressed_from(meta):
         parts.append(f'<p class="prov">Copy: compressed from {longest} chars — our slides are '
                      "this deck's panels compressed to the style's budget, never quoted (D54)</p>")
+    # D63/FR-346: the LANGUAGE half, beside the length half above and never instead of it — a
+    # translated deck under copy mode auto carries both lines, because both transforms happened.
+    # The target language is named as "the platform's", not as a code: `meta.yaml` records the
+    # SOURCE language (FR-73) and the platform badge at the top of this card, so inventing a target
+    # code here would be the gallery's own guess about a run config it has never read (NFR-22 keeps
+    # this module reading documents off disk and nothing else).
+    if _any_translated(meta):
+        source_language = _source_language(meta)
+        parts.append('<p class="prov">Copy: translated'
+                     + (f" from {html.escape(source_language)}" if source_language else "")
+                     + " to the platform's language — our slides are this deck's panels "
+                       "translated, never shortened (D63)</p>")
     if caption := " ".join(str(post.get("caption") or "").split()):
         # The creator's OWN caption, in its own language. Long by nature, so it is clamped by CSS
         # (scrollable, not cut): a truncated caption would look like a quote we shortened.
@@ -402,19 +448,24 @@ def _panels_html(folder: Path, meta: _Meta, rows: list[dict[str, Any]]) -> str:
     ours = _our_slides(folder)
     used: set[str] = set()
     tiles = []
+    # D63: the deck-level source language, read ONCE and handed to every tile. It lives on the
+    # document rather than on the row (FR-73: one code per bound deck, not one per panel), and a
+    # per-tile re-read would be the same lookup done N times with N chances to disagree.
+    source_language = _source_language(meta)
     for row in rows:
         slide = _int(row.get("slide"))
         position = _int(row.get("source_position"))
         pin = f"slide {slide or '?'} ← source panel {position or '?'}"
         tiles.append(f'<div class="pair"><div class="pin">{html.escape(pin)}</div>'
-                     f'{_source_side(row)}{_our_side(folder, ours.get(slide), used)}</div>')
+                     f'{_source_side(row, source_language)}'
+                     f'{_our_side(folder, ours.get(slide), used)}</div>')
     # Anything the deck delivered that no row claimed (a stray slide, an older meta) still shows:
     # media on disk is never hidden by a mapping that did not mention it.
     return (f'<div class="pairs">{"".join(tiles)}</div>{_panel_note(meta, rows)}'
             f'{_media_html(folder, meta, exclude=frozenset(used))}')
 
 
-def _source_side(row: dict[str, Any]) -> str:
+def _source_side(row: dict[str, Any], source_language: str = "") -> str:
     """One SOURCE panel: its picture (local copy), its extracted words, its visual brief.
 
     The chip above the picture carries whichever provenance this row HAS. On a verbatim row that is
@@ -427,11 +478,24 @@ def _source_side(row: dict[str, Any]) -> str:
     `source_text` stays what it has always been — the string that SHIPPED — so the tile still shows
     the words that are burned into our slide beside the picture they came from. Under compression
     those are the compressed words, which is exactly what the chip has just said.
+
+    **A row can carry TWO answers since D63 (FR-346), and it prints both.** Under `copy_mode: auto`
+    a translated row that also overflowed its style's budget was translated AND compressed, in that
+    order, so the chip reads `source · compressed from 1048 chars · translated from de` and says
+    them in the order they happened. Either half can appear alone: a translated row that fitted
+    shows only the language, a compressed row on a `source`-mode run only the length. The row's own
+    `translated` flag is what gates the second half — never the document's `copy_language`, which
+    answers for the deck and would label rows that shipped their source words untouched.
     """
     src = _relative(row.get("source_image"))
-    label = str(row.get("ref_label") or "").strip()
+    parts_label = [str(row.get("ref_label") or "").strip()]
     if compressed_from := _row_original(row):
-        label = f"compressed from {compressed_from} chars"
+        parts_label = [f"compressed from {compressed_from} chars"]
+    if row.get("translated"):
+        parts_label = [part for part in parts_label if part]  # the ref label is empty by contract
+        parts_label.append(f"translated from {source_language}" if source_language else
+                           "translated")
+    label = " · ".join(part for part in parts_label if part)
     text = " ".join(str(row.get("source_text") or "").split())
     brief = " ".join(str(row.get("visual_brief") or "").split())
     parts = [f'<span class="tag">source{f" · {html.escape(label)}" if label else ""}</span>']
@@ -528,11 +592,31 @@ def _receipt_html(meta: _Meta) -> list[str]:
     FROM, and the receipt for which words is the panel map, one row per slide, further down the
     card. Checked before the refs branch rather than inside it so the mode can never fall through
     to a "Quotes … verbatim" line either.
+
+    **A TRANSLATED deck (D63/FR-346) is answered before all of them**, because it is the same trap
+    one axis over: it also reaches here with a bound post and no refs, and "Quoted post" over a
+    deck whose slides are in a language that post never used is the worst sentence this card could
+    print. Its line names the direction and, when the deck also compressed, says so in the same
+    breath — one receipt for one deck, never two lines arguing about which transform happened.
     """
     refs = meta.get("copy_source_refs")
     refs = {str(slot): str(label) for slot, label in refs.items()
             if str(label).strip()} if isinstance(refs, dict) else {}
     post_id = str(meta.get("copy_source_post_id") or "").strip()
+    if _any_translated(meta):
+        # D63/FR-346, answered BEFORE either length branch and for the same reason the compress
+        # branch was put before the refs branch: a translated deck arrives here with a bound post
+        # id and an empty `copy_source_refs` (the walk clears every label — a label pointing at
+        # bytes we did not ship would be a false receipt), which is exactly the shape the "nothing
+        # was quoted" branch below would print `Quoted post: <id>` over. The claim on this card is
+        # the post the words were TRANSLATED from, and the receipt for which words is the panel
+        # map further down, one row per slide with its own `translated` flag.
+        language = _source_language(meta)
+        return [f'<p class="prov">Translated from post: {html.escape(post_id)}'
+                + (f" (written in {html.escape(language)})" if language else "")
+                + " — see the panel map below for the panel each slide was translated from"
+                + ("; the panels over the style's budget were then compressed"
+                   if _any_compressed(meta) else "") + "</p>"] if post_id else []
     if str(meta.get("copy_mode") or "").strip() == _COMPRESS_MODE:
         return [f'<p class="prov">Compressed from post: {html.escape(post_id)} — see the panel '
                 "map below for what each slide was compressed from</p>"] if post_id else []

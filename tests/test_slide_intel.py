@@ -26,6 +26,7 @@ shape fails here rather than at the first paid run.
 
 from __future__ import annotations
 
+import inspect
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -66,11 +67,16 @@ class Vision:
     """
 
     def __init__(self, *rows: dict[str, Any], raises: BaseException | None = None,
-                 degraded: bool = False, reason: str = "") -> None:
+                 degraded: bool = False, reason: str = "", language: Any = None) -> None:
         self.rows = list(rows)
         self.raises = raises
         self.degraded = degraded
         self.reason = reason
+        #: v2.7.0/D63's deck-level `language` key. `None` — the default — OMITS it entirely, so
+        #: every test written before the key existed still sends the exact payload it always sent.
+        #: That is not laziness: an omitted key is a real production shape (an older cached answer,
+        #: a truncated row), and the parser has to read it as `""` rather than as a failed read.
+        self.language = language
         self.calls: list[dict[str, Any]] = []
 
     async def __call__(self, role: str, messages: list[dict[str, Any]],
@@ -79,7 +85,10 @@ class Vision:
                            "images": list(images or [])})
         if self.raises is not None:
             raise self.raises
-        return ParsedResult(parsed={"slides": self.rows}, raw_text="{}", cost_usd=0.02,
+        payload: dict[str, Any] = {"slides": self.rows}
+        if self.language is not None:
+            payload["language"] = self.language
+        return ParsedResult(parsed=payload, raw_text="{}", cost_usd=0.02,
                             prompt_tokens=900, completion_tokens=300, degraded=self.degraded,
                             reason=self.reason)
 
@@ -155,7 +164,9 @@ async def test_each_slide_downloads_once_one_call_reads_them_all_and_source_yaml
     post = _post(panels=("Panel one", "", ""))
     vision = Vision(_answer(1, "Panel one as seen", "hero image, heading centred"),
                     _answer(2, "Druhý panel\nna dvou řádcích", "two-column table, four rows"),
-                    _answer(3, "Third", "line chart, three series, rising", marks=("TikTok mark",)))
+                    _answer(3, "Third", "line chart, three series, rising",
+                            marks=("TikTok mark",)),
+                    language="cs")
     log = Log()
 
     intel = await slide_intel.enrich([post], run_dir=tmp_path, call=vision, engine=_engine(),
@@ -183,6 +194,9 @@ async def test_each_slide_downloads_once_one_call_reads_them_all_and_source_yaml
     assert report.slides[2].brand_marks == ["TikTok mark"]
     assert report.usable_panels == 3
     assert report.cost_usd == 0.02 and report.prompt_tokens == 900
+    # v2.7.0/D63: the deck-level language reading rides on this same answer — no second call, and
+    # no per-slide question. It is the copy stage's second language rung (SESSION N §2).
+    assert report.language == "cs"
     assert not log.warnings, f"a clean read warned about nothing: {log.keys()}"
 
     stored = _read_yaml(tmp_path)
@@ -195,7 +209,13 @@ async def test_each_slide_downloads_once_one_call_reads_them_all_and_source_yaml
     assert stored["panel_count"] == 3
     assert stored["vision"] == {"model_role": "analysis",
                                 "model_id": Config().models.analysis,
-                                "status": slide_intel.STATUS_OK, "reason": ""}
+                                "status": slide_intel.STATUS_OK, "reason": "",
+                                # D63: what the vision pass READ the deck's language to be, filed
+                                # as vision provenance beside the model that read it — so "why did
+                                # this deck ship in the source language" is answerable without a
+                                # re-run. No new events.jsonl type: FR-80's vocabulary is
+                                # PRD-governed and the runner owns the INTEL stage's lines.
+                                "language": "cs"}
     assert stored["slides"][0] == {
         "position": 1, "virlo_text": "Panel one", "vision_text": "Panel one as seen",
         # v2.2.0 provenance: the unrepaired reading (empty — nothing was repaired here) and the
@@ -477,6 +497,156 @@ async def test_no_posts_is_not_a_run_folder_write(tmp_path: Path, downloads: lis
     assert await slide_intel.enrich([], run_dir=tmp_path, call=Vision(), engine=_engine(),
                                     cfg=Config(), log=Log()) == {}
     assert not (tmp_path / packager.SOURCE_DIR).exists()
+
+
+# ------------------------- v2.7.0/D63: the deck-level language reading (SESSION N, plan §1/§2)
+#
+# The output-language feature needs to know what language a bound source post is written in before
+# it can decide whether to translate it. The operator decision was explicit: NO new LLM call for
+# that. Virlo sends `intelligence.language_detected` for free and is asked first; this vision pass
+# is already looking at every word on every slide, so a second rung costs one string on an answer
+# the run has already paid for. Everything below pins that it stays free, deck-level and fail-open.
+
+
+async def test_the_vision_pass_reads_the_decks_language_on_the_answer_it_already_pays_for(
+    tmp_path: Path, downloads: list[str]
+) -> None:
+    """One deck, one call, one language — and no second question anywhere (plan §0).
+
+    Deck-level and not per slide, because that is the question the copy stage actually asks: a
+    source post is written in a language. A per-slide answer would only invite the model to call an
+    English product name on slide 4 a language change, and the ladder has nothing to do with that.
+    """
+    post = _post(slides=2, panels=("", ""))
+    vision = Vision(_answer(1, "Die besten Tools"), _answer(2, "Kostenlos statt teuer"),
+                    language="de")
+
+    intel = await slide_intel.enrich([post], run_dir=tmp_path, call=vision, engine=_engine(),
+                                     cfg=Config(), log=Log())
+
+    assert intel["p1"].language == "de"
+    assert len(vision.calls) == 1, "the reading rides on the FR-306 answer; it buys no second call"
+    assert _read_yaml(tmp_path)["vision"]["language"] == "de"
+
+
+@pytest.mark.parametrize(
+    ("answered", "code", "why"),
+    [
+        # The shape the question template asks for, in the spellings a model actually writes it in.
+        ("de", "de", "a two-letter code is passed through"),
+        ("EN", "en", "case is not a language"),
+        ("en-US", "en", "a regional tag is the same language"),
+        ("English", "en", "the alias table knows the two languages this product writes in"),
+        ("čeština", "cs", "including the endonym, diacritics and all"),
+        # Every honest "I could not tell", which is a legal answer and never a failed read.
+        ("", "", "a wordless deck has no language"),
+        ("unknown", "", "a model that cannot tell must be able to say so"),
+        ("mixed", "", "and so must one looking at two languages at once"),
+        (None, "", "a null is not an answer"),
+        # Junk fails open rather than raising — this module never raises at its caller (§0.14c).
+        (12, "12", "a number is normalised like any other string, and matches no target"),
+        # This row read `("German", "ge", …)` for the length of Wave 1, pinning the first-two-
+        # letters fallback: the borrowed alias table knew `en` and `cs` (D6) and nothing else, and
+        # `ge` was defended as "wrong but off-language, which is all the skip needed". D63 made the
+        # code load-bearing rather than approximate — it rides `SourcePost.language` into the
+        # translate call and is printed to the operator as the source language — so the table now
+        # carries the languages a source post is likely to be IN, not only the two we write in.
+        ("German", "de", "the alias table now names a source language properly (D63)"),
+        ("Français", "fr", "endonym and accent included, like the Czech row above"),
+        # And the fallback is STILL a fallback for anything the table has never heard of.
+        ("Klingon", "kl", "an unknown language name is off-language, named approximately"),
+    ])
+async def test_the_language_reading_is_normalised_and_fails_open_on_anything_else(
+    tmp_path: Path, downloads: list[str], answered: Any, code: str, why: str,
+) -> None:
+    """`"English"`, `"en-US"` and `"EN"` are one code — the SAME table the topic screen uses.
+
+    Borrowed rather than re-implemented on purpose (guidelines §2): the copy stage compares this
+    reading against the run's configured target language, and two alias tables that drifted apart
+    would show up as a deck translating when it should have shipped its own words verbatim.
+    """
+    vision = Vision(_answer(1, "words"), language=answered)
+
+    intel = await slide_intel.enrich([_post(slides=1, panels=("",))], run_dir=tmp_path,
+                                     call=vision, engine=_engine(), cfg=Config(), log=Log())
+
+    assert intel["p1"].language == code, why
+
+
+def test_the_language_parsers_docstring_describes_the_table_the_code_actually_uses() -> None:
+    """A doc guard, because this paragraph was wrong for a whole session and nothing caught it.
+
+    `_language`'s docstring claimed the alias table knew only `en` and `cs` and that `"German"`
+    therefore came back as `ge`. D63 widened the table in the same wave and the row above was
+    updated to `de`; the prose was not. A reader landing on that function was told the code prints
+    an approximate language into the translate prompt when it prints an exact one — the sort of
+    stale explanation that gets a correct behaviour "fixed" back into a defect.
+
+    The guard is deliberately narrow: it pins the CLAIM against the behaviour, not the wording.
+    """
+    doc = inspect.getdoc(slide_intel._language) or ""
+
+    assert "`ge`" not in doc, "the table names German properly now — the prose must not say `ge`"
+    assert slide_intel._language("German") == "de", "and this is the behaviour it describes"
+    assert "widened" in doc and "de" in doc, "the paragraph says which languages it covers"
+    assert "first two letters" in doc, "the fallback is still described — it still exists"
+    assert slide_intel._language("Klingon") == "kl", "and it still behaves that way"
+
+
+async def test_an_answer_with_no_language_key_at_all_is_a_deck_with_no_language_not_a_failed_read(
+    tmp_path: Path, downloads: list[str]
+) -> None:
+    """The key is REQUIRED of the model and OPTIONAL of the parser (§0.14c).
+
+    Strict mode makes the model send it, but an older cached payload, a truncated row or a
+    hand-built answer in some future test has no such key, and none of those is a reason to lose a
+    deck the operator has already paid to render. Everything else on the answer must still land.
+    """
+    vision = Vision(_answer(1, "words", "a brief"))  # `language=None` OMITS the key entirely
+
+    intel = await slide_intel.enrich([_post(slides=1, panels=("",))], run_dir=tmp_path,
+                                     call=vision, engine=_engine(), cfg=Config(), log=Log())
+
+    report = intel["p1"]
+    assert report.language == ""
+    assert report.status == slide_intel.STATUS_OK, "a missing optional key is not a degrade"
+    assert report.panel_texts == ["words"], "and the rest of the answer is read exactly as before"
+
+
+async def test_a_deck_whose_vision_pass_never_ran_has_no_language_and_says_so(
+    tmp_path: Path, downloads: list[str]
+) -> None:
+    """`""` is the honest answer when the call raised, and the ladder is built to expect it.
+
+    Unknown is not an error here. The copy stage's ladder falls through to "I do not know", which
+    ships the source's own words verbatim and warns once — which is exactly right for a deck whose
+    words we never got to look at.
+    """
+    vision = Vision(_answer(1), raises=RuntimeError("provider down"))
+
+    intel = await slide_intel.enrich([_post(slides=1, panels=("Panel",))], run_dir=tmp_path,
+                                     call=vision, engine=_engine(), cfg=Config(), log=Log())
+
+    assert intel["p1"].language == ""
+    assert intel["p1"].status == slide_intel.STATUS_UNAVAILABLE
+
+
+def test_the_language_key_is_declared_top_level_and_required_but_never_per_slide() -> None:
+    """Schema shape, pinned: `language` sits beside `slides`, not inside a slide row.
+
+    Two rules meet here. Strict mode (`llm._response_format` always sends `strict: true`) requires
+    every declared property to appear in `required`, so a new optional-feeling key still has to be
+    listed — which is why the parser, not the schema, is what makes it optional. And the per-slide
+    `_SLIDE` object stays closed and unchanged: adding a language to every row would multiply the
+    question by the deck's length for an answer that is one string.
+    """
+    schema = slide_intel._SCHEMA["schema"]
+
+    assert schema["properties"]["language"] == {"type": "string"}
+    assert set(schema["required"]) == {"slides", "language"}
+    assert "language" not in slide_intel._SLIDE["properties"]
+    assert set(slide_intel._SLIDE["required"]) == {
+        "slide", "onimage_text", "chrome_text", "visual_brief", "brand_marks", "mark_boxes"}
 
 
 # --------------------------------------------------------------------------- the hard boundary
@@ -764,6 +934,210 @@ def test_counter_line_is_full_line_only_so_a_fraction_inside_a_sentence_still_sh
     ones are the strings a looser rule would silently delete from a paid creative.
     """
     assert slide_intel.counter_line(line) is is_chrome
+
+
+# ------------------------------------- FR-313 amended (v2.7.0/D63): the BARE numeral convention
+#
+# The defect this section exists for is one real, paid deck. Run `20260820_234620_j867` bound a
+# seven-panel slideshow whose every panel read `Jason AI / by Reply / 01 / Personal Assistant / …`
+# through `07` — the creator had numbered the deck on a line of its own, with no `//` marker, no
+# separator and no total. Neither of the two older scanners can see that shape, so `meta.yaml`
+# recorded `counter.detected: false` on a visibly numbered deck, our slides rendered unnumbered,
+# and the `01`…`07` lines rode into the panel map as if they were the slides' own words.
+#
+# The fix is deliberately lopsided. A bare numeral is the weakest counter shape there is — a `5`
+# alone on a slide is content far more often than it is chrome — so it may only ever supply
+# evidence to RULE 2, where the number has to BE the position it sits on. Rules 1, 3 and 4 are
+# blind to it, because rule 4 in particular accepts a constant OFFSET, and two unrelated content
+# numerals two apart would manufacture one and badge every frame of a paid deck.
+
+#: The seven panels of run `20260820_234620_j867`, copied byte-for-byte out of that creative's
+#: `meta.yaml` `panel_map[*].source_text_original`. Kept verbatim rather than reduced to `"01"`
+#: rows because the whole difficulty was that the numeral is BURIED: it sits on line 3 of nine,
+#: between the creator's lockup and the slide's real content, and a scanner that only looked at
+#: the first line or the whole blob would still miss it.
+J867_PANELS = (
+    "Jason AI\nby Reply\n01\nPersonal Assistant\nPAID\nFREE\nChatGPT\nNanoClaw\n@oleg.talk",
+    "Jason AI\nby Reply\n02\nVideo Generation:\nPAID\nFREE\nKling\nSynthesia\n@oleg.talk",
+    "Jason AI\nby Reply\n03\nMusic Generation\nPAID\nFREE\nElevenLabs\nSuno\n@oleg.talk",
+    "Jason AI\nby Reply\n04\nSales Automation\nPAID\nFREE\nSalesforce\nJason AI\n@oleg.talk",
+    "Jason AI\nby Reply\n05\nIdeas Organisation\nPAID\nFREE\nNotion\nObsidian\n@oleg.talk",
+    "Jason AI\nby Reply\n06\nEditing Images:\nPAID\nFREE\nPhotoshop\nCanva\n@oleg.talk",
+    "Jason AI\nby Reply\n07\nWeb Design:\nPAID\nFREE\nFigma\nKittl\n"
+    "SAVE this before you pay for\nanother subscription\n@oleg.talk",
+)
+
+
+def test_a_bare_numeral_line_on_every_panel_is_the_counter_the_j867_deck_shipped_without() -> None:
+    """The live regression: seven panels, `01`…`07` on line 3 of each, and no chrome at all.
+
+    Every fact asserted here is read off that run's own `meta.yaml`: the chrome column was empty
+    (Virlo's adapter has no `chrome_text` field and the vision pass put the numerals in the panel
+    words, not the chrome), the deck was seven panels long, and `counter.detected` came back
+    `false`. Rule 2 is what must fire — the numerals corroborate themselves by equalling their own
+    positions on seven distinct slides — and the badge must come back in the SOURCE's hand, which
+    here means zero-padded to two digits with no total, because the source wrote `01` and not
+    `1/7`.
+    """
+    spec = slide_intel.detect_counter([[]] * 7, J867_PANELS, 7)
+
+    assert spec is not None, "the deck that started this is numbered, and must read as numbered"
+    assert spec.rule == slide_intel.RULE_POSITIONAL, "rule 2 is the only rule bare tokens join"
+    assert spec.numerator_only is True, "the source wrote a position and no total, and so do we"
+    assert spec.pad == 2, "`01` is the creator's hand; `1` would be ours"
+    # Re-based onto OUR deck, like every other convention: their seven panels may become our five.
+    assert [spec.format(n, 5) for n in (1, 5)] == ["01", "05"]
+
+
+@pytest.mark.parametrize(
+    ("panels", "count", "why"),
+    [
+        # Content numerals that never equal their own position. A comparison deck with a `5` on
+        # slide 3 and a `7` on slide 5 is exactly what the position test exists to refuse.
+        (("a", "b", "5", "d", "7"), 5, "numerals that are not their own position are content"),
+        # The dangerous one, and the reason rules 3 and 4 are blind to this shape: `1` on slide 3
+        # and `2` on slide 4 form a perfectly constant offset of 2. Rule 4 would take it if it
+        # could see these candidates — and would then print a page number on every slide.
+        (("a", "b", "1", "2", "e"), 5,
+         "a constant offset built out of bare numerals is not evidence of anything"),
+        # One slide alone proves nothing under rule 2 either. The two-slide floor is the same one
+        # every other rule uses, and it is what refuses `1` on a single countdown slide.
+        (("1", "b", "c"), 3, "a single positional hit is a coincidence, not a convention"),
+        # Zero is not a page, and neither is a numeral wearing a word.
+        (("0", "0", "0"), 3, "there is no page zero"),
+        (("Step 1", "Step 2", "Step 3"), 3, "a numeral with a word on it is typeset copy"),
+        # A three-digit numeral is a statistic. The scanner reads one and two digits only.
+        (("100", "200", "300"), 3, "three digits is a number the slide is about, not a page"),
+    ])
+def test_a_bare_numeral_is_believed_only_where_the_slide_itself_corroborates_it(
+    panels: tuple[str, ...], count: int, why: str,
+) -> None:
+    """The weakest shape gets the narrowest gate — every one of these decks ships no badge.
+
+    The asymmetry that governs the whole counter story governs this too: a missed counter renders
+    a deck without a page badge and tells the prompt so, while a false one prints a wrong number
+    on every slide of a creative the operator already paid for. A bare numeral carries no marker,
+    no separator and no total, so the only evidence that can rescue it is the slide it sits on.
+    """
+    assert slide_intel.detect_counter([[]] * count, panels, count) is None, why
+
+
+def test_the_bare_shape_cannot_reach_the_offset_rules_even_beside_a_real_badge() -> None:
+    """Rules 1, 3 and 4 must see EXACTLY the candidate set they saw before D63 existed.
+
+    Two guarantees, on one deck. A lone paired badge (`1/6` on panel 2) is not enough for any rule
+    on its own — rule 4 needs two slides agreeing on an offset — and adding bare numerals that
+    would supply that second slide must not change the verdict. Then the same bare numerals, moved
+    onto their own positions, DO carry the deck under rule 2. The difference between the two calls
+    is only which rule is allowed to look, which is the point.
+    """
+    # `1/6` on panel 2 (offset 1) plus bare `2` on panel 3 (offset 1): arithmetically a constant
+    # offset across two slides, and rule 4 would take it if bare tokens were merged into `found`.
+    assert slide_intel.detect_counter([[], ["1/6"], []], ("a", "b", "2"), 3) is None
+    # The same tokens where rule 2 can use them: `2` on slide 2 and `3` on slide 3.
+    spec = slide_intel.detect_counter([[], [], []], ("a", "2", "3"), 3)
+    assert spec is not None and spec.rule == slide_intel.RULE_POSITIONAL
+
+
+@pytest.mark.parametrize(
+    ("line", "position", "is_chrome"),
+    [
+        # ACCEPTED — the numeral IS the slide it was transcribed from, in either hand.
+        ("01", 1, True),
+        ("1", 1, True),
+        ("07", 7, True),
+        ("  03  ", 3, True),      # surrounding whitespace is not content, as everywhere else here
+        # REFUSED — the caller does not know where the line came from, so nothing may be dropped.
+        ("01", 0, False),
+        ("1", 0, False),
+        # REFUSED — the numeral disagrees with its slide, so it is the slide's own content.
+        ("02", 1, False),
+        ("5", 3, False),
+        ("0", 1, False),          # there is no page zero, and 0 is not position 1 either
+        # REFUSED — anything with a word, a separator or a third digit on it is not this shape.
+        ("3/4 of teams", 3, False),
+        ("Step 1", 1, False),
+        ("100", 100, False),      # two digits max; a bare 100 is a statistic
+        ("001", 1, False),        # and a third digit is a third digit however it is padded
+    ])
+def test_counter_line_admits_a_bare_numeral_only_when_told_which_slide_it_sat_on(
+    line: str, position: int, is_chrome: bool,
+) -> None:
+    """The admission half of D63 — and why the new keyword is not optional decoration.
+
+    `copywrite._strip_counter_lines` drops counter-shaped lines before a panel becomes pixels,
+    because a badge left in the words becomes an expected L-line of the gauntlet's frame contract
+    and BLOCKS a render that correctly left it out. Under the two older shapes the line proves
+    itself: `1/6` and `// 01` are counter-shaped edge to edge whatever slide they came from. A bare
+    `01` proves nothing, so the caller has to say where it was — `position=0`, the default, means
+    "I do not know" and refuses the whole shape.
+
+    The refusals are the load-bearing half. `5` on slide 3 is the slide's message; deleting it
+    would ship a wordless panel out of a deck the operator paid for.
+    """
+    assert slide_intel.counter_line(line, position=position) is is_chrome
+
+
+def test_the_position_keyword_is_keyword_only_so_no_caller_passes_it_by_accident() -> None:
+    """`counter_line(text, *, position=0)` — the second argument cannot be given positionally.
+
+    Every pre-D63 call site passes one argument and must keep meaning exactly what it meant, and a
+    positional second parameter is the shape that would let some future caller pass a line LENGTH,
+    a slide index or an enumerate() counter into it by mistake and silently start deleting content
+    numerals. The default is pinned here too: unknown position, shape off.
+    """
+    signature = inspect.signature(slide_intel.counter_line)
+    position = signature.parameters["position"]
+
+    assert position.kind is inspect.Parameter.KEYWORD_ONLY
+    assert position.default == 0
+    with pytest.raises(TypeError):
+        slide_intel.counter_line("01", 1)  # type: ignore[misc]
+    assert slide_intel.counter_line("01") is False, "one argument still means one argument"
+
+
+@pytest.mark.parametrize(("line", "answer"), [
+    ("1", 1), ("01", 1), ("7", 7), ("07", 7), ("99", 99), ("  03  ", 3),
+    ("0", 0), ("00", 0),          # there is no page zero, and 0 doubles as "not this shape"
+    ("100", 0), ("001", 0),       # two digits max, however the third one is padded
+    ("Step 1", 0), ("1/6", 0), ("// 01", 0), ("", 0), ("   ", 0),
+])
+def test_bare_numeral_position_answers_which_slide_a_lone_numeral_would_count(
+    line: str, answer: int,
+) -> None:
+    """The public helper `copywrite._offer_for` surveys a deck with — the OTHER question.
+
+    `counter_line(line, position=n)` asks "is this line chrome for slide n" and needs the answer
+    before it can be asked. The admission strip has to decide something first: FR-313 rule 2 calls
+    a deck counted only when at least TWO slides carry their own position as a bare numeral, so
+    `_offer_for` walks the whole deck asking "which slide would this line be chrome for" and only
+    then decides whether to strip anything. One lone numeral is a slide about a number — a
+    countdown, a score, an answer — and emptying that panel would ship a wordless slide.
+
+    Same shape and same fence as the scanner, which is the point of splitting it out rather than
+    writing a second regex: `0` and a third digit are refused, padding reads through, and 0 is
+    both "there is no page zero" and "not that shape" — safe together because a slide position is
+    always 1-based and can never equal 0.
+    """
+    assert slide_intel.bare_numeral_position(line) == answer
+
+
+def test_counter_line_reads_the_bare_shape_through_the_same_helper() -> None:
+    """One reading of "a lone numeral", shared by the survey and the strip that follows it.
+
+    If these two ever disagreed, `_offer_for` could decide a deck is counted on evidence the strip
+    then refuses (a numeral surveyed and not dropped) or, worse, the other way round. The helper
+    is the single definition and this pins the composition: `counter_line` is exactly "the caller
+    knows the position AND the helper's answer equals it".
+    """
+    # Only shapes the paired and prefix scanners cannot claim, so the bare branch is what answers.
+    for position in range(1, 8):
+        for line in (f"{position}", f"{position:02d}", "0", "100", "Step 1"):
+            expected = slide_intel.bare_numeral_position(line) == position
+            assert slide_intel.counter_line(line, position=position) is expected, \
+                f"{line!r} at slide {position}"
+    assert slide_intel.bare_numeral_position("04") == 4, "the helper knows no position of its own"
+    assert slide_intel.counter_line("04", position=1) is False, "the caller's position decides"
 
 
 # ------------------------------------ FR-306 amendment (v2.1.3/D48): mark boxes, sanitised hard

@@ -235,6 +235,21 @@ class RunConfig:
     # three brand configs pin `auto` (it pays only for the panels that need it); the engine default
     # is still `verbatim`.
     carousel_copy_mode: Literal["verbatim", "compress", "auto"] = "verbatim"
+    # v2.7.0 (D63/FR-345): the LANGUAGE axis beside the LENGTH axis above — what happens to a BOUND
+    # carousel deck whose source post is in a language other than the platform's configured one
+    # (`run.languages[platform]`). `source` keeps the post's own words in the post's own language
+    # (the pre-D63 behaviour byte for byte, and still the ENGINE default for the D58 reason: a
+    # default that re-behaves configs nobody opted into is wrong); `target` sends that deck through
+    # ONE translate call of its own (`copywrite._call_translate`, `copy_translate_system.md`) that
+    # translates and never shortens — every fact, number, name and line break kept, no character
+    # ceiling stated — and ships the translation with `copy_language: target` on its receipt. Posts
+    # already in the platform's language stay byte-verbatim under both values; a post whose language
+    # nobody knows (Virlo sent none, the vision pass read none) ships verbatim with a warning. Scope
+    # is bound carousel decks only — images, reels, override briefs and unbound decks never translate,
+    # and pre-flight says so. The three brand configs pin `target`. Config + CLI (`--copy-language`)
+    # only, never a wizard step (NFR-16); shown on the confirm screen and the launch summary. An
+    # unknown word is refused by `_coerce`'s Literal check at load, like the key above.
+    copy_language_mode: Literal["source", "target"] = "source"
     reel_overlay_text: Literal["seed_frame", "in_model", "none"] = "seed_frame"
     reel_audio: bool = True
     reel_duration_s: int = 5  # 4–30; out of range is CLAMPED at pre-flight, never rejected here

@@ -893,3 +893,126 @@ def test_fr333_an_override_brief_deck_in_compress_mode_is_out_of_scope_too(
 
     assert [hint for hint in verdict.hints if "compressed from the source post" in hint] == []
     assert [hint for hint in verdict.hints if "quoted verbatim" in hint] == []
+
+
+# ---- D63 ------------------ FR-345: what `copy_language_mode: target` cannot reach, said once
+
+
+def _language_warnings(verdict: Preflight) -> list[str]:
+    """Only FR-345's own warning. Every other line in the verdict names something else."""
+    return [line for line in verdict.warnings if "copy_language_mode: target" in line]
+
+
+def test_fr345_target_mode_warns_that_images_reels_and_briefs_ship_their_source_language(
+    tmp_path: Path,
+) -> None:
+    """The gap between what `target` promises on screen and what it can actually deliver.
+
+    Translation is scoped to BOUND carousel decks (FR-343): the deck has a source post, its panels
+    map one to one, and "translate these exact lines" therefore has an answer. An image quotes a
+    hook, a reel quotes a caption and an override brief writes from a file — none of them has that
+    shape, so all three ship whatever language their material was in.
+
+    Nothing else on screen says so. The confirm notice and the launch summary both read "bound
+    decks translated to en", which on a plan holding four images is a true sentence an operator
+    will reasonably read as a false one. Hence one warning, and a COUNT rather than a list: nine
+    asset ids would run past the line width, and the number is what the decision turns on.
+    """
+    config = _styled_config(tmp_path, registry=_TWO_STYLES)
+    config.run.formats = {"image": 1, "carousel": 2, "reel": 0}
+    config.run.copy_language_mode = "target"
+    config.sources.include_videos = True  # §0.14e: an image plan needs video-sourced posts
+    override = _deck(2)
+    override.brief_name, override.brief_influence = "ai-audit-cta", "override"
+
+    verdict = check(config, action="run",
+                    entries=[_deck(0), _entry(1), override])  # one bound deck, one image, one brief
+
+    warned = _language_warnings(verdict)
+    assert len(warned) == 1, verdict.report
+    assert "reaches bound carousel decks only" in warned[0]
+    assert "2 image/reel/override creative(s)" in warned[0], \
+        "the bound deck is reached and must not be counted against the mode"
+    assert "ship their source language" in warned[0] and "FR-345" in warned[0]
+    assert verdict.ok, "a scope gap is a fact about the plan, never a refusal"
+    # FR-286 on THIS warning's own printed lines. The whole report is not asserted, because a
+    # tmp_path in a disk message is one unbreakable token and no wrapper can shorten it.
+    printed = [line for line in verdict.report.splitlines()
+               if "copy_language_mode" in line or "image/reel/override" in line]
+    assert printed and all(len(line) <= 78 for line in printed), verdict.report
+
+
+def test_fr345_the_warning_is_silent_under_source_and_on_an_all_deck_plan(
+    tmp_path: Path,
+) -> None:
+    """Two silences, and they are silent for different reasons.
+
+    Under `source` there is no promise to break: every creative ships its source language and the
+    line would be describing the mode rather than a gap in it.
+
+    Under `target` with nothing but bound decks in the plan, the promise is kept in full — every
+    creative in that run really is translated. A warning that fired on the CONFIGURATION rather
+    than on the gap is the kind an operator learns to scroll past, which would cost the line its
+    value on the run where it matters.
+    """
+    config = _styled_config(tmp_path, registry=_TWO_STYLES)
+    config.run.formats = {"image": 1, "carousel": 2, "reel": 0}
+    config.sources.include_videos = True
+    assert config.run.copy_language_mode == "source", "the engine default, not set by this test"
+
+    kept = check(config, action="run", entries=[_deck(0), _entry(1)])
+    assert _language_warnings(kept) == [], kept.report
+
+    config.run.copy_language_mode = "target"
+    decks_only = check(config, action="run", entries=[_deck(0), _deck(1)])
+    assert _language_warnings(decks_only) == [], decks_only.report
+
+    # And the same plan with one image back in it says so again — the trigger is the plan.
+    mixed = check(config, action="run", entries=[_deck(0), _entry(1)])
+    assert len(_language_warnings(mixed)) == 1, mixed.report
+    assert "1 image/reel/override creative(s)" in _language_warnings(mixed)[0]
+
+
+def test_fr345_a_translating_run_with_the_gauntlet_off_gets_its_own_glyph_hint(
+    tmp_path: Path,
+) -> None:
+    """D63's clause on the accented-glyph family, and why it is a line of its own.
+
+    `target` does not change WHICH creatives may carry accented glyphs — the answer was already
+    "any of them, whatever run.languages says" — but it changes WHOSE glyphs they are. A translated
+    slide is the copy model's own string, written for a language the source never wrote in, so an
+    `en` run may now deliberately order Czech diacritics rather than only stumble into them, and
+    nothing has proved that glyph renderable on the way.
+
+    It prints BESIDE whichever of the three existing arms fires rather than replacing one. The
+    arms are three answers to "where does this run's on-image text come from" and are mutually
+    exclusive; translation is a second question about the same text. Making it a fourth arm would
+    have silenced the Czech line on exactly the run that needs it most — a `cs` config translating
+    English posts into Czech, which is `hypedigitaly-cs.yaml` as shipped.
+    """
+    config = _styled_config(tmp_path, registry=_TWO_STYLES)
+    config.run.formats = {"image": 0, "carousel": 2, "reel": 0}
+    config.run.gauntlet.enabled = False  # the hint family only exists when the gate is off
+    config.run.copy_language_mode = "target"
+
+    verdict = check(config, action="run", entries=[_deck(0)])
+
+    hints = [hint for hint in verdict.hints if "copy_language_mode: target translates" in hint]
+    assert len(hints) == 1, verdict.report
+    assert "the copy model's own words in this run's language" in hints[0]
+    assert "FR-343" in hints[0] and "the gauntlet is off" in hints[0]
+    assert [hint for hint in verdict.hints if "quoted verbatim" in hint] != [], \
+        "the verbatim arm still fires — the translation clause is beside it, not instead of it"
+    assert verdict.ok
+
+    # The gauntlet reads every frame back, so with it ON the whole family stays quiet, D63 included.
+    config.run.gauntlet.enabled = True
+    assert check(config, action="run", entries=[_deck(0)]).hints == ()
+
+    # And `source` mode never prints it: there is no translated string to be unsure about.
+    config.run.gauntlet.enabled = False
+    config.run.copy_language_mode = "source"
+    silent = check(config, action="run", entries=[_deck(0)])
+    assert [hint for hint in silent.hints if "copy_language_mode: target" in hint] == []
+    assert [hint for hint in silent.hints if "quoted verbatim" in hint] != [], \
+        "the pre-D63 hint is unchanged on the mode every default run uses"

@@ -99,6 +99,11 @@ order. Report exactly five things about every slide. Report nothing else.
    marks are wanted across the whole deck — give the most prominent ones, and
    prefer a `tool` mark over any other kind when you have to choose.
 
+Then, ONCE for the whole deck and beside `slides`, report `language`: the
+two-letter ISO 639-1 code of the language the slides' WORDS are written in
+("de", "cs", "en"), the majority one when they mix, and an empty string when
+there are no words at all or you cannot tell.
+
 Answer for every attached slide, one entry each, in the order the slides were
 attached, numbered from 1. Return valid JSON and nothing else (the four numbers
 below are only an example of the shape a box takes):

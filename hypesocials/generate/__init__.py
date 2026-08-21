@@ -997,6 +997,16 @@ def _record(entry: PlanEntry, env: Env) -> AssetRecord:
         # actually got: a bound deck whose compress call failed fell back to the verbatim mapped
         # deck and is `verbatim`, and so is every image and reel in the same compress-mode run.
         copy_mode=prov.copy_mode if prov else "verbatim",
+        # FR-73/FR-346 (v2.7.0, D63): the LANGUAGE receipt beside the length one above, and read
+        # off the same provenance for the same reason — `run.copy_language_mode` says what the
+        # operator ASKED for, and this record has to say what this creative GOT. A deck whose
+        # translate call failed fell back to the verbatim mapped deck and says `source` (its
+        # `copy_not_translated` tag is the other half of that story); an image or a reel in the
+        # same target-mode run never had a translation to lose and says `source` too.
+        # `source_language` is recorded in BOTH modes wherever the ladder answered, so a deck that
+        # was deliberately NOT translated still says which language its slides are in.
+        copy_language=prov.copy_language if prov else "source",
+        source_language=prov.source_language if prov else "",
         # FR-73 (v2.1.0) — the slideshow receipt FR-309's three-part card is drawn from.
         source_post=_source_post(post_id, bound),
         source_panel_count=prov.source_panel_count if prov else 0,
@@ -1076,10 +1086,16 @@ def _virlo_url(bound: Any, trend: TrendItem | None, entry: PlanEntry, env: Env) 
 def _panel_map(prov: CopyProvenance | None, intel: Any) -> list[dict[str, Any]]:
     """FR-73/FR-304/FR-306: the copy stage's rows, each joined with what that source panel SHOWED.
 
-    The copy stage owns `{slide, source_position, source_text, ref_label, compressed}` — our
-    slide's index, the source panel it renders, the words it ships, the label they were quoted
-    under (empty when nothing was, including on every D54-compressed row) and whether those words
-    are a compression of the source panel rather than a quote of it. This
+    The copy stage owns `{slide, source_position, source_text, source_text_original, drop_reason,
+    creator_stripped, chrome_counter_stripped, truncation_suspect, ref_label, compressed,
+    translated}` — our slide's index, the source panel it renders, the words it ships and the
+    pre-gate bytes they came from, why a row shipped nothing, which safety strips fired, the label
+    the words were quoted under (empty when nothing was, including on every D54-compressed and
+    every D63-translated row) and the two transform flags: whether those words are a COMPRESSION
+    of the source panel rather than a quote of it, and whether they are a TRANSLATION of it. The
+    whole row is copied across key by key rather than rebuilt from a list, so a key the copy stage
+    adds arrives here without this function being edited — which is exactly how `translated`
+    (D63/FR-346) reached `meta.yaml` and the gallery's per-row chip. This
     adds the two the slide-intelligence pass owns: `visual_brief` (the English content directive
     the slide prompt carried, FR-308) and `source_image` (the run-relative path of the downloaded
     source panel, FR-309's strip; forward-slashed and already relative to the run folder, since

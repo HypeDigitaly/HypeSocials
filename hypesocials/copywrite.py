@@ -87,15 +87,50 @@ prompt-level:
    `"auto"` for the creative and `CopyProvenance.refs` holds the QUOTED rows' labels — real
    labels, kept — so `_verify`'s byte-substring half still audits the verbatim rows for real
    rather than being skipped wholesale the way it is for a fully compressed deck.
+7. **Translate mode is the LANGUAGE axis (D63/FR-343, operator decision 2026-08-21).** Points 5
+   and 6 are about LENGTH; `run.copy_language_mode: "target"` is about what tongue the words are
+   in, and the two are orthogonal by construction — a translated deck that compressed nothing
+   reports `copy_mode: verbatim, copy_language: target`. What it reverses is one sentence of
+   §1.7.5: "no language is detected" and "there is no translation path" were true of every run
+   before this one, and they are why a German slideshow could only ever be quoted in German onto
+   an English-language creative. Under `target` a BOUND, panel-mapped deck whose post is in a
+   KNOWN language other than its platform's configured one (`entry.language`) takes ONE translate
+   call of its own — never grouped, because one section per creative is what keeps a deck's
+   panels its own — and every other creative in the run is untouched.
+
+   The no-shortening guarantee is what makes this a third contract rather than a variant of
+   compress: no character ceiling is ever stated to the translate call, `_translate_field` has no
+   `budget` parameter, and a translated line is ALLOWED to be longer than its source. That is the
+   one boundary in this module where a shipped string may legitimately grow, and the audit that
+   replaces the byte-substring claim is a RATIO rather than a ceiling — a line under half or over
+   twice its source panel's length warns and ships (`translate_length_drift`, A20's polarity).
+
+   Ordering with auto is fixed and load-bearing: **translate FIRST, then measure.** The FR-304
+   mapped deck is translated, and it is the TRANSLATED strings that `_rows_over_budget` measures,
+   because the English of a German panel is a different number of characters and budgeting the
+   source would compress the wrong rows (or none of them). So a `target` + `auto` deck makes two
+   calls in sequence — translate, then compress the positions that overflowed after translation —
+   and a `target` + `verbatim` deck makes exactly one.
+
+   The receipts are per creative and per row. `CopyProvenance.copy_language` is `"target"` only
+   when a translation actually shipped, `CopyProvenance.source_language` records the ladder's
+   answer on EVERY bound deck in BOTH modes (so meta.yaml can say what language an untranslated
+   deck is in), and each panel-map row carries `translated`. Every decision NOT to translate has
+   its own warning and no tag — an unknown language (`translate_language_unknown`), a post already
+   in the target language, an image or a reel — while a translation that was WANTED and did not
+   happen is tagged `copy_not_translated` beside whatever the failure already earned. A failed
+   translate call costs the deck nothing: it falls back to point 4's verbatim mapped deck.
 
 Public API:
     await write_copy(entries, trends=..., styles=..., call=..., engine=...,
-                     carousel_copy_mode="verbatim") -> CopyResult
+                     carousel_copy_mode="verbatim", copy_language_mode="source") -> CopyResult
     CopyResult(copy, tags, provenance) — `.degraded` / `.trimmed` are views over `tags`
-    CopyProvenance(post_id, refs, copy_mode) — FR-298's `copy_source_post_id` /
-        `copy_source_refs`, plus FR-73's per-asset `copy_mode`
+    CopyProvenance(post_id, refs, copy_mode, copy_language, source_language) — FR-298's
+        `copy_source_post_id` / `copy_source_refs`, plus FR-73's per-asset `copy_mode` and
+        FR-346's per-asset language pair
     NoSafeCaptionError — pre-spend refusal: an offer path had no caption it was allowed to ship
-    COPY_ROLE, PANEL_SANITY_CHARS, MODE_VERBATIM / MODE_AUTO / MODE_COMPRESS
+    COPY_ROLE, PANEL_SANITY_CHARS, MODE_VERBATIM / MODE_AUTO / MODE_COMPRESS,
+        LANGUAGE_SOURCE / LANGUAGE_TARGET
 
 Invariants:
 - **Selection is structural, never a promise.** No path exists from a model's free text to
@@ -196,6 +231,7 @@ re-implement the blocklist mechanics that `topic_filter.apply_blocklist` owns.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 import re
 from collections.abc import Mapping, Sequence
@@ -208,6 +244,7 @@ from hypesocials.models import (
     CopyCompressed,
     CopySelection,
     CopySet,
+    CopyTranslated,
     DegradationTag,
     MetaStyle,
     PlanEntry,
@@ -227,8 +264,11 @@ from hypesocials.prompts_engine import (
 #: `generate/carousel.py` imports `detect_counter`/`CounterSpec`: the facade's own contract is the
 #: adapter seam (fetch/brand/monitors), and pulling a pure string predicate through it would make
 #: a chrome test look like a data fetch to every reader of this import block.
-from hypesocials.sources.slide_intel import counter_line
-from hypesocials.topic_filter import apply_blocklist, collapse, fuzzy_strip
+from hypesocials.sources.slide_intel import bare_numeral_position, counter_line
+#: `language_code` is imported for the SAME reason `collapse` is: the ladder in `_source_language`
+#: has to spell a language the way every other rung spells it, and a second normaliser here is how
+#: `"English"` from one channel would stop comparing equal to `"en"` from another (D63/FR-343).
+from hypesocials.topic_filter import apply_blocklist, collapse, fuzzy_strip, language_code
 from hypesocials.util import slugify
 
 logger = logging.getLogger(__name__)
@@ -506,12 +546,44 @@ MODE_COMPRESS = "compress"
 #: with nothing over budget takes the ordinary verbatim path and issues no compress call at all,
 #: which is why this mode can be the shipped default in a way `compress` never should have been.
 MODE_AUTO = "auto"
+#: D63/FR-345 — `run.copy_language_mode`'s two values, the LANGUAGE axis beside the LENGTH axis
+#: above. `source` keeps every bound deck in its post's own language (the pre-D63 behaviour, byte
+#: for byte); `target` translates a bound deck whose known source language differs from its
+#: platform's configured language (`entry.language`). Orthogonal to `MODE_*` on purpose: a
+#: translated deck that compressed nothing is `copy_mode: verbatim, copy_language: target`.
+LANGUAGE_SOURCE = "source"
+LANGUAGE_TARGET = "target"
 #: The compress call's own template (FR-332). Rendered exactly the way the verbatim call renders
 #: `copywriter_system.md`, through the same engine and the same allowlist mechanism; a missing or
 #: unresolvable template warns `copy_prompt_failed` and the group falls to `_mapped_fallback`,
 #: which is the verbatim mapped deck — a failure of the compress path never costs a deck its words.
 _COMPRESS_TEMPLATE = "copy_compress_system.md"
 _COMPRESS_CARRIER_TURN = "Return the compression JSON for the creatives listed above now."
+#: The TRANSLATE call's own template (D63/FR-344), rendered through the same engine and the same
+#: allowlist mechanism as the other two copy contracts. Its failure door is theirs as well —
+#: `copy_prompt_failed` -> `{}` -> `_mapped_fallback`, the verbatim mapped deck — so a missing or
+#: unresolvable template costs the deck its LANGUAGE and never its words.
+_TRANSLATE_TEMPLATE = "copy_translate_system.md"
+#: Singular ("the creative", not "the creatives") because a translate call carries exactly one
+#: creative by contract: one section per deck is what keeps a deck's own panels its own, and
+#: `_write_group` issues one call per translating entry rather than grouping them (D63, plan 9g).
+_TRANSLATE_CARRIER_TURN = "Return the translation JSON for the creative listed above now."
+#: The English name printed beside a two-letter code in the translate work order's header, for the
+#: languages this operator's platforms are configured in and their near neighbours. It is a
+#: COURTESY to the model, never a lookup the engine depends on: an unknown code prints as itself
+#: (`"tr"` -> `"tr (tr)"`), which is still an unambiguous ISO 639-1 instruction. Deliberately not
+#: a full ISO table — a hundred rows nobody has ever rendered would be dead weight in a module
+#: whose one job is not to guess about languages.
+_LANGUAGE_NAMES = {"en": "English", "cs": "Czech", "de": "German", "fr": "French",
+                   "es": "Spanish", "it": "Italian", "pt": "Portuguese", "pl": "Polish",
+                   "nl": "Dutch", "sk": "Slovak"}
+#: D63/FR-343 — the length-ratio audit's two bounds. A translation is EXPECTED to change length
+#: (German compounds shrink into English, English expands into Czech), so the question is never
+#: "is it the same length" but "is it plausibly the same content": under half or over twice is the
+#: band where a line stops looking like a translation and starts looking like a summary or a
+#: hallucination. Both ship — this is an audit with A20's polarity, not a gate.
+_DRIFT_FLOOR = 0.5
+_DRIFT_CEILING = 2.0
 
 
 @dataclass(slots=True)
@@ -532,7 +604,7 @@ class CopyProvenance:
         {"slide": 3, "source_position": 3, "source_text": "",
          "source_text_original": "Ask @creator for the template", "ref_label": "",
          "drop_reason": "contains_handle_or_url", "creator_stripped": False,
-         "truncation_suspect": False, "compressed": False}
+         "truncation_suspect": False, "compressed": False, "translated": False}
 
     The row is the alignment. A deck that dropped its empty rows would tell the gallery that our
     slide 3 came from their slide 4, which is the precise failure FR-304 is written against.
@@ -569,6 +641,14 @@ class CopyProvenance:
     never this field — says which half a given slide belongs to. `refs` on an auto creative holds
     the quoted rows' real labels, which is why `_verify` audits those rows for real instead of
     self-skipping.
+
+    `translated` (D63/FR-343/FR-346) is the eleventh key and the LANGUAGE half of the same row —
+    True only where the shipped text is the model's translation of `source_text_original`. It is
+    written on every row of every walk (`False` by construction on the verbatim, compressed and
+    auto ones), for the same "one row schema always" reason `compressed` is, and it is per ROW
+    rather than per creative because a translated deck under auto mode can carry a row that was
+    translated and then compressed, a row that was only translated, and a row whose source panel
+    was dropped before either could touch it.
     """
 
     post_id: str = ""
@@ -576,6 +656,17 @@ class CopyProvenance:
     panel_map: list[dict[str, Any]] = field(default_factory=list)
     source_panel_count: int = 0
     copy_mode: str = MODE_VERBATIM
+    #: D63/FR-346 — the LANGUAGE receipt, orthogonal to `copy_mode` (the LENGTH receipt above).
+    #: `"target"` ONLY when a translation actually shipped on this deck (`_translated`); every
+    #: other path — a `source`-mode run, a post already in the platform's language, an unknown
+    #: language, a translate call that failed and fell back to the verbatim mapped deck — says
+    #: `"source"`, because that is the language the bytes on the slides are in.
+    copy_language: str = LANGUAGE_SOURCE
+    #: D63/FR-346 — the language ladder's answer for the bound post (`SourcePost.language` from
+    #: Virlo, else the vision pass's deck-level reading, else `""` = unknown), recorded on EVERY
+    #: bound deck where it is known, in both modes, so `meta.yaml` can say what language a deck
+    #: that was NOT translated is in. Two-letter ISO 639-1 code.
+    source_language: str = ""
 
 
 @dataclass(slots=True)
@@ -634,6 +725,9 @@ async def write_copy(
     chrome_lines: Mapping[str, Sequence[str]] | None = None,
     burnt_post_ids: Sequence[str] = (),
     carousel_copy_mode: str = MODE_VERBATIM,
+    copy_language_mode: str = LANGUAGE_SOURCE,
+    post_languages: Mapping[str, str] | None = None,
+    topic_languages: Mapping[str, str] | None = None,
     progress: dict[str, int] | None = None,
     log: Any = None,
 ) -> CopyResult:
@@ -699,6 +793,26 @@ async def write_copy(
             requires `_panel_mapped`, so an unrecognised value simply behaves as `verbatim` here —
             the refusal for a bad value belongs to config load, where `Literal` validation catches
             it before the run costs anything.
+        copy_language_mode: `"source"` (default) or `"target"` — `config.run.copy_language_mode`,
+            D63/FR-343/FR-345. Under `target` a BOUND, panel-mapped deck whose post is in a known
+            language other than its platform's configured one (`entry.language`) takes ONE
+            translate call of its own (`_translate_wanted`, `_call_translate`); everything else —
+            a post already in the target language, an unknown language, images, reels, override
+            briefs, unbound decks — is untouched and byte-identical to a `source` run. An operator
+            toggle exactly like `carousel_copy_mode`; an unrecognised value behaves as `source`
+            here and is refused at config load.
+        post_languages: `post_id -> deck-level language code` from the slide-intelligence pass
+            (`SlideIntel.language`, FR-306 as amended) — rung 2 of the language ladder, read only
+            when Virlo's own `SourcePost.language` is empty. Keyed by post like `merged_panels`,
+            for the same reason. Omitted, rung 2 is simply unknown.
+        topic_languages: `trend_key -> language code` from the FR-294 topic screen's own verdicts
+            (`topic_filter.Verdict.language`) — rung 3, read only when rungs 1 and 2 both came
+            back empty. It exists because under `target` mode the screen's LANG skip is switched
+            off: a topic the screen read as German is deliberately let through Select, and with no
+            Virlo code and no vision reading behind it that deck used to reach COPY as "unknown"
+            and ship German pixels. The screen's reading is evidence this run already paid for.
+            Keyed by TOPIC rather than by post, which is also why it is the last rung — one topic
+            can hold posts in two languages. Omitted, rung 3 is simply unknown.
         progress: OPTIONAL live tally for FR-299's COPY heartbeat — this function keeps
             `{"total", "done", "in_flight"}` current while the group calls run and never reads
             it back. The runner's silence-breaker prints from it; `None` costs nothing.
@@ -715,7 +829,10 @@ async def write_copy(
                chrome_lines=chrome_lines or {},
                burnt_posts=frozenset(str(post_id) for post_id in burnt_post_ids
                                      if str(post_id).strip()),
-               carousel_copy_mode=str(carousel_copy_mode or MODE_VERBATIM), log=log)
+               carousel_copy_mode=str(carousel_copy_mode or MODE_VERBATIM),
+               copy_language_mode=str(copy_language_mode or LANGUAGE_SOURCE),
+               post_languages=dict(post_languages or {}),
+               topic_languages=dict(topic_languages or {}), log=log)
     groups = _build_groups(entries, trends or {}, campaign_briefs or {})
 
     async def _tracked(group: _Group) -> Any:
@@ -769,6 +886,25 @@ class _Run:
     #: the operator sets it once per run; consumed per CREATIVE by `_compress_wanted`, which is the
     #: only reader, and per ROW after that on the `auto` path.
     carousel_copy_mode: str = MODE_VERBATIM
+    #: D63/FR-343/FR-345 — `source` (default) or `target`: whether a BOUND deck whose post is in a
+    #: language other than its platform's configured one is TRANSLATED (`target`) or quoted in the
+    #: post's own language (`source`). Run-scoped like `carousel_copy_mode`; consumed per CREATIVE
+    #: by `_translate_wanted`, the only reader.
+    copy_language_mode: str = LANGUAGE_SOURCE
+    #: D63/FR-343 rung 2 of the language ladder — `post_id -> the vision pass's deck-level
+    #: language code` (`SlideIntel.language`, FR-306 as amended). Read by `_source_language` after
+    #: `SourcePost.language` (rung 1, Virlo) came back empty; `""`/absent means unknown.
+    post_languages: Mapping[str, str] = field(default_factory=dict)
+    #: D63/FR-343 rung 3 — `trend_key -> the FR-294 topic screen's own reading of that topic's
+    #: language` (`topic_filter.Verdict.language`). The weakest rung and the last one, because it
+    #: is a judgement about a TOPIC's strings rather than about the bound post's own slides: two
+    #: posts inside one topic can be written in different languages, which is the whole reason
+    #: `off_language_post` exists. It is here because under `target` mode the screen's LANG skip
+    #: is switched off, so a topic the screen read as German goes through and — with no Virlo
+    #: reading and no vision reading — used to reach COPY as "unknown" and ship German pixels
+    #: with `translate_language_unknown`. A reading this run already paid for is better evidence
+    #: than none.
+    topic_languages: Mapping[str, str] = field(default_factory=dict)
     log: Any = None
 
 
@@ -912,6 +1048,19 @@ def _offer_for(entry: PlanEntry, group: _Group, run: _Run) -> _Offer:
     hook and caption is admitted through `_repaired` before any strip runs, so one reading of the
     post reaches the table, the prompt, the verifier's pool and the panel map. The raw bytes
     survive in `panels_original`, and a panel that looks cut is flagged rather than touched.
+
+    **FR-313's bare-numeral strip is CORROBORATED here, deck-wide, before the loop starts**
+    (v2.7.0/D63, amended). `slide_intel.detect_counter` accepts a line that is only a numeral
+    under rule 2 alone, and rule 2 needs the shape on at least TWO slides — a single stray
+    numeral must never manufacture a counting convention. The admission strip is held to the same
+    bar: `numbered_positions` surveys the pre-strip panels for lines that are nothing but their
+    own slide's number, and only when two or more slides agree does the loop below pass its
+    ordinal down to `_strip_counter_lines`. Otherwise the position is withheld and the bare shape
+    is switched off for the whole deck. Without that survey a countdown panel whose entire text is
+    the numeral `1` on slide 1 would be emptied at admission and render as a wordless slide beside
+    a source slide that had words — the exact FR-304 failure the counter strip was added to
+    prevent, arriving from the other direction. The paired and prefix counter shapes are outside
+    this gate entirely: they carry their own evidence and never asked for a position.
     """
     posts = list(group.trend.posts) if group.trend else []
     if not posts:
@@ -943,6 +1092,18 @@ def _offer_for(entry: PlanEntry, group: _Group, run: _Run) -> _Offer:
     haystack: list[str] = []
     suspect: set[int] = set()          # panels that look CUT rather than finished (flag only)
     promotable: dict[str, list[str]] = {"hook": [], "overlay": [], "panel": []}
+    # FR-313's bare-numeral CORROBORATION, computed once over the whole deck before a single line
+    # is stripped. `detect_counter` accepts a lone numeral only under rule 2 and only when at
+    # least two slides carry their own position that way, and the strip below has to hold itself
+    # to the same bar: a countdown panel whose entire text is the word-less number `1` would
+    # otherwise be emptied at admission and render as a wordless slide, which is the FR-304
+    # failure this engine exists to prevent. Two matching positions is a convention; one is a
+    # slide about a number. Read off the PRE-strip panels because that is the deck as the source
+    # typeset it, and no strip layer edits digits anyway.
+    numbered_positions = {ordinal for ordinal, panel in enumerate(panels, start=1)
+                          if any(bare_numeral_position(line) == ordinal
+                                 for line in str(panel or "").split("\n"))}
+    bare_corroborated = len(numbered_positions) >= 2
     for kind, raw, ordinal in _numbered_fields(post, panels):
         # THE SANCTIONED ADMISSION BOUNDARY (FR-100/101 as amended, v2.2.0). The repair happens
         # here, once, BEFORE every strip and every table — so the candidate table, the prompt, the
@@ -996,7 +1157,17 @@ def _offer_for(entry: PlanEntry, group: _Group, run: _Run) -> _Offer:
             # bytes; a strip on one side of that pair alone is how a run false-flags itself
             # `copy_not_verbatim`. `pre_creator` was captured further up and KEEPS the counter —
             # provenance records what the source said, never what we admitted.
-            text, counters = _strip_counter_lines(text)
+            # `position=ordinal` is what admits FR-313's BARE-NUMERAL shape (v2.7.0/D63): this
+            # loop is the only place in the engine that knows which source slide a panel line was
+            # transcribed from, and a lone `01` is chrome only when it equals its own slide's
+            # number. Everywhere else the default `0` keeps the shape switched off — and so does
+            # `bare_corroborated` above, which withholds the position on a deck where only ONE
+            # slide carries its own number. That is rule 2's two-slide bar, mirrored here so the
+            # detector and the strip agree: a deck the detector will not call counted is a deck
+            # this strip may not empty a panel over. The paired (`01 / 06`) and prefix (`// 03`)
+            # shapes are unaffected — they carry their own evidence and never needed a position.
+            text, counters = _strip_counter_lines(
+                text, position=ordinal if bare_corroborated else 0)
             if counters:
                 chrome_cut.add(ordinal)
                 counter_hits.extend(counters)
@@ -1522,7 +1693,7 @@ def _strip_creator_lines(text: str, identifiers: Mapping[str, str]) -> tuple[str
     return "\n".join(kept), True
 
 
-def _strip_counter_lines(text: str) -> tuple[str, list[str]]:
+def _strip_counter_lines(text: str, *, position: int = 0) -> tuple[str, list[str]]:
     """`(the panel without its page-counter lines, the lines that went)` — F2, Session 5.5.
 
     Layer 3's sibling in mechanics and its opposite in subject: same whole-line rule, same
@@ -1543,14 +1714,28 @@ def _strip_counter_lines(text: str) -> tuple[str, list[str]]:
     BETWEEN two kept lines is part of the panel's shape. A panel that was ONLY its counter comes
     back empty and renders wordless in its own position, which is FR-304's rule for every empty
     panel and not a special case here.
+
+    **`position` unlocks the BARE-NUMERAL shape (FR-313, v2.7.0/D63).** A line that is nothing but
+    `01` carries no evidence of its own that it is chrome — a `5` on a slide can be the whole
+    point of the slide — so `counter_line` accepts that shape only when the caller says which
+    slide the line came from and the numeral EQUALS that slide's 1-based position. `_offer_for`
+    knows the position (it is walking the deck by ordinal) and passes it — but only on a deck
+    where at least TWO slides carry their own number that way, which is rule 2's corroboration
+    mirrored at admission; on any other deck it passes `0` and the bare shape is off. Every other
+    caller, and the default, leaves it at `0`, which switches the shape off entirely. Run
+    `20260820_234620_j867` is what this is written against: `01`…`07` sat on their own line on all
+    seven panels of a bound deck, shipped into `panel_map.source_text` and into the gauntlet's
+    frame contract, and the counter detector recorded `detected: false` because no paired form
+    was ever present. A panel reading `"5 tools I use\\nto ship faster"` at position 5 keeps every
+    byte — the numeral there is not alone on its line.
     """
     if not text:
         return text, []
     lines = text.split("\n")
-    dropped = [line for line in lines if counter_line(line)]
+    dropped = [line for line in lines if counter_line(line, position=position)]
     if not dropped:
         return text, []
-    kept = [line for line in lines if not counter_line(line)]
+    kept = [line for line in lines if not counter_line(line, position=position)]
     while kept and not kept[0].strip():
         kept.pop(0)
     while kept and not kept[-1].strip():
@@ -1796,6 +1981,11 @@ async def _write_group(
       overflowing positions alone. A deck with nothing over budget never reaches this partition:
       `_compress_wanted`'s auto arm is false for it, so it sits in `selecting` and takes the plain
       verbatim path, byte for byte.
+    - **Translate** (D63/FR-343, `run.copy_language_mode: "target"`): a bound panel-mapped deck
+      whose post is in a known language other than its platform's. It is a PIPELINE rather than a
+      shape — `_translate_and_fit` makes the translate call, and under auto or compress it then
+      makes ONE follow-up compress call on the TRANSLATED strings — and it is resolved by
+      `_translated` here. One pipeline per creative, never grouped.
 
     A creative whose bound post was refused (burnt or absent, FR-307) is in neither shape: it is
     left OUT of the call entirely — there are no candidates to offer and no words to ask for, so
@@ -1812,13 +2002,30 @@ async def _write_group(
     a PURE compress partition and still exactly one call. `budget._llm_lines` prices one copy call
     per (topic × language); a genuinely MIXED group is the one shape that issues two, which is why
     the estimator carries a note about it.
+
+    **The LANGUAGE partition is taken FIRST (D63).** `translating` is computed before
+    `compressing` and `compressing` excludes it, so a deck that is being translated is never also
+    in the group's shared compress call: it runs its own two-stage pipeline, and the compress
+    stage of that pipeline measures the TRANSLATED strings rather than the source panels. That
+    ordering is the whole of FR-343's "translate before the budget test" — budgeting a German
+    panel and then translating it into English would compress the wrong rows. The estimator
+    prices one extra copy call per translating deck for exactly this reason (§9 of the D63 plan).
     """
     offers = {entry.asset_id: _offer_for(entry, group, run) for entry in group.entries}
     askable = [entry for entry in group.entries if not offers[entry.asset_id].refused]
     verbatim = any(offers[entry.asset_id].post is not None for entry in askable)
+    # D63/FR-343: the LANGUAGE partition is taken FIRST and the length partition is taken from
+    # what is left, because a translating deck runs its own two-stage pipeline (translate, then —
+    # under auto or compress — a follow-up compress call on the TRANSLATED strings) and must never
+    # also appear in the group's shared compress call. `_translate_wanted` is the only predicate
+    # here that warns, and it is called exactly once per creative for that reason.
+    translating = {entry.asset_id for entry in askable
+                   if _translate_wanted(entry, offers[entry.asset_id], run)}
     compressing = {entry.asset_id for entry in askable
-                   if _compress_wanted(entry, offers[entry.asset_id], run)}
-    selecting = [entry for entry in askable if entry.asset_id not in compressing]
+                   if entry.asset_id not in translating
+                   and _compress_wanted(entry, offers[entry.asset_id], run)}
+    selecting = [entry for entry in askable
+                 if entry.asset_id not in compressing and entry.asset_id not in translating]
     # D62/FR-353: `{asset_id: the 1-based positions whose ADMITTED panel overflows this deck's own
     # slide budget}`, computed ONCE here for the auto partition and threaded into the call (which
     # lists those positions alone) and, separately, recomputed by `_auto` from the same pure pair
@@ -1837,10 +2044,28 @@ async def _write_group(
         calls.append(_call_compress(
             group, [entry for entry in askable if entry.asset_id in compressing], run, offers,
             only=auto_rows))
+    # ONE translate pipeline per translating creative (D63, plan 9g) — never grouped, because
+    # `{{translate_panels}}` carries one section per creative and two decks in one call would be
+    # two decks' panels on one page for a model that has just been told every panel is a content
+    # authority. They are gathered ALONGSIDE the two group calls rather than after them: the
+    # translate call and the selection call of the same group have no dependency on each other,
+    # and serialising them would add a whole model round trip to every mixed group's wall clock.
+    translating_entries = [entry for entry in askable if entry.asset_id in translating]
+    outcomes = await asyncio.gather(
+        *calls,
+        *(_translate_and_fit(group, entry, run, offers) for entry in translating_entries))
     payloads: dict[str, dict[str, Any]] = {}
-    for answered in await asyncio.gather(*calls):
+    for answered in outcomes[:len(calls)]:
         payloads.update(answered)
-    if missing := [entry for entry in askable if entry.asset_id not in payloads]:
+    translations: dict[str, _Translation] = {
+        entry.asset_id: translation
+        for entry, translation in zip(translating_entries, outcomes[len(calls):])}
+    # A translating creative is deliberately OUTSIDE the FR-99 split: its payload never lands in
+    # `payloads`, and a translate call that came back empty must not be re-asked as a selection or
+    # a compression — those are different contracts and would answer for a deck whose slides are
+    # already mapped. Its own failure path is `_mapped_fallback` plus `copy_not_translated`, below.
+    if missing := [entry for entry in askable
+                   if entry.asset_id not in payloads and entry.asset_id not in translating]:
         _warn(run.log, "copy_group_split",
               f"grouped copy call missed {len(missing)} of {len(askable)} creatives; "
               "splitting into one call each (FR-99)",
@@ -1865,6 +2090,19 @@ async def _write_group(
         offer = offers[entry.asset_id]
         if offer.refused:
             written = _refused(entry, group, run, offer)
+        elif entry.asset_id in translating:
+            # D63/FR-343. The branch sits ABOVE the `payload is None` tier on purpose: a
+            # translating creative's answer never enters `payloads` (it has its own pipeline and
+            # its own `_Translation`), so leaving it below would send every translating deck down
+            # the degrade path whether or not the call succeeded. Its failure is the SAME degrade
+            # tier the other two contracts use — the verbatim mapped deck, tagged `copy_degraded`
+            # — and it earns `copy_not_translated` on top of it a few lines further down.
+            translation = translations.get(entry.asset_id)
+            written = (
+                _translated(entry, translation, offer, group, run)
+                if translation is not None and translation.payload is not None
+                else (_mapped_fallback(entry, offer, group, run)
+                      if _panel_mapped(entry, offer) else _fallback(entry, group.trend, run)))
         elif payload is None:
             # FR-99 vs FR-304 ruling (D15, SESSION G): a BOUND deck's slides are a deterministic
             # panel mapping that needs no model, so a failed copy call must not cost it its words.
@@ -1886,6 +2124,29 @@ async def _write_group(
         else:
             written = _free_text(entry, payload, group, run)
         earned = [*written.tags, *_verify(written, entry, run)]
+        # D63/FR-343 — the ONE place `copy_not_translated` is decided, and it is decided here
+        # rather than inside each path so no future degrade branch can forget it: translation was
+        # WANTED for this creative (it is in `translating`, which already required target mode, a
+        # panel-mapped deck and a known foreign language) and the bytes that shipped are in the
+        # source language anyway. `copy_language` on the finished provenance is the honest test —
+        # only `_translated` ever sets `target`, and it sets it only when a translation shipped.
+        if entry.asset_id in translating and written.source.copy_language != LANGUAGE_TARGET:
+            earned.append(DegradationTag.COPY_NOT_TRANSLATED)
+            _warn(run.log, "copy_not_translated",
+                  f"{entry.asset_id}: this deck was going to be translated into "
+                  f"{entry.language} and shipped in its source language instead — the translate "
+                  "call returned nothing, so the creative fell back to the verbatim FR-304 "
+                  "mapping of its source panels (FR-343); or the call landed and the model "
+                  "answered that every panel was already written in the target language, so the "
+                  "already-target backstop shipped the source bytes on every row and the deck "
+                  "changed no words at all. Nothing was lost that the deck had: "
+                  "every admitted panel still renders, in its own position, in the language its "
+                  "author wrote it in. What is missing is only the translation, and a re-run "
+                  "translates it — though when `translate_already_target` is beside this warning, "
+                  "the model is claiming there was nothing to translate and the language ladder "
+                  "is claiming there was, and a re-run will not settle that on its own",
+                  asset_id=entry.asset_id, target_language=entry.language,
+                  source_language=written.source.source_language)
         copies[entry.asset_id] = written.copyset
         provenance[entry.asset_id] = written.source
         if earned:
@@ -1970,6 +2231,95 @@ def _compress_wanted(entry: PlanEntry, offer: _Offer, run: _Run) -> bool:
         return _panel_mapped(entry, offer) and bool(_rows_over_budget(
             _admitted_texts(entry, offer), offer.budgets.get("slide", 0)))
     return False
+
+
+def _source_language(entry: PlanEntry, offer: _Offer, run: _Run) -> str:
+    """D63/FR-343 — the LANGUAGE LADDER: what tongue this creative's bound post is written in.
+
+    Four rungs, in order, and the first non-empty answer wins:
+
+    1. **`SourcePost.language`** — Virlo's own `intelligence.language_detected`, normalised at the
+       adapter by `topic_filter.language_code`. It is free: the enriched post row already carries
+       it, which is the whole reason the output-language decision costs no extra call.
+    2. **`run.post_languages[post_id]`** — the slide-intelligence pass's ONE deck-level reading
+       (`SlideIntel.language`, FR-306 as amended), keyed by post because the reading is a property
+       of the SOURCE DECK and two sibling creatives bound to one post must see one answer.
+    3. **`run.topic_languages[trend_key]`** — the FR-294 topic screen's own `Verdict.language`,
+       keyed by topic. Added after the D63 review: under `target` mode the screen's LANG skip is
+       switched OFF (a foreign topic is let in on purpose, because translation now exists), so a
+       topic the screen read as German sails through Select, and if Virlo sent no code and the
+       vision pass read none, the deck used to arrive here as "unknown" and ship German pixels
+       under `translate_language_unknown`. The screen already made that reading and this run
+       already paid for it; declining to use it is not caution, it is throwing away evidence.
+       It sits BELOW the other two because it is a judgement about a TOPIC's strings rather than
+       about the bound post's own slides, and two posts inside one topic can be written in
+       different languages — that gap is exactly what `plan.off_language_post` exists for.
+    4. **`""` — unknown**, and unknown is a real answer that this engine honours by doing nothing:
+       the deck ships verbatim in whatever language its post is in, with one warning. There is
+       deliberately NO fifth rung. A stopword or diacritics heuristic was considered and rejected
+       (D63 §0): `topic_filter.fuzzy_strip` records why guessing at language from bytes is a
+       decision this codebase does not make, and a wrong guess here spends a model call
+       translating a deck that was already in the target language.
+
+    Every rung goes through `language_code` even though rung 1 is normalised upstream, because
+    this function is the one place the channels are compared with each other and with
+    `entry.language`, and one spelling rule across the comparison is what stops `"English"` from
+    failing to equal `"en"` on the one run nobody tests. Pure, silent, and safe to call from
+    anywhere: an offer with no post answers `""` — the ladder describes a BOUND post, and rung 3
+    is not allowed to answer for a creative that has no post to be in a language.
+    """
+    if offer.post is None:
+        return ""
+    if code := language_code(getattr(offer.post, "language", "")):
+        return code
+    if code := language_code(run.post_languages.get(str(offer.post.post_id), "")):
+        return code
+    return language_code(run.topic_languages.get(str(entry.trend_key or ""), ""))
+
+
+def _translate_wanted(entry: PlanEntry, offer: _Offer, run: _Run) -> bool:
+    """D63/FR-343 — does THIS creative take a translate call before anything else happens to it?
+
+    Four conditions, and the mode is always the first, exactly as it is for `_compress_wanted`:
+
+    - **`run.copy_language_mode` is `target`.** An operator toggle, never a measurement. Under
+      `source` (the engine default) this function is false for every creative in the run and the
+      module behaves byte for byte as it did before D63.
+    - **`_panel_mapped`** — a carousel, BOUND at ASSIGN, not an override brief. Scope is the same
+      three structural tests compress rides, and for the same reason: translation is a rule about
+      a bound deck's own slides, and an image, a reel, an override brief or an unbound carousel
+      has none. Those creatives ship their source language under `target` too; pre-flight warns
+      about them (FR-345) rather than this module pretending otherwise.
+    - **the ladder answered at all.** An unknown language is NOT a failure to translate — it is a
+      decision not to, because "translate this into English" aimed at a deck that may already be
+      English is a call that can only make the deck worse. One warning per creative, no tag, and
+      the deck ships verbatim. The warning is emitted HERE rather than at a call site because
+      this predicate runs exactly once per creative (`_write_group`'s partition), which is what
+      keeps it one line per creative rather than one per caller.
+    - **the ladder's answer differs from the platform's configured language** (`entry.language`,
+      which `plan` set from `run.languages[platform]`). A post already in the target language is
+      quoted byte for byte, costs no call, and is byte-identical to what a `source`-mode run would
+      have shipped — `source_language` is still recorded on its provenance so meta.yaml can say
+      so.
+
+    Returns True only for the case where a translation is both possible and worth paying for.
+    """
+    if run.copy_language_mode != LANGUAGE_TARGET or not _panel_mapped(entry, offer):
+        return False
+    source = _source_language(entry, offer, run)
+    if not source:
+        _warn(run.log, "translate_language_unknown",
+              f"{entry.asset_id}: this bound deck ships verbatim in whatever language its post is "
+              f"in — post {offer.post.post_id if offer.post else ''} carries no language from "
+              "Virlo and the vision pass read none, so there is nothing to translate FROM "
+              "(FR-343). The engine does not guess at a language from the bytes: a wrong guess "
+              f"pays a model to rewrite a deck that may already be in {entry.language}. Every "
+              "panel still renders in full, in its own position, and the creative is not tagged",
+              asset_id=entry.asset_id,
+              post_id=offer.post.post_id if offer.post else "",
+              target_language=entry.language)
+        return False
+    return source != language_code(entry.language)
 
 
 def _rows_over_budget(texts: Sequence[str], budget: int) -> list[int]:
@@ -2118,10 +2468,15 @@ def _compress_block(entries: Sequence[PlanEntry], offers: Mapping[str, _Offer], 
       asks for it and `_compressed_deck`'s backstop trim cuts to the same value. It is repeated per
       line rather than stated once because a model reading its ninth panel has stopped looking at
       the header.
-    - **The language rule names the panels, not a language.** The engine does not detect languages
-      (§1.7.5) and must not start now — `SourcePost` carries no language field, so any code naming
-      one here would be guessing. "Mirror the language these panels are written in" is checkable by
-      the model against text it can see; "answer in Czech" would be an engine guess it must obey.
+    - **The language rule names the panels, not a language.** Compress is the LENGTH contract and
+      it never changes what tongue a deck is in, so the mirror rule stands: "mirror the language
+      these panels are written in" is checkable by the model against text it can see, and it is
+      what keeps a compressed slide comparable, word for word, with the panel it was written down
+      from. (`SourcePost` DOES carry a `language` field since v2.7.0/D63 — the sentence here used
+      to say it did not, and that reasoning is retired. The field exists, the D63 ladder reads it,
+      and a deck that needs its language CHANGED takes the translate contract and its own template
+      instead. Naming a target language on this block would make this call a translation nobody
+      priced and nobody asked for.)
 
     Panels are shown IN FULL and never `_display`-truncated. The verbatim table can truncate for
     display because the engine ships the original bytes from `SourcePost`; here the shown text IS
@@ -2302,7 +2657,8 @@ def _display(text: str) -> str:
 
 def _sibling_list(entries: Sequence[PlanEntry], run: _Run, offers: Mapping[str, _Offer],
                   verbatim: bool, *, compress: bool = False,
-                  auto_rows: Mapping[str, Sequence[int]] | None = None) -> str:
+                  auto_rows: Mapping[str, Sequence[int]] | None = None,
+                  translate_to: str = "") -> str:
     """One line per creative — asset id, platform, format, and the LANGUAGE RULE in force.
 
     §1.7.5, F22: a verbatim creative's language is a property of the string it quotes, so the line
@@ -2335,6 +2691,17 @@ def _sibling_list(entries: Sequence[PlanEntry], run: _Run, offers: Mapping[str, 
     deck ships verbatim and is not printed, and repeats the template's own rule that an unprinted
     position takes `""` — because under auto the unprinted positions are the majority of the deck,
     and a model that "helpfully" rewrote them would have its work discarded row by row.
+
+    `translate_to` (D63/FR-343) is the FIFTH branch and it is tried before both compress ones,
+    because a translating deck is never in a compress call's entry list and the two clauses would
+    otherwise have to be read as mutually exclusive by inspection rather than by order. The line
+    names BOTH languages — the ladder's reading of the panels and the platform's configured target
+    — which is the one place in this whole module a language is stated to a model rather than
+    described. That is not a reversal of §1.7.5's rule: the rule is that the ENGINE does not detect
+    a language, and this code is the adapter's or the vision pass's answer being passed through,
+    not a guess made here. The rest of the clause is the no-shortening guarantee restated on the
+    line the model reads last, because a ceiling it never saw is exactly what a model invents when
+    a translation runs long.
     """
     lines = []
     for entry in entries:
@@ -2342,7 +2709,12 @@ def _sibling_list(entries: Sequence[PlanEntry], run: _Run, offers: Mapping[str, 
         line = f"- {entry.asset_id} · {entry.platform} · {entry.creative_format}"
         if entry.creative_format == "carousel" and entry.slide_count:
             line += f" · {entry.slide_count} slides"
-        if compress and auto_rows is not None and offer is not None and offer.post is not None:
+        if translate_to and offer is not None and offer.post is not None:
+            line += (f" · translate post P{offer.post_ordinal}'s panels from "
+                     f"{_source_language(entry, offer, run)} to {translate_to}; "
+                     "keep every fact, number, "
+                     "name and claim; never shorten, never summarise")
+        elif compress and auto_rows is not None and offer is not None and offer.post is not None:
             budget = offer.budgets.get("slide", 0)
             rows = ", ".join(str(int(position))
                              for position in auto_rows.get(entry.asset_id, ()))
@@ -2541,7 +2913,14 @@ def _resolve(entry: PlanEntry, payload: Mapping[str, Any], offer: _Offer, group:
         copyset=copyset,
         source=CopyProvenance(post_id=offer.post.post_id if offer.post else "", refs=refs,
                               panel_map=deck.panel_map,
-                              source_panel_count=len(offer.panels)),
+                              source_panel_count=len(offer.panels),
+                              # D63/FR-346: the ladder's answer is recorded on EVERY bound
+                              # creative in BOTH language modes, whether or not anything was
+                              # translated. `copy_language` stays `source` here — these bytes are
+                              # the post's own — and the pair is what lets meta.yaml say "this
+                              # deck is in German and we shipped it that way" instead of leaving
+                              # the operator to guess from the pixels.
+                              source_language=_source_language(entry, offer, run)),
         tags=tags,
         quoted=(*offer.haystack, *own_words))
 
@@ -2564,6 +2943,14 @@ class _PanelDeck:
     #: (`text_trimmed`). Always false on the verbatim walk, where an over-budget panel is never
     #: trimmed and never can be: trimming a quote is how byte identity dies (FR-100/FIX 2).
     trimmed: bool = False
+    #: D63/FR-343 only — at least one TRANSLATED line on this deck measured under half or over
+    #: twice its source panel's length, so the creative earns `translate_length_drift`. It is a
+    #: deck-level flag rather than a per-row one because the tag is per creative and the row that
+    #: caused it is already named in the warning; and it is a separate field from `trimmed`
+    #: because the two mean opposite things — `trimmed` says the engine cut a line to a ceiling,
+    #: `drifted` says a line whose ceiling does not exist came back a suspicious length and
+    #: shipped anyway (A20's polarity: an audit never costs the operator a card).
+    drifted: bool = False
 
 
 def _mapped_deck(entry: PlanEntry, offer: _Offer, run: _Run) -> _PanelDeck:
@@ -2675,7 +3062,14 @@ def _mapped_deck(entry: PlanEntry, offer: _Offer, run: _Run) -> _PanelDeck:
                                # because `generate._panel_map`'s contract is ONE row schema always,
                                # and a gallery that had to ask whether the key exists before
                                # reading it would be reading two schemas (FR-73 as amended).
-                               "compressed": False})
+                               "compressed": False,
+                               # D63 (v2.7.0): FALSE here by the same construction — this walk
+                               # quotes the source's own bytes in the source's own language, so
+                               # nothing on the row is a translation. `_auto_deck` inherits the
+                               # key from this walk and rewrites `compressed` alone;
+                               # `_translated` is the only place it ever becomes True, and it is
+                               # written here so the one-row-schema contract holds on every path.
+                               "translated": False})
         deck.stripped = deck.stripped or (ships and (position in offer.stripped_panels
                                                      or creator_cut))
     deck.refs = {slot: label for slot, label in deck.refs.items() if label}
@@ -2810,7 +3204,11 @@ def _compressed(entry: PlanEntry, payload: Mapping[str, Any], offer: _Offer, gro
                               refs={},  # FR-302 as amended: a compressed slide quotes no label
                               panel_map=deck.panel_map,
                               source_panel_count=len(offer.panels),
-                              copy_mode=MODE_COMPRESS),
+                              copy_mode=MODE_COMPRESS,
+                              # D63/FR-346: recorded here too. Compress shortens a panel in its
+                              # OWN language, so `copy_language` stays `source` and this says
+                              # which language that is.
+                              source_language=_source_language(entry, offer, run)),
         tags=tags,
         # FR-331: nothing here claims to be a byte-substring of the post, so the pool is empty and
         # `_verify`'s half 1 self-skips. The blocklist half runs on every shipped string regardless
@@ -2910,7 +3308,13 @@ def _compressed_deck(entry: PlanEntry, payload: Mapping[str, Any], offer: _Offer
                                # `source_text_original`, not a quote of it. It is what tells the
                                # gallery to label the column and the auditor not to expect byte
                                # identity.
-                               "compressed": True})
+                               "compressed": True,
+                               # D63 (v2.7.0): FALSE on this walk always. Compress shortens a
+                               # panel in its OWN language — `_compress_block`'s header states
+                               # the mirror rule and the template repeats it — so a compressed
+                               # row is never a translated one. The two axes are orthogonal and
+                               # only `_translated_deck` sets this key True.
+                               "translated": False})
         deck.stripped = deck.stripped or (ships and (position in offer.stripped_panels
                                                      or position in offer.creator_stripped_panels))
     if len(answered) > length:
@@ -3165,7 +3569,11 @@ def _auto(entry: PlanEntry, payload: Mapping[str, Any], offer: _Offer, group: _G
                               refs=deck.refs,  # the QUOTED rows' labels — real, and kept
                               panel_map=deck.panel_map,
                               source_panel_count=len(offer.panels),
-                              copy_mode=MODE_AUTO),
+                              copy_mode=MODE_AUTO,
+                              # D63/FR-346: recorded here too, for the same reason. An auto deck
+                              # quotes some rows and compresses others, all in the post's own
+                              # language, so `copy_language` stays `source` and this names it.
+                              source_language=_source_language(entry, offer, run)),
         tags=tags,
         quoted=(*offer.haystack, *own_words, *authored, caption, headline, *hashtags))
 
@@ -3286,6 +3694,690 @@ def _positional(value: Any) -> list[str]:
     if isinstance(value, Sequence):
         return [str(item or "") for item in value]
     return []
+
+
+# --------------------------------------------------------------------------------------------
+# Translate mode — the LANGUAGE axis (D63/FR-343), orthogonal to the two length contracts above
+#
+# What this is written against. Virlo's monitors do not respect the operator's language: the
+# strongest slideshow on a topic is as likely to be German or Czech as English, and until D63 the
+# only two things the engine could do with it were quote it verbatim (a German deck published on
+# an English-language platform slot) or refuse the topic at the filter's LANG screen (a strong
+# post thrown away for a reason that is now fixable). Translation is the third answer, and it is
+# scoped as narrowly as compress is: a BOUND, panel-mapped carousel whose source language is KNOWN
+# and differs from its platform's configured one, in a run the operator put in `target` mode.
+#
+# The one rule that makes this a separate contract rather than a compress variant: NO CEILING. A
+# translated line may be longer than its source and that is a normal outcome, so no budget is
+# stated to the call, `_translate_field` has no `budget` parameter, and the only length gate a
+# translated slide faces is `PANEL_SANITY_CHARS` — the same transcription-accident fence a source
+# panel faces on the way in. Everything that was never about length is re-applied exactly as
+# compress re-applies it: the blocklist (fail-closed, layers 1 and 2), the FR-319 social-mark
+# BLANK, FR-304's position preservation and its three drop reasons.
+# --------------------------------------------------------------------------------------------
+
+
+async def _call_translate(group: _Group, entry: PlanEntry, run: _Run,
+                          offers: Mapping[str, _Offer]) -> dict[str, dict[str, Any]]:
+    """The D63 call: this deck's source panels in, the same deck in another language out (FR-343).
+
+    Shaped deliberately like `_call_compress` — same role (`COPY_ROLE`, so the operator's model,
+    token ceiling and reasoning effort are the ones the estimator already priced), same engine,
+    same failure door (`copy_prompt_failed` -> `{}` -> the caller's `_mapped_fallback`), same
+    `_answers` envelope. Three things differ:
+
+    - **ONE creative per call, never a group.** `{{translate_panels}}` carries one section per
+      creative and the template tells the model that section's panels are the content authority;
+      two decks on one page is two content authorities, and the failure mode (a line from deck A
+      answered for deck B) is precisely the alignment FR-304 exists to protect. It also keeps the
+      blast radius at one deck, which is what makes the fail-open cheap.
+    - **`carousel_copy_mode=MODE_VERBATIM` is passed on purpose**, even though the RUN may be in
+      auto or compress mode. That is what sends `_budget_line` down its verbatim carousel branch,
+      so `{{text_budgets}}` states the headline ceiling and says in so many words that a panel
+      string carries none. A translate prompt that contained a per-slide character number would be
+      a shortening brief wearing a translation's title, and the test for it is literal: the
+      rendered prompt may not contain the substring `(at most`. The follow-up compress call — when
+      the run is in auto or compress mode — is where a ceiling legitimately appears, and it is a
+      SEPARATE call with a separate template.
+    - **`sibling_list` takes the fifth branch** (`translate_to`), which names both languages and
+      repeats the no-shortening guarantee on the line the model reads last.
+    """
+    entries = [entry]
+    offer = offers[entry.asset_id]
+    context = build_context(
+        trend=group.trend,
+        style=_single_style(entries, run),
+        campaign_brief=group.campaign_brief,
+        creative_format=entry.creative_format,
+        niche_descriptor=run.niche_descriptor,
+        brand_context=run.brand_context,
+        competitor_strings=_strip_terms(entry, run),  # M6: one strip pass over the fenced
+        platform_conventions=_relevant(run.conventions, entries),  # trend texts as well
+        text_budgets=run.budgets,
+        # NORMALISED here, not raw, and through the SAME expression `_translate_block` uses
+        # (`language_code(...)` with the raw value as its last-resort fallback). The work order
+        # prints the target once and this sibling clause prints it again, so a config that spells
+        # its platform language `en-US` — or `English` — would otherwise put two different names
+        # for one language into one prompt: `translate to: en` at the top and `to en-US` on the
+        # line the model reads last. One spelling rule at every rung of the ladder is the whole
+        # reason `language_code` is public (D63).
+        sibling_list=_sibling_list(
+            entries, run, offers, True,
+            translate_to=language_code(entry.language) or str(entry.language or "")),
+        carousel_copy_mode=MODE_VERBATIM,
+    )
+    context["translate_panels"] = _translate_block(entry, offer, run)
+    try:
+        system = run.engine.render(_TRANSLATE_TEMPLATE, context)
+    except (ValueError, LookupError) as exc:  # unresolved placeholder / missing template
+        _warn(run.log, "copy_prompt_failed", str(exc))
+        return {}
+    result = await run.call(
+        COPY_ROLE,
+        [{"role": "system", "content": system},
+         {"role": "user", "content": _TRANSLATE_CARRIER_TURN}],
+        _translate_schema(),
+        None,
+    )
+    if result.degraded or not isinstance(result.parsed, Mapping):
+        return {}
+    return _answers(result, entries)
+
+
+def _translate_schema() -> dict[str, Any]:
+    """The translate call's schema, generated from `CopyTranslated` (contracts item 10).
+
+    The same construction as `_compress_schema` and `_selection_schema`: `asset_id` is excluded
+    from the dataclass projection and re-added first by the engine, so the ANSWER fields belong to
+    the dataclass and identity belongs to the envelope. The one field `CopyCompressed` does not
+    have is `source_language`, and it reaches the wire because the dataclass carries it rather
+    than because anybody hand-listed it here.
+    """
+    fields = json_schema_for(CopyTranslated, exclude={"asset_id"})["properties"]
+    creative = {"type": "object", "properties": {"asset_id": {"type": "string"}, **fields},
+                "required": ["asset_id", *fields], "additionalProperties": False}
+    return {
+        "name": "copy_translated",
+        "schema": {"type": "object", "properties": {"creatives": {"type": "array",
+                                                                  "items": creative}},
+                   "required": ["creatives"], "additionalProperties": False},
+    }
+
+
+def _translate_block(entry: PlanEntry, offer: _Offer, run: _Run) -> str:
+    """The `{{translate_panels}}` block: this creative's own deck, numbered by SOURCE POSITION.
+
+    `_compress_block`'s shape with one line changed and one line REMOVED, and both differences are
+    the contract:
+
+        CREATIVE <asset_id> — translate to: en (English); source language: de
+        caption source: <that post's own caption>
+        1. <source panel 1, folded, IN FULL>
+        3. <source panel 3>
+
+    - **The header names both languages** instead of stating the mirror rule. This is the one
+      place in this module where a language is told to a model rather than described, and it is
+      not the engine guessing: the target is `entry.language` (the operator's own
+      `run.languages[platform]`, set at ASSIGN) and the source is the ladder's — Virlo's
+      `language_detected`, else the vision pass's deck-level reading. The English name in brackets
+      is a courtesy for the codes anybody here actually renders; an unknown code prints as itself.
+    - **No per-line budget, ever.** `_compress_block` writes `(at most N characters)` on every
+      line; this block writes nothing, because a translation has no ceiling and a number on the
+      line is the single most reliable way to turn a translation into a summary. The absence is
+      asserted by a test on the rendered prompt.
+
+    Everything else is deliberately identical, because everything else is FR-304's alignment
+    rather than compress's: only ADMITTED positions are listed (`_panel_verdict` == ""), an
+    unlisted number IS the instruction that the slide ships wordless, positions are numbered by
+    SOURCE POSITION rather than re-numbered 1..N so `slide_texts[i - 1]` is readable by index, and
+    every panel is shown IN FULL through `_folded` rather than `_display`-truncated — the shown
+    text is the material being translated, and a truncated panel would be translated into a lie.
+
+    `run` is taken for symmetry with `_compress_block`'s neighbours and for the language ladder,
+    which reads `run.post_languages` when Virlo sent nothing.
+    """
+    if offer.post is None:
+        return ""
+    source = _source_language(entry, offer, run)
+    target = language_code(entry.language) or str(entry.language or "")
+    lines = [f"CREATIVE {entry.asset_id} — translate to: {target} "
+             f"({_LANGUAGE_NAMES.get(target, target)}); source language: {source}",
+             "caption source: " + (_folded(offer.captions[0].text) if offer.captions else
+                                   "(none — return an empty caption and the engine "
+                                   "assembles one from this post's own words)")]
+    for position in range(1, _deck_length(entry, offer) + 1):
+        text = offer.panels[position - 1] if position <= len(offer.panels) else ""
+        if _panel_verdict(text):
+            continue  # unlisted IS the instruction: that slide ships wordless (FR-304)
+        lines.append(f"{position}. {_folded(text)}")
+    header = ("One section per creative, each carrying that creative's OWN source deck. These "
+              "panels are the content authority: translate them, never shorten them, and never "
+              "write a slide from anything else on this page.")
+    return f"{header}\n\n" + "\n".join(lines)
+
+
+def _translate_field(text: str, brands: Sequence[str], entry: PlanEntry, run: _Run,
+                     *, where: str,
+                     blanked_into: list[str] | None = None) -> tuple[str, bool]:
+    """One translated string through the engine's TWO backstops — `(text, stripped)`.
+
+    `_compress_field`'s sibling, minus the third gate, and the missing gate is the whole point of
+    the contract: there is **no `budget` parameter** and no `trim_words` call anywhere on this
+    path. A translated line has no ceiling — it is the source deck's own panel said in another
+    language, and the target language may simply need more characters — so a slide can never earn
+    `text_trimmed` here. (The cover HEADLINE is ours and keeps its budget: `_translated` runs it
+    through `_compress_field` with `offer.budgets["headline"]`, exactly as the other two contracts
+    do.)
+
+    What remains runs in the order of certainty, and both gates are the ones that were never about
+    length:
+
+    1. **Blocklist** (§1.5 layers 1 and 2, fail-closed, `apply_blocklist`'s mechanics and never a
+       second implementation). A model asked to translate a panel can write a competitor's name it
+       read in the fenced trend texts, so the strip runs on what came BACK as well as on what went
+       in.
+    2. **Social marks** (FR-319). The line is BLANKED, never edited: a translated sentence with
+       its @handle cut out is a sentence nobody wrote and nobody proof-read. Aggregated through
+       `blanked_into` so an eight-slide deck reports one finding rather than eight.
+
+    Then the one LENGTH test that survives, and it is a sanity fence rather than a budget: past
+    `PANEL_SANITY_CHARS` the returned string is not a translation of a slide, it is a runaway —
+    the same ceiling a SOURCE panel faces on the way in, applied to what comes back for the same
+    reason. It blanks the line and warns `translate_over_sanity`; it never trims, because trimming
+    a translated line mid-thought is exactly the shortening this contract forbids.
+
+    `stripped` reports the BLOCKLIST alone, exactly as it does on the compress path:
+    `competitor_stripped` means "a name was removed", and nothing else may borrow that word.
+    """
+    out = apply_blocklist(text, brands) if (text and brands) else text
+    stripped = out != text
+    if out.strip() and _social_mark(out):
+        if blanked_into is not None:
+            blanked_into.append(f"{where} (carries {_excluded_marks(out, relaxed=True)})")
+        else:
+            _warn(run.log, "translate_scrub",
+                  f"{entry.asset_id}: the translated {where} carried "
+                  f"{_excluded_marks(out, relaxed=True)} and was BLANKED (FR-319/FR-343) — a "
+                  "translated line is the model's own bytes, so the social-mark gate is "
+                  "re-applied to what came back, and the line is removed whole rather than edited",
+                  asset_id=entry.asset_id, field=where, text=out)
+        return "", stripped
+    if len(out) > PANEL_SANITY_CHARS:
+        _warn(run.log, "translate_over_sanity",
+              f"{entry.asset_id}: the translated {where} came back at {len(out)} characters, past "
+              f"the {PANEL_SANITY_CHARS}-character sanity ceiling, and was BLANKED (FR-343). A "
+              "translation is allowed to be longer than its source and this is not that: past "
+              "this length the string is a runaway rather than a slide, and it is removed whole "
+              "rather than cut, because cutting it mid-thought is the shortening this contract "
+              "exists to forbid. The source panel is intact and a verbatim re-run renders it",
+              asset_id=entry.asset_id, field=where, characters=len(out),
+              sanity_ceiling=PANEL_SANITY_CHARS)
+        return "", stripped
+    return out, stripped
+
+
+def _translated_deck(entry: PlanEntry, payload: Mapping[str, Any], offer: _Offer, run: _Run,
+                     brands: Sequence[str]) -> _PanelDeck:
+    """FR-343 — ONE walk producing the translated deck's `slide_texts` AND its `panel_map`.
+
+    `_compressed_deck`'s shape, and the single walk is the same invariant for the same reason:
+    `gauntlet._expected_blocks` builds the rendered deck's frame contract from
+    `CopySet.slide_texts` while the gallery and the operator's audit read `panel_map`, so
+    `deck.texts[i - 1]` and `deck.panel_map[i - 1]["source_text"]` are the same string by
+    construction rather than by agreement.
+
+    Per position, in this order:
+
+    1. **The SOURCE panel faces `_panel_verdict` first**, exactly as both other walks do — the same
+       three drop reasons, the same position-preserving wordless slide, the same three warnings. A
+       panel past the sanity ceiling is a transcription accident, and a confident translation of an
+       accident is worse than a wordless slide.
+    2. **The already-target BACKSTOP.** If the model's own `source_language` names the language we
+       are translating INTO and the line it returned is not the source's bytes, the SOURCE bytes
+       ship, the row says `translated: False`, and one warning per creative names it. The model
+       has just told us it rewrote a panel that needed no translation, and a rewrite nobody asked
+       for is a rewrite we do not publish. It is a backstop and not a gate: the engine already
+       decided this deck was foreign (the ladder said so before the call was paid for), so this
+       fires only when the two readings disagree.
+    3. **An admitted position takes `slide_texts[position - 1]`** — by INDEX, never by consuming a
+       queue, so a model that answered "" for slide 2 leaves slide 2 wordless instead of pulling
+       slide 3's line onto it. A short list pads; a long one is truncated and warned.
+    4. **The engine's backstops run on what came back** (`_translate_field`): the blocklist, then
+       the social-mark BLANK, then the sanity fence. No trim, ever.
+    5. **The length-ratio AUDIT.** A shipped line under half or over twice its source panel's
+       length warns and ships, and sets `deck.drifted` so the creative earns
+       `translate_length_drift`. Translation legitimately changes length, so this can never be a
+       gate — it is the receipt that tells the operator which card to read twice, exactly as
+       `copy_not_verbatim` does on the verbatim path.
+    6. **An admitted position answered with NOTHING renders wordless**, collected into one
+       `translate_no_text` warning, and **a line for a position the SOURCE dropped is DISCARDED**
+       (`translate_invented_text`). Translation fills no vacuums for the same reason compression
+       does not: an empty source slide is a slide its author left wordless, and words of ours on
+       it are the `invented_text` defect the post-render gate blocks whole decks for.
+    """
+    length = _deck_length(entry, offer)
+    answered = _positional(payload.get("slide_texts"))
+    #: The model's own reading of the panels' language, normalised the same way every other rung
+    #: of the ladder is. It is evidence for the backstop below and NOTHING else — it never decides
+    #: whether the call happens, because the call has already happened by the time it exists.
+    answered_language = language_code(payload.get("source_language"))
+    already_target = bool(answered_language) and answered_language == language_code(entry.language)
+    deck = _PanelDeck()
+    over: list[str] = []        # over the sanity ceiling — cited in characters
+    marks: list[str] = []       # an @handle or a URL survived into the SOURCE panel text
+    blanked: list[str] = []     # the source claimed words here and the strip took them all
+    invented: list[str] = []    # the model wrote for a position the source left empty
+    scrubbed: list[str] = []    # a translated line carried a social mark and was blanked
+    silent: list[str] = []      # an admitted panel came back with nothing to render
+    drift: list[str] = []       # a shipped line is under half or over twice its source's length
+    untouched: list[str] = []   # the backstop fired: the source bytes ship, not the model's
+    for position in range(1, length + 1):
+        source = offer.panels[position - 1] if position <= len(offer.panels) else ""
+        original = (offer.panels_original[position - 1]
+                    if position <= len(offer.panels_original) else source)
+        reason = _panel_verdict(source)
+        ships = not reason
+        if reason == _DROP_OVER_BUDGET:
+            over.append(f"slide {position} ({len(source)} characters, sanity ceiling "
+                        f"{PANEL_SANITY_CHARS})")
+        elif reason == _DROP_MARKS:
+            marks.append(f"slide {position} (carries {_excluded_marks(source, relaxed=True)})")
+        elif reason == _DROP_EMPTY and position in offer.stripped_panels:
+            blanked.append(f"slide {position}")
+        model_text = answered[position - 1] if position <= len(answered) else ""
+        text = ""
+        translated = False
+        if ships and already_target and model_text.strip() and model_text != source:
+            # The model says these panels are ALREADY in the target language and then handed back
+            # something other than their bytes. Ship the bytes (FR-343's backstop, plan 9f).
+            text = source
+            untouched.append(f"slide {position}")
+        elif ships:
+            text, cut_name = _translate_field(model_text, brands, entry, run,
+                                              where=f"slide {position}", blanked_into=scrubbed)
+            deck.stripped = deck.stripped or cut_name
+            if text.strip():
+                translated = True
+                ratio = len(text) / len(source) if source else 1.0
+                if ratio < _DRIFT_FLOOR or ratio > _DRIFT_CEILING:
+                    deck.drifted = True
+                    drift.append(f"slide {position} ({len(source)} characters in, {len(text)} "
+                                 f"out, ratio {ratio:.2f})")
+            elif not model_text.strip():
+                # `_compressed_deck`'s exact condition, and for its exact reason: a line the
+                # ENGINE rejected (scrubbed for a social mark, blanked at the sanity fence)
+                # already has its own honest warning, and reporting it a second time as "the
+                # model sent nothing" would double-count one finding and name the wrong cause.
+                silent.append(f"slide {position}")
+        elif model_text.strip():
+            invented.append(f"slide {position} ({_display(model_text)})")
+        deck.texts.append(text)
+        deck.panel_map.append({"slide": position, "source_position": position,
+                               # What SHIPS — the translated line, the source bytes the backstop
+                               # kept, or "" for a wordless slide. Same key, same meaning, same
+                               # walk as the other two contracts.
+                               "source_text": text,
+                               # The source panel as it arrived (pre-layer-3, per the provenance
+                               # doctrine that original bytes are never rewritten). It is what the
+                               # gallery renders beside our slide and what the FR-346 chip
+                               # measures "translated from <lang>" against.
+                               "source_text_original": original,
+                               # FR-302 as amended: a translated slide quotes no label. The bytes
+                               # are the model's rendering of the panel, not the panel.
+                               "ref_label": "",
+                               "drop_reason": reason,
+                               "creator_stripped": position in offer.creator_stripped_panels,
+                               "chrome_counter_stripped": position in offer.chrome_counter_panels,
+                               "truncation_suspect": position in offer.truncation_suspect_panels,
+                               # D54: nothing on this walk is compressed. A translated deck in an
+                               # auto- or compress-mode run may have rows compressed AFTERWARDS,
+                               # and `_auto_deck` rewrites this key on exactly those rows.
+                               "compressed": False,
+                               # D63: True only where the shipped text is the model's translation
+                               # of `source_text_original` — never on a dropped position, never on
+                               # a row the already-target backstop handed back its source bytes.
+                               "translated": translated})
+        deck.stripped = deck.stripped or (ships and (position in offer.stripped_panels
+                                                     or position in offer.creator_stripped_panels))
+    if len(answered) > length:
+        _warn(run.log, "translate_list_truncated",
+              f"{entry.asset_id}: the translate call returned {len(answered)} slide texts for a "
+              f"{length}-slide deck; the extra {len(answered) - length} are discarded. The deck's "
+              "length is the plan's (fixed at ASSIGN and priced at the Confirm gate), never the "
+              "model's — a longer answer cannot buy a slide nobody paid for (FR-343/FR-95)",
+              asset_id=entry.asset_id, answered=len(answered), slides=length)
+    if over:
+        _warn(run.log, "panel_over_budget",
+              f"{entry.asset_id}: {len(over)} source panel(s) exceed the {PANEL_SANITY_CHARS}"
+              f"-character sanity ceiling and are never translated (FR-304a) — {'; '.join(over)}. "
+              "A panel that long is a transcription accident rather than a slide, and a confident "
+              "translation of an accident is worse than a wordless slide; those slides render "
+              "without text and keep their position", asset_id=entry.asset_id,
+              sanity_ceiling=PANEL_SANITY_CHARS, slides=over)
+    if marks:
+        _warn(run.log, "panel_handle_or_url",
+              f"{entry.asset_id}: {len(marks)} source panel(s) carry an @handle or a URL pointing "
+              f"outside the technical allowlist, and may never become pixels (FR-319) — "
+              f"{'; '.join(marks)}. They are not translated either: the gate is about identity, "
+              "not language, and a translation of a line we may not render is still that line. "
+              "Those slides render without text and keep their position",
+              asset_id=entry.asset_id, slides=marks)
+    if blanked:
+        _warn(run.log, "panel_emptied_by_strip",
+              f"{entry.asset_id}: {len(blanked)} source panel(s) had words and lost all of them to "
+              f"the competitor strip (§1.5) — {'; '.join(blanked)}. Those slides render without "
+              "text and keep their position", asset_id=entry.asset_id, slides=blanked)
+    if untouched:
+        _warn(run.log, "translate_already_target",
+              f"{entry.asset_id}: the translate call reported these panels are already written in "
+              f"{entry.language} and then returned different words for {len(untouched)} of them — "
+              f"{'; '.join(untouched)}. Those slides ship their SOURCE bytes instead (FR-343): a "
+              "panel that needs no translation needs no rewrite either, and a model that improves "
+              "one is doing work nobody asked for and nobody proof-read. The engine's own language "
+              "ladder said this deck was foreign, so the two readings disagree — the operator may "
+              "want to check which one is right",
+              asset_id=entry.asset_id, slides=untouched,
+              model_language=answered_language, target_language=entry.language)
+    if drift:
+        _warn(run.log, "translate_length_drift",
+              f"{entry.asset_id}: {len(drift)} translated line(s) measured under half or over "
+              f"twice their source panel's length — {'; '.join(drift)}. They SHIP: a translation "
+              "legitimately changes length and this engine has no ceiling for one, so this is an "
+              "audit rather than a gate (A20's polarity, exactly like copy_not_verbatim). Read "
+              "those slides beside their source panels in the gallery — a line at a third of its "
+              "source's length is usually a summary, and this contract forbids summaries",
+              asset_id=entry.asset_id, slides=drift)
+    if invented:
+        _warn(run.log, "translate_invented_text",
+              f"{entry.asset_id}: the translate call wrote text for {len(invented)} position(s) "
+              f"whose SOURCE panel has none — {'; '.join(invented)}. Discarded: translation fills "
+              "no vacuums (FR-343). An empty source slide is a slide its author left wordless, and "
+              "a slide of ours carrying words theirs never had is the `invented_text` defect the "
+              "post-render gate blocks whole decks for",
+              asset_id=entry.asset_id, slides=invented)
+    if scrubbed:
+        _warn(run.log, "translate_scrub",
+              f"{entry.asset_id}: {len(scrubbed)} translated line(s) carried an @handle or a URL "
+              f"outside the technical allowlist and were BLANKED — {'; '.join(scrubbed)}. The line "
+              "is removed whole rather than edited: a translated sentence with its mark cut out is "
+              "a sentence nobody wrote and nobody proof-read (FR-319/FR-343). Those slides render "
+              "without text and keep their position", asset_id=entry.asset_id, slides=scrubbed)
+    if silent:
+        _warn(run.log, "translate_no_text",
+              f"{entry.asset_id}: {len(silent)} admitted source panel(s) came back from the "
+              f"translate call with nothing — {'; '.join(silent)}. Those slides render wordless "
+              "beside a source slide that has words, which is the failure FR-304 exists to "
+              "prevent; the panels themselves are intact and a `--copy-language source` re-run "
+              "renders them in their own language, in full",
+              asset_id=entry.asset_id, slides=silent)
+    return deck
+
+
+@dataclass(slots=True)
+class _Translation:
+    """One creative's whole translate pipeline, carried from `_translate_and_fit` to `_translated`.
+
+    Three fields because the pipeline has up to two model calls and the resolution step needs the
+    outcome of both:
+
+    - `payload` — the TRANSLATE call's answer, or `None` when the call produced nothing. `None` is
+      the only failure this object reports, and its caller answers it with the verbatim mapped
+      deck plus `copy_degraded` and `copy_not_translated`.
+    - `deck` — the finished translated deck (texts, panel map, `stripped`, `drifted`). Empty and
+      unread when `payload` is `None`; kept non-optional so no caller has to guard a type it can
+      already tell from `payload`.
+    - `fit` — `(the follow-up compress call's answer or None, the offer that call was built from,
+      the positions it was asked about)`, or `None` when the run is in verbatim language-length
+      mode or nothing overflowed after translation. The offer travels with the answer because
+      splicing needs the SAME offer the call was built from — its `panels` are the translated
+      strings, not the source's.
+    """
+
+    payload: dict[str, Any] | None
+    deck: _PanelDeck = field(default_factory=_PanelDeck)
+    fit: tuple[dict[str, Any] | None, _Offer, list[int]] | None = None
+
+
+async def _translate_and_fit(group: _Group, entry: PlanEntry, run: _Run,
+                             offers: Mapping[str, _Offer]) -> _Translation:
+    """One creative's translate pipeline: translate, then — if the run compresses — fit (FR-343).
+
+    **Translate FIRST, measure SECOND, and the order is the whole point.** `_rows_over_budget` is
+    called on `deck.texts`, the TRANSLATED strings, never on `offer.panels`: a 210-character
+    German panel can be 260 characters of English or 170, and measuring the source would compress
+    a row that ended up fitting and leave one that did not. That is why `_rows_over_budget` was
+    written as a pure function of a list and a number back in D62 — this call site is the reason.
+
+    The follow-up call is the ORDINARY compress call, unchanged. What makes it work on translated
+    text is one `dataclasses.replace`: the offer it is handed carries the translated strings as its
+    `panels`, so `_compress_block` prints the ENGLISH lines the model is being asked to shorten
+    rather than the German ones it already rendered. `stripped_panels` is cleared with it, because
+    that set names positions a COMPETITOR was cut from at offer time and re-reporting it against
+    the translated deck would warn `panel_emptied_by_strip` a second time for the same finding.
+    Everything else on the offer — the budgets, the creator/counter/suspect position sets, the
+    caption candidates, `panels_original` — is deliberately untouched: the rows still describe the
+    same source deck.
+
+    In `compress` mode every non-empty translated row is listed (that mode compresses the whole
+    deck by definition); in `auto` mode only the rows that overflow after translation are. In
+    `verbatim` length mode there is no second call at all and `fit` stays `None`.
+
+    The `only` keyword is handed on for AUTO alone, and that is a wording decision rather than a
+    content one: under compress mode `over` is already every admitted position, so `only` would
+    print exactly the same panel block and then swap the sibling line for auto's — "compress post
+    P1's panels 1, 2, 3 (the ones over 40 characters)" on a deck where every panel is being
+    compressed regardless of its length, several of them comfortably under that number. Passing
+    `None` keeps the compress-mode sentence a compress-mode run has always sent. The positions
+    still travel on `fit`, because `_translated` needs them to splice.
+
+    A failed follow-up is NOT a failed translation: `fit` comes back with a `None` payload, and
+    `_translated` ships the translated deck uncompressed with `translate_compress_failed` and
+    `copy_degraded`. The deck keeps its language; it only keeps its length as well.
+    """
+    offer = offers[entry.asset_id]
+    payload = (await _call_translate(group, entry, run, offers)).get(entry.asset_id)
+    if payload is None:
+        return _Translation(payload=None)
+    deck = _translated_deck(entry, payload, offer, run, _strip_terms(entry, run))
+    fit: tuple[dict[str, Any] | None, _Offer, list[int]] | None = None
+    if run.carousel_copy_mode in (MODE_AUTO, MODE_COMPRESS):
+        budget = offer.budgets.get("slide", 0)
+        over = (_rows_over_budget(deck.texts, budget) if run.carousel_copy_mode == MODE_AUTO
+                else [position for position, text in enumerate(deck.texts, start=1)
+                      if text.strip()])
+        if over:
+            translated_offer = dataclasses.replace(offer, panels=tuple(deck.texts),
+                                                   stripped_panels=frozenset())
+            # `only` is the AUTO signal at the wire and nothing else. Under compress mode `over`
+            # already IS every admitted position, so passing it would print an identical panel
+            # block and then make `_sibling_list` write the auto clause over it — "compress post
+            # P1's panels 1, 2, 3 (the ones over 40 characters)" on a deck where every panel is
+            # being compressed by definition, some of them well under that number. Passing `None`
+            # takes the compress branch instead ("compress post P1's panels to N characters per
+            # slide"), which is the sentence a compress-mode run has always sent and the only one
+            # that is true here. `fit` still carries `over` — the splice in `_translated` needs
+            # the positions whatever the prompt said.
+            answered = await _call_compress(
+                group, [entry], run, {entry.asset_id: translated_offer},
+                only={entry.asset_id: over} if run.carousel_copy_mode == MODE_AUTO else None)
+            fit = (answered.get(entry.asset_id), translated_offer, over)
+    return _Translation(payload=payload, deck=deck, fit=fit)
+
+
+def _translated(entry: PlanEntry, translation: _Translation, offer: _Offer, group: _Group,
+                run: _Run) -> _Written:
+    """Turn one `CopyTranslated` answer (and its optional compress follow-up) into a shipped deck.
+
+    The sibling of `_compressed` and `_auto`, and above the deck it is identical to both: the
+    call's own caption, headline and hashtags go through the same three backstops
+    (`_compress_field`, `_compressed_caption`) and earn the same three tags on the same terms. The
+    caption comes from the TRANSLATE payload even when a compress call ran afterwards — that
+    second call was asked about slide positions and nothing else, and its caption is ignored on
+    purpose so the deck's prose has ONE author.
+
+    The deck has two shapes:
+
+    - **No follow-up** (verbatim length mode, or nothing overflowed after translation): the
+      translated deck ships as `_translated_deck` built it, `copy_mode: verbatim`. That is the
+      common case and it is the one FR-343 is really about — a deck whose language changed and
+      whose lengths did not.
+    - **A follow-up landed**: `_auto_deck` splices the compressed lines into the TRANSLATED deck
+      exactly as it splices them into a verbatim one, because that is what the translated offer
+      made it — same function, same order, same `auto_row_kept_verbatim` rule (a compressed row
+      that came back empty keeps its translated bytes; long beats wordless). Then every row's
+      `translated` flag is carried across from the translate walk, every `ref_label` is emptied
+      and `refs` is cleared, because a translated row quotes no label whether or not it was
+      compressed afterwards — `_auto_deck` would otherwise leave the untouched rows holding the
+      `P<n>.panel.<i>` labels `_mapped_deck` writes, and those labels claim a byte identity this
+      deck gave up when it changed language. Each row's `drop_reason` is carried across for the
+      same kind of reason: the second walk sees the TRANSLATED strings, so a position the SOURCE
+      lost to an @handle or to the sanity ceiling reads back as a plain `empty` there, and that
+      is the reason the render contract and the gallery would go on to state.
+
+    `copy_mode` then says what the SLIDES are: `compress` when the run compressed the whole deck,
+    `auto` when some rows were compressed and some were not, `verbatim` when none were. It is the
+    LENGTH receipt and it stays honest about length alone; `copy_language` beside it is the
+    language receipt, and this function is the only place in the module that can set it to
+    `target`.
+
+    **`copy_language` is read off the ROWS, not off the fact that a translate call happened.** It
+    is `target` when at least one row's `translated` flag is True and `source` otherwise, because
+    the receipt has to describe the bytes that shipped rather than the money that was spent. The
+    shape that makes the difference real is the already-target backstop firing on EVERY position:
+    the model answered that these panels are already written in the platform's language, so every
+    row shipped its source bytes with `translated: False`, and the deck the operator receives is
+    word for word the deck a `--copy-language source` run would have produced. Calling that
+    `target` would tell the gallery, `meta.yaml` and the previews that the words were translated
+    when nothing was.
+
+    Saying `source` there is also what RAISES the audit signal, deliberately. `_write_group` tags
+    `copy_not_translated` on any creative that was in `translating` and came back with a
+    provenance that does not say `target` — so this deck earns the tag, and that is the intended
+    outcome, not a false positive: a translation was wanted, a call was paid for, and the pixels
+    are in the source language. The two readings disagreed (the engine's ladder said foreign, the
+    model said already-target) and `translate_already_target` names that disagreement on the same
+    creative; the tag is what puts it in front of the operator before nine decks render.
+
+    `quoted=()` for the same reason `_compressed` uses it: nothing here claims to be a
+    byte-substring of the post, so `_verify`'s half 1 self-skips while its blocklist half still
+    audits every string that ships.
+    """
+    brands = _strip_terms(entry, run)
+    payload = translation.payload or {}
+    tags: list[DegradationTag] = []
+    own_words: list[str] = []
+    deck = translation.deck
+    copy_mode = MODE_VERBATIM
+    if translation.fit is not None:
+        compressed_payload, translated_offer, over = translation.fit
+        if compressed_payload is None:
+            tags.append(DegradationTag.COPY_DEGRADED)
+            _warn(run.log, "translate_compress_failed",
+                  f"{entry.asset_id}: this deck was translated into {entry.language} and the "
+                  "follow-up compress call failed, so it ships translated and UNCOMPRESSED "
+                  "(FR-343/FR-353). The expensive half succeeded: every admitted panel is in the "
+                  "target language, in its own position. What is missing is the fit to this "
+                  f"style's {offer.budgets.get('slide', 0)}-character slide budget, so the long "
+                  "lines render long — the pre-D62 outcome, not a loss of the deck",
+                  asset_id=entry.asset_id, positions=list(over),
+                  budget=offer.budgets.get("slide", 0))
+        else:
+            deck = _auto_deck(entry, compressed_payload, translated_offer, run, brands, over)
+            # Both walks run `_deck_length(entry, ...)` over the same entry, so the two maps are
+            # the same length by construction — the bounds check is here because a row that
+            # silently kept `_mapped_deck`'s `P<n>.panel.<i>` label would be claiming a byte
+            # identity this deck gave up when it changed language, and that is not a claim to
+            # leave resting on an arithmetic coincidence.
+            #
+            # `drop_reason` is carried across for a harder reason than tidiness: `_auto_deck`
+            # re-walks `_mapped_deck` over the TRANSLATED offer, whose `panels` are the translated
+            # strings, so a position the SOURCE panel lost — an @handle panel (FR-319), a panel
+            # past `PANEL_SANITY_CHARS`, a panel the competitor strip emptied — arrives at that
+            # walk as `""` and re-reads as the blandest reason there is, `empty`. The row then
+            # tells `generate/contracts.py` that the slide is wordless because the source had no
+            # words, when in truth the source had words this engine may not render. The frame
+            # contract prints that reason to the render model and the gallery shows it to the
+            # operator, so the SOURCE walk's verdict is the only honest one and it wins here.
+            #
+            # The other three per-row facts — `creator_stripped`, `chrome_counter_stripped`,
+            # `truncation_suspect` — cannot drift and are deliberately NOT copied: both walks read
+            # them out of the same position sets on the same offer (`dataclasses.replace` changed
+            # `panels` and `stripped_panels` and nothing else), so they are already identical and
+            # copying them would only suggest they might not be.
+            for index, row in enumerate(deck.panel_map):
+                if index < len(translation.deck.panel_map):
+                    source_row = translation.deck.panel_map[index]
+                    row["translated"] = source_row["translated"]
+                    row["drop_reason"] = source_row["drop_reason"]
+                row["ref_label"] = ""
+            deck.refs = {}
+            deck.stripped = deck.stripped or translation.deck.stripped
+            deck.drifted = translation.deck.drifted
+            copy_mode = (MODE_COMPRESS if run.carousel_copy_mode == MODE_COMPRESS
+                         else MODE_AUTO if any(row["compressed"] for row in deck.panel_map)
+                         else MODE_VERBATIM)
+    headline, headline_trimmed, headline_stripped = _compress_field(
+        str(payload.get("headline") or ""), offer.budgets.get("headline", 0), brands,
+        entry, run, where="headline")
+    caption, hashtags, caption_stripped = _compressed_caption(payload, offer, entry, run, brands,
+                                                              own_words)
+    copyset = CopySet(
+        asset_id=entry.asset_id,
+        language=entry.language,
+        trend_key=entry.trend_key,
+        caption=caption,
+        hashtags=hashtags,
+        headline=headline,
+        slide_texts=deck.texts,
+        narrative_arc=str(payload.get("narrative_arc") or ""),
+        through_line=str(payload.get("through_line") or "") or _subject_name(entry, group),
+    )
+    if not (headline or any(text.strip() for text in deck.texts)):
+        tags.append(DegradationTag.NO_ONIMAGE_TEXT)
+        _warn(run.log, "no_onimage_text",
+              f"{entry.asset_id}: the translate call returned no usable text for any slide of "
+              f"this deck and no cover headline; shipping a caption-only creative (FR-343). Its "
+              f"{sum(1 for text in offer.panels if text.strip())} source panel(s) are unchanged "
+              "and a `--copy-language source` re-run renders them in full, in their own language",
+              asset_id=entry.asset_id, budgets=dict(offer.budgets),
+              source_panels=len(offer.panels))
+    if deck.trimmed or headline_trimmed:
+        # Never from a slide on the translate path — `_translate_field` has no budget and cannot
+        # trim. It is the cover headline (ours, and budgeted) or a line the FOLLOW-UP compress
+        # call overshot its stated ceiling with, which is compress's backstop doing its job.
+        tags.append(DegradationTag.TEXT_TRIMMED)
+    if deck.stripped or caption_stripped or headline_stripped:
+        tags.append(DegradationTag.COMPETITOR_STRIPPED)
+        _warn(run.log, "competitor_stripped",
+              f"{entry.asset_id}: a blocklisted competitor name, or the source creator's own name "
+              "(FR-312), was removed from this creative's text (§1.5). On the translate path the "
+              "strip runs on both sides — the panels the model was shown and the lines it sent "
+              "back — because a translated line is the model's bytes, not the source's, and a "
+              "model translating a panel can write a name it read anywhere else on the page",
+              asset_id=entry.asset_id, refs={}, copy_mode=copy_mode,
+              creator_lines=sorted(offer.creator_stripped_panels))
+    if deck.drifted:
+        tags.append(DegradationTag.TRANSLATE_LENGTH_DRIFT)
+    # The LANGUAGE receipt, read off the shipped rows and never off the fact that a call ran. See
+    # the docstring above: a deck every row of which came back untranslated is a deck in its
+    # source language, whatever the call cost, and saying `target` over it would be the one lie
+    # `_write_group`'s `copy_not_translated` audit has no way to catch.
+    copy_language = (LANGUAGE_TARGET if any(row["translated"] for row in deck.panel_map)
+                     else LANGUAGE_SOURCE)
+    return _Written(
+        copyset=copyset,
+        source=CopyProvenance(post_id=offer.post.post_id if offer.post else "",
+                              refs={},  # FR-302 as amended: a translated slide quotes no label
+                              panel_map=deck.panel_map,
+                              source_panel_count=len(offer.panels),
+                              copy_mode=copy_mode,
+                              copy_language=copy_language,
+                              source_language=_source_language(entry, offer, run)),
+        tags=tags,
+        # FR-343: nothing here claims to be a byte-substring of the post — the words are in
+        # another language — so the pool is empty and `_verify`'s half 1 self-skips. The blocklist
+        # half runs on every shipped string regardless; it reads the CopySet, not this tuple.
+        quoted=())
 
 
 def _selected_deck(payload: Mapping[str, Any], offer: _Offer, entry: PlanEntry,
@@ -3583,7 +4675,13 @@ def _mapped_fallback(entry: PlanEntry, offer: _Offer, group: _Group, run: _Run) 
         copyset=copyset,
         source=CopyProvenance(post_id=offer.post.post_id if offer.post else "", refs=refs,
                               panel_map=deck.panel_map,
-                              source_panel_count=len(offer.panels)),
+                              source_panel_count=len(offer.panels),
+                              # D63/FR-346: recorded even on the degrade tier, and especially
+                              # here. This is the deck a failed TRANSLATE call falls back to, so
+                              # the pair reads `copy_language: source` beside the foreign code the
+                              # ladder found — which is exactly the evidence behind the
+                              # `copy_not_translated` tag `_write_group` adds on top of it.
+                              source_language=_source_language(entry, offer, run)),
         tags=tags,
         quoted=(*offer.haystack, *own_words))
 
@@ -3940,5 +5038,6 @@ def _warn(log: Any, event_type: str, message: str, **data: Any) -> None:
         log.warn(event_type, message, **data)
 
 
-__all__ = ["COPY_ROLE", "MODE_AUTO", "MODE_COMPRESS", "MODE_VERBATIM", "PANEL_SANITY_CHARS",
-           "CopyProvenance", "CopyResult", "NoSafeCaptionError", "write_copy"]
+__all__ = ["COPY_ROLE", "LANGUAGE_SOURCE", "LANGUAGE_TARGET", "MODE_AUTO", "MODE_COMPRESS",
+           "MODE_VERBATIM", "PANEL_SANITY_CHARS", "CopyProvenance", "CopyResult",
+           "NoSafeCaptionError", "write_copy"]

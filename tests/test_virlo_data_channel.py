@@ -16,6 +16,12 @@ Three claims are pinned here, in the order they change what gets rendered:
    rows carry a populated `intelligence` block.
 3. **A14 — the winning posts' real hashtags reach the copy prompt** as reference material, while
    the invented-from-slug fallback stays exactly what it was: the last resort, for its own case.
+4. **D63/9a — the FREE language channel reaches `SourcePost`.** `intelligence.language_detected`
+   and `is_multilingual` travel wrapper -> adapter -> `SourcePost.language` / `.multilingual`,
+   normalized to one two-letter spelling and absent-safe. This is the channel that makes the
+   output-language decision cost $0, and the captured page proves it carries foreign rows (`th`,
+   `hi`, `ko`) — the off-language deck D63 exists to fix was invisible precisely because nothing
+   downstream could see what language a post was written in.
 
 **A18's digest-exemplar tier is gone (v2.0.0).** The digest used to hand five `top_exemplars` per
 trend to the adapter as a last-resort REFERENCE tier; post-pivot there is no reference tier at all
@@ -34,15 +40,17 @@ response, and slideshows whose panels arrive as `{image_url, position}`.
 
 from __future__ import annotations
 
+import inspect
 import json
 from contextlib import asynccontextmanager
+from dataclasses import fields
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 from hypesocials import copywrite
 from hypesocials.config import Config
-from hypesocials.models import PlanEntry, TrendItem
+from hypesocials.models import PlanEntry, SourcePost, TrendItem
 from hypesocials.prompts_engine import PromptEngine, build_context
 from hypesocials.sources import virlo
 from hypesocials.virlo_mcp import server as virlo_server
@@ -520,3 +528,126 @@ async def test_the_wrapper_still_normalizes_the_exemplars_the_adapter_now_ignore
                             "platform": "tiktok", "views": 4_000_000,
                             "thumbnail_url": "https://cdn.virlo.test/digest-strong.jpg",
                             "publish_date": "2026-08-09T09:00:00Z", "author": "@strong"}
+
+
+# ------------------------------------------------- D63/9a: the free language channel, end to end
+
+
+def test_the_language_channel_survives_wrapper_and_adapter_on_the_real_page() -> None:
+    """`intelligence.language_detected` / `is_multilingual` -> `_norm_slideshow` -> `SourcePost`.
+
+    Asserted on the whole captured page rather than a hand-written row, because the value of this
+    channel is entirely a claim about REAL data: it is free, it is populated often enough to be
+    worth reading, and it does carry languages this run does not write in. All three are
+    measurements, and a fixture built to pass would measure nothing. The Thai rows are the point —
+    before D63 they reached a deck as quotable panels with nothing anywhere able to say so.
+    """
+    _videos, shows = _corpus()
+    posts = [virlo._source_post(row, MONITOR, index, True)
+             for index, row in enumerate(shows)]
+
+    assert shows[0]["language_detected"] and "is_multilingual" in shows[0]
+    languages = [post.language for post in posts]
+    assert languages.count("en") == 82, "the channel is populated on most of a real page"
+    assert languages.count("th") == 2, "...and it does carry languages this run does not write"
+    assert languages.count("") == 16, "...and says nothing at all on the unenriched rows"
+    assert sum(1 for post in posts if post.multilingual) == 1
+
+
+def test_the_language_channel_survives_the_video_normalizer_too() -> None:
+    """Videos are the other half of the same page and the same `intelligence` block. They never
+    bind a carousel, so nothing translates off them — but a topic's posts are read as a set, and a
+    normalizer that forwards the field for one media kind and not the other is exactly the shape
+    that makes a mixed topic report a language half its posts are not in."""
+    videos, _shows = _corpus()
+    posts = [virlo._source_post(row, MONITOR, index, False)
+             for index, row in enumerate(videos)]
+
+    assert {post.language for post in posts} == {"en", "hi", "ko", ""}
+    assert sum(1 for post in posts if post.language == "en") == 68
+
+
+def test_a_row_virlo_never_enriched_reports_no_language_never_english() -> None:
+    """`""` is "Virlo did not say", and it must not be readable as "English".
+
+    30 of the 100 captured video rows arrive with `intelligence: null`, so this is the common case,
+    not the edge one. Defaulting an unknown language to the run's own language is the failure that
+    ships an off-language deck as if it had been checked; the empty code makes the ladder fall
+    through to its next rung and, failing that, ship verbatim with a warning.
+    """
+    bare = virlo._source_post(_slideshow("s-bare"), MONITOR, 0, True)
+
+    assert bare.language == "" and bare.multilingual is False
+    assert virlo._source_post({"id": "x"}, MONITOR, 0, False).language == ""
+
+
+def test_one_spelling_rule_folds_every_way_virlo_could_name_a_language() -> None:
+    """`"English"`, `"en-US"` and `"EN"` are one code, and `"unknown"` is no code at all.
+
+    Normalized at the adapter — the single place a Virlo spelling exists — so no downstream
+    comparison ever has to know that Virlo may say `"English"` where the config says `en`. That
+    comparison is the whole of the translate decision, and getting it wrong is silent: the deck
+    renders, in the wrong language, and every check downstream passes.
+    """
+    codes = [virlo._source_post(_slideshow("s1", language_detected=spelling), MONITOR, 0, True
+                                ).language
+             for spelling in ("English", "en-US", "EN", " en ", "unknown", "n/a", "", None)]
+
+    assert codes == ["en", "en", "en", "en", "", "", "", ""]
+    assert virlo._source_post(_slideshow("s1", language_detected="Deutsch"), MONITOR, 0, True
+                              ).language == "de"
+
+
+def test_multilingual_is_a_bool_whatever_virlo_sent() -> None:
+    """The flag qualifies `language` rather than replacing it, so it is read as a plain bool and a
+    missing one is `False` — "Virlo did not say" and "one language" lead to the same decision here
+    (bind it, quote it verbatim), which is why they are allowed to share a value."""
+    truthy = virlo._source_post(_slideshow("s1", is_multilingual=True), MONITOR, 0, True)
+    falsy = virlo._source_post(_slideshow("s2", is_multilingual=False), MONITOR, 0, True)
+
+    assert truthy.multilingual is True and falsy.multilingual is False
+    assert virlo._source_post(_slideshow("s3", is_multilingual=None), MONITOR, 0, True
+                              ).multilingual is False
+
+
+def test_the_multilingual_row_still_names_a_dominant_language() -> None:
+    """The one row the captured page flags multilingual reports `en` beside the flag, which is what
+    licenses reading `language` as "the dominant one" rather than "the only one". Pinned because
+    the alternative reading — flagged means unknowable — would make the field useless."""
+    _videos, shows = _corpus()
+    posts = [virlo._source_post(row, MONITOR, index, True) for index, row in enumerate(shows)]
+
+    mixed = [post for post in posts if post.multilingual]
+    assert [post.language for post in mixed] == ["en"]
+
+
+def test_source_post_is_never_projected_into_a_json_schema() -> None:
+    """No `json_schema_for(SourcePost)` anywhere, and no schema property named after one of its
+    own fields. `SourcePost` is INPUT — the material a copy call reads — while a schema is what
+    the model must ANSWER, so a projection would both ask the model to hand our own source bytes
+    back and turn every new adapter field into a silent change to a paid call's answer shape. Two
+    new fields landed on it in D63; this is the test that says so cheaply.
+
+    Read off the shipped module rather than a hard-coded list, so a builder added later (the D63
+    translate schema, for one) is covered the day it lands. `caption` is the one shared NAME — a
+    copy OUTPUT field that happens to spell the same word as a source field, not a projection.
+    """
+    assert "json_schema_for(SourcePost" not in inspect.getsource(copywrite)
+
+    builders = [value for name, value in vars(copywrite).items()
+                if name.endswith("_schema") and callable(value)
+                and not inspect.signature(value).parameters]
+    assert len(builders) >= 3, "the shipped schema builders are discovered, not assumed"
+    named: set[str] = set()
+    for builder in builders:
+        stack: list[Any] = [builder()]
+        while stack:
+            node = stack.pop()
+            if isinstance(node, dict):
+                named |= set(node.get("properties") or {})
+                stack.extend(node.values())
+            elif isinstance(node, list):
+                stack.extend(node)
+
+    assert named & {item.name for item in fields(SourcePost)} == {"caption"}
+    assert "language" not in named and "multilingual" not in named

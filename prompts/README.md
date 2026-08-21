@@ -5,18 +5,23 @@ no build step and no restart of anything but the run. Spec: `prds/50-promptcraft
 
 **This file is documentation, not a template. The engine never loads it.**
 
-**Current state (D62 cover best-of-N, v2.6.0).** Fifteen shipped roles:
-ten global templates flat in `prompts/`, four `gpt-image-2` render templates,
+**Current state (D63 output language, v2.7.0).** Sixteen shipped roles:
+eleven global templates flat in `prompts/`, four `gpt-image-2` render templates,
 one `seedance-2-5` director template — plus `styles.yaml`, which is not a
 template, and `humanizer_skill.md`, which is not a template either (see below).
 `style_match_system.md` is the ninth global (FR-334/335): the
 registry grew to 19 styles at D56/D57 and to 26 at D61, and one batched, fail-open analysis call
 per run now decides which of them fits each creative, instead of rotation
-deciding alone. `cover_pick_system.md` is the tenth and the newest (FR-351/352):
+deciding alone. `cover_pick_system.md` is the tenth (FR-351/352):
 a carousel may order two or three renders of slide 1, and one fail-open vision
 call picks the frame that becomes the cover AND the reference every body slide
-is built from. (`prds/50-promptcraft.md` FR-181 counts *sixteen* roles rather
-than fifteen because it counts the registry itself among its eleven globals; this
+is built from. `copy_translate_system.md` is the eleventh and the newest
+(FR-344): under `run.copy_language_mode: target` a bound carousel deck whose
+source post is written in some other language is carried over into the
+platform's own language, one call per deck, and a deck already in that language
+is never called for at all. (`prds/50-promptcraft.md` FR-181 counts
+*seventeen* roles rather than sixteen because it counts the registry itself
+among its twelve globals; this
 file keeps `styles.yaml` outside the template count, because it plays by none of
 the template rules.)
 Two things changed under every file in this folder at v2.1.0 and are the reason
@@ -40,6 +45,7 @@ prompts/
   humanizer_skill.md             NOT a template — the vendored humanizer reference (see below)
   copywriter_system.md           global — Luna copy-selection system prompt (verbatim mode)
   copy_compress_system.md        global — Luna compression system prompt (compress mode, D54)
+  copy_translate_system.md       global — Luna translation system prompt (v2.7.0, FR-343/344): one call per bound deck under `copy_language_mode: target`
   topic_filter_system.md         global — the batched competitor / language / audience screen
   style_match_system.md          global — the matched style-assignment screen (v2.4.0, FR-334/335): one batched `analysis` call per run, fail-open
   cover_pick_system.md           global — the cover best-of-N judge (v2.6.0, FR-351/352): one `analysis` vision call per carousel, fail-open
@@ -139,26 +145,27 @@ Two rules govern every row below, and the second is the one people forget:
 | `{{counter_rule}}` | FR-338's counter line for **this deck**: where the assigned style's `counter_slot` zone puts the position badge (the zone's own words, from the same formatter the critic's `{{layout_zones}}` uses), the house corner — *small, body family, top-right inside the safe area; no chip, no badge* — when the style declares no such zone, or the flat statement that this deck carries **no** counter at all. **Empty** on a style-less context, under an override brief, and on an uncounted deck whose style never asked for a badge. It exists because this role names no `{{layout_zones}}` slot: the zone that PLACES the badge reached the critic and never the deck renderer. Never cuttable under truncation | carousel_slide **only** |
 | `{{onimage_text}}` | the exact strings to render, resolved from the copy call's reference labels — plus, on a branded creative, the `wordmark (render verbatim): "…"` entry (with a spelling aid only where a word carries a non-ASCII character). On a mapped deck this is the source panel's own text, emoji, line breaks and `#` tokens included (§0.14b) | all render templates |
 | `{{branding_block}}` | accent colours per `branding.mode`, font character, placement hint, background hint, and the profile's `never:` guards. **Never the wordmark** — that travels in the TEXT block. Empty when the creative is unbranded, and empty of extras when the assigned style is itself a brand style (`brand_slot: true`) | image_post, carousel_slide, reel_seed_frame |
-| `{{text_budgets}}` | the on-image character budget **in force for this call** — the tighter of the style's `max_onimage_chars` and config `text_budgets`. On a CAROUSEL the wording forks on `build_context(carousel_copy_mode=…)` (D54): verbatim states the headline ceiling and says a `panel_text` string carries none (B6), compress states the headline ceiling **and** the real per-slide `min(config.slide, style.slide)` figure, because a compressed line is ours and is measured against it | copywriter_system, copy_compress_system + the three gpt-image-2 render templates |
+| `{{text_budgets}}` | the on-image character budget **in force for this call** — the tighter of the style's `max_onimage_chars` and config `text_budgets`. On a CAROUSEL the wording forks on `build_context(carousel_copy_mode=…)` (D54): verbatim states the headline ceiling and says a `panel_text` string carries none (B6), compress states the headline ceiling **and** the real per-slide `min(config.slide, style.slide)` figure, because a compressed line is ours and is measured against it. A TRANSLATE call builds its context on the verbatim branch deliberately (FR-343): a translated line may be longer than the panel it came from, so the only ceiling it is ever shown is the headline's | copywriter_system, copy_compress_system, copy_translate_system + the three gpt-image-2 render templates |
 | `{{reference_roles}}` | one line per **actually attached** reference: index · what it contributes · what it must not. Post-D46 the provenances are a brief's product photo, the carousel anchor slide, a reel's seed frame and (v2.1.3, FR-315) a **mark patch** — a tool logo cropped from the source slide, the one attachment whose own lettering may be copied — and most image jobs attach nothing at all | image_post, carousel_slide, reel_seed_frame |
 | `{{exclusions}}` | the style's own forbid-list from `styles.yaml`: self-contained rules (platform chrome, watermarks, real logos, faces, legible text outside the declared zones), readable without any picture. Never a restriction on the TEXT block | image_post, carousel_slide, reel_seed_frame, reel_director |
 | `{{content_sentence}}` | deterministic subject sentence, no LLM call (FR-96): reference-free jobs and override briefs | image_post |
 | `{{through_line}}` | the copy call's one-line "what this clip is about" | reel_director |
 | `{{motion_beat}}` | the copy call's ONE named physical action, dropped into the reel's Stage 2 | reel_director |
 | `{{motion_profile}}` | the style's `photographic` \| `graphic` switch — selects the reel's LOOK/CAMERA paragraph | reel_director |
-| `{{brief_directives}}` | campaign brief's directives; empty when none | render templates, copywriter_system, copy_compress_system |
+| `{{brief_directives}}` | campaign brief's directives; empty when none | render templates, copywriter_system, copy_compress_system, copy_translate_system |
 | `{{slide_index}}` | this slide's position in the deck — METADATA for orientation, never rendered as words (FR-313) | carousel_slide |
 | `{{tool_marks}}` | the sanctioned real-logo list for this slide (FR-310/315): third-party tool marks named by the slide's text or seen on the source slide, competitor/creator/platform marks already filtered out. Each is a **required** element and renders as the real mark in true brand colours, palette-exempt — pixel-faithfully when a cropped MARK PATCH rides in `reference_roles` — inside the TEXT block beside its panel title, in the same position on every slide of the deck; empty = no sanctioned marks | carousel_slide **only** |
 | `{{slide_counter}}` | the deck's source-mirrored counter string for this slide (FR-313), e.g. `03 / 08`; normally reaches the model as the locked `counter` TEXT entry + `counter_slot` zone rather than through this raw slot — allowlisted so an override template may name it; empty = unnumbered deck | carousel_slide **only** |
 | `{{seed_frame_ref}}` | one-line description of what the seed frame shows | reel_director |
 | `{{audio_cue}}` | the whole AUDIO body — either the bracketed cue set or the silent-clip line | reel_director |
-| `{{trend_texts}}` | the topic's hooks, panel texts, tactics and Virlo's own summary, fenced as data. The summary (`description`) is **context only** — FR-303 bans it from every output, and FR-331 keeps it out of a compressed line too: compression is authored from the panel above it, never from Virlo's description | copywriter_system, copy_compress_system |
+| `{{trend_texts}}` | the topic's hooks, panel texts, tactics and Virlo's own summary, fenced as data. The summary (`description`) is **context only** — FR-303 bans it from every output, and FR-331 keeps it out of a compressed line too: compression is authored from the panel above it, never from Virlo's description, and FR-343 keeps it out of a translated line for the same reason | copywriter_system, copy_compress_system, copy_translate_system |
 | `{{source_hooks}}` | **the numbered candidate list** — one section per creative, that creative's bound post only, source-deck panels first, each string with its `P<n>.<kind>[.<i>]` label. Kinds are `panel`, `overlay`, `hook`, `caption`; `description` is not a kind (FR-302/303) | copywriter_system |
 | `{{compress_panels}}` | **the compression work order** (D54/FR-331/332) — one section per creative naming its language, its caption source and its admitted panels, each led by its SOURCE POSITION and that position's own `min(config.slide, style.slide)` ceiling. A position the block does not print carries no source text and ships wordless: compression never fills a vacuum. Written by `copywrite._compress_block` onto the built context, on the `source_hooks` precedent (one implementation of the numbering, and the same walk builds the `panel_map`). Allowlisted for `copy_compress_system.md` **only** | copy_compress_system **only** |
-| `{{sibling_list}}` | every creative sharing this copy call, with its bound post and whether its slides are engine-mapped; on a compress call, each deck's slide count — the length its `slide_texts` answer must have | copywriter_system, copy_compress_system |
-| `{{platform_conventions}}` | tone/length/hashtag guidance per platform | copywriter_system, copy_compress_system |
-| `{{brand_context}}` | Notion brand context; empty when influence is off | copywriter_system, copy_compress_system |
-| `{{niche_descriptor}}` | audience / vibe / visual world; empty when unset | copywriter_system, copy_compress_system |
+| `{{translate_panels}}` | **the translation work order** (v2.7.0/FR-343/344) — one section per creative naming the language it is translated INTO, the language its own panels are written in, its caption source and its admitted panels, each led by its SOURCE POSITION and printed IN FULL. It carries **no character ceiling at all**, and that absence is the contract: a translated line may legitimately come out longer than the panel it came from, so a per-line number printed here would turn the one copy call that must never shorten into a second compressor. A position the block does not print carries no source text and ships wordless — translation never fills a vacuum either. Written by `copywrite._translate_block` onto the built context, on the `compress_panels` precedent (same seam, and the same walk builds the `panel_map`). Allowlisted for `copy_translate_system.md` **only** | copy_translate_system **only** |
+| `{{sibling_list}}` | every creative sharing this copy call, with its bound post and whether its slides are engine-mapped; on a compress call, each deck's slide count — the length its `slide_texts` answer must have; on a translate call, that same slide count plus the two language codes the deck is carried **from** and **to** | copywriter_system, copy_compress_system, copy_translate_system |
+| `{{platform_conventions}}` | tone/length/hashtag guidance per platform | copywriter_system, copy_compress_system, copy_translate_system |
+| `{{brand_context}}` | Notion brand context; empty when influence is off | copywriter_system, copy_compress_system, copy_translate_system |
+| `{{niche_descriptor}}` | audience / vibe / visual world; empty when unset | copywriter_system, copy_compress_system, copy_translate_system |
 | `{{niche_visual_world}}` | the niche's `visual_world` line **alone** — standing art direction, no audience and no copy context; empty when unset | image_post, carousel_slide, reel_seed_frame |
 | `{{topic_items}}` | the engine-numbered topic blocks for the competitor screen — ordinals 1..N in arrival order, never the topic's own key | topic_filter_system **only** |
 | `{{competitor_list}}` | `branding.competitors`, the deterministic blocklist, for the same call | topic_filter_system **only** |
@@ -176,6 +183,7 @@ actually enforces. A role's set is exact: not a minimum, not a suggestion.
 |---|---|
 | `copywriter_system.md` | `niche_descriptor`, `brand_context`, `trend_texts`, `source_hooks`, `sibling_list`, `text_budgets`, `platform_conventions`, `brief_directives` |
 | `copy_compress_system.md` | `niche_descriptor`, `brand_context`, `trend_texts`, `compress_panels`, `sibling_list`, `text_budgets`, `platform_conventions`, `brief_directives` |
+| `copy_translate_system.md` | `niche_descriptor`, `brand_context`, `trend_texts`, `translate_panels`, `sibling_list`, `text_budgets`, `platform_conventions`, `brief_directives` |
 | `topic_filter_system.md` | `topic_items`, `competitor_list`, `audience_profile` |
 | `style_match_system.md` | `style_candidates`, `match_entries` |
 | `cover_pick_system.md` | `cover_contract`, `cover_candidates` |
@@ -241,18 +249,22 @@ either slot becomes pixels: the match call decides which style a creative is
 assigned, and its `reason` and `wanted_archetype` are read by a person in the
 run log and the gallery, never by a render model (FR-334/335).
 
-**Why the two copy roles never share a slot.** `copywriter_system.md` and
-`copy_compress_system.md` are the same role (Luna, the `copy` LLM role, the same
-estimator) under two contracts, and the one slot that differs is the one that
-decides which. `{{source_hooks}}` says *pick a label and the engine ships those
-bytes*; `{{compress_panels}}` says *shorten this panel to this ceiling and the
-engine ships your words*. Each is allowlisted for its own file alone, so a
-template that drifts into naming the other fails loudly (FR-260) instead of
-handing a quote-only mandate a block of prose to rewrite — which is D50's rule
-running backwards. `{{compress_panels}}` is locked down for the `{{topic_items}}`
-reason as well: it is the only slot in the vocabulary that carries third-party
+**Why the three copy roles never share a slot.** `copywriter_system.md`,
+`copy_compress_system.md` and `copy_translate_system.md` are the same role
+(Luna, the `copy` LLM role, the same estimator) under three contracts, and the
+one slot that differs is the one that decides which. `{{source_hooks}}` says
+*pick a label and the engine ships those bytes*; `{{compress_panels}}` says
+*shorten this panel to this ceiling and the engine ships your words*;
+`{{translate_panels}}` says *carry this panel whole into another language, at
+whatever length that takes, and the engine ships your words*. Each is
+allowlisted for its own file alone, so a template that drifts into naming
+another fails loudly (FR-260) instead of handing a quote-only mandate a block of
+prose to rewrite — which is D50's rule running backwards — or handing the one
+call that must not shorten a per-line ceiling to shorten to. `{{compress_panels}}`
+and `{{translate_panels}}` are locked down for the `{{topic_items}}`
+reason as well: they are the only slots in the vocabulary that carry third-party
 source text to a call that is *asked* to author new bytes from it, and a render
-role that could resolve it would be handed a wall of panel prose to letter.
+role that could resolve either would be handed a wall of panel prose to letter.
 
 **Truncation.** When an assembled prompt exceeds the model's length limit the
 engine trims placeholder *values* (never the template's own prose) in the fixed
@@ -271,6 +283,9 @@ The locked text block, including the wordmark entry that lives inside
 `{{onimage_text}}`, is never touched at all. `{{compress_panels}}` is absent from
 that tuple and stays absent: it IS the content the call exists to compress, so a
 pass that trimmed it would silently drop slides from the answer.
+`{{translate_panels}}` is absent for the same reason and stays absent too — it
+is the content the call exists to translate, and a trimmed panel would be
+translated into a lie rather than into another language.
 
 ## Editing rules
 
@@ -342,7 +357,17 @@ pass that trimmed it would silently drop slides from the answer.
   is the failure D50 named and D54 opened exactly one operator-opted door in.
   The `~14` humanizer patterns in it are a distillation of
   `prompts/humanizer_skill.md`; when that vendored file changes, re-derive them
-  here rather than pointing the model at the file — no prompt loads it.
+  here rather than pointing the model at the file — no prompt loads it. The
+  same fourteen ride in `copy_translate_system.md`, so re-derive them in both.
+- **Do not let `copy_translate_system.md` become a shortening brief.** It is
+  the sibling of the file above and its rules run the other way: no per-line
+  ceiling is printed, no per-line ceiling may be added, and a translated line
+  is allowed to come out LONGER than the panel it came from (FR-343). Every
+  number, name, list item and line break crosses over, an unprinted position
+  still answers `""`, and a panel already in the target language comes back
+  byte-identical. A word like "concise", "punchy" or "tighten" in this file
+  turns the one call whose whole job is to keep a deck whole into a second
+  compressor, and the engine has no way to tell the difference afterwards.
 - Change wording freely; change section *labels* only if you mean it — the
   labelled scaffold is what makes a bad render debuggable from the log.
 - A broken or deleted template is not fatal: the engine falls back to its
@@ -413,6 +438,7 @@ any labelled line above that is empty"* line.
 | Empty-signature line — *"This frame carries no signature zone: the lower margin is empty."*, appended when a `role: brand_slot` zone is dropped on an unbranded creative | `{{layout_zones}}` | `prompts_engine.py` |
 | Numbered candidate list — one section per creative, its bound post's offerable strings with their `P<n>.<kind>[.<i>]` labels, source-deck panels first | `{{source_hooks}}` | `copywrite.py` (owns numbering AND resolution — one implementation; it overwrites the slot after `build_context` returns) |
 | Compression work order — one section per creative: its language-mirror line, its caption source, and its admitted panels numbered by SOURCE POSITION with each position's own character ceiling (D54/FR-331) | `{{compress_panels}}` | `copywrite.py` `_compress_block` (same seam as `source_hooks`: written onto the built context, and the same walk that builds this block builds the `panel_map`) |
+| Translation work order — one section per creative: its `translate to: <code> (<name>); source language: <code>` header, its caption source, and its admitted panels numbered by SOURCE POSITION and printed in full **with no ceiling on any line** (FR-343/344) | `{{translate_panels}}` | `copywrite.py` `_translate_block` (same seam again; one call per creative rather than one per group, because the language pair is a property of the bound post) |
 | `source panel i of N` position line and the per-slide visual brief | `{{slide_panel_source}}`, `{{visual_brief}}` | `generate/carousel.py` `_panel_source_line` / `_visual_brief`, fed by `sources/slide_intel.py` |
 | Numbered topic blocks for the competitor screen, ordinals 1..N | `{{topic_items}}` | `prompts_engine.py` `_topic_items` |
 | Candidate-style block — one entry per style usable somewhere in this run, each printed as `key` + `match_profile` + the formats it is meant for, the profile falling back to the first sentence of `render_prompt` where a style declares none (FR-334/335) | `{{style_candidates}}` | `style_match.py`, off `styles.py`'s own pool predicates (`usable_styles` / format affinity — imported, never re-derived) |

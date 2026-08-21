@@ -432,7 +432,9 @@ plans/xmasterplan-style-intelligence.md (SESSION I).
 
 ---
 
-# SESSIONS J–N — Render quality, design system, and language (v2.5.0 → v2.7.0, D59–D63) · ⏳ NOT STARTED
+# SESSIONS J–N — Render quality, design system, and language (v2.5.0 → v2.7.0, D59–D63) · ✅ COMPLETE (2026-08-20 → 2026-08-21)
+
+> ✅ **All five sessions landed on branch `session-k-colour-type-spine` (J → K → L → M → N, one commit each), suite 1568 → 1910, registry 19 → 26 / enabled 12 → 17, PRDs v2.5.0 → v2.7.0 (D59–D63).** Closeouts: `plans/SESSION-J-CLOSEOUT.md` … `plans/SESSION-N-CLOSEOUT.md` (N carries the final 9-carousel paid run's acceptance against plan §9 and the drift numbers). Design contract for N: `plans/SESSION-N-DESIGN.md`. New tool: `plans/tools/splice_builtin_twin.py` (prompt twins).
 
 > Plan: **plans/xmasterplan-render-quality-and-language.md** (v3, verified 2026-08-20). Read its §0–§5 before
 > any session; §5 is the corrected file:line table, §7 the per-session briefs, §11 the paste-ready prompts.

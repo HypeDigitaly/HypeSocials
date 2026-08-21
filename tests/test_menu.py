@@ -1131,3 +1131,85 @@ def test_fr285_the_quick_run_never_asks_the_copy_mode_step_either(tmp_path: Path
     assert result.config.run.carousel_copy_mode == "compress"
     assert any("carousel copy mode: compress" in line for line in wizard.printed), \
         "asked nothing, so the notice is the ONLY place this run states its copy contract"
+
+
+# ---- D63 ------------------------------- FR-345: the confirm notice's copy-LANGUAGE line
+
+
+def test_fr345_the_confirm_notice_states_the_copy_language_whenever_carousels_are_planned(
+    tmp_path: Path,
+) -> None:
+    """The language mode has NO wizard step, so this line is the whole of its operator surface.
+
+    `carousel_copy_mode` at least gets asked (step 3 of six); `copy_language_mode` is config and
+    `--copy-language` only, because NFR-16 caps the wizard at six inputs and D63's own ruling was
+    that the length question is the one worth a prompt. That makes the confirm notice — the last
+    screen before money moves — the only place a guided run states which language its decks will
+    come out in, on every path including `--quick`.
+
+    The line names the LANGUAGE, not only the mode word. `_READY` writes `cs` on all three
+    platforms, so a translating run of it says `translated to cs`: an operator reading `target`
+    alone could not tell whether their Czech config was about to translate English posts into
+    Czech or the reverse, and that is precisely the config this mode was written for.
+    """
+    configs = _configs(tmp_path, ready=_READY.replace(
+        "run:\n", "run:\n  copy_language_mode: target\n"))
+    wizard = _wizard(counts=_CAROUSEL_COUNTS)
+
+    assert run_menu(cli.Options(), console=wizard.console, configs_dir=configs) is not None
+
+    line = next(line for line in wizard.printed if "copy language:" in line)
+    assert line.strip() == "copy language: target - bound decks translated to cs"
+    assert len(line) <= WIDTH
+
+    # `source` says the opposite in the same shape, because "no translation" is a fact about the
+    # creatives too — it is why a German post's panels would ship as German pixels.
+    kept = _configs(tmp_path / "kept", ready=_READY)
+    quiet = _wizard(counts=_CAROUSEL_COUNTS)
+    assert run_menu(cli.Options(), console=quiet.console, configs_dir=kept) is not None
+    source_line = next(line for line in quiet.printed if "copy language:" in line)
+    assert source_line.strip() == "copy language: source - posts keep their own language"
+    assert len(source_line) <= WIDTH
+
+    # And a carousel-free run says nothing at all: translation reaches bound decks only, so on a
+    # plan of images the line would be a promise about creatives that will never see it (FR-345).
+    none = _wizard(counts="images=1 carousels=0 reels=0")
+    assert run_menu(cli.Options(), console=none.console, configs_dir=kept) is not None
+    assert not any("copy language:" in line for line in none.printed)
+
+
+def test_fr345_the_language_line_never_adds_a_wizard_step_and_names_every_language(
+    tmp_path: Path,
+) -> None:
+    """Two halves of one promise: six steps stay six (NFR-16), and a mixed-language run is named.
+
+    The step list is asserted here as well as in the FR-300 test above, because this is the change
+    that would have broken it: the obvious way to ship an output-language mode is to ask for it,
+    and the obvious way is the one D63 refused. Nothing about `_WIZARD_STEPS` moves — the fact
+    line is printed by the CONFIRM step, which was already live.
+
+    The second half is the mixed run. `run.languages` is per platform, so a config publishing
+    English to LinkedIn and Czech to Instagram translates into both, and one code on that line
+    would be a false statement about half the plan. `_say_confirm_ahead` is called directly here
+    rather than through the wizard: the walkthrough scripts a config picker, and what is under
+    test is the arithmetic of the line, not the path to it.
+    """
+    assert menu._WIZARD_STEPS == ("config", "counts", "copy_mode", "cap", "briefs", "confirm"), \
+        "D63 adds no step — the language mode is config and CLI only (NFR-16)"
+    assert menu._live_steps(quick=False) == menu._WIZARD_STEPS
+    assert "copy_language" not in menu._WIZARD_STEPS
+
+    mixed = _configs(tmp_path, ready=_READY.replace(
+        "  languages: {{ linkedin: cs, instagram: cs, tiktok: cs }}\n",
+        "  copy_language_mode: target\n"
+        "  languages: {{ linkedin: en, instagram: cs, tiktok: cs }}\n"))
+    said: list[str] = []
+
+    menu._say_confirm_ahead(Console(ask=lambda question: "", say=said.append),
+                            load_config(mixed / "ready.yaml"), menu._live_steps(quick=True))
+
+    line = next(line for line in said if "copy language:" in line)
+    assert line.strip() == "copy language: target - bound decks translated to en/cs"
+    assert len(line) <= WIDTH, "FR-286 holds even when three platforms disagree"
+    assert menu._target_language(load_config(mixed / "ready.yaml")) == "en/cs", \
+        "config order, deduplicated — not sorted, so it reads against run.platforms"

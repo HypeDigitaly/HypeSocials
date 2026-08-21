@@ -51,7 +51,7 @@ from contextlib import suppress
 from hypesocials import cli, plan, preflight, runner, style_match, styles, topic_filter
 from hypesocials.budget import format_usd
 from hypesocials.config import Config, ConfigError, load_config
-from hypesocials.copywrite import MODE_AUTO, MODE_COMPRESS, CopyResult
+from hypesocials.copywrite import LANGUAGE_TARGET, MODE_AUTO, MODE_COMPRESS, CopyResult
 from hypesocials.models import PlanEntry, PlanEntryStatus, TrendItem
 from hypesocials.outputs import read_history
 from hypesocials.prompts_engine import PROMPTS_DIR
@@ -539,16 +539,33 @@ def _copy_block(copy_result: CopyResult, live: Sequence[PlanEntry]) -> str:
     so it belongs in "how many decks did not ship pure quotes" (the question the header answers)
     while its own row says `auto` rather than `compressed`, because "compressed" over a deck whose
     slides are mostly verbatim would be exactly as wrong as "quoted" over one whose slides are not.
+
+    D63's translation (FR-343) is counted on its OWN axis and answered first, because it is the one
+    thing about this block's opening promise — "in the language of the post it was taken from" —
+    that can be false. A translated deck's slides are the post's panels in the PLATFORM's language,
+    never shortened, so the header says how many decks changed language and the compression count
+    (a different question about the same decks) keeps its own clause underneath. A `source`-mode
+    run reaches neither branch and prints exactly the two lines it always did.
     """
     compressed = sum(1 for prov in copy_result.provenance.values()
                      if prov.copy_mode in (MODE_COMPRESS, MODE_AUTO))
-    lines = ([f"Copy — {len(copy_result.copy)} creative(s), quoted verbatim in the language",
-              "  of the post each string came from; nothing was rendered (FR-140)"]
-             if not compressed else
-             [f"Copy — {len(copy_result.copy)} creative(s), {compressed} deck(s) compressed",
-              "  from the source post's panels to the style's budget, in the post's own",
-              "  language (under copy mode auto, only the panels that overflowed it);",
-              "  the rest quoted verbatim, nothing rendered (FR-140/FR-331/FR-353)"])
+    translated = sum(1 for prov in copy_result.provenance.values()
+                     if prov.copy_language == LANGUAGE_TARGET)
+    if translated:
+        lines = [f"Copy — {len(copy_result.copy)} creative(s), {translated} deck(s) translated",
+                 "  into the platform's language and never shortened (FR-343); the rest",
+                 "  quoted verbatim in the post's own language, nothing rendered (FR-140)"]
+        if compressed:
+            lines.append(f"  {compressed} deck(s) were then fitted to the style's slide budget "
+                         "(FR-331/FR-353)")
+    elif compressed:
+        lines = [f"Copy — {len(copy_result.copy)} creative(s), {compressed} deck(s) compressed",
+                 "  from the source post's panels to the style's budget, in the post's own",
+                 "  language (under copy mode auto, only the panels that overflowed it);",
+                 "  the rest quoted verbatim, nothing rendered (FR-140/FR-331/FR-353)"]
+    else:
+        lines = [f"Copy — {len(copy_result.copy)} creative(s), quoted verbatim in the language",
+                 "  of the post each string came from; nothing was rendered (FR-140)"]
     for entry in live:
         copy = copy_result.copy.get(entry.asset_id)
         if copy is None:
@@ -587,15 +604,28 @@ def _source_rows(copy_result: CopyResult, asset_id: str) -> list[str]:
     are worth reading — the refs row is the list of slides the operator can check against the post
     roster above, and the slides missing from it are the ones that were compressed.
 
+    A D63-TRANSLATED deck says `translated` and wins over both mode words (FR-343): its slides are
+    that post's panels in another language, which is a bigger claim about the same bytes than
+    either `compressed` or `auto` makes, and a translated auto deck is both at once. It carries no
+    refs row for the same reason a compressed deck does not — the walk clears every `ref_label`,
+    because a label pointing at bytes we did not ship would be a false receipt — and it adds
+    `from <code>` so the row says which language the panels were read out of.
+
     `compressed` is the FIRST label in this module wider than `_ROW_LABEL`'s column, which is why
     `_rows` below now guarantees a separator instead of trusting the padding to supply one. `auto`
-    (4) is well inside it and pads like every other short label.
+    (4) is well inside it and pads like every other short label; `translated` (10) is the same
+    width as `compressed` and rides the same guarantee.
     """
     provenance = copy_result.provenance.get(asset_id)
     if provenance is None:
         return []
     kind = {MODE_COMPRESS: "compressed", MODE_AUTO: "auto"}.get(provenance.copy_mode, "quoted")
-    rows = _rows(kind, provenance.post_id or "(free text — no post quoted)")
+    detail = provenance.post_id or "(free text — no post quoted)"
+    if provenance.copy_language == LANGUAGE_TARGET:
+        kind = "translated"
+        if provenance.source_language:
+            detail = f"{detail}  from {provenance.source_language}"
+    rows = _rows(kind, detail)
     if provenance.refs:
         rows += _rows("refs", " ".join(f"{slot}={label}"
                                        for slot, label in sorted(provenance.refs.items())))

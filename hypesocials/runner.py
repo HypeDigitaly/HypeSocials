@@ -186,6 +186,14 @@ class _Session:
     #: to copywrite, and the SAME mapping rides `generate.Env` so LLM-discovered brands reach every
     #: render prompt's `competitor_strings`, not only the CopySet (Session-C obligation 2).
     strip_brands: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    #: FR-343 rung 3 (D63): the SAME screen's own `language` reading, re-keyed trend_key -> code.
+    #: Filled beside `strip_brands` from the identical verdict map, because it is the identical
+    #: answer read one field along. `_write` hands it to copywrite, where it is consulted only
+    #: after Virlo's post row and the vision pass have both come back empty. It matters under
+    #: `target` mode specifically: the screen's LANG skip is off there, so a topic the screen read
+    #: as German is let through on purpose, and without this rung its deck reached COPY as
+    #: "unknown" and shipped German pixels with `translate_language_unknown`.
+    topic_languages: dict[str, str] = field(default_factory=dict)
     #: FR-307: the burnt post-id union read before Collect — the fetch gate consumes it there,
     #: and `_write` hands the SAME set to copywrite's pick-time guard (belt-and-braces; one
     #: read, two enforcement points, zero drift).
@@ -437,7 +445,14 @@ async def _pipeline(session: _Session, overrides: Sequence[str]) -> int:
     assignment = _select(session, kept, resolved.entries)
     # Re-priced with the topics actually assigned: the shared filter/copy calls of FR-107/FR-99
     # are per distinct topic, so the per-entry shares only become real once assignment has run.
-    plan_estimate = estimate(config, resolved.entries)
+    #
+    # D63 hands it the bound posts' languages too. FR-343's translate line is one `copy` call per
+    # deck that has to CHANGE language, and the Confirm gate (which runs before Collect) has no
+    # post to read one off, so it prices every non-override carousel. Here the posts exist and
+    # Virlo's own `language_detected` is on every row, so the decks already written in the
+    # platform's language drop off the quote — the same "provisional at the gate, real after
+    # ASSIGN" restatement the slide-intelligence line has always had.
+    plan_estimate = estimate(config, resolved.entries, post_languages=_post_languages(kept))
     _restate(session, assignment, plan_estimate)
     live = [entry for entry in live if entry.status is PlanEntryStatus.PENDING]
 
@@ -996,6 +1011,40 @@ async def _collect(session: _Session, *, fetch_trends: bool = True) -> sources.T
     return trends
 
 
+def _off_language_line(assignment: plan.Assignment) -> str:
+    """FR-345's bind-skip receipt: ONE line naming the posts `source` mode refused, or `""`.
+
+    `plan.off_language_post` drops a candidate source post whose known language this run does not
+    write, because under `run.copy_language_mode: source` the panels ship byte for byte and a
+    German post inside an English topic ships German pixels under an English caption. The drop is
+    correct and the fix works — but a post that quietly leaves the supply pool is exactly the
+    invisible defect FR-345 was written for, so the run has to SAY it happened.
+
+    It is a line and not a warning-only event because the remedy is a config decision the operator
+    takes before the money gate: flipping `run.copy_language_mode` to `target` binds those same
+    posts and translates their decks (FR-343), which is usually what someone who monitors foreign
+    creators actually wants. Naming the key is therefore half the line's job.
+
+    Language codes are listed DISTINCT and sorted rather than one per post: three German posts and
+    one French one is "4 post(s) skipped (de, fr)", because the count answers "how much supply did
+    I lose" and the codes answer "which way do I have to flip the switch". A pair whose code came
+    back empty cannot happen (the screen never fires on an unknown language) but is tolerated —
+    the parenthesis is simply left off rather than printed empty.
+
+    FR-286 arithmetic: 16 lead + 28 tail leaves 34 columns for the body, which holds a five-digit
+    count and about eight language codes; beyond that `fit` cuts the codes, never the tail, so the
+    key the operator has to change is the one thing on the line that can never be lost.
+    """
+    posts = assignment.off_language_posts
+    if not posts:
+        return ""
+    lead, tail = "  off-language  ", " - copy_language_mode: source"
+    codes = ", ".join(sorted({code for _, code in posts if code}))
+    body = f"{len(posts)} post(s) skipped ({codes})" if codes \
+        else f"{len(posts)} post(s) skipped"
+    return f"{lead}{fit(body, _FUNNEL_WIDTH - len(lead) - len(tail))}{tail}"
+
+
 def _select(session: _Session, trends: list[TrendItem],
             entries: list[PlanEntry]) -> plan.Assignment:
     """Select + assign, then the FR-8 ceiling check and 10 §10's four-cause abort message.
@@ -1003,6 +1052,11 @@ def _select(session: _Session, trends: list[TrendItem],
     FR-296 narration: the SELECT header states topics in → the three verdict buckets, and every
     NON-eligible verdict is echoed with its cause (`<name> [excluded: …]`) — a drop is a decision
     with a cause, and those are exactly the lines the default console tier shows.
+
+    Two drops that happen at ASSIGN rather than at Select are echoed here for the same reason:
+    FR-345's off-language bind skip (`_off_language_line`) and FR-307's supply arithmetic. Both
+    arrive as counts on `plan.Assignment` because that module prints nothing itself (NFR-2), and
+    both would otherwise be decisions the operator only meets as a missing deck.
     """
     config = session.config
     watch = Stopwatch()
@@ -1035,6 +1089,22 @@ def _select(session: _Session, trends: list[TrendItem],
                               f"{config.run.max_trend_reuses_per_run} (FR-8)",
                               trend=decision.trend_key, use_index=decision.use_index,
                               max_reuses=config.run.max_trend_reuses_per_run)
+    # FR-345 (D63): the posts the language screen refused, said ONCE for the whole run. `plan`
+    # collects the `(post_id, language)` pairs on the same walk that counts the supply above and
+    # returns them as data (NFR-2 — that module prints nothing and logs nothing); this stage is
+    # where they become a warning in `run.log` and a line on the console. Printed BEFORE the
+    # famine arithmetic on purpose: when both fire, the language screen is the CAUSE of the
+    # shortage the famine line is about to report, and the cause reads better above its effect.
+    if off_language := assignment.off_language_posts:
+        session.log.warn("plan_off_language_posts",
+                         f"{len(off_language)} source post(s) not bindable under "
+                         f"run.copy_language_mode: source — this run does not write their "
+                         f"language (FR-345): "
+                         + ", ".join(f"{post_id} ({code or 'unknown'})"
+                                     for post_id, code in off_language),
+                         posts=[post_id for post_id, _ in off_language],
+                         languages=sorted({code for _, code in off_language if code}))
+        session.say(_off_language_line(assignment))
     # FR-307's supply arithmetic, printed the moment a carousel starves rather than only inside the
     # abort path: the plan may still ship its other decks, and "3 carousels found no unused source
     # slideshow" with no numbers beside it reads as a bug rather than as a cadence fact. `plan` owns
@@ -1176,6 +1246,22 @@ async def _write(session: _Session, live: Sequence[PlanEntry], trends: dict[str,
         # reach the same function through this one (`--preview-analysis` included), which is what
         # makes the preview an honest rehearsal of the paid run's words.
         carousel_copy_mode=config.run.carousel_copy_mode,
+        # D63/FR-343/FR-345: the LANGUAGE contract beside the length one, and the second rung of
+        # the language ladder. `copy_language_mode` is the operator's toggle; `post_languages` is
+        # the vision pass's ONE deck-level reading per post, which `copywrite` consults only after
+        # Virlo's own `SourcePost.language` came back empty. Only posts the pass actually read a
+        # language off are sent — an empty string is "unknown", and passing it would look like an
+        # answer — and an empty mapping is passed as `None` so the module's own default applies.
+        copy_language_mode=config.run.copy_language_mode,
+        post_languages={pid: intel.language for pid, intel in session.slide_intel.items()
+                        if getattr(intel, "language", "")} or None,
+        # Rung 3, read straight off the session because `_screen_topics` filled it from the same
+        # verdicts `strip_brands` came from. It is the LAST rung and it is a topic-level reading,
+        # so copywrite consults it only when both post-level rungs are silent — which is exactly
+        # the shape that shipped German pixels under `translate_language_unknown` before D63's
+        # review: `target` mode turns the screen's LANG skip off, the foreign topic is let in on
+        # purpose, and nothing downstream had bothered to remember what the screen had read.
+        topic_languages=dict(session.topic_languages) or None,
         progress=progress,
         niche_descriptor=config.niche.as_text(), log=session.log), heartbeat, suppress_s=10.0)
     session.log.event("copy_complete", f"copy for {len(result.copy)} creative(s)",
@@ -1195,12 +1281,37 @@ async def _write(session: _Session, live: Sequence[PlanEntry], trends: dict[str,
     # for byte, a pure-auto run says `auto-compressed` (a different word for a different contract,
     # not a qualifier bolted onto the old one), and only a genuinely mixed run pays the extra
     # `(N auto)` clause — which is the only run where the split is not already implied.
+    #
+    # D63 adds the LANGUAGE count as a fifth and sixth shape, on the same "counted off the receipt"
+    # rule: `copy_language == "target"` is written only where a translation actually shipped, so a
+    # target-mode run whose translate call failed reports 0 translated and carries the loud
+    # `copy_not_translated` lines below instead of a number that would deny the loss.
     autos = sum(1 for prov in result.provenance.values()
                 if prov.copy_mode == copywrite.MODE_AUTO)
     compressed = autos + sum(1 for prov in result.provenance.values()
                              if prov.copy_mode == copywrite.MODE_COMPRESS)
+    translated = sum(1 for prov in result.provenance.values()
+                     if prov.copy_language == copywrite.LANGUAGE_TARGET)
     head = f"{groups} call(s) -> {len(result.copy)} creative(s)"
-    if not compressed:
+    if translated and compressed:
+        # The one shape that does NOT carry the head, measured rather than guessed: the head is 26
+        # columns at single-digit counts, each clause is 14, and `_stage` gives this body 53 on a
+        # ten-stage run — 54 characters of text into 53 columns, and `fit` would eat the word
+        # `translated` whole. That 53 is COPY's own number and nothing wider: `_stage` computes
+        # `59 - len(tag)`, COPY sits at position seven of the full ten-stage list, and its tag is
+        # six characters wide. It is NOT the narrowest body on that run — DONE's tag is seven
+        # characters wide and its body gets 52 — but no stage borrows another stage's width, so
+        # 53 is the number this line has to fit inside. Nine-stage runs (`gauntlet.enabled:
+        # false`, or a plan with no carousels and therefore no INTEL) give it 54, which is slack
+        # and never a licence. The head is what goes: the call count is already on this stage's
+        # OPENING line, two lines above on the same screen, while the translated count is printed
+        # nowhere else. The `auto-` prefix and the `(N auto)` clause go with it for the same
+        # reason — the panel map is where the per-row split is recorded either way.
+        body = (f"{len(result.copy)} creative(s), {compressed} compressed, "
+                f"{translated} translated")
+    elif translated:
+        body = f"{head}, {translated} translated"
+    elif not compressed:
         body = f"{head} quoted verbatim"
     elif autos == compressed:
         body = f"{head}, {autos} auto-compressed"
@@ -1209,7 +1320,41 @@ async def _write(session: _Session, live: Sequence[PlanEntry], trends: dict[str,
     else:
         body = f"{head}, {compressed} compressed"
     _stage(session, "COPY", body, elapsed_s=watch.elapsed_s)
+    _not_translated_lines(session, result)
     return result
+
+
+def _not_translated_lines(session: _Session, result: copywrite.CopyResult) -> None:
+    """FR-343/FR-346: `copy_not_translated`, said out loud, in the `copy_degraded` posture.
+
+    The tag means a translation was WANTED — `run.copy_language_mode: target`, a bound
+    panel-mapped deck, a known source language that is not the platform's — and the deck shipped
+    its source language anyway, because the translate call returned nothing or the creative ended
+    on a degrade path. The words on those slides are legitimate (they are the source post's own
+    panels, verbatim) but they are in the WRONG LANGUAGE for the platform they are about to be
+    published on, and that is a decision the operator has to make before the render spend, not
+    after: on a `--yes` run this block is the only place it is said before the money moves.
+
+    TWO lines, the shape `_screen_topics`' `filter_degraded` and `_assign_visuals`'
+    `style_match_degraded` both settled on: the variable part (a list of asset ids that grows with
+    the plan) is the only thing `fit` may cut, and the fixed sentence explaining what shipped
+    instead can no longer be cut at all. The tag word is printed verbatim so a console line and a
+    `meta.yaml` degradation are greppable by the same string.
+
+    It is NOT in `_credits_exhausted_line`'s `llm_starved` set, deliberately: that set charges
+    creatives to OpenRouter's 402 latch, and an untranslated deck is not an LLM loss of its own —
+    a translate call that actually failed already carries `copy_degraded`, which IS in the set.
+    """
+    hit = sorted(asset_id for asset_id, tags in result.tags.items()
+                 if DegradationTag.COPY_NOT_TRANSLATED in tags)
+    if not hit:
+        return
+    ordinals = ", ".join(asset_id.rsplit("_", 1)[-1] for asset_id in hit)
+    session.log.warn("copy_not_translated",
+                     f"{len(hit)} deck(s) wanted a translation and shipped their source "
+                     f"language: {', '.join(hit)}", assets=hit)
+    session.say(f"  {fit(f'copy_not_translated: {len(hit)} deck(s) -- {ordinals}', 76)}")
+    session.say("  they shipped the post's own language, verbatim (FR-343)")
 
 
 async def _slide_intel(session: _Session, live: Sequence[PlanEntry],
@@ -1882,6 +2027,14 @@ def _provenance_block(entries: Sequence[PlanEntry], records: Mapping[str, AssetR
     provenance claim is unchanged, only the transform is — and points at `meta.yaml`'s `panel_map`,
     where every row carries the source panel beside what shipped.
 
+    **A TRANSLATED deck (D63/FR-343) gets line 2 ahead of either of those, naming the direction.**
+    Its slides are the copy model's translation of that post's panels, so like a compressed deck it
+    quoted nothing and has no exact string to print — but unlike a compressed deck the transform
+    was LANGUAGE, and `compressed` over it would name the wrong one (a translated auto deck did
+    both, and no single word carries that). The row prints `<src>-><platform>` and points at the
+    same `panel_map`, where every row carries the source panel beside what shipped and its own
+    `translated` flag.
+
     **An AUTO deck (D62/FR-353) gets its own line 2, naming the mode.** It quoted the panels that
     fitted its style's budget and compressed only the ones that did not, so neither of the two
     lines above is true of the whole deck: `quoted "…"` would present one row as the receipt for a
@@ -1913,7 +2066,17 @@ def _provenance_block(entries: Sequence[PlanEntry], records: Mapping[str, AssetR
             ordinal = f"P{index + 1}" if index is not None else (label.split(".", 1)[0] or "P?")
             handle = f"@{post.author}" if post is not None and post.author else "-"
             views = _compact(post.views) if post is not None else "-"
-            if record.copy_mode == copywrite.MODE_COMPRESS:
+            if record.copy_language == copywrite.LANGUAGE_TARGET:
+                # D63: the language row WINS over both mode rows, because it is the bigger claim
+                # about the same bytes. A translated deck's slides are not that post's words in
+                # any mode — `compressed` would say the transform was length when it was language,
+                # and a translated auto deck did both, which no single word can carry. The
+                # direction is what makes the row checkable against the source strip in the
+                # gallery, and `panel_map` is where the per-row split is written down.
+                arrow = f"{record.source_language or '??'}->{entry.language}"
+                lines.append(f'       translated {ordinal} {fit(handle, 13)} {views} '
+                             f'{fit(record.copy_source_post_id, 10)} {arrow} -> panel_map')
+            elif record.copy_mode == copywrite.MODE_COMPRESS:
                 lines.append(f'       compressed {ordinal} {fit(handle, 13)} {views} '
                              f'{fit(record.copy_source_post_id, 14)} -> panel_map')
             elif record.copy_mode == copywrite.MODE_AUTO:
@@ -1952,6 +2115,15 @@ async def _screen_topics(session: _Session, trends: Sequence[TrendItem]
         trends[ordinal - 1].history_key: tuple(verdict.brands_to_strip)
         for ordinal, verdict in verdicts.items()
         if verdict.brands_to_strip and 1 <= ordinal <= len(trends)}
+    # FR-343 rung 3 (D63), built from the SAME verdict map one field along. Only a non-empty
+    # reading is recorded — an empty code is the screen saying "I could not tell", and passing it
+    # on would look like an answer to a ladder whose whole contract is "the first non-empty rung
+    # wins". Kept off the console: it is evidence for a decision COPY makes, not a decision this
+    # stage takes, and the FR-296 line here already states the three verdict buckets.
+    session.topic_languages = {
+        trends[ordinal - 1].history_key: topic_filter.language_code(verdict.language)
+        for ordinal, verdict in verdicts.items()
+        if 1 <= ordinal <= len(trends) and topic_filter.language_code(verdict.language)}
     for ordinal, verdict in sorted(verdicts.items()):
         topic = trends[ordinal - 1] if 1 <= ordinal <= len(trends) else None
         session.log.event(
@@ -2145,6 +2317,37 @@ def _stamp_provisional(entries: Sequence[PlanEntry]) -> None:
             entry.trend_key = f"{_PROVISIONAL}{entry.atomic_group or entry.asset_id}"
 
 
+def _post_languages(topics: Sequence[TrendItem]) -> dict[str, str]:
+    """`post_id -> ISO 639-1 code` for every post Virlo told us the language of (D63, rung 1).
+
+    The estimator's sharpener, not the copy stage's: `copywrite` reads `SourcePost.language`
+    itself and only needs the RUNNER to supply rung 2 (the vision pass's deck-level reading, which
+    does not exist yet at this point in the run). Posts Virlo said nothing about are left out
+    entirely rather than mapped to `""` — an empty string here would read as an answer, and the
+    estimator's rule is that an unknown language is still priced for a translate call (D11).
+    """
+    return {str(post.post_id): code
+            for topic in topics for post in getattr(topic, "posts", ())
+            if (code := str(getattr(post, "language", "") or "").strip())}
+
+
+def _target_languages(config: Config) -> str:
+    """The language(s) a translated deck comes out in — `en`, or `en/cs` when platforms differ.
+
+    FR-343 translates to the ENTRY's language, which is its platform's configured one
+    (`config.language_for`), so a run whose platforms are configured differently has more than one
+    target and the launch summary says so rather than picking the first. First-seen order, not
+    sorted: `run.platforms` is the operator's own list and reading their own order back is what
+    makes a typo in it visible.
+    """
+    seen: list[str] = []
+    for name in config.run.platforms:
+        code = str(config.language_for(name) or "").strip()
+        if code and code not in seen:
+            seen.append(code)
+    return "/".join(seen) or "the platform language"
+
+
 def _launch_summary(session: _Session, overrides: Sequence[str]) -> str:
     """FR-77's opening block: what this run is, resolved, before anything can change it.
 
@@ -2203,6 +2406,18 @@ def _launch_summary(session: _Session, overrides: Sequence[str]) -> str:
         *([f"  carousels   copy mode: {config.run.carousel_copy_mode} · cover candidates: "
            f"{config.run.cover_candidates} · "
            + ("anchor chained" if config.run.carousel_anchor else "unchained")]
+          if config.run.formats.get("carousel", 0) else []),
+        # FR-345 (D63): the LANGUAGE dial, on its own line under the carousel line and gated the
+        # same way — translation reaches bound carousel decks and nothing else (FR-343), so on a
+        # plan that makes no deck the setting changes nothing and printing it would be noise. The
+        # target names the PLATFORMS' configured language rather than the mode word alone, because
+        # "target" on its own does not tell an operator which tongue their slides come out in; a
+        # run whose platforms disagree prints all of them (`en/cs`), which is also the shape that
+        # makes a misconfigured platform visible before the money moves.
+        *([f"  language    copy: {config.run.copy_language_mode} · "
+           + (f"bound decks translated to {_target_languages(config)}"
+              if config.run.copy_language_mode == copywrite.LANGUAGE_TARGET
+              else "posts keep their own language")]
           if config.run.formats.get("carousel", 0) else []),
         f"  output      {fit(str(session.run_dir), 64)}",
         # FR-286: an override list grows without bound, so it wraps onto its own indented lines.

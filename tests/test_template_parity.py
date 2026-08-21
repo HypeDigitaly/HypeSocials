@@ -25,7 +25,8 @@ retired templates from every surface and left 8 shipped roles (3 global + 4 gpt-
 since — the W2 transitional carve-outs are gone. The count has since moved with the pipeline, not
 with the rules: +4 for the v2.2.0 gauntlet artifacts, -1 for the retired `vision_check_question.md`
 (D49), +1 for v2.3.0's `copy_compress_system.md` (D54), +1 for v2.4.0's `style_match_system.md`
-(D56) and +1 for v2.6.0's `cover_pick_system.md` (D62), which is **15** today. `SHIPPED_COUNT`
+(D56), +1 for v2.6.0's `cover_pick_system.md` (D62) and +1 for v2.7.0's
+`copy_translate_system.md` (D63), which is **16** today. `SHIPPED_COUNT`
 below is that number, and raising it is how a new role is ADMITTED to every check in this module.
 """
 
@@ -56,14 +57,15 @@ SHIPPED: list[tuple[str, str]] = (
     [("", role) for role in GLOBAL_TEMPLATES if role not in PENDING_TEMPLATES]
     + [(profile, role) for profile, names in PROFILE_TEMPLATES.items() for role in names])
 
-#: The count of roles that ship BYTES today: 10 global — `copywriter_system.md`,
-#: `copy_compress_system.md` (v2.3.0/D54), `topic_filter_system.md`, `style_match_system.md`
+#: The count of roles that ship BYTES today: 11 global — `copywriter_system.md`,
+#: `copy_compress_system.md` (v2.3.0/D54), `copy_translate_system.md` (v2.7.0/D63),
+#: `topic_filter_system.md`, `style_match_system.md`
 #: (v2.4.0/D56), `cover_pick_system.md` (v2.6.0/D62), `slide_intel_question.md` and the gauntlet's
 #: four (`critic_brief.md`, `critic_system.md`, `critic_craft.md`, `gauntlet_fix.md`) — plus 4
 #: gpt-image-2 (the merged `image_post.md` and its three siblings) plus 1 seedance.
 #: `vision_check_question.md` is gone with the FR-105 machinery it asked for (v2.2.0/D49), and
 #: `PENDING_TEMPLATES` is now empty, so this number is every shipped role there is.
-SHIPPED_COUNT = 15
+SHIPPED_COUNT = 16
 
 #: `prompts/humanizer_skill.md` ships in the same folder and is NOT a role: it is the vendored MIT
 #: `SKILL.md` from github.com/blader/humanizer, kept as the reference the compress template's ~14
@@ -119,15 +121,17 @@ def test_every_shipped_role_ships_both_a_file_and_a_built_in_default() -> None:
     one day its file is already broken, and FR-334's fail-open would then be answering for a defect
     it was never meant to cover. `cover_pick_system.md` is the TENTH, added v2.6.0 (D62/FR-352),
     and the same sentence applies to it word for word with `cover_pick`'s FR-351 fail-open in the
-    place of FR-334's.
+    place of FR-334's. `copy_translate_system.md` is the ELEVENTH, added v2.7.0 (D63/FR-344):
+    the copy role's third contract, and a translate twin gone missing would silently route a
+    `target`-mode deck to the FR-183 fallback the day its file broke — exactly FR-181's case.
     """
     assert len(SHIPPED) == SHIPPED_COUNT, \
         "the shipped role set changed — the parity checks below need it"
     assert set(GLOBAL_TEMPLATES) == {"copywriter_system.md", "copy_compress_system.md",
-                                     "topic_filter_system.md", "style_match_system.md",
-                                     "cover_pick_system.md", "slide_intel_question.md",
-                                     "critic_brief.md", "critic_system.md", "critic_craft.md",
-                                     "gauntlet_fix.md"}
+                                     "copy_translate_system.md", "topic_filter_system.md",
+                                     "style_match_system.md", "cover_pick_system.md",
+                                     "slide_intel_question.md", "critic_brief.md",
+                                     "critic_system.md", "critic_craft.md", "gauntlet_fix.md"}
     assert PENDING_TEMPLATES <= set(GLOBAL_TEMPLATES), \
         "a pending name that is not even declared is a typo, not a sequencing carve-out"
     assert "image_post.md" in PROFILE_TEMPLATES["gpt-image-2"]

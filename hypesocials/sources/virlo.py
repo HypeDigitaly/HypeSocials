@@ -76,6 +76,12 @@ from typing import TYPE_CHECKING, Any
 from hypesocials.config import Config
 from hypesocials.mcp_client import MCPClientError, MCPError, ServerConfig, Session, SessionPool
 from hypesocials.models import SourcePost, TrendItem
+# ONE spelling rule for language codes across the whole run (D63): this adapter, the topic screen
+# and the slide-intelligence pass all normalise through the same function, so `"English"` from one
+# rung can never fail to equal `"en"` from another. The edge is one-way and verified: nothing in
+# `topic_filter`'s transitive imports (`config`, `models`, `prompts_engine`) reaches
+# `hypesocials.sources`, so importing it here closes no cycle.
+from hypesocials.topic_filter import language_code
 from hypesocials.util import slugify
 from hypesocials.virlo_mcp import VirloToolError, translate
 
@@ -1113,6 +1119,8 @@ def _source_post(raw: Mapping[str, Any], monitor_id: str, index: int,
     | `panel_count`   | `panel_count`        | how many slides the source deck has               |
     | `image_urls`    | `image_urls`         | those slides' URLs, position-sorted (analysis only) |
     | `intelligence_status` | `intelligence_status` | whether Virlo enriched this row            |
+    | `language`      | `language_detected`  | what tongue the post's own words are in           |
+    | `multilingual`  | `is_multilingual`    | whether it mixes more than one of them            |
     | `views/author/url/published_at` | same names | identity and rank                         |
     | `author_name`   | *(nothing today)*    | the creator's DISPLAY name — see `_author_name`   |
 
@@ -1125,6 +1133,14 @@ def _source_post(raw: Mapping[str, Any], monitor_id: str, index: int,
     Whitespace is stripped at the edges and nowhere else: a string is otherwise stored exactly as
     it arrived, diacritics, emoji, line breaks and all, because a string edited on the way in can
     no longer be quoted verbatim on the way out (D42).
+
+    **`language` is the one field that is NORMALISED, and it is not quotable material.** It is a
+    code about the strings, never one of them, so `topic_filter.language_code` folds Virlo's
+    spelling (`"English"`, `"en-US"`, `"EN"`) into one two-letter code here rather than leaving
+    every reader to re-parse it — the D63 language ladder compares this value against a configured
+    target code, and a comparison that has to know three spellings of English is a bug that only
+    fires on a foreign topic. `""` is the honest answer for a row Virlo did not enrich, and it
+    never drops a post: an unknown language ships verbatim, which is the pre-D63 behaviour.
 
     **Panels keep their POSITIONS (FR-293/FR-304, §0.14a).** This function used to drop empty
     entries out of `panel_texts`; it now pads instead, so slot *i* is source slide *i+1* whether or
@@ -1152,7 +1168,9 @@ def _source_post(raw: Mapping[str, Any], monitor_id: str, index: int,
         is_slideshow=is_slideshow,
         panel_count=int(_num(raw.get("panel_count"))),
         image_urls=[str(url) for url in raw.get("image_urls") or [] if str(url).strip()],
-        intelligence_status=str(raw.get("intelligence_status") or "").strip())
+        intelligence_status=str(raw.get("intelligence_status") or "").strip(),
+        language=language_code(raw.get("language_detected")),
+        multilingual=bool(raw.get("is_multilingual") or False))
 
 
 #: Every key a display name could plausibly arrive under, tried in this order. Virlo exposes NONE

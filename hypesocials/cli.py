@@ -52,6 +52,13 @@ _NOTION = ("off", "copy", "full")
 #: as `choices`, so a misspelled mode dies at the boundary with the same one-liner `config._coerce`
 #: would have printed for the file-side key.
 _COPY_MODES = ("verbatim", "auto", "compress")
+#: FR-345's output-language modes (v2.7.0, D63), engine default first. This is the LANGUAGE axis
+#: beside `_COPY_MODES`' length axis, and the two are orthogonal: a run can compress and translate,
+#: or do either alone. `source` keeps every post's own words in the post's own language; `target`
+#: sends a bound carousel deck whose post is in another language through one translate call to the
+#: platform's configured language. Same `choices` discipline as above — a misspelled mode dies at
+#: the boundary rather than loading clean and running the other mode.
+_COPY_LANGUAGES = ("source", "target")
 
 
 class Action(str, Enum):
@@ -83,6 +90,13 @@ class Options:
     #: `run.carousel_copy_mode` from the file stands — the three shipped brand configs pin `auto`,
     #: and a plain default of `"verbatim"` here would quietly override them on every flagless run.
     copy_mode: str | None = None
+    #: `--copy-language` (v2.7.0, D63/FR-345): `source` | `target` for BOUND carousel decks only.
+    #: `None` = the flag was not passed, so `run.copy_language_mode` from the file stands — the
+    #: three shipped brand configs pin `target`, and a plain default of `"source"` here would
+    #: quietly turn translation off on every flagless run of those configs (the `copy_mode` trap
+    #: above, same shape). Orthogonal to `copy_mode`: one says how LONG the words may be, this one
+    #: says which LANGUAGE they arrive in.
+    copy_language: str | None = None
     #: `--gauntlet` / `--no-gauntlet` (v2.2.0, D49) — the post-render quality gate, replacing the
     #: removed `--vision-check`. THREE states, which is why it is not a plain bool: `None` = neither
     #: flag was passed, so the config file's `run.gauntlet.enabled` stands untouched. The old flag
@@ -126,6 +140,7 @@ def parse_args(argv: Sequence[str] | None = None) -> Options:
         budget_usd=ns.budget,
         notion=ns.notion,
         copy_mode=ns.copy_mode,  # already one of `_COPY_MODES`, or None when the flag was absent
+        copy_language=ns.copy_language,  # one of `_COPY_LANGUAGES`, or None when it was absent
         gauntlet=ns.gauntlet,  # None unless one of the two mutually exclusive flags was passed
         verbose=bool(ns.verbose),
         briefs=tuple(ns.brief or ()),
@@ -169,6 +184,13 @@ def _parser() -> argparse.ArgumentParser:
                              "shortens only the panels over the style's budget and quotes the "
                              "rest, compress shortens every panel to it; both stay in the post's "
                              "own language, and images, reels and override briefs are unaffected")
+    parser.add_argument("--copy-language", dest="copy_language", choices=_COPY_LANGUAGES,
+                        help="which language a bound carousel deck ships in (D63): source keeps "
+                             "the post's own words in the post's own language, target sends a "
+                             "deck whose post is in another language through one translate call "
+                             "to the platform's language and never shortens it; a post already "
+                             "in that language stays word for word either way, and images, reels "
+                             "and override briefs always ship their source language")
     # v2.2.0 (D49): the mirror of the removed `--vision-check`. Two flags into ONE dest so the
     # "not passed" state stays distinguishable from "passed false" — `--no-gauntlet` must be able
     # to turn off a gate the config file turned on, which `store_true` alone could never express.
@@ -305,6 +327,9 @@ def apply_overrides(config: Config, opts: Options) -> list[str]:
     if opts.copy_mode:  # FR-333, flag over file (FR-61) — argparse already checked the word
         config.run.carousel_copy_mode = opts.copy_mode  # type: ignore[assignment]
         applied.append(f"run.carousel_copy_mode={opts.copy_mode}")
+    if opts.copy_language:  # FR-345, flag over file (FR-61) — argparse already checked the word
+        config.run.copy_language_mode = opts.copy_language  # type: ignore[assignment]
+        applied.append(f"run.copy_language_mode={opts.copy_language}")
     if opts.gauntlet is not None:  # `None` = neither flag passed; the file's own value stands
         config.run.gauntlet.enabled = bool(opts.gauntlet)
         applied.append(f"run.gauntlet.enabled={str(bool(opts.gauntlet)).lower()}")

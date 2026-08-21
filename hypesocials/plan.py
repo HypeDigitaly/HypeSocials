@@ -6,13 +6,21 @@ Purpose: turn *config + requested briefs* into an ordered plan of creatives, and
 topics + history* into a ranked shortlist with a verdict per topic, then bind the two together.
 Public API: `select()` · `build_plan()` · `assign()` and their result objects
 (`Selection`/`TrendVerdict`, `Plan`/`BriefRequest`, `Assignment`/`AssignmentDecision`), plus the
-source-deck rules a carousel is bound by — `fresh_source_post()`, `deck_length()` and the
-per-platform ASSIGN floor those two share, `min_panels()`.
+source-deck rules a carousel is bound by — `fresh_source_post()`, `deck_length()`, the
+per-platform ASSIGN floor those two share, `min_panels()`, and FR-345's language screen
+`off_language_post()`.
 
 Invariants:
-- **Pure and instant** (NFR-2): no file, network or clock I/O and no logging — every decision
-  leaves as data so `runner.py` logs it (NFR-5) and `previews.py` prints it at zero model spend
-  (FR-139). History arrives as the dict `outputs.read_history()` returns.
+- **Pure and instant** (NFR-2): no file, network or clock I/O — every decision leaves as data so
+  `runner.py` logs it (NFR-5) and `previews.py` prints it at zero model spend (FR-139). History
+  arrives as the dict `outputs.read_history()` returns. There is NO exception, not even for
+  FR-345's off-language drops: a post this run may not quote leaves as `Assignment.
+  off_language_posts` — the `(post_id, language)` pairs — and `runner._select` is what turns
+  them into the one warning and the one console line the operator reads. A logger call from
+  here would have been swallowed anyway: `__main__._configure_logging` installs a NullHandler,
+  so nothing written through `logging` reaches any operator surface. The pairs are collected
+  where the pool is walked exactly ONCE per `assign()`, not inside the per-topic binder that
+  `_pick` calls repeatedly, so a dropped post is named once rather than once per group.
 - **One entry per creative** (v2.0.0, operator decision #2 — A/B mode withdrawn). Expansion emits
   exactly one `PlanEntry` per requested creative, and one creative is one render. FR-3's
   analyzed/direct duplication — two renders of one idea, tagged and cross-linked so a gallery
@@ -33,22 +41,32 @@ Invariants:
   slideshow post skips with `no_fresh_post_available` rather than being bound to whatever is left:
   post ids are stable, and a repeat is the exact defect D46 exists to end.
 
+Import edge (v2.7.0, D63): this module imports `topic_filter` for `target_languages()` and
+`language_code()` — the SAME two functions the LLM screen decides a topic's language with, so the
+screen at Select and the screen at ASSIGN can never disagree about what this run writes. The edge
+is one-way and measured: `topic_filter`'s own closure is `config · models · prompts_engine ·
+render · styles · util`, none of which import `plan`.
+
 Do not: price anything (`budget.py` owns cost and trimming), read files, or assume reels are
 enabled — an unpriced reel is not planned at all (FR-131).
 """
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from itertools import count
 from typing import Any, Literal
 
+from hypesocials import topic_filter
 from hypesocials.config import Config
 from hypesocials.models import (
     Brief, CreativeFormat, PlanEntry, PlanEntryStatus, SourcePost, TrendItem)
 from hypesocials.outputs import days_since_use, used_posts
 from hypesocials.util import slugify
+
+logger = logging.getLogger(__name__)
 
 #: Canonical format order — the order counts are expanded in, and the order of a brief's slots.
 FORMAT_ORDER: tuple[CreativeFormat, ...] = ("image", "carousel", "reel")
@@ -447,6 +465,15 @@ class Assignment:
     #: counts because a supply figure without its floor is not checkable: "4 fresh post(s) were
     #: bindable" means something different at 2 panels than at 3, and this run may hold both.
     carousel_floor: int = MIN_DECK_SLIDES
+    #: v2.7.0 (D63/FR-345): every candidate source post the language screen refused, as
+    #: `(post_id, language)` pairs, in pool order and without repeats. Only `source` mode ever
+    #: fills it — under `target` the same posts are bound and translated, so the list is empty
+    #: by construction. It exists because a post that quietly leaves the supply pool is the
+    #: invisible defect FR-345 was written for (run `4a0q` bound a German post and nobody could
+    #: see why), and NFR-2 forbids this module from printing or logging the fact itself. The
+    #: language is the NORMALISED code (`language_code`), so the console can list `de, fr`
+    #: rather than whatever spelling Virlo happened to send.
+    off_language_posts: list[tuple[str, str]] = field(default_factory=list)
 
     @property
     def summary_line(self) -> str:
@@ -531,9 +558,10 @@ def assign(entries: Sequence[PlanEntry], selection: Selection, config: Config) -
     # take its first and second unused post rather than quoting the same slides twice.
     burnt: set[str] = set(selection.burnt_posts)
     floor = _supply_floor(entries, config)
+    available, off_language = _carousel_supply(pool, config, burnt, floor)
     result = Assignment(
         usable_trends=len(pool), batch_ceiling=len(pool) * max_reuses, carousel_floor=floor,
-        carousel_posts_available=_carousel_supply(pool, config, burnt, floor))
+        carousel_posts_available=available, off_language_posts=off_language)
 
     for group, members in _groups(entries).items():
         ids = [entry.asset_id for entry in members]
@@ -688,6 +716,39 @@ def min_panels(config: Config, platform: str = "") -> int:
     return max(MIN_DECK_SLIDES, int(config.platform(platform).min_carousel_panels or 0))
 
 
+def off_language_post(post: SourcePost, config: Config) -> bool:
+    """FR-345's bind-time language screen: is this post one a `source`-mode run must not bind?
+
+    True only when ALL of these hold, which is the whole rule:
+
+    - `run.copy_language_mode` is `source`. Under `target` the test is OFF by design — a foreign
+      post is bound on purpose there, and its deck is translated at COPY (FR-343). This is the
+      only eligibility test in this module that reads a run mode at all, and it reads it because
+      the same post is a defect under one mode and the intended material under the other.
+    - the post's language is KNOWN. An empty code means Virlo sent none and nobody has looked yet
+      (the vision pass runs after Confirm), and a guess is not a reason to shrink the pool —
+      fail-open, exactly as the LLM screen's own language check does.
+    - the run writes at least one language, and the post's is not among them. `target_languages`
+      is `topic_filter`'s union of `run.languages` and `run.onimage_text_language`; an empty union
+      is a config that named no language and screens nothing.
+
+    Why this exists at all: under `source` the copy is quoted byte for byte, so a German post
+    inside an otherwise-English topic ships German pixels under an English caption. The FR-294
+    topic screen catches the case where the WHOLE topic is off-language; it cannot catch one
+    foreign post ranked first inside a topic the screen judged English, which is what happened to
+    `Ig_car_claude-ai-for-productivity-and-business_08` in run `20260820_145809_4a0q`.
+
+    The post's own code is re-normalised through `language_code` rather than trusted: the Virlo
+    adapter already normalises it on the way in, but a `SourcePost` also arrives from a preview
+    fixture or a test, and one spelling rule for every rung of the ladder is the point.
+    """
+    if str(config.run.copy_language_mode) != "source":
+        return False
+    language = topic_filter.language_code(post.language)
+    targets = topic_filter.target_languages(config)
+    return bool(language and targets and language not in targets)
+
+
 def fresh_source_post(trend: TrendItem, config: Config,
                       burnt: Collection[str] = frozenset(), *,
                       platform: str = "") -> SourcePost | None:
@@ -698,6 +759,19 @@ def fresh_source_post(trend: TrendItem, config: Config,
     an id that is not burnt (neither in the history window nor already bound in this run), at least
     `min_panels(config, platform)` source panels, and at least that many usable panel slots
     (§0.14a).
+
+    **A FOURTH test since v2.7.0 (D63/FR-345), and the only mode-gated one:** under
+    `run.copy_language_mode: source` a post whose language is known and is not one this run writes
+    is skipped (`off_language_post` above). Under `target` it is bound like any other, because the
+    deck it produces is translated at COPY — the same post is the defect in one mode and the point
+    in the other. This is the fix for the German deck of run `20260820_145809_4a0q`, where the
+    topic screen passed an English-looking topic whose top-ranked post was German and the deck
+    shipped German panels under an English caption.
+
+    The test is applied HERE and not one layer up because the alternatives are worse: screening
+    after `_pick` has chosen would leave the group with no post at all rather than the topic's
+    next-best one, and screening the whole topic is FR-294's job at Select, where the decision is
+    about a topic's own strings rather than about one ranked post inside it.
 
     `platform` is the DESTINATION of the creative being bound (v2.2.0): the floor is per-platform
     now, so the same post can be bindable for Instagram and not for LinkedIn. Omitting it screens
@@ -718,6 +792,8 @@ def fresh_source_post(trend: TrendItem, config: Config,
             continue
         if usable_panel_slots(post, config) < floor:
             continue
+        if off_language_post(post, config):  # FR-345, `source` mode only — silent here, and
+            continue  # collected once per post by `_carousel_supply`, which walks the pool once
         return post
     return None
 
@@ -747,7 +823,8 @@ def deck_length(post: SourcePost, config: Config, platform: str) -> int:
 
 
 def _carousel_supply(pool: Sequence[TrendItem], config: Config, burnt: Collection[str],
-                     floor: int = MIN_DECK_SLIDES) -> int:
+                     floor: int = MIN_DECK_SLIDES,
+                     ) -> tuple[int, list[tuple[str, str]]]:
     """Distinct unused source posts the run's carousels could reach — FR-307's supply numerator.
 
     Counted over the SLIDESHOW half of the pool only, because affinity is a hard constraint for
@@ -759,9 +836,26 @@ def _carousel_supply(pool: Sequence[TrendItem], config: Config, burnt: Collectio
     could this run have made" is the count some carousel in it could still bind: counting against
     the strictest floor would understate the supply a TikTok deck can reach, and counting against
     no floor at all would report posts nothing in the plan may bind.
+
+    FR-345's language screen applies here too, and it must: this count is the numerator of the
+    famine message, so counting a post `fresh_source_post` will refuse to bind would make that
+    message argue against the skip it is explaining. It is also the ONE walk that sees every
+    candidate post exactly once per `assign()`, which is why the dropped posts are collected here
+    rather than in the binder — `_pick` calls the binder once per topic per creative group, and
+    the same German post would otherwise be reported nine times on a nine-deck plan.
+
+    Returns BOTH numbers a caller needs, because they come from the same walk and separating them
+    would mean walking twice with two chances to disagree: the count itself, and the
+    `(post_id, language)` pairs the screen refused. The pairs leave as DATA on `Assignment`
+    (NFR-2) — `runner._select` writes the warning and the console line, since a `logging` call
+    from here reaches nobody (`__main__._configure_logging` installs a NullHandler and no console
+    handler at all). Order is pool order and each post id appears at most once, so the console
+    line is stable between two runs of the same plan.
     """
     used = set(burnt)
     available: set[str] = set()
+    off_language: list[tuple[str, str]] = []
+    seen_off: set[str] = set()
     for trend in pool:
         if not trend.is_slideshow:
             continue
@@ -770,8 +864,14 @@ def _carousel_supply(pool: Sequence[TrendItem], config: Config, burnt: Collectio
             if (post_id and post_id not in used and post_id not in available
                     and source_panel_count(post) >= floor
                     and usable_panel_slots(post, config) >= floor):
+                if off_language_post(post, config):
+                    if post_id not in seen_off:
+                        seen_off.add(post_id)
+                        off_language.append(
+                            (post_id, topic_filter.language_code(post.language)))
+                    continue
                 available.add(post_id)
-    return len(available)
+    return len(available), off_language
 
 
 def _supply_floor(entries: Sequence[PlanEntry], config: Config) -> int:
@@ -828,6 +928,6 @@ def _pick(pool: Sequence[TrendItem], rank: Mapping[str, int], uses: Mapping[str,
 __all__ = [
     "Assignment", "AssignmentDecision", "BriefRequest", "FORMAT_ORDER", "MIN_DECK_SLIDES",
     "NO_FRESH_POST_AVAILABLE", "PENDING_TREND_SLUG", "Plan", "Selection", "TrendVerdict", "assign",
-    "build_plan", "deck_length", "fresh_source_post", "min_panels", "select", "source_panel_count",
-    "usable_panel_slots",
+    "build_plan", "deck_length", "fresh_source_post", "min_panels", "off_language_post", "select",
+    "source_panel_count", "usable_panel_slots",
 ]

@@ -101,6 +101,14 @@ _COPY_MODES = {"1": "verbatim", "verbatim": "verbatim",
 _COPY_MODE_NOTES = {"verbatim": "panels render as the post wrote them",
                     "auto": "only panels over the style budget shortened",
                     "compress": "panels shortened to the style budget"}
+#: FR-345's LANGUAGE axis in one clause each, for the confirm notice's second copy line (D63).
+#: `<lang>` is filled with this run's configured platform language(s) — the line has to name the
+#: language the decks come out in, because "translated" alone leaves the operator guessing which
+#: way the arrow points, and a `cs` config translating English posts into Czech is the case this
+#: whole mode exists for. There is NO wizard step behind these words (config + CLI only, NFR-16),
+#: so the confirm screen is the only place a run states its output language before money moves.
+_COPY_LANGUAGE_NOTES = {"source": "posts keep their own language",
+                        "target": "bound decks translated to <lang>"}
 _PREFERRED_CONFIGS = ("hypedigitaly", "default")  # shipped picker default (30 §2 §Niche packs)
 _BRIEF_SUFFIXES = (".yaml", ".yml", ".md", ".txt")
 _RATING_PROMPT = ("Fidelity of this batch to its trends? "
@@ -335,6 +343,14 @@ def _say_confirm_ahead(io: Console, config: Config, steps: Sequence[str]) -> Non
     shortened rewrite of them, and it is the one answer above that changes what the slides SAY
     rather than how many there are. `--quick` reaches this notice too, having asked nothing — so
     for that path this line is the only place the mode is stated before the price.
+
+    FR-345's copy-LANGUAGE line (v2.7.0, D63) sits directly under it, on the same carousel
+    condition and for a stronger version of the same reason: the language mode has NO wizard step
+    at all (config + `--copy-language` only — six steps stay six, NFR-16), so unlike the mode above
+    it, this screen is the only question-free surface that states it before the Confirm gate. It
+    names the target language rather than only the mode word, because "target" without a code does
+    not tell an operator whether their Czech config is about to translate English decks into Czech
+    or the other way round.
     """
     minutes = "5-8 minutes" if config.run.formats.get("reel", 0) else "about 3 minutes"
     branding = config.branding
@@ -348,7 +364,26 @@ def _say_confirm_ahead(io: Console, config: Config, steps: Sequence[str]) -> Non
         mode = config.run.carousel_copy_mode
         facts.append(_fit(f"carousel copy mode: {mode} - {_COPY_MODE_NOTES[mode]}",
                           _FACTS_WIDTH))
+        language = config.run.copy_language_mode
+        note = _COPY_LANGUAGE_NOTES[language].replace("<lang>", _target_language(config))
+        facts.append(_fit(f"copy language: {language} - {note}", _FACTS_WIDTH))
     _step(io, steps, "confirm", *facts)
+
+
+def _target_language(config: Config) -> str:
+    """The language code(s) a translated deck would come out in, for the confirm line (FR-345).
+
+    `run.languages` is per platform and a run may span three of them, so the honest answer is the
+    ORDERED, deduplicated set of what those platforms are configured for — `en` on the usual run,
+    `en/cs` on a mixed one. The platform order is the config's own (`run.platforms`), not sorted,
+    because the operator reads this line against the list they wrote two keys higher up.
+
+    Empty `run.platforms` cannot happen in a loaded config (`_validate` refuses it), but the
+    fallback is `en` rather than an empty string all the same: a confirm line reading "translated
+    to " with nothing after it would be the one place this screen looked broken.
+    """
+    codes = list(dict.fromkeys(config.language_for(name) for name in config.run.platforms))
+    return "/".join(code for code in codes if code) or "en"
 
 
 def _pick_config(io: Console, opts: cli.Options, steps: Sequence[str],

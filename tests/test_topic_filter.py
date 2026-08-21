@@ -463,3 +463,95 @@ def test_the_template_names_only_placeholders_this_role_may_resolve_and_no_one_e
     holders = {role for role in prompts_engine._ALLOWLIST
                if allowed & prompts_engine.allowlist(role)}
     assert holders == {"topic_filter_system.md"}
+
+
+# ---- D63 ------------------------ FR-345: the LANG skip is mode-gated, the reading never is
+
+
+async def test_fr345_an_off_language_topic_is_skipped_under_source_and_kept_under_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The sentence this module's docstring used to end on — "there is no translation path and
+    there must not be one" — stopped being true on 2026-08-21, and this is the test that says so.
+
+    Under `source` nothing downstream can change a word: the copy is quoted byte for byte, so a
+    German topic ships German pixels under an English caption and dropping it before any spend is
+    the whole answer. That behaviour is unchanged and is still what every default run gets.
+
+    Under `target` a bound carousel deck from that topic is TRANSLATED at COPY (FR-343), so the
+    skip would be throwing away material the run can now use — usually the strongest material,
+    since a topic surfaces on views rather than on language. The screen therefore lets it in and
+    hands the decision to the bind screen and the translate path.
+    """
+    cfg = _config()
+    row = {**_verdict(1), "language": "de"}
+
+    _answers(monkeypatch, row)
+    kept_source = await topic_filter.screen([_topic("t1")], cfg, Answer())
+
+    assert cfg.run.copy_language_mode == "source", "the engine default, not set by this test"
+    assert kept_source[1].verdict == "skip"
+    assert kept_source[1].skip_code == topic_filter.SKIP_LANGUAGE
+    assert "off-language" in kept_source[1].reason and "de" in kept_source[1].reason
+
+    translating = _config()
+    translating.run.copy_language_mode = "target"
+    _answers(monkeypatch, row)
+    let_in = await topic_filter.screen([_topic("t1")], translating, Answer())
+
+    assert let_in[1].verdict == "keep", "FR-345: under target the topic is bound and translated"
+    assert let_in[1].skip_code == ""
+
+
+async def test_fr345_the_language_is_read_and_recorded_under_both_modes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A mode decides what the run DOES about a language, never what it KNOWS.
+
+    The code is printed on the console, lands in the funnel report and is the first rung of the
+    copy stage's language ladder, so a `target` run that recorded nothing would go into COPY
+    blind and have to pay the vision pass to re-learn what the screen already read for free.
+    Flipping the mode between two runs must change one thing only: the verdict.
+    """
+    cfg = _config()
+    cfg.run.copy_language_mode = "target"
+    _answers(monkeypatch, {**_verdict(1), "language": "Deutsch"},
+             {**_verdict(2), "language": "en-GB"})
+
+    verdicts = await topic_filter.screen([_topic("t1"), _topic("t2")], cfg, Answer())
+
+    assert [verdicts[1].language, verdicts[2].language] == ["de", "en"]
+    assert [verdicts[1].verdict, verdicts[2].verdict] == ["keep", "keep"]
+
+    # The audience half is NOT mode-gated, and must not be: translating a topic written for the
+    # wrong people produces a well-worded creative for the wrong people.
+    _answers(monkeypatch, {**_verdict(1), "language": "de", "audience_fit": False})
+    unfit = await topic_filter.screen([_topic("t1")], cfg, Answer())
+
+    assert unfit[1].verdict == "skip" and unfit[1].skip_code == topic_filter.SKIP_AUDIENCE
+    assert unfit[1].language == "de", "still read, still recorded, skipped for another reason"
+
+
+def test_fr345_the_alias_table_names_a_source_language_instead_of_guessing_two_letters() -> None:
+    """D63 made this code load-bearing, so the table had to grow past what the run WRITES.
+
+    Until D63 the only consumer was the skip, and `"German"` folding to `"ge"` was defensible:
+    `ge` is not ISO 639-1 anything, but it differs from every target code, which is all the skip
+    needed. Now the same function normalises `SourcePost.language` and the vision pass's deck-level
+    reading, both of which ride into the translate call and are printed to the operator as the
+    source language — and `ge` there is simply wrong.
+
+    So the table carries the languages a source post is likely to be IN, in English and in their
+    own name. The two-letter fallback survives for everything it has never heard of, and every
+    honest "I could not tell" still fails open.
+    """
+    for spelling, code in (("German", "de"), ("deutsch", "de"), ("DE", "de"),
+                           ("French", "fr"), ("français", "fr"), ("Español", "es"),
+                           ("italian", "it"), ("Português", "pt"), ("polski", "pl"),
+                           ("Nederlands", "nl"), ("slovenčina", "sk"), ("čeština", "cs"),
+                           ("English", "en"), ("en-US", "en")):
+        assert topic_filter.language_code(spelling) == code, spelling
+
+    assert topic_filter.language_code("Klingon") == "kl", "the fallback is still a fallback"
+    for nothing in ("", "unknown", "mixed", None, "n/a"):
+        assert topic_filter.language_code(nothing) == "", "fail open, as it always did"

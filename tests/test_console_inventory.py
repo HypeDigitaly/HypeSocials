@@ -60,12 +60,13 @@ from typing import Any
 
 import pytest
 
-from hypesocials import (cli, copywrite, generate, preflight, previews, render, runner,
+from hypesocials import (cli, copywrite, generate, plan, preflight, previews, render, runner,
                          style_match, styles, topic_filter)
 from hypesocials.config import Config
-from hypesocials.models import (AssetRecord, CopySet, MetaStyle, PlanEntry, PlanEntryStatus,
-                                RenderFailCause, RenderOutcome, RenderOutcomeKind, RenderPriority,
-                                SourcePost, TrendItem, VisionCheckResult)
+from hypesocials.models import (AssetRecord, CopySet, DegradationTag, MetaStyle, PlanEntry,
+                                PlanEntryStatus, RenderFailCause, RenderOutcome,
+                                RenderOutcomeKind, RenderPriority, SourcePost, TrendItem,
+                                VisionCheckResult)
 from hypesocials.util import Deadline, Pulse, Stopwatch
 
 #: FR-286's ceiling, read off the runner so a widened console cannot silently pass this file.
@@ -185,9 +186,10 @@ def entry(order: int, *, fmt: str = "image", trend: TrendItem | None = None, reu
 
 def record(item: PlanEntry, source: TrendItem | None = None, *, cost: float = 0.041,
            quoted: SourcePost | None = None, refs: dict[str, str] | None = None,
-           copy_mode: str = "verbatim") -> AssetRecord:
+           copy_mode: str = "verbatim", copy_language: str = "source",
+           source_language: str = "") -> AssetRecord:
     return AssetRecord(
-        copy_mode=copy_mode,
+        copy_mode=copy_mode, copy_language=copy_language, source_language=source_language,
         asset_id=item.asset_id, source=item.trend_key or "", platform="linkedin",
         source_name=source.name if source is not None else "", creative_format=item.creative_format,
         style_key=item.style_key, branded=item.branded, actual_cost_usd=cost,
@@ -1283,27 +1285,47 @@ class CompressedCopy:
     verbatim mapped deck, and a line claiming "compressed" over it would hide the degradation.
     """
 
-    def __init__(self, modes: Sequence[str]) -> None:
+    def __init__(self, modes: Sequence[str], languages: Sequence[str] = (),
+                 not_translated: Sequence[int] = ()) -> None:
         self.modes = list(modes)
+        # D63: the LANGUAGE receipt is a second axis on the SAME provenance, and the tag is a
+        # third fact that can disagree with both — a deck that wanted a translation and did not
+        # get one ships `copy_language: source` AND `copy_not_translated`, which is exactly the
+        # combination the console has to keep telling apart.
+        self.languages = list(languages)
+        self.not_translated = set(not_translated)
 
     async def __call__(self, entries: Sequence[PlanEntry], **kwargs: Any) -> copywrite.CopyResult:
         result = copywrite.CopyResult()
         for index, item in enumerate(entries):
             mode = self.modes[index] if index < len(self.modes) else "verbatim"
+            language = (self.languages[index] if index < len(self.languages)
+                        else copywrite.LANGUAGE_SOURCE)
             result.copy[item.asset_id] = CopySet(asset_id=item.asset_id, language="en")
-            result.provenance[item.asset_id] = copywrite.CopyProvenance(post_id="p1",
-                                                                        copy_mode=mode)
+            result.provenance[item.asset_id] = copywrite.CopyProvenance(
+                post_id="p1", copy_mode=mode, copy_language=language,
+                source_language="de" if language == copywrite.LANGUAGE_TARGET else "")
+            if index in self.not_translated:
+                result.tags[item.asset_id] = (DegradationTag.COPY_NOT_TRANSLATED,)
         return result
 
 
-async def copy_stage(modes: Sequence[str], monkeypatch: pytest.MonkeyPatch) -> None:
-    """Run the real COPY stage over a canned result, so the printed line is the production one."""
-    live = session(stages=["COPY"])
+async def copy_stage(modes: Sequence[str], monkeypatch: pytest.MonkeyPatch, *,
+                     languages: Sequence[str] = (), not_translated: Sequence[int] = (),
+                     stages: list[str] | None = None) -> runner._Session:
+    """Run the real COPY stage over a canned result, so the printed line is the production one.
+
+    Returns the session so a caller can read `log.warnings` — the D63 `copy_not_translated` block
+    is a console line AND a `run.log` warning, and the pair is the contract.
+    """
+    live = session(stages=stages or ["COPY"])
     live.llm = object()  # `_metered` needs a client; the wrapped call is never invoked here
     item = topic("AI agents do the work")
     entries = [entry(index, fmt="carousel", trend=item) for index in range(len(modes))]
-    monkeypatch.setattr(copywrite, "write_copy", CompressedCopy(modes))
+    monkeypatch.setattr(copywrite, "write_copy",
+                        CompressedCopy(modes, languages, not_translated))
     await runner._write(live, entries, {item.history_key: item}, {})
+    return live
 
 
 async def test_fr296_the_copy_stage_line_names_the_contract_the_words_shipped_under(
@@ -2228,3 +2250,344 @@ def test_fr290_the_launch_block_style_count_is_the_ENABLED_aware_usable_pool() -
     assert f"{brand_only} usable here" not in line, \
         "the brand-only count is the pre-D56 bug: it promises styles this config cannot wear"
     assert "registry v3 · " in line and "sha abcdef01" in line
+
+
+# ------------------------------------------- FR-343/FR-345/FR-346 (v2.7.0, D63): output language
+#
+# Four console surfaces gain a LANGUAGE fact, and every one of them already carried a LENGTH fact
+# (D54's compress, D62's auto) in the same slot. The tests below are written as pairs for exactly
+# that reason: the language answer must be added WITHOUT rewriting the length answer, and the two
+# must stay legible when a deck did both — a translated deck under copy mode auto was translated
+# first and then compressed, and no single word carries that.
+#
+# The fourth surface, `copy_not_translated`, is the only LOUD one: it says a translation was
+# wanted and did not happen, which on a `--yes` run is the last chance the operator has to stop
+# a batch that is about to render nine decks in the wrong language for their platform.
+
+
+async def test_fr346_the_copy_stage_line_counts_the_decks_that_changed_language(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The COPY closing line, on the language axis (FR-346).
+
+    Counted off the per-asset PROVENANCE like every other clause on this line, never off
+    `run.copy_language_mode`: the two disagree exactly where it matters — a target-mode run whose
+    translate call failed shipped the source language, and a line claiming "2 translated" over it
+    would deny the loss the `copy_not_translated` block below is shouting about.
+    """
+    await copy_stage(["verbatim", "verbatim"], monkeypatch, languages=["target", "target"])
+    translated = printed(capsys)
+
+    await copy_stage(["verbatim", "verbatim"], monkeypatch, languages=["target", "source"])
+    one_of_two = printed(capsys)
+
+    for lines in (translated, one_of_two):
+        console_safe("\n".join(lines))
+        assert lines[0].startswith("[1/1] COPY"), "the opening line is untouched by the language"
+    assert "1 call(s) -> 2 creative(s), 2 translated" in translated[1]
+    assert "1 call(s) -> 2 creative(s), 1 translated" in one_of_two[1], "counted, never assumed"
+    assert "quoted verbatim" not in translated[1], \
+        "a translated deck did not quote its post's words, whatever its copy_mode says"
+
+
+async def test_fr346_a_deck_that_translated_and_compressed_says_both_inside_53_columns(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The one shape that cannot carry the `N call(s) -> N creative(s)` head, measured.
+
+    `_stage` gives this body 53 columns on the full ten-stage list, and the head is 26 of them at
+    single-digit counts with each clause costing 14 — 54 characters of text into 53 columns, and
+    `fit` would eat the word `translated` whole. So the head goes: the call count is already on
+    this stage's OPENING line, two lines above on the same screen, and the translated count is
+    printed nowhere else. Run through the REAL ten-stage list rather than a one-stage test list,
+    because the one-stage list is much wider and would not catch it.
+
+    The 53 is COPY's own number and is re-derived here rather than restated: `_stage` computes
+    `59 - len(tag)` and COPY's tag on that list is `[7/10]`, six characters. DONE's is `[10/10]`,
+    seven, so the narrowest body anywhere on a ten-stage run is 52 — but no stage borrows another
+    stage's width, and reading 52 off the wrong tag is how this comment got questioned once
+    already. The assertion below measures the rendered line instead of trusting either number.
+    """
+    stages = list(runner._STAGE_ORDER)
+    tag = f"[{stages.index('COPY') + 1}/{len(stages)}]"
+    assert 59 - len(tag) == 53, "`_stage`'s own arithmetic, re-derived — COPY's tag is [7/10]"
+    await copy_stage(["auto", "compress"], monkeypatch, languages=["target", "target"],
+                     stages=stages)
+    lines = printed(capsys)
+
+    console_safe("\n".join(lines))
+    closing = lines[1]
+    assert closing.startswith(f"{tag} COPY")
+    assert len(closing) == 78, "the header spends its full width — 53 of it on this body"
+    assert "2 creative(s), 2 compressed, 2 translated" in closing
+    assert "…" not in closing, "the whole sentence fits — nothing was cut to make room"
+    assert "call(s) ->" not in closing, "the head is what goes; the opening line already said it"
+    assert "auto-compressed" not in closing and "(2 auto)" not in closing, \
+        "the auto qualifier goes with the head — the panel map records the per-row split"
+
+
+async def test_fr346_the_four_length_only_shapes_are_byte_identical_under_source_mode(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The regression half: with nothing translated, D54's and D62's four sentences are untouched.
+
+    Every one of them is a branch of one if/elif chain that D63 inserted two arms in FRONT of, and
+    an arm inserted in front of a chain is exactly how the arm below it stops being reachable.
+    """
+    shapes = {
+        ("verbatim", "verbatim"): "1 call(s) -> 2 creative(s) quoted verbatim",
+        ("compress", "compress"): "1 call(s) -> 2 creative(s), 2 compressed",
+        ("auto", "auto"): "1 call(s) -> 2 creative(s), 2 auto-compressed",
+        ("auto", "compress"): "1 call(s) -> 2 creative(s), 2 compressed (1 auto)",
+    }
+    for modes, expected in shapes.items():
+        await copy_stage(list(modes), monkeypatch)
+        lines = printed(capsys)
+        console_safe("\n".join(lines))
+        assert expected in lines[1], modes
+        assert "translated" not in lines[1], "a source-mode run says nothing about language"
+
+
+async def test_fr343_copy_not_translated_is_loud_on_the_console_like_copy_degraded(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A wanted translation that did not happen is news, and news at COPY time is actionable.
+
+    The words on those slides are legitimate — they are the post's own panels, verbatim — but they
+    are in the wrong language for the platform they are about to be published on, and on a `--yes`
+    run this block is the only place it is said before the money moves. Two lines, the shape
+    `filter_degraded` and `style_match_degraded` both settled on: the variable list is the only
+    thing `fit` may cut, and the fixed sentence explaining what shipped instead cannot be cut at
+    all. The tag word is printed verbatim so console and `meta.yaml` are greppable alike.
+    """
+    live = await copy_stage(["verbatim"] * 3, monkeypatch, not_translated=[0, 2])
+    lines = printed(capsys)
+
+    console_safe("\n".join(lines))
+    assert lines[2] == "  copy_not_translated: 2 deck(s) -- 01, 03"
+    assert lines[3] == "  they shipped the post's own language, verbatim (FR-343)"
+    codes = [code for code, _ in live.log.warnings]
+    assert codes == ["copy_not_translated"], "one warning for the run, not one per deck"
+    assert "20260812_141207_k3xz_topic_01" in live.log.warnings[0][1], \
+        "run.log gets the FULL asset ids — the console shows ordinals for 78 columns"
+
+
+async def test_fr343_a_clean_run_prints_no_copy_not_translated_block_at_all(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D45: no heading without rows. A run where every wanted translation happened — and every
+    `source`-mode run, which wanted none — says nothing, because a "0 decks untranslated" line
+    trains an operator to skim exactly the block that will one day say 9."""
+    live = await copy_stage(["verbatim", "verbatim"], monkeypatch, languages=["target", "target"])
+    lines = printed(capsys)
+
+    assert len(lines) == 2, lines
+    assert not any("copy_not_translated" in line for line in lines)
+    assert live.log.warnings == []
+
+
+def test_fr343_copy_not_translated_is_not_in_the_credits_exhausted_starved_set() -> None:
+    """It is NOT an LLM loss, and FR-248's latch must not adopt it.
+
+    `_credits_exhausted_line` charges creatives to OpenRouter's 402 — every asset it names gets a
+    `skip_reason` stamped and drops off a clean exit 0. An untranslated deck rendered fine and cost
+    what it was quoted; the translate call that ACTUALLY failed already carries `copy_degraded`,
+    which is in the set. Adding the sibling there would charge a deliberate decision (a deck on a
+    degrade path, a language the ladder could not name) to a 402 that never happened.
+    """
+    source = inspect.getsource(runner._credits_exhausted_line)
+
+    assert "COPY_DEGRADED" in source, "the fixture is not failing — the set is still here"
+    assert "COPY_NOT_TRANSLATED" not in source
+
+
+def test_fr345_the_launch_summary_states_the_language_dial_before_anything_is_spent() -> None:
+    """FR-345's launch-summary line: which language this run's decks come out in.
+
+    It names the PLATFORMS' configured language and not the mode word alone, because "target" on
+    its own does not tell an operator which tongue their slides will be in — and a run whose
+    platforms disagree prints all of them, which is also the shape that makes a misconfigured
+    platform visible before the money moves.
+    """
+    config = Config()
+    config.run.formats = {"image": 0, "carousel": 2, "reel": 0}
+    live = session(config=config)
+
+    source_mode = runner._launch_summary(live, [])
+    config.run.copy_language_mode = "target"
+    target_mode = runner._launch_summary(live, [])
+    config.run.languages = dict(config.run.languages) | {"instagram": "cs"}
+    two_languages = runner._launch_summary(live, [])
+
+    for block in (source_mode, target_mode, two_languages):
+        console_safe(block)
+    assert "  language    copy: source · posts keep their own language" in source_mode
+    assert "  language    copy: target · bound decks translated to en" in target_mode
+    assert "bound decks translated to en/cs" in two_languages, \
+        "one line per run, every target it has — a first-seen order the operator can recognise"
+
+
+def test_fr345_a_plan_with_no_carousel_prints_no_language_line() -> None:
+    """Translation reaches bound carousel decks and nothing else (FR-343), so on a plan that makes
+    no deck the dial changes nothing and printing it would be noise — the same gate the FR-333
+    `carousels` line directly above it already has."""
+    config = Config()
+    config.run.formats = {"image": 3, "carousel": 0, "reel": 0}
+    config.run.copy_language_mode = "target"
+
+    block = runner._launch_summary(session(config=config), [])
+
+    console_safe(block)
+    assert "  language" not in block and "  carousels" not in block
+
+
+def test_fr346_the_provenance_row_of_a_translated_deck_names_the_direction() -> None:
+    """FR-297c's second line, on the language axis — and it WINS over both mode rows.
+
+    A translated deck quoted nothing (the walk clears every `ref_label`: a label pointing at bytes
+    we did not ship would be a false receipt), so the verbatim receipt cannot print. `compressed`
+    or `auto` would name the wrong transform — this deck's slides are that post's panels in another
+    language, and the deck below did both. The direction is what makes the row checkable against
+    the source strip in the gallery, and `panel_map` is where the per-row split is written down.
+    """
+    item = topic("AI agents do the work", strength=1.0)
+    deck = entry(0, fmt="carousel", trend=item, style="anime-noir-statement")
+    deck.status = PlanEntryStatus.SUCCESS
+    records = {deck.asset_id: record(deck, item, cost=0.180, quoted=item.posts[0], refs={},
+                                     copy_mode="auto", copy_language="target",
+                                     source_language="de")}
+    copy = {deck.asset_id: CopySet(asset_id=deck.asset_id, language="en",
+                                   slide_texts=["Ship it, then measure."])}
+
+    block = runner._provenance_block([deck], records, {item.history_key: item}, copy)
+
+    console_safe(block)
+    receipt = block.splitlines()[3].strip()
+    assert receipt.startswith("translated P1 @creator0 ")
+    assert " de->en " in receipt, "source language to the platform's, on the row itself"
+    assert item.posts[0].post_id in receipt, "the post is still named — the claim is unchanged"
+    assert receipt.endswith("-> panel_map"), "where the operator reads both sides of each row"
+    assert '"' not in receipt, "there is no quoted string to show, so none is invented"
+    assert "auto" not in receipt and "compressed" not in receipt
+
+
+def test_fr346_a_translated_deck_with_no_known_source_language_still_prints_a_row() -> None:
+    """`??` rather than a blank or a guess. The ladder answers `""` only where Virlo said nothing
+    and the vision pass read nothing, which is a shape `_translate_wanted` refuses — but a record
+    resurrected from an older run, or a hand-edited `meta.yaml`, can still arrive here, and a row
+    that silently dropped the arrow would read as a verbatim receipt with a missing quote."""
+    item = topic("AI agents do the work", strength=1.0)
+    deck = entry(0, fmt="carousel", trend=item)
+    deck.status = PlanEntryStatus.SUCCESS
+    records = {deck.asset_id: record(deck, item, quoted=item.posts[0], refs={},
+                                     copy_language="target")}
+
+    block = runner._provenance_block([deck], records, {item.history_key: item}, {})
+
+    console_safe(block)
+    assert " ??->en " in block.splitlines()[3]
+
+
+def test_fr346_the_preview_copy_header_and_rows_say_which_deck_changed_language() -> None:
+    """`--preview-analysis` is the CHEAPEST review of a translation: it costs the copy calls and
+    nothing else, and reading the translated slides there is what tells the operator whether the
+    words are worth rendering. So the header counts the decks that changed language and each row
+    says `translated … from de` — wider than `_ROW_LABEL`, on the separator guarantee `compressed`
+    bought in D54. A `source`-mode run reaches neither and prints its old two lines byte for byte.
+    """
+    item = topic("AI agents do the work")
+    deck = entry(0, fmt="carousel", trend=item)
+    image = entry(1, trend=item)
+    result = copywrite.CopyResult()
+    for plan_entry in (deck, image):
+        result.copy[plan_entry.asset_id] = CopySet(
+            asset_id=plan_entry.asset_id, language="en", caption="A caption.")
+    result.provenance[deck.asset_id] = copywrite.CopyProvenance(
+        post_id="p1", copy_language=copywrite.LANGUAGE_TARGET, source_language="de")
+    result.provenance[image.asset_id] = copywrite.CopyProvenance(post_id="p1")
+
+    block = previews._copy_block(result, [deck, image])
+
+    console_safe(block)
+    assert block.splitlines()[0] == "Copy — 2 creative(s), 1 deck(s) translated"
+    assert "  into the platform's language and never shortened (FR-343); the rest" in block
+    assert "  quoted verbatim in the post's own language, nothing rendered (FR-140)" in block
+    rows = [line for line in block.splitlines() if line.strip().startswith("translated")]
+    assert len(rows) == 1 and rows[0].strip() == "translated p1 from de"
+    assert "      quoted   p1" in block, "the image beside it still says `quoted`, unchanged"
+
+
+def test_fr346_a_preview_of_a_translated_and_compressed_deck_states_both_transforms() -> None:
+    """Under copy mode auto a translated deck was translated first and then fitted to its style's
+    budget, so the header carries a clause for each: one question is what language the words are
+    in, the other is how long they are, and answering only the second is how D54's sentence would
+    quietly claim a compressed deck is in the post's own language."""
+    item = topic("AI agents do the work")
+    deck = entry(0, fmt="carousel", trend=item)
+    result = copywrite.CopyResult()
+    result.copy[deck.asset_id] = CopySet(asset_id=deck.asset_id, language="en")
+    result.provenance[deck.asset_id] = copywrite.CopyProvenance(
+        post_id="p1", copy_mode=copywrite.MODE_AUTO,
+        copy_language=copywrite.LANGUAGE_TARGET, source_language="de")
+
+    block = previews._copy_block(result, [deck])
+
+    console_safe(block)
+    assert block.splitlines()[0] == "Copy — 1 creative(s), 1 deck(s) translated"
+    assert "  1 deck(s) were then fitted to the style's slide budget (FR-331/FR-353)" in block
+    assert [line for line in block.splitlines() if line.strip().startswith("auto")] == [], \
+        "the row says `translated`: the bigger claim about the same bytes wins"
+def test_fr345_the_bind_skip_says_on_the_console_which_posts_the_language_screen_refused(
+) -> None:
+    """FR-345's off-language receipt, and the reason it is a LINE rather than a logger call.
+
+    `plan.off_language_post` drops a candidate source post whose known language this run does not
+    write. That is right under `source` mode — the panels ship byte for byte, so a German post
+    inside an English topic would put German pixels under an English caption — but a post that
+    silently leaves the supply pool is the invisible defect FR-345 was written for. Run `4a0q`
+    bound one and nobody could see why.
+
+    The fact used to be a `logger.warning` inside `plan`, which reached NOBODY:
+    `__main__._configure_logging` installs a NullHandler and no console handler at all, so the
+    line was written and thrown away on every run. It is data on `plan.Assignment` now, and this
+    stage is what says it. The mode key is named because it is the cure: flipping
+    `run.copy_language_mode` to `target` binds those same posts and translates their decks.
+    """
+    empty = runner._off_language_line(plan.Assignment())
+    one = runner._off_language_line(plan.Assignment(off_language_posts=[("post-de", "de")]))
+    two = runner._off_language_line(plan.Assignment(
+        off_language_posts=[("post-de", "de"), ("post-fr", "fr"), ("post-de2", "de")]))
+
+    assert empty == "", "a run that refused nothing prints nothing — no `0 post(s)` furniture"
+    console_safe(one)
+    console_safe(two)
+    assert one == "  off-language  1 post(s) skipped (de) - copy_language_mode: source"
+    assert two == "  off-language  3 post(s) skipped (de, fr) - copy_language_mode: source", \
+        "posts are counted, languages are listed distinct and sorted"
+
+
+def test_fr286_the_off_language_line_cuts_the_codes_and_never_the_config_key() -> None:
+    """The one unbounded token on the line is the language list, so it is the only thing `fit`
+    may eat. Whatever it cuts, the count at the front and `copy_language_mode: source` at the
+    back survive — the first says how much supply was lost and the second says how to get it
+    back, and a line that lost either would be worse than no line."""
+    crowded = runner._off_language_line(plan.Assignment(off_language_posts=[
+        (f"post-{code}", code) for code in
+        ("de", "fr", "es", "it", "pt", "nl", "pl", "sv", "da", "fi", "cs", "hu")]))
+
+    console_safe(crowded)
+    assert crowded.startswith("  off-language  12 post(s) skipped (")
+    assert crowded.endswith(" - copy_language_mode: source")
+
+
+def test_fr345_the_select_stage_is_what_writes_the_warning_and_the_line() -> None:
+    """The wire-in, pinned where the two halves meet. `plan` returns the pairs and prints nothing
+    (NFR-2); SELECT is the stage that owns what the operator reads, so it writes both the
+    `plan_off_language_posts` warning into `run.log` and the console line above FR-307's supply
+    arithmetic — when both fire, the language screen is the CAUSE of the shortage the famine line
+    is about to report, and a cause reads better above its effect."""
+    source = inspect.getsource(runner._select)
+
+    assert "off_language_posts" in source and "plan_off_language_posts" in source
+    assert source.index("_off_language_line") < source.index("fresh_post_line"), \
+        "the cause is said before the effect it produced"

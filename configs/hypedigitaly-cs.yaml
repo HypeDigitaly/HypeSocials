@@ -46,9 +46,15 @@ run:
   # With the English-only monitor configured below, this file therefore ships ENGLISH strings
   # inside a Czech-audience plan. `cs` still fully governs the FREE-TEXT creatives - override
   # briefs and the post-less degrade path - which are the only copy still written rather than
-  # quoted, so briefs from niches/hypedigitaly/briefs/ do come out Czech here. To get Czech
-  # topic-driven creatives, point sources.virlo_monitor_ids at a monitor that collects Czech posts
-  # (the old "CZ coverage probe" was the only one, and it is frozen - see the note there).
+  # quoted, so briefs from niches/hypedigitaly/briefs/ do come out Czech here.
+  # D63 (2026-08-21, FR-345) partly LIFTS the paragraph above, and only for BOUND CAROUSEL DECKS:
+  # with `copy_language_mode: target` pinned below, a deck whose source post is in another language
+  # is translated into the `cs` named here by one copy call before it renders, so `cs` does again
+  # commission Czech words on those slides. Everything else in that paragraph still holds - a post
+  # already in Czech is quoted byte for byte, and images, reels and the post-less degrade path are
+  # untouched by translation. Pointing sources.virlo_monitor_ids at a Czech-collecting monitor is
+  # now about the SOURCES being Czech, not about the output being Czech (the old "CZ coverage
+  # probe" was the only such monitor, and it is frozen - see the note there).
   languages: { linkedin: cs, instagram: cs, tiktok: cs }
   # D54 (2026-08-20) had the decks this config ships COMPRESS their source panels instead of
   # quoting them whole; D58 (operator decision, the SAME day) WITHDREW that pin and this config is
@@ -84,6 +90,14 @@ run:
   # frame would actually overflow. `--copy-mode verbatim` / `--copy-mode compress` still override
   # it for one run.
   carousel_copy_mode: auto
+  # D63 (2026-08-21, FR-345): this is the key that finally makes the `cs` above reach the DECKS. The
+  # monitor below collects English posts, so under `source` every bound deck ships English text in a
+  # Czech language slot; `target` sends each bound deck through one translate call into `cs`, never
+  # shortened. Scope is BOUND CAROUSEL DECKS only (FR-343). Override briefs and the post-less
+  # degrade path are still written Czech by the copy model as before; a bound image or a bound
+  # reel quotes its own post's words, so it ships in whatever language that post is in (§1.7.5 -
+  # the engine never rewrites a quote), and pre-flight says so before the money gate.
+  copy_language_mode: target
   # D62 (2026-08-21, FR-351): three identical cover renders per chained deck, one vision pick
   # (style contract -> legibility at thumbnail size -> stopping power); the winner is the anchor,
   # all three are kept under <asset>/covers/. About +$0.10 renders and +$0.08 vision per deck at
@@ -123,10 +137,14 @@ sources:
   # trade-off here before changing this file: the dropped "CZ coverage probe" was the ONLY Virlo
   # source with english_only: false, so this config reads ENGLISH-language posts. That was already
   # a compromise - the probe was a one-shot frozen at 2026-08-06 and would only have gone staler -
-  # but D42 sharpened it: the copy is now quoted verbatim from those posts instead of rewritten, so
-  # what ships is English text under a Czech language slot (see `languages` above). Point this key
-  # at a Czech-collecting monitor when you want Czech creatives; nothing else in this file can
-  # produce them.
+  # but D42 sharpened it: the copy is now quoted verbatim from those posts instead of rewritten.
+  # D63 (2026-08-21, FR-345) is what answers that. With `run.copy_language_mode: target` pinned
+  # above, a BOUND carousel deck sourced from these English posts is TRANSLATED into Czech by one
+  # copy call before it renders, so Czech decks no longer wait on a Czech monitor. What this key
+  # still decides is the MATERIAL: the topics, the panels and the facts are whatever this monitor
+  # collects, and everything outside a bound deck (images, reels, override briefs) is unaffected by
+  # the translation. Point this key at a Czech-collecting monitor when you want Czech SOURCES -
+  # the same trends read from Czech creators - rather than Czech words.
   virlo_monitor_ids:
     - "9c96fddf-dc35-4be0-bbd9-12f4d22aea12"   # AI Trends Tracker - weekly, english_only: true
   # How many TOPICS this one monitor may contribute (FR-293/FR-170, 30 §2 Sources). Post-pivot
@@ -153,7 +171,13 @@ sources:
   # After the Confirm gate, download the assigned carousel source posts' slides and have the
   # analysis model transcribe their on-image text and describe their visuals (FR-306), so our
   # slides reproduce the CONTENT in our own style. The transcription is VERBATIM and keeps the
-  # source language, so this does not turn an English deck Czech - see `languages` above.
+  # source language: this pass READS the source, it never rewrites it, so what it hands on is
+  # English words. Turning the deck Czech is a separate, later step and a different key -
+  # `run.copy_language_mode: target` above (D63/FR-345), which translates the bound deck's text
+  # after this transcription and before the slides render. What this pass contributes to that is
+  # the words themselves: a panel Virlo shipped empty has nothing to translate until it is read
+  # here (FR-306), and it also supplies the deck-level language reading the translate step falls
+  # back on when Virlo sent no language at all.
   vision_transcribe: true
 
 # Style selection (v2.1.2/FR-314/D-E): which of the authored meta-styles this config's runs may

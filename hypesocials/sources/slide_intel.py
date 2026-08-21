@@ -13,7 +13,9 @@ Public API:
     detect_counter(chrome_lines, panel_texts, panel_count) -> CounterSpec | None  ·  CounterSpec
     RULE_DENOMINATOR / RULE_POSITIONAL / RULE_LEADING_OFFSET / RULE_CONSTANT_OFFSET — the four
         accept-rule names `CounterSpec.rule` carries into `meta.yaml.counter` (FR-313, D59)
-    counter_line(text) -> bool — is that line ONLY a page counter (chrome, not copy)?
+    counter_line(text, *, position=0) -> bool — is that line ONLY a page counter (chrome, not
+        copy)? `position` is the panel's own 1-based ordinal and unlocks the BARE numeral shape
+        (FR-313, v2.7.0/D63): a line reading just `01` is a counter only on slide 1.
     STATUS_OK / STATUS_UNAVAILABLE / STATUS_DISABLED
     TEXT_SOURCE_VIRLO / TEXT_SOURCE_VISION / TEXT_SOURCE_NONE
 
@@ -106,6 +108,13 @@ from hypesocials.sources.mark_names import collapse, mark_name
 # becomes `from hypesocials.outputs import store_source, write_source_yaml` (guidelines §3a/§18).
 from hypesocials.outputs import packager
 from hypesocials.prompts_engine import PromptEngine
+# The language normaliser is BORROWED, never re-implemented (guidelines §2, "one thing, one
+# place"). The topic screen already turns a model's language answer — "English", "en-US", "EN",
+# "unknown" — into one two-letter code, and the copy stage's language ladder compares this
+# module's reading against that same vocabulary. Two alias tables would eventually disagree, and
+# the symptom would be a deck that translates when it should not. One-way edge, like every other
+# import here: `topic_filter` knows nothing about `sources`.
+from hypesocials.topic_filter import language_code
 
 logger = logging.getLogger(__name__)
 
@@ -242,8 +251,29 @@ _SLIDE: dict[str, Any] = {
 }
 _SCHEMA: dict[str, Any] = {
     "name": "slide_intelligence",
-    "schema": {"type": "object", "properties": {"slides": {"type": "array", "items": _SLIDE}},
-               "required": ["slides"], "additionalProperties": False},
+    "schema": {
+        "type": "object",
+        "properties": {
+            "slides": {"type": "array", "items": _SLIDE},
+            # v2.7.0/D63 — ONE deck-level reading of what language the slides' words are written
+            # in, as a two-letter ISO 639-1 code. Deck-level and not per slide because that is the
+            # question the copy stage asks (`copywrite._source_language`'s second rung): a source
+            # post is written in a language, and a per-slide answer would only invite the model to
+            # call an English product name on slide 4 a language change. It is FREE — the vision
+            # pass is already reading every word on every slide, so this adds a field to an answer
+            # rather than a call, which is exactly why D63 chose it over a detection call
+            # (plan §0: "No new LLM call for language detection").
+            #
+            # `""` is a legal, expected answer: a wordless deck has no language, and a model that
+            # cannot tell must say so rather than guess. Strict mode requires every declared
+            # property to be listed in `required`, so the key is REQUIRED of the model and OPTIONAL
+            # of the parser — an older cached payload that predates this key reads as `""`, never
+            # as a failed read (§0.14c).
+            "language": {"type": "string"},
+        },
+        "required": ["slides", "language"],
+        "additionalProperties": False,
+    },
 }
 
 
@@ -340,6 +370,19 @@ class SlideIntel:
     #: (FR-306 amendment). Deck-level rather than per-slide because the cap is per deck and because
     #: the same mark usually recurs on every panel — FR-315 crops it once and the patch is reused.
     mark_boxes: list[MarkBox] = field(default_factory=list)
+    #: v2.7.0/D63 — what language this deck's WORDS are in, as a two-letter ISO 639-1 code
+    #: (`"de"`, `"cs"`, `"en"`), normalised through `topic_filter`'s shared alias table so that
+    #: `"English"`, `"en-US"` and `"EN"` are one value (see `_language` for what that table does
+    #: and does not know). `""` means "not known" and is the honest, common answer: a wordless deck
+    #: has no language, a model that cannot tell says so, and the vision pass may not have run at
+    #: all.
+    #:
+    #: Deck-level, one reading, no extra call — it rides on the FR-306 answer the run already pays
+    #: for. It is the SECOND rung of the copy stage's language ladder (SESSION N §2): Virlo's own
+    #: `SourcePost.language` is asked first because it is free and arrives before any spend, and
+    #: this fills the gap when Virlo sent nothing. Nothing here decides whether a deck translates
+    #: — `copywrite._translate_wanted` owns that, and this field is only ever an input to it.
+    language: str = ""
     status: str = STATUS_OK
     reason: str = ""  # why it is not `ok`; operator-facing, never a secret (D30)
     folder: str = ""  # `source/<post_id>` relative to the run folder — the gallery's href root
@@ -403,6 +446,14 @@ _COUNTER_TOKEN = re.compile(
 #: The other convention a slideshow counts with: a prefix on the panel's own words, `// 01`.
 #: It names no total, so only the position rule below can ever accept it.
 _PREFIX_TOKEN = re.compile(r"^\s*(//+\s*)(\d{1,3})(?!\d)")
+#: The THIRD convention, added v2.7.0/D63 after run `…_j867` shipped an uncounted deck: a line of
+#: the panel's own words that is NOTHING BUT a 1–2 digit numeral. Every one of that deck's seven
+#: panels read `"Jason AI\nby Reply\n01\nPersonal Assistant\n…"` — the creator typeset the page
+#: number as its own row inside the panel, with no `//` marker and no total, so neither of the two
+#: scanners above could see it and `counter.detected` came back `false` on a visibly numbered deck.
+#: Two digits, not three: a bare `100` on a slide is a statistic far more often than a page number,
+#: and this shape has no separator, no marker and no denominator to make it look like anything.
+_BARE_TOKEN = re.compile(r"^\s*(\d{1,2})\s*$")
 #: Sanity fence on both numbers. A counter counts a deck, and a deck is not 400 panels long; a
 #: bigger number in a chrome line is a price, a year, a view count or a statistic.
 _MAX_COUNT = 99
@@ -424,7 +475,39 @@ RULE_LEADING_OFFSET = "leading_offset"
 RULE_CONSTANT_OFFSET = "constant_offset"
 
 
-def counter_line(text: str) -> bool:
+def bare_numeral_position(text: str) -> int:
+    """The number this line would be a bare counter FOR, or `0` when it is not that shape at all.
+
+    `counter_line`'s bare-numeral test, split out so a caller can ask the question WITHOUT already
+    knowing the answer. `counter_line(line, position=n)` asks "is this line chrome for slide n";
+    this asks "which slide would this line be chrome for", and the difference matters at exactly
+    one call site: `copywrite._offer_for` has to survey a whole deck for the bare shape BEFORE it
+    decides whether to strip any of it, because one lone numeral is not evidence of a counting
+    convention and two are (FR-313 rule 2's corroboration, mirrored at admission).
+
+    Same shape and same fence as the scanner: after `strip()` the line must be a 1–2 digit numeral
+    and nothing else. Zero padding is the source's hand and reads through (`01` answers 1), a
+    third digit is out of the shape (`001` and `100` answer 0 — a bare three-digit number on a
+    slide is a statistic), and `0`/`00` answer 0 too, which is both the honest reading of "there
+    is no page zero" and, conveniently, the same value this function uses for "not that shape".
+    No caller can be misled by the collision: a position is 1-based, so 0 never matches one.
+
+    Args:
+        text: one line of a source panel, as transcribed. Leading and trailing whitespace is
+            ignored; anything else on the line — a word, a marker, a separator, a total — makes
+            this not the bare shape and answers 0.
+
+    Returns:
+        The numeral's value (1–99) when the line is nothing but that numeral, else 0.
+    """
+    bare = _BARE_TOKEN.fullmatch(str(text or "").strip())
+    if bare is None:
+        return 0
+    number = int(bare.group(1))
+    return number if 1 <= number <= _MAX_COUNT else 0
+
+
+def counter_line(text: str, *, position: int = 0) -> bool:
     """Is this line NOTHING BUT a page counter — the source deck's chrome rather than its words?
 
     The admission-time half of the counter story (F2, Session 5.5). `detect_counter` below reads
@@ -445,9 +528,23 @@ def counter_line(text: str) -> bool:
     same `number <= total` rule the candidate scanners use — which is why `24/7` on a slide of its
     own is a slogan and survives.
 
+    **The third shape needs the caller to say where it is (FR-313, v2.7.0/D63).** A line that is
+    only a numeral — `01` on its own row, no marker, no separator, no total — carries no evidence
+    of its own that it is chrome: a `5` on a slide can be the whole point of the slide. The one
+    thing that can corroborate it is the slide it sits on, so this shape is accepted ONLY when the
+    caller passes the panel's own 1-based ordinal and the numeral equals it. `01` on slide 1 is the
+    creator's page number; `01` on slide 4 is content, and `07` on slide 1 is content too. Zero
+    padding is the source's hand and is ignored by the comparison (`01` and `1` both read as 1),
+    but a THIRD digit is out of the shape altogether — `001` and `100` are not this. Leaving
+    `position` at its default `0` switches the shape off entirely, which is what every caller that
+    does not know where the line came from should do.
+
     Args:
         text: one line of a source panel. Position in the strip chain does not matter: no strip
             layer edits digits, so the verdict is the same before and after.
+        position: the 1-based SOURCE panel position this line was transcribed from — what
+            `copywrite._strip_counter_lines` forwards from `_offer_for`'s panel ordinal. `0` (the
+            default) means "unknown", and an unknown position can never admit a bare numeral.
 
     Returns:
         True when the entire line is a counter and may be dropped at admission; False for
@@ -461,8 +558,16 @@ def counter_line(text: str) -> bool:
     if paired is not None:
         return 1 <= int(paired.group(1)) <= int(paired.group(3)) <= _MAX_COUNT
     prefix = _PREFIX_TOKEN.match(line)
-    return (prefix is not None and prefix.end() == len(line)
-            and 1 <= int(prefix.group(2)) <= _MAX_COUNT)
+    if prefix is not None and prefix.end() == len(line):
+        return 1 <= int(prefix.group(2)) <= _MAX_COUNT
+    if position < 1:
+        return False
+    # ONE reading of the bare shape, shared with `bare_numeral_position` above, so the deck-wide
+    # survey `copywrite._offer_for` runs and the strip it then decides on can never disagree about
+    # what "a lone numeral" is. No `_MAX_COUNT` fence and no "there is no page zero" test are
+    # restated here, and neither is missing: the helper answers 0 for both, and a position is
+    # 1-based, so the comparison below rejects them without a check that could never fail.
+    return bare_numeral_position(line) == position
 
 
 @dataclass(frozen=True, slots=True)
@@ -525,9 +630,10 @@ def detect_counter(
         chrome_lines: per SOURCE slide position (index 0 is slide 1), that slide's creator-chrome
             lines as transcribed by `SourceSlide.chrome_text` — where a page counter lives, since
             the vision question splits chrome away from the slide's words on purpose.
-        panel_texts: per slide position, the slide's own words — scanned only for the prefix
-            convention (`// 01 THE HOOK`), which is typeset as part of the copy rather than as
-            chrome.
+        panel_texts: per slide position, the slide's own words — scanned for the two conventions
+            a creator typesets INTO the copy rather than as chrome: the prefix form
+            (`// 01 THE HOOK`) and, since v2.7.0/D63, the bare numeral on a line of its own
+            (`"Jason AI\\nby Reply\\n01\\nPersonal Assistant"`).
         panel_count: the SOURCE deck's length, which is the denominator a real counter agrees
             with.
 
@@ -539,7 +645,8 @@ def detect_counter(
         1. Some slide's denominator equals `panel_count` — `3/6` on a six-panel deck. The deck's
            own length, written on it: the strongest evidence there is.
         2. At least two slides carry their own position as the numerator (`01`, `02`, …). One
-           slide alone proves nothing, which is why the rule counts to two.
+           slide alone proves nothing, which is why the rule counts to two. **This is the only
+           rule a BARE numeral line may take part in** (v2.7.0/D63) — see the asymmetry below.
         3. **Unnumbered leading slides.** A cover that carries no badge shifts every later one by
            a constant `k ≥ 1`: `1/ 6` on panel 2 … `6/ 6` on panel 7 of a SEVEN-panel deck. Accept
            when the offset `position − number` is the same on every numbered candidate AND the
@@ -551,6 +658,16 @@ def detect_counter(
            system whose denominator we cannot check (the source truncated, or the badge names no
            total). Weaker than rule 3, so it is last, and one candidate disagreeing kills it.
 
+        **The bare-numeral asymmetry (v2.7.0/D63).** A standalone numeral line is admitted as
+        evidence for rule 2 and for NOTHING ELSE. Rules 1, 3 and 4 see exactly the candidates they
+        saw before this shape existed. The reason is that the other three rules all reason about
+        arithmetic between numbers that were never claimed to be counters: rule 4 in particular
+        accepts a CONSTANT OFFSET, and two content numerals that happen to sit two apart ("3" on
+        slide 5's price row, "4" on slide 6's) would manufacture one out of nothing and print a
+        page number on every slide of a paid deck. Rule 2 is the only test where the slide itself
+        corroborates the number — the numeral has to BE its own position — which is precisely the
+        evidence a bare token is missing on its own.
+
         Everything else is rejected by construction — `24/7` (a numerator above its denominator,
         and a denominator that is not the deck), `12/08/2026` (a run of numbers, not a pair),
         `16:9`, prices, view counts. The cost of a false positive is a badge printed on every slide
@@ -558,7 +675,11 @@ def detect_counter(
         badge and is told so explicitly. The second is cheap, so the tie still goes to `None`.
     """
     found = [*_chrome_candidates(chrome_lines), *_prefix_candidates(panel_texts)]
-    if not found:
+    # Kept in its own list, never merged into `found`: everything below that is not rule 2 must
+    # keep seeing the pre-D63 candidate set, and one shared list would make that impossible to
+    # hold — the asymmetry is the whole safety argument for admitting this shape at all.
+    bare = _bare_candidates(panel_texts)
+    if not found and not bare:
         return None
     if panel_count > 0:
         for candidate in found:
@@ -567,8 +688,10 @@ def detect_counter(
                 return replace(candidate.spec, rule=RULE_DENOMINATOR)
     # Second rule: the same badge on ≥2 slides, each stating the place it actually sits in. One
     # slide alone proves nothing — `1/2` in a caption, `5 of 7` inside a statistic — so a single
-    # positional hit is dropped rather than believed.
-    positional = [item for item in found if item.number == item.position]
+    # positional hit is dropped rather than believed. This is the ONE rule bare numerals join
+    # (D63): "the number equals the slide it is on, twice over" is evidence a stray content
+    # numeral cannot fake, and it is the only such test in the four.
+    positional = [item for item in (*found, *bare) if item.number == item.position]
     if len({item.position for item in positional}) >= 2:
         return replace(positional[0].spec, rule=RULE_POSITIONAL)
     # Third rule (D48): the badges agree with each other but start late. `numbered` only, because
@@ -646,6 +769,57 @@ def _prefix_candidates(panel_texts: Sequence[str]) -> list[_Candidate]:
             position=position, number=int(match.group(2)),
             spec=CounterSpec(pad=_pad(match.group(2)), prefix=match.group(1),
                              numerator_only=True)))
+    return out
+
+
+def _bare_candidates(panel_texts: Sequence[str]) -> list[_Candidate]:
+    """Standalone numeral LINES inside the panels' own words — `01` on a row of its own (D63).
+
+    The third counting convention, and by a distance the WEAKEST shape of the three. A paired
+    token (`3/6`) names a total that can be checked against the deck's length; a prefix token
+    (`// 01`) carries a marker whose only job in typography is to mean "this is a label". A bare
+    numeral carries neither. Standing alone it is indistinguishable from content: a slide whose
+    whole message is `5` (a countdown, a rank, a score, a price row in a comparison table) writes
+    exactly the same bytes as a page number.
+
+    So this scanner produces candidates and no confidence. `detect_counter` admits them to RULE 2
+    ONLY — `number == position` on at least two distinct slides — because that is the one accept
+    rule where the slide corroborates the number instead of the numbers corroborating each other.
+    Rules 1, 3 and 4 never see this list: rule 4 would happily turn two unrelated content numerals
+    into a "constant offset" and print a page badge on every frame of a paid deck.
+
+    The shape is not hypothetical. Run `20260820_234620_j867` bound a seven-panel deck whose every
+    panel read `"Jason AI\\nby Reply\\n01\\nPersonal Assistant\\n…"` through `07`, and `meta.yaml`
+    recorded `counter.detected: false` — the creator had numbered the deck as plainly as a deck can
+    be numbered, on its own line, and neither of the two older scanners could see it.
+
+    Args:
+        panel_texts: per slide position, that slide's merged on-image words. Split on newlines,
+            because the numeral is a LINE of the panel, not a prefix of it.
+
+    Returns:
+        One `_Candidate` per qualifying line, in slide order, with `total` left at its `-1`
+        "no denominator was written" default and a `numerator_only` spec carrying the source's own
+        zero-padding — so a deck that wrote `01` gets `01` back, and a deck that wrote `1` gets
+        `1`. A slide carrying two bare numerals contributes two candidates; only one of them can
+        equal the position, and the other simply never matches.
+    """
+    out: list[_Candidate] = []
+    for position, text in enumerate(panel_texts, start=1):
+        for line in str(text or "").splitlines():
+            match = _BARE_TOKEN.fullmatch(line)
+            if match is None:
+                continue
+            digits = match.group(1)
+            number = int(digits)
+            # The same fence the other two scanners apply, restated rather than assumed: `\d{1,2}`
+            # cannot exceed `_MAX_COUNT` today, but `00` and `0` can still get this far and there
+            # is no page zero.
+            if not 1 <= number <= _MAX_COUNT:
+                continue
+            out.append(_Candidate(
+                position=position, number=number,
+                spec=CounterSpec(pad=_pad(digits), numerator_only=True)))
     return out
 
 
@@ -864,6 +1038,10 @@ def _apply(intel: SlideIntel, parsed: Mapping[str, Any], positions: Sequence[int
     """Merge the model's answers onto the slides, by POSITION, and count what never came back."""
     answered: set[int] = set()
     boxes: list[MarkBox] = []
+    # Deck-level and read before the per-slide walk, because it is not per-slide data and must not
+    # depend on any row parsing successfully: a deck whose slide rows all came back malformed still
+    # told us what language it is in, and that reading is what the copy stage's ladder asks for.
+    intel.language = _language(parsed.get("language"))
     for slot, row in _answers(parsed, positions):
         slide = intel.slide(slot)
         if slide is None:
@@ -1005,6 +1183,14 @@ def _payload(intel: SlideIntel, post: SourcePost, cfg: Config | None) -> dict[st
             "model_id": cfg.models.analysis if cfg is not None else "",
             "status": intel.status,
             "reason": intel.reason,
+            # v2.7.0/D63 — the deck-level language reading, recorded as VISION provenance because
+            # that is what it is: a thing this call read, not a fact Virlo sent. It belongs on the
+            # record for the same reason `status` does — when a deck ships in the wrong language,
+            # the first question is what the pipeline thought the source language was, and the
+            # answer should not need a re-run. No new `events.jsonl` type is emitted for it: the
+            # FR-80 event vocabulary is PRD-governed, and the runner (not this module) owns the
+            # INTEL stage's console and event lines.
+            "language": intel.language,
         },
     }
 
@@ -1050,6 +1236,43 @@ def _iso(value: Any) -> str | None:
         return value.isoformat()
     text = str(value or "").strip()
     return text or None
+
+
+def _language(value: Any) -> str:
+    """The deck's language answer as a two-letter code, or `""` — never a raise (D63).
+
+    One line of real work and a paragraph of reasons. The work is `topic_filter`'s shared
+    normaliser: `"English"`, `"en-US"` and `"EN"` all become `en`, and `"unknown"`, `"mixed"`,
+    `"none"` and a missing key all become `""`.
+
+    **What it does with language NAMES.** The alias table was widened in D63 and now covers the
+    languages this product actually meets in Virlo's feeds as well as the two it writes in — `en`
+    and `cs` (D6) plus `de`, `fr`, `es`, `it`, `pt`, `pl`, `nl` and `sk`, each in its English
+    name, its native name, its ISO 639-2 codes and its unaccented spellings. So a model that
+    answers `"German"`, `"Deutsch"` or `"ger"` instead of `"de"` gets `de`, and the translate
+    prompt names the language exactly rather than approximately.
+
+    Outside that table the borrowed helper still falls back to the answer's first two letters, and
+    that fallback is deliberate rather than a gap: an unrecognised language only has to DIFFER
+    from every target code to mean "off-language", and two letters of anything does. The question
+    template asks for the code, so a compliant answer never reaches the fallback at all; when one
+    does — an unlisted language, a whole sentence — the deck is still correctly treated as foreign
+    and only the code printed in the translate prompt is approximate.
+
+    The reasons for borrowing at all:
+
+    - **Borrowed, not re-implemented.** The topic screen already owns the alias table, and the
+      copy stage compares this reading against codes that came out of it. Two tables that drift
+      apart would show up as a deck translating when it should have shipped verbatim.
+    - **Fail-open, like everything in this module (§0.14c).** `None`, a number, a whole sentence
+      and a missing key are all "no answer", and no answer is a legal outcome that costs the deck
+      nothing: the copy stage's ladder simply falls through to `""` = unknown, which ships the
+      source's own words verbatim and says so.
+
+    A one-line wrapper rather than a bare call at the parse site, because the paragraphs above are
+    the whole reason this field can be trusted, and they have to live somewhere a reader lands.
+    """
+    return language_code(value)
 
 
 def _marks(value: Any) -> list[str]:
@@ -1182,6 +1405,6 @@ __all__ = [
     "MARK_KINDS", "MARK_KIND_TOOL", "QUESTION_TEMPLATE", "RULE_CONSTANT_OFFSET",
     "RULE_DENOMINATOR", "RULE_LEADING_OFFSET", "RULE_POSITIONAL", "SLIDE_INTEL_ROLE",
     "STATUS_DISABLED", "STATUS_OK", "STATUS_UNAVAILABLE", "TEXT_SOURCE_NONE", "TEXT_SOURCE_VIRLO",
-    "TEXT_SOURCE_VISION", "CounterSpec", "MarkBox", "SlideIntel", "SourceSlide", "counter_line",
-    "detect_counter", "enrich",
+    "TEXT_SOURCE_VISION", "CounterSpec", "MarkBox", "SlideIntel", "SourceSlide",
+    "bare_numeral_position", "counter_line", "detect_counter", "enrich",
 ]

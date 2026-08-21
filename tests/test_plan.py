@@ -26,13 +26,16 @@ Pure logic, so every test is sync: no event loop, no I/O, no fixtures beyond sma
 
 from __future__ import annotations
 
+import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
 from hypesocials.config import Config, PlatformConfig, RunConfig
 from hypesocials.models import Brief, PlanEntry, PlanEntryStatus, SourcePost, TrendItem
 from hypesocials.plan import (
     MIN_DECK_SLIDES, NO_FRESH_POST_AVAILABLE, BriefRequest, assign, build_plan, deck_length,
-    fresh_source_post, select, source_panel_count, usable_panel_slots)
+    fresh_source_post, off_language_post, select, source_panel_count, usable_panel_slots)
 
 # --------------------------------------------------------------------------- builders
 
@@ -875,3 +878,225 @@ def test_assign_with_no_eligible_topics_drops_every_topic_dependent_entry() -> N
     assert result.usable_trends == 0 and result.batch_ceiling == 0
     assert [e.status for e in plan.entries] == [PlanEntryStatus.PENDING, PlanEntryStatus.SKIPPED]
     assert len(result.dropped) == 1  # the brief-only creative still stands (10 §10 carve-out)
+
+
+# ---- D63 --------------------- FR-345: the bind-time language screen, and the mode that gates it
+
+
+def _spoken(post: SourcePost, language: str) -> SourcePost:
+    """The same source post with Virlo's `intelligence.language_detected` reading attached."""
+    post.language = language
+    return post
+
+
+def test_fr345_a_foreign_post_is_unbindable_under_source_and_the_pick_falls_to_the_next_one(
+) -> None:
+    """The German-deck defect of run `20260820_145809_4a0q`, made unrepeatable.
+
+    That run bound `Ig_car_claude-ai-for-productivity-and-business_08` to a German post inside a
+    topic the FR-294 screen had judged English, and shipped German panels under an English caption
+    — because under `source` mode the copy is quoted byte for byte and nothing downstream can
+    change a word of it. The topic screen could not have caught it: it grades a TOPIC's own
+    strings, and one foreign post ranked first inside an otherwise-English topic is invisible to
+    it. So the screen belongs where the post is chosen.
+
+    The fallback is the point, not the skip: the topic keeps its other posts, and the binder takes
+    the next view-ranked one that this run can actually quote.
+    """
+    cfg = _config()
+    foreign = _spoken(_deck("post-de", panels=5, views=9000), "de")
+    ours = _spoken(_deck("post-en", panels=4, views=1000), "en")
+    topic = _deck_topic("ai-tools", foreign, ours)
+
+    assert cfg.run.copy_language_mode == "source", "the engine default, not set by this test"
+    assert off_language_post(foreign, cfg) is True
+    assert off_language_post(ours, cfg) is False
+    assert fresh_source_post(topic, cfg) is ours, \
+        "the higher-viewed post is refused and the pick falls through, it does not skip the topic"
+
+
+def test_fr345_target_mode_turns_the_screen_off_and_the_foreign_post_wins_its_rank_back(
+) -> None:
+    """Under `target` the same post is the intended material, not a defect.
+
+    A bound deck is translated at COPY (FR-343), so a German post produces an English deck and its
+    view rank is worth having — it is usually the reason the topic surfaced at all. This is the
+    only eligibility test in the module that reads a run mode, and it reads one because the
+    identical post is unusable under one value and first choice under the other.
+    """
+    cfg = _config(copy_language_mode="target")
+    foreign = _spoken(_deck("post-de", panels=5, views=9000), "de")
+    ours = _spoken(_deck("post-en", panels=4, views=1000), "en")
+
+    assert off_language_post(foreign, cfg) is False
+    assert fresh_source_post(_deck_topic("ai-tools", foreign, ours), cfg) is foreign
+    # The other three tests are untouched by the mode — a one-panel post is still not a deck.
+    thin = _spoken(_deck("post-thin", panels=1), "de")
+    assert fresh_source_post(_deck_topic("thin", thin), cfg) is None
+
+
+def test_fr345_a_post_with_no_language_reading_is_bound_under_both_modes() -> None:
+    """Fail-open, exactly like the LLM screen's own language check.
+
+    An empty code means Virlo sent no `language_detected` and the vision pass has not run yet — it
+    runs after the Confirm gate, and this decision is made before it. A guess is not a reason to
+    shrink the pool: the honest posture is to bind the post, and let COPY warn
+    (`translate_language_unknown`) and ship its words verbatim if nobody ever learns the language.
+
+    A run that configured no language at all screens nothing either, for the same reason: an empty
+    target set is a config that never said what it writes, not a config that writes nothing.
+    """
+    silent = _spoken(_deck("post-quiet", panels=4), "")
+    for mode in ("source", "target"):
+        cfg = _config(copy_language_mode=mode)
+        assert off_language_post(silent, cfg) is False
+        assert fresh_source_post(_deck_topic("quiet", silent), cfg) is silent
+
+    nowhere = _config(languages={})
+    nowhere.run.onimage_text_language = {}
+    assert off_language_post(_spoken(_deck("post-de", panels=4), "de"), nowhere) is False
+
+
+def test_fr345_the_language_is_normalised_and_the_onimage_slot_counts_as_a_target() -> None:
+    """Two details that decide real runs, pinned so neither drifts.
+
+    The code is re-normalised through `topic_filter.language_code` rather than trusted: the Virlo
+    adapter normalises on the way in, but a `SourcePost` also arrives from a preview fixture or a
+    test, and one spelling rule for every rung of the ladder is the whole point of that function
+    being public. `"German"` is `de` — the alias table beats the first-two-letters fallback that
+    used to answer `ge`.
+
+    And the target set is `run.languages` UNION `run.onimage_text_language` (whatever
+    `topic_filter.target_languages` says), so a config that writes English captions over Czech
+    on-image text can bind a Czech post. Two answers to "what does this run write" is exactly how
+    a topic gets skipped at Select and an off-language post bound at ASSIGN.
+    """
+    cfg = _config()
+    assert off_language_post(_spoken(_deck("post-named", panels=4), "German"), cfg) is True
+    assert off_language_post(_spoken(_deck("post-named", panels=4), "English"), cfg) is False
+    assert off_language_post(_spoken(_deck("post-named", panels=4), "en-US"), cfg) is False
+
+    czech = _spoken(_deck("post-cs", panels=4), "cs")
+    assert off_language_post(czech, cfg) is True, "an `en` run cannot quote it"
+    cfg.run.onimage_text_language = {"linkedin": "cs"}
+    assert off_language_post(czech, cfg) is False, "now something this run writes IS Czech"
+
+
+def test_fr345_the_supply_count_agrees_with_the_binder_and_returns_every_post_it_drops(
+) -> None:
+    """`_carousel_supply` runs the SAME screen, and it is where the drop becomes visible.
+
+    Two halves. The count is the numerator of FR-307's famine message ("N fresh post(s) were
+    bindable"), so counting a post the binder will refuse would make that message argue against
+    the very skip it is explaining.
+
+    And the pairs are collected HERE rather than in the binder because this is the one walk that
+    sees each candidate post exactly once per `assign()`: `_pick` calls the binder once per topic
+    per creative group, so the same German post would otherwise be reported nine times on a
+    nine-deck plan.
+
+    They leave as DATA on `Assignment`, never as a `logging` call. That is NFR-2 (this module
+    prints nothing and logs nothing — every decision leaves as data so `runner.py` can write it
+    and `previews.py` can show it at $0), and it is also the only shape that WORKS:
+    `__main__._configure_logging` installs a NullHandler, so a `logger.warning` from here reaches
+    no operator surface at all. `runner._select` turns the pairs into one `plan_off_language_posts`
+    warning and one console line — a drop nobody can see is the defect FR-345 exists to end.
+    """
+    cfg = _config(formats={"image": 0, "carousel": 1, "reel": 0}, platforms=["instagram"])
+    foreign = _spoken(_deck("post-de", panels=5, views=9000), "de")
+    ours = _spoken(_deck("post-en", panels=4, views=1000), "en")
+    topic = _deck_topic("ai-tools", foreign, ours)
+    plan = build_plan(cfg)
+
+    result = assign(plan.entries, select([topic], cfg), cfg)
+
+    assert result.carousel_posts_available == 1, "the German post is not supply this run can spend"
+    assert plan.entries[0].source_post_id == "post-en"
+    assert result.off_language_posts == [("post-de", "de")], \
+        "the id AND the normalised code, so the console can name both the loss and the cure"
+
+    # Under `target` both posts are supply, nothing is dropped and the list stays empty.
+    translating = _config(formats={"image": 0, "carousel": 1, "reel": 0},
+                          platforms=["instagram"], copy_language_mode="target")
+    result = assign(build_plan(translating).entries,
+                    select([_deck_topic("ai-tools", foreign, ours)], translating), translating)
+
+    assert result.carousel_posts_available == 2
+    assert result.off_language_posts == []
+
+
+def test_fr345_plan_writes_no_log_records_at_all_and_names_each_dropped_post_once() -> None:
+    """NFR-2's purity, pinned as an absence: `plan` emits nothing through `logging`, ever.
+
+    The module used to write one `logger.warning` per off-language post. It was invisible —
+    `__main__._configure_logging` installs a NullHandler and no console handler — so the operator
+    of run `4a0q` still could not see why a post left the pool. The cure was to move the fact into
+    the result object, and this test is what keeps it there: any future decision that reaches for
+    a logger inside `plan` fails here rather than being discovered on a paid run.
+
+    The second half is the de-duplication. One post can sit in several topics of one pool, and the
+    console line counts posts rather than sightings, so the walk records each id at most once.
+    """
+    cfg = _config(formats={"image": 0, "carousel": 2, "reel": 0}, platforms=["instagram"])
+    german = _spoken(_deck("post-de", panels=5, views=9000), "de")
+    french = _spoken(_deck("post-fr", panels=5, views=8000), "fr")
+    ours = _spoken(_deck("post-en", panels=4, views=1000), "en")
+    pool = [_deck_topic("ai-tools", german, french, ours),
+            _deck_topic("ai-agents", german, ours)]  # the SAME German post, seen twice
+
+    with _no_log_records() as records:
+        result = assign(build_plan(cfg).entries, select(pool, cfg), cfg)
+
+    assert records == [], "plan must not write log records — NFR-2, and nothing would read them"
+    assert result.off_language_posts == [("post-de", "de"), ("post-fr", "fr")], \
+        "pool order, each post id once, both codes normalised"
+
+
+@contextmanager
+def _no_log_records() -> Iterator[list[logging.LogRecord]]:
+    """Capture anything `hypesocials.plan` writes through `logging`, which must be nothing."""
+    records: list[logging.LogRecord] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record)
+
+    logger = logging.getLogger("hypesocials.plan")
+    handler = _Capture()
+    logger.addHandler(handler)
+    previous, logger.propagate = logger.propagate, False
+    try:
+        yield records
+    finally:
+        logger.removeHandler(handler)
+        logger.propagate = previous
+
+
+def test_fr345_a_topic_whose_every_post_is_foreign_starves_under_source_and_binds_under_target(
+) -> None:
+    """End to end through `assign()`, because the two modes must differ in the PLAN, not only in a
+    predicate. Under `source` the carousel keeps its terminal status and FR-307's own reason —
+    the material exists but this run cannot quote it, which is the same shape as a topic whose
+    slideshows have all been used. Under `target` the identical inputs produce a bound deck whose
+    length comes from the German post's panels, priced before the Confirm gate exactly like any
+    other (§0.4′)."""
+    foreign = _spoken(_deck("post-de", panels=6), "de")
+    kwargs = {"formats": {"image": 0, "carousel": 1, "reel": 0}, "platforms": ["instagram"]}
+
+    kept = _config(**kwargs)
+    plan = build_plan(kept)
+    starved = assign(plan.entries, select([_deck_topic("nur-deutsch", foreign)], kept), kept)
+
+    assert plan.entries[0].status is PlanEntryStatus.SKIPPED
+    assert starved.decisions[0].reason == NO_FRESH_POST_AVAILABLE
+    assert starved.no_fresh_post_skips == 1 and starved.carousel_posts_available == 0
+
+    translating = _config(**kwargs, copy_language_mode="target")
+    bound_plan = build_plan(translating)
+    bound = assign(bound_plan.entries, select([_deck_topic("nur-deutsch", foreign)], translating),
+                   translating)
+
+    assert bound_plan.entries[0].status is PlanEntryStatus.PENDING
+    assert bound_plan.entries[0].source_post_id == "post-de"
+    assert bound_plan.entries[0].slide_count == 6, "the deck length still comes from the source"
+    assert bound.no_fresh_post_skips == 0 and bound.carousel_posts_bound == 1

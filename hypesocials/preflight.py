@@ -220,6 +220,7 @@ def check(
     _check_node(config, errors)
     _clamp_reel_duration(config, warnings)
     _check_prices(config, errors, warnings)
+    _check_language_mode(config, entries, warnings)
     _check_language_hint(config, entries, hints)
     footprint = _check_disk(config, entries, errors)
 
@@ -597,6 +598,38 @@ def _check_prices(config: Config, errors: list[str], warnings: list[str]) -> Non
                         "(OQ-2)")
 
 
+def _check_language_mode(config: Config, entries: Sequence[PlanEntry],
+                         warnings: list[str]) -> None:
+    """FR-345: under `target`, name the creatives translation cannot reach — once, as a warning.
+
+    Translation is scoped to BOUND carousel decks (FR-343): the deck has a source post, that post
+    has a language, and the panels are mapped one to one, which is what makes "translate these
+    exact lines" a well-formed request. Nothing else in a run has that shape. An image or a reel
+    quotes a hook or a caption through the ordinary selection path, and an override brief writes
+    its own words from the brief file — so those creatives ship whatever language their material
+    was in, on a run whose config says `target`.
+
+    That gap is invisible everywhere else. The launch summary says "bound decks translated to en",
+    the confirm screen says the same, and an operator reading either on a 4-image plan would
+    reasonably expect four English images. Hence ONE warning, counted rather than listed: on a
+    nine-creative plan the asset ids would run past the width and the number is the decision.
+
+    Silent under `source`, which promises nothing to break, and silent under `target` when every
+    creative in the plan is a bound deck — a warning that fires on the configuration rather than
+    on the gap is the kind an operator learns to skip past.
+    """
+    if str(config.run.copy_language_mode) != "target":
+        return
+    unreached = sum(1 for entry in entries
+                    if str(entry.creative_format) in ("image", "reel")
+                    or entry.brief_influence == "override")
+    if not unreached:
+        return
+    warnings.append(
+        f"copy_language_mode: target reaches bound carousel decks only — {unreached} "
+        "image/reel/override creative(s) ship their source language (FR-345)")
+
+
 def _check_language_hint(config: Config, entries: Sequence[PlanEntry], hints: list[str]) -> None:
     """30 §2's diacritics hint, re-based for verbatim copy (§1.7 F22): recommend the check when
     this run may put accented glyphs on an image and nothing is looking at the result.
@@ -621,6 +654,17 @@ def _check_language_hint(config: Config, entries: Sequence[PlanEntry], hints: li
     hint names the MODE IN FORCE rather than saying "compress" for both, and for `auto` it says
     which panels are affected — only the ones over the assigned style's budget — because that is
     the difference an operator reading this line before the Confirm gate is actually deciding on.
+
+    D63/FR-345 adds a clause rather than an arm. `copy_language_mode: target` does not change
+    WHICH creatives may carry accented glyphs — the answer was already "possibly all of them,
+    whatever run.languages says" — but it changes WHOSE glyphs they are: a translated slide is the
+    copy model's own string, chosen for a language the source never wrote in, so a run configured
+    `en` may now deliberately render Czech diacritics rather than only stumble into them. It is
+    its OWN hint line, printed in addition to whichever of the three arms below fires, rather than
+    a fourth arm in the `elif` chain: the three arms are mutually exclusive because they are three
+    answers to "where does this run's on-image text come from", and translation is a second
+    question about the same text. Making it an arm would have silenced the Czech line on exactly
+    the run that needs it most — a `cs` config translating English posts into Czech.
     """
     if config.run.gauntlet.enabled:
         return
@@ -631,6 +675,15 @@ def _check_language_hint(config: Config, entries: Sequence[PlanEntry], hints: li
     compressing = (mode in ("compress", "auto")
                    and any(str(entry.creative_format) == "carousel"
                            and entry.brief_influence != "override" for entry in entries))
+    translating = (str(config.run.copy_language_mode) == "target"
+                   and any(str(entry.creative_format) == "carousel"
+                           and entry.brief_influence != "override" for entry in entries))
+    if translating:  # its own line, beside whichever arm fires below (see the docstring)
+        hints.append("copy_language_mode: target translates a bound deck whose post is in "
+                     "another language, so those slides carry the copy model's own words in "
+                     "this run's language (FR-343) — a glyph the source never rendered is a "
+                     "glyph nothing has proved renderable, and the gauntlet is off "
+                     "(30 §2; a hint, never a gate)")
     if czech:
         hints.append(f"{', '.join(czech)} render Czech text and the gauntlet is off — Czech "
                      "diacritics are where GPT Image 2 struggles most; consider --gauntlet "
