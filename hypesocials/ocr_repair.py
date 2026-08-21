@@ -76,8 +76,20 @@ _IN_UPPER: dict[str, str] = {"0": "O", "1": "I", "5": "S", "l": "I", "|": "I"}
 _MIN_UPPER_TOKEN = 3
 
 #: Tokens that are legitimately mixed digits and capitals — repairing them would break the very
-#: strings they name. Extended by measurement, never by guess.
+#: strings they name. Extended by measurement, never by guess. This list names PRODUCTS; the
+#: measurement shapes it used to have to name one at a time are `_MEASUREMENT` below.
 _NEVER_REPAIR = frozenset({"H2O", "MP3", "MP4", "GPT4", "GPT5", "CO2", "B2B", "B2C", "K2", "P2P"})
+
+#: The unit suffixes that turn a leading digit run into a MEASUREMENT rather than an acronym.
+#: A closed, small vocabulary on purpose: units are a stable set, product names are not, and the
+#: allowlist above was losing a race it could never win (it named `MP3` and `GPT5` and still let
+#: `16GB` through). Order does not matter; the match is exact against the token's letter tail.
+_UNITS = frozenset({
+    "B", "K", "M", "X", "KB", "MB", "GB", "TB", "PB", "KW", "MW", "HZ", "KHZ", "MHZ", "GHZ",
+    "FPS", "PX", "PT", "MS", "S", "H", "D", "W", "Y", "BPS", "KBPS", "MBPS", "GBPS", "RPM", "DPI"})
+
+#: A leading run of digits followed by a unit — `16GB`, `146K`, `10X`, `70B`, `128GB`, `500MS`.
+_MEASUREMENT = re.compile(r"^\d+([A-Z]+)$")
 
 #: `truncation_suspect`: the ellipsis forms an OCR pass and a source author both produce. Their
 #: presence is a SUSPICION and never a verdict — see doctrine point 3.
@@ -179,7 +191,19 @@ def _is_acronym(token: str) -> bool:
     `token.isupper()` alone is false for "AI2" in some scripts and true for "2024" in none, so the
     letter test is explicit: a token of pure digits is a number, not an acronym, and repairing
     "2024" into "ZOZ4" is the failure mode this guard exists for.
+
+    **A MEASUREMENT is not an acronym (D65).** `16GB`, `146K`, `10X`, `70B` and `128GB` are all-caps
+    runs containing letters, so every one of them used to reach the character swap and come out as
+    `I6GB`, `I46K`, `IOX`, `7OB`, `I28GB` — this module MANUFACTURING the exact corruption the
+    2026-08-21 audit found rendered onto published slides, which FR-362's guard 1 then spent its
+    life undoing off `source_text_original`. The discriminator is the token's shape rather than its
+    spelling: a run of digits followed by a known UNIT is a quantity, and its digits are the
+    content. `_NEVER_REPAIR` cannot do this job — it names products one at a time and a unit
+    vocabulary is closed where a product vocabulary is not. A digit-led token whose tail is NOT a
+    unit (`0PENAI`) is still exactly the mis-read this repair exists for, and still repairs.
     """
+    if (measurement := _MEASUREMENT.match(token)) and measurement.group(1) in _UNITS:
+        return False
     return any(char.isalpha() for char in token) and token == token.upper()
 
 

@@ -245,6 +245,15 @@ def guard_digits(shipped: str, original: str) -> DigitFinding:
                     None)) is not None:
                 replacement = counterpart
                 restored.append((token, counterpart))
+            elif any(digits_of(token) and digits_of(token) == digits_of(candidate)
+                     for candidate in originals):
+                # A SEPARATOR variant, not drift (D65 fix). A German panel writes `1,5 %` and its
+                # translation writes `1.5%`; `digits_of`'s whole reason to exist is that those are
+                # one measurement. The ladder above compares raw strings, so the pair reaches here
+                # unmatched — and before this rung it set `unmatched`, which on a TRANSLATED row
+                # (never restorable to source-language bytes) blanked a perfectly good slide over
+                # a comma. The digits agree; the row ships as written.
+                replacement = token
             elif digits_of(token):
                 unmatched = True
         out.append(shipped[cursor:match.start()])
@@ -505,14 +514,22 @@ def subject_marks(rows: Sequence[Mapping[str, Any]], marks: Iterable[str]) -> se
     exempt.
 
     Rows that ARE the mark are excluded from the corpus on purpose: a watermark stamped on three
-    slides would otherwise vouch for itself three times over.
+    slides would otherwise vouch for itself three times over. **That exclusion is per LINE, not per
+    row (D65 fix).** Testing the whole row was the same self-vouching bug wearing a hat: the
+    audit's real shape is a watermark carried as a row PREFIX — the mark on its own opening line
+    with the slide's real sentence under it — whose collapsed ROW is not equal to the mark, so it
+    entered the corpus, found its own
+    watermark there and declared it deck subject matter. Guard 9 then left the hero line standing,
+    which is exactly how `EVOLVING AI` was promoted to a headline on a published slide. A line
+    that is nothing but the mark never vouches for it, wherever in its row it sits; only the rest
+    of the deck's prose can.
     """
     lookup = {folded for folded in marks if folded}
     if not lookup:
         return set()
     corpus = " | ".join(
-        collapse(row.get("source_text")) for row in rows
-        if collapse(row.get("source_text")) and collapse(row.get("source_text")) not in lookup)
+        collapse(line) for row in rows for line in str(row.get("source_text") or "").splitlines()
+        if collapse(line) and collapse(line) not in lookup)
     return {folded for folded in lookup if folded in corpus}
 
 

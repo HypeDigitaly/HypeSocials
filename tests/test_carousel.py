@@ -1388,6 +1388,57 @@ async def test_a_failed_slide_download_blocks_the_deck_as_incomplete(
     assert packager.read_meta(folder.path)["missing_slide_numbers"] == [3]
 
 
+async def test_fr363_a_short_deck_is_blocked_whatever_the_critics_said(
+    tmp_path: Path, downloads: SimpleNamespace
+) -> None:
+    """The refusal is deliberately NOT conditional on the gauntlet — the critics judge the frames
+    that EXIST, so a deck missing a slide has nothing for them to object to.
+
+    That is the whole 2026-08-21 finding: decks shipped `status: success` with an `incomplete`
+    badge and three clean critic verdicts, because every frame that landed really was fine. The
+    question the gate cannot ask is whether the deck the operator approved is the deck that
+    shipped. Our slide *i* is their panel *i* (FR-304), so a hole in the middle reads as if the
+    source skipped a step and a hole at the end stops the deck mid-argument. Here every critic
+    passes, and the shortfall blocks anyway.
+    """
+    entry = make_entry(slides=4)
+    env = make_env(tmp_path, entry)
+    env.llm_call = CriticStub()  # no failing rounds — every frame passes, every round
+    downloads.fail_contains = "slide-3-"
+    folder = make_folder(tmp_path, entry)
+
+    record = await render_carousel(entry, env, folder, submit=FakeSubmit())
+
+    assert record.gauntlet["result"] == "pass", "the gate had no objection to the frames it saw"
+    assert record.status is AssetStatus.BLOCKED and entry.status is PlanEntryStatus.BLOCKED
+    assert record.skip_reason.startswith("incomplete_deck:") and "(FR-363)" in record.skip_reason
+    assert "incomplete_deck" in env.log.types(), "an error line, never a silent badge"
+    assert env.log.fields("incomplete_deck")["slides_ordered"] == 4
+    assert sorted(path.name for path in folder.path.glob("slide_*.jpg")) == [
+        "slide_01.jpg", "slide_02.jpg", "slide_04.jpg"], "FR-74: every paid slide stays on disk"
+    assert (folder.path / packager.BLOCKED_FILE).is_file()
+    assert packager.read_meta(folder.path)["status"] != "success"
+
+
+async def test_fr363_a_complete_deck_still_finishes_success(tmp_path: Path) -> None:
+    """The control, and the reason the test above proves anything: the SAME critics, the same
+    submission, every ordered slide delivered — and the deck ships as a success with no block
+    file, no skip reason and no incomplete badge. FR-363 refuses a shortfall, not a carousel."""
+    entry = make_entry(slides=4)
+    env = make_env(tmp_path, entry)
+    env.llm_call = CriticStub()
+    folder = make_folder(tmp_path, entry)
+
+    record = await render_carousel(entry, env, folder, submit=FakeSubmit())
+
+    assert record.status is AssetStatus.SUCCESS and entry.status is PlanEntryStatus.SUCCESS
+    assert record.slide_count == 4 and record.missing_slide_numbers == []
+    assert not record.skip_reason and "incomplete_deck" not in env.log.types()
+    assert "incomplete" not in [tag.value for tag in record.degradations]
+    assert not (folder.path / packager.BLOCKED_FILE).exists()
+    assert packager.read_meta(folder.path)["status"] == "success"
+
+
 async def test_an_incomplete_deck_carries_the_run_to_exit_one(
     tmp_path: Path, downloads: SimpleNamespace
 ) -> None:
