@@ -432,6 +432,17 @@ platforms:
     conventions: {}
 
 models:
+  # SESSION O (v2.8.0, D64, 2026-08-21): WHICH DOOR the calls leave through. Engine defaults keep
+  # the metered path; the three brand configs pin `codex` on both.
+  #   llm_backend: openrouter | codex   - `codex` = the operator's ChatGPT/Codex subscription via
+  #                                       `npx openai-oauth@latest` on 127.0.0.1:10531 (pre-flight
+  #                                       starts it); ids become the proxy's bare names
+  #                                       (gpt-5.6-terra / -luna / -sol); OPENROUTER_API_KEY unused.
+  #   render_provider: kie | codex       - `codex` renders gpt-image-2 through the same proxy at $0,
+  #                                       images only (formats.reel must be 0), fixed ~1254 px.
+  #   llm_base_url                       - loopback only; default http://127.0.0.1:10531/v1.
+  llm_backend: openrouter
+  render_provider: kie
   analysis: anthropic/claude-sonnet-5       # OpenRouter chat id - the VISION CHECK role only.
                                             #   (The style-brief call this role used to make died
                                             #   with the pivot; the visual authority is now the
