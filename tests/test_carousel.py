@@ -615,15 +615,21 @@ def test_style_dna_is_the_five_meta_style_rows_and_no_layout_grid(tmp_path: Path
     zone-derived `layout_grid` row is GONE — layout travels in `{{layout_zones}}` alone.
 
     Two descriptions of one thing is how byte-identical instructions still produce a drifting
-    deck, which is why this is asserted on a style that DOES declare zones."""
+    deck, which is why this is asserted on a style that DOES declare zones.
+
+    RE-PINNED at v2.9.0 (D65/FR-364): the block now opens with a SIXTH row, `colour_rendering` —
+    one mandated sentence, identical for every style in the registry, prepended so the last-resort
+    trio trim (which cuts from the tail) can never be what removes it. The five per-style DNA
+    fields below it are unchanged, and the zone leak this test exists to catch is unaffected."""
     style = make_style(tmp_path)
     assert style.layout_zones, "the point of the assertion is a style that has zones to leak"
 
     dna = style_dna(style)
 
     labels = [row.split(":", 1)[0].strip() for row in dna.splitlines()]
-    assert labels == ["palette", "typography", "text_placement", "image_treatment",
-                      "visual_pacing"]
+    assert labels == ["colour_rendering", "palette", "typography", "text_placement",
+                      "image_treatment", "visual_pacing"]
+    assert dna.startswith("colour_rendering: "), "FR-364's row leads, so a tail trim cannot eat it"
     assert "layout_grid" not in dna
     assert "ZZZONE" not in dna, "a zone position reached the DNA block"
     assert style_dna(None) == "", "no assigned style is an empty block, never a crash"

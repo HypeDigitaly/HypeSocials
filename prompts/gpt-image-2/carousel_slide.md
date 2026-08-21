@@ -162,6 +162,9 @@ CONSTRAINTS:
     and never with a bar, rule, block or placeholder standing in for words. A
     repeating device (a row, a card, a chip) exists once per quoted line and not
     at all when none is quoted.
+  - An icon depicts what its line says, never decoration. Never invent a
+    human face. A negative mark (an X, a cross) is never in the accent
+    colour.
   - A swipe prompt ("SWIPE LEFT", "TAP", a worded arrow) appears only if quoted
     in the TEXT block. No brand wordmark, logotype or signature
     line other than one quoted there; with none quoted, this slide is unsigned —

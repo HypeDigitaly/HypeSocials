@@ -659,12 +659,19 @@ def test_style_dna_is_the_five_registry_fields_and_no_layout_grid_row() -> None:
     """Contracts item 12. The old `layout_grid` row (derived from the zones) DIES: layout travels
     in `{{layout_zones}}` alone, and a deck whose DNA block also described its zones gave the model
     two descriptions of one thing to reconcile per slide — which is how byte-identical instructions
-    still produce a drifting deck (M9)."""
+    still produce a drifting deck (M9).
+
+    RE-PINNED at v2.9.0 (D65/FR-364): a SIXTH row leads the block, `colour_rendering`, and it is
+    the one row that belongs to no style — the same mandated sentence for every registry entry,
+    prepended (never appended) so the last-resort trio trim, which cuts from the tail, can never
+    be the thing that removes it. The five registry fields below it are unchanged and still in
+    their old order."""
     dna = pe.style_dna(make_style())
 
     labels = [row.split(":", 1)[0].strip() for row in dna.splitlines()]
-    assert labels == ["palette", "typography", "text_placement", "image_treatment",
-                      "visual_pacing"]
+    assert labels == ["colour_rendering", "palette", "typography", "text_placement",
+                      "image_treatment", "visual_pacing"]
+    assert dna.startswith("colour_rendering: "), "FR-364's row leads, so a tail trim cannot eat it"
     assert "layout_grid" not in dna
     # `text_placement` is a DNA field and legitimately says "upper third"; what must not appear is
     # the zone list itself — position, content and treatment, described a second time.
@@ -673,10 +680,11 @@ def test_style_dna_is_the_five_registry_fields_and_no_layout_grid_row() -> None:
     assert "#F6F1E7, #8FA37E, #1B1B1B" in dna
     assert pe.style_dna(None) == ""
     assert pe.style_dna(make_style(typography="", palette=[])).splitlines() == [
-        "text_placement: headline upper third, badge lower right",
+        f"colour_rendering: {pe._COLOUR_RENDERING_ROW}",
+        "  text_placement: headline upper third, badge lower right",
         "  image_treatment: flat graphic with pill cards",
         "  visual_pacing: eye lands on the headline, then the card stagger",
-    ], "empty rows are dropped, not printed blank"
+    ], "empty rows are dropped, not printed blank — and FR-364's row is never one of them"
 
 
 def test_fr189_style_dna_is_byte_identical_on_every_slide_of_a_deck() -> None:

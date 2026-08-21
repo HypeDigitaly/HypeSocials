@@ -32,6 +32,14 @@ Append-only list: T2.5 adds the packager and gallery exports here; existing name
     PackagingError  a failed store, carrying `disk_full` / `download_failed` for skip_reason
     write_gallery   self-contained incremental gallery.html; returns None instead of raising
                     (FR-75/76/150/231, NFR-22)
+
+D65 (FR-365) adds the alpha-halo guard, the SECOND sanctioned Pillow use in the tree after
+`sources/logo_crops.py`. Both entry points are SYNCHRONOUS and belong on a worker thread:
+
+    inspect_frame   is this landed frame's edge ring see-through? -> AlphaVerdict (fail-open)
+    flatten_frame   last resort: composite a haloed frame onto a ground sampled from itself
+    AlphaVerdict / FlattenResult
+                    the two frozen answers; `clean` and `ok` are the only fields a caller gates on
 """
 
 from hypesocials.outputs.logwriter import LogWriter
@@ -43,6 +51,12 @@ from hypesocials.outputs.state import (
     resolve_latest,
     set_latest,
     used_posts,
+)
+from hypesocials.outputs.alpha_halo import (
+    AlphaVerdict,
+    FlattenResult,
+    flatten_frame,
+    inspect_frame,
 )
 from hypesocials.outputs.gallery import write_gallery
 from hypesocials.outputs.packager import (
@@ -69,6 +83,10 @@ from hypesocials.outputs.packager import (
 )
 
 __all__ = [
+    "AlphaVerdict",
+    "FlattenResult",
+    "flatten_frame",
+    "inspect_frame",
     "LogWriter",
     "Ledger",
     "days_since_use",

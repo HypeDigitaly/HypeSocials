@@ -89,6 +89,47 @@ _SIZE_BY_RATIO: dict[str, str] = {
 }
 _MAX_REFERENCE_IMAGES = 16  # gpt-image-2's documented ceiling; the profile caps first (FR-272)
 
+#: FR-364 (v2.9.0, D65) — the two colour-lock render parameters, sent on every image request.
+#: `quality` goes on BOTH routes and `input_fidelity` on `/images/edits` alone (see `_post_image`).
+#: Module constants rather than literals in the body because they are a CONTRACT with the PRD
+#: (20 §8f names both values), and because the two encodings of the same request — multipart form
+#: fields on edits, JSON on generations — must never drift into disagreeing about the word.
+#:
+#: There is no `low`/`medium` tier reachable from config and there is deliberately none: the
+#: operator pays a flat subscription, so the cheap tier buys nothing back, and D65's whole finding
+#: was that gpt-image-2's default rendering mottles a flat field and drifts 30+ points of lightness
+#: between the slides of one deck.
+IMAGE_QUALITY = "high"
+INPUT_FIDELITY = "high"
+
+#: **MEASURED 2026-08-21, SESSION P W1 — `input_fidelity` is NOT sent, and this is why.**
+#:
+#: FR-364 says both parameters are sent unconditionally because "a proxy that ignores them is
+#: acceptable". `quality` behaves exactly that way and is shipped: `/images/generations` and
+#: `/images/edits` both answer HTTP 200 with `quality: "high"` in the body and both echo
+#: `"quality": "low"` back in the response envelope — asked for, ignored, harmless, and correct
+#: the day the proxy starts honouring it.
+#:
+#: `input_fidelity` does NOT behave that way. The dev-time probe against
+#: `npx openai-oauth@latest` on loopback got, on BOTH routes, an immediate HTTP 400:
+#:
+#:     {"error": {"message": "`input_fidelity` is not supported by ChatGPT OAuth image editing.",
+#:                "type": "invalid_request_error"}}
+#:
+#: A 400 with that prose classifies as `provider_fail` in `_fail_cause`, which means shipping the
+#: parameter would fail EVERY image-to-image render this engine places — every chained body slide
+#: (FR-95), every logo-patch render (FR-315), every gauntlet re-render carrying a reference — and
+#: then burn FR-317's single resubmit on an identical request guaranteed to earn the identical
+#: refusal. The premise FR-364 rests on is false for this parameter on this proxy, so the
+#: parameter is held here instead of being sent.
+#:
+#: This is a STATIC decision, not the runtime capability check FR-364 forbids: nothing probes
+#: anything at run time, no request is retried without the key, and there is no fallback path. The
+#: day the OAuth image route supports it, this flag flips to `True` in one line and the constant
+#: above is already the value to send. Reported to the operator as a deviation from the PRD's
+#: literal wording rather than taken silently; 20 §8f is the file that has to move for it.
+_INPUT_FIDELITY_SUPPORTED = False
+
 _REQUEST_TIMEOUT_S = 300.0  # client default only — every call passes the job's own remaining time
 _CONNECT_TIMEOUT_S = 10.0
 _BACKOFF_BASE_S = 1.5
@@ -316,15 +357,42 @@ class CodexImageClient:
         self, *, prompt: str, size: str, references: list[tuple[str, bytes]],
         timeout_s: float, watch: Stopwatch,
     ) -> dict[str, Any]:
-        """One POST: `/images/edits` when references travel, `/images/generations` when not."""
+        """One POST: `/images/edits` when references travel, `/images/generations` when not.
+
+        **FR-364 (v2.9.0, D65) — `quality` on both routes, `input_fidelity` on `/images/edits`.**
+        Both are sent on EVERY call, unconditionally: no capability probe, no feature flag, no
+        fallback path if the proxy answers without honouring them. That is the PRD's own wording
+        (20 §8f) and it is a deliberate posture rather than laziness — a runtime capability check
+        would mean a first render placed at whatever the proxy defaults to, and the whole point of
+        the colour lock is that the FIRST slide of a deck is already right, because slides 2-N are
+        chained off it (FR-95). A proxy that ignores an unknown key costs nothing; a proxy that
+        400s on one is a broken proxy, which is a `provider_fail` like any other and is exactly
+        what the dev-time probe on 2026-08-21 was run to rule out.
+
+        `input_fidelity` is edits-only because it is a statement about the ATTACHED image, and
+        `/images/generations` has none: it tells the model to hold the reference's own pixels —
+        the anchor slide's ground colour and type, a tool-mark patch's actual letterforms
+        (FR-315) — rather than re-imagining them in the new frame. Sending it on the text-to-image
+        route would be a key about nothing. **It is currently held back on the edits route too**,
+        because the probe FR-364 cites found this proxy answering it with a hard 400 rather than
+        ignoring it — see `_INPUT_FIDELITY_SUPPORTED` above for the measurement and the one-line
+        way back in.
+
+        The multipart route sends STRINGS because that is what multipart carries; the JSON route
+        sends the same words as JSON strings. Same values, two encodings.
+        """
         if references:
             files = [("image[]", (name, blob, _content_type(name))) for name, blob in references]
+            data = {"prompt": prompt, "model": CODEX_IMAGE_MODEL, "size": size, "n": "1",
+                    "quality": IMAGE_QUALITY}
+            if _INPUT_FIDELITY_SUPPORTED:
+                data["input_fidelity"] = INPUT_FIDELITY
             return await self._request(
-                EDITS_PATH, timeout_s=timeout_s, watch=watch, files=files,
-                data={"prompt": prompt, "model": CODEX_IMAGE_MODEL, "size": size, "n": "1"})
+                EDITS_PATH, timeout_s=timeout_s, watch=watch, files=files, data=data)
         return await self._request(
             GENERATIONS_PATH, timeout_s=timeout_s, watch=watch,
-            json={"model": CODEX_IMAGE_MODEL, "prompt": prompt, "size": size, "n": 1})
+            json={"model": CODEX_IMAGE_MODEL, "prompt": prompt, "size": size, "n": 1,
+                  "quality": IMAGE_QUALITY})
 
     async def _request(
         self, path: str, *, timeout_s: float, watch: Stopwatch, **kwargs: Any,

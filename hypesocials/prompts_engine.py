@@ -144,6 +144,30 @@ _TRIO_FLOOR = 0.40
 #: the hard truncation below is the backstop if even the floors cannot make room.
 _TRIM_PASSES = 4
 
+#: FR-364 (v2.9.0, D65) — the ONE sentence every styled render carries about how a flat colour
+#: field must be laid down, quoted verbatim from `50-promptcraft.md` FR-189's amended text. It is a
+#: MODULE CONSTANT rather than a line in `styles.yaml` because it is not a property of any style:
+#: 26 registry entries would each have to spell it, 26 would have to be re-measured against the
+#: budget bars when it changed, and the one that forgot it would be the deck that shipped mottled.
+#:
+#: What it is written against: the 2026-08-21 audit found gpt-image-2 drifting 30+ points of
+#: lightness across the slides of one deck and speckling what the registry called a "flat ground" —
+#: two failures of the SAME instruction gap, because "flat" was stated as a property of the ground
+#: ("flat cream ground") and never as an instruction about rendering ("lay it down as one uniform
+#: mix"). The model read the adjective and painted the noun.
+#:
+#: **Length is a feature here (D65 measurement).** Every character of this row is charged to every
+#: styled prompt, and the first draft's 288 cost enough of the trio-trim budget to strip the FR-340
+#: empty-zone rule off five styles' longest panels — a colour instruction that silently bought back
+#: empty placeholder blocks would have been a net loss. The shipped 230 keeps all four constraints
+#: (uniform field, the named defect list, one hex per deck, gradients only where declared) and drops
+#: only the words that were restating them.
+_COLOUR_RENDERING_ROW = (
+    "Render every flat colour field as ONE uniform colour edge to edge — no mottling, speckle, "
+    "noise, vignette or tonal drift inside it, and the SAME hex on every slide of this deck. "
+    "A gradient exists only where the style declares one."
+)
+
 #: FR-261 condition 3 — which placeholders each ROLE may resolve, per `prompts/README.md`'s
 #: mapping table (that table is the allowlist source). Out-of-role name -> unresolved -> FR-260.
 _ALLOWLIST: dict[str, frozenset[str]] = {
@@ -863,10 +887,27 @@ def style_dna(style: MetaStyle | None) -> str:
     from the zones, is gone: layout travels in `{{layout_zones}}` alone, and a deck whose DNA block
     also described its zones gave the model two descriptions of one thing to reconcile per slide —
     which is exactly how byte-identical instructions still produce a drifting deck (M9).
+
+    **The `colour_rendering` row (FR-364, v2.9.0/D65) is PREPENDED, never appended.** It is the
+    one row here that belongs to no style — the same sentence for all 26 registry entries — and it
+    sits FIRST for a mechanical reason, not a rhetorical one: the last-resort trio trim
+    (`_trim_trio`) cuts these fields from the TAIL down to `_TRIO_FLOOR` (40%), so a row appended
+    to the end of the block is the FIRST thing a long deck loses, and the decks that assemble long
+    prompts — a big verbatim panel, a wordy style — are exactly the decks whose colour was drifting.
+    At the head it survives every trim short of the hard truncation backstop.
+
+    **It reaches three readers, and that is the point.** `style_dna()` is the single source for the
+    slide/image render prompt AND for both the `brief` and `system` critic contracts
+    (`gauntlet`/`contracts` read this same function so a frame is judged against the words it was
+    ordered with — see `style_zones` below for the same one-implementation-two-readers rule). So
+    the colour lock is stated to the renderer and to the critics in byte-identical words: a critic
+    that flags a mottled ground is flagging a rule the renderer was actually given, and a second
+    wording written beside the critic would read as a `style_layout` defect on every clean frame.
     """
     if style is None:
         return ""
     rows = (
+        ("colour_rendering", _COLOUR_RENDERING_ROW),
         ("palette", _join(style.palette, ", ")),
         ("typography", style.typography),
         ("text_placement", style.text_placement),
@@ -3257,6 +3298,15 @@ CONSTRAINTS:
     kicker slot with nothing quoted for it stays wordless. An interface, chart
     or label group drawn for this frame is greeked into bars and unlettered
     shapes.
+  - Every icon, glyph or pictogram depicts what the line beside it says, and
+    nothing else. An icon picked for decoration, for rhythm or to fill a slot
+    is a defect; a line with nothing depictable in it gets no icon at all.
+  - Never invent a human face. Where a real person was shown or named and no
+    attached reference supplies them, draw a non-human glyph or leave that
+    element out entirely — a synthesized face is a stranger presented as real.
+  - A negative marker — an X, a cross, a strike, a "loses" or "before" mark —
+    is never drawn in the positive accent colour. Set it in a muted or
+    neutral tone: the accent marks what the frame is FOR.
   - This is one standalone image: no navigation or swipe prompt of any kind
     ("SWIPE LEFT", "SWIPE RIGHT", "READ MORE", "TAP", an arrow or a hand
     carrying words), and no brand wordmark, logotype or signature line other
@@ -3453,6 +3503,9 @@ CONSTRAINTS:
     and never with a bar, rule, block or placeholder standing in for words. A
     repeating device (a row, a card, a chip) exists once per quoted line and not
     at all when none is quoted.
+  - An icon depicts what its line says, never decoration. Never invent a
+    human face. A negative mark (an X, a cross) is never in the accent
+    colour.
   - A swipe prompt ("SWIPE LEFT", "TAP", a worded arrow) appears only if quoted
     in the TEXT block. No brand wordmark, logotype or signature
     line other than one quoted there; with none quoted, this slide is unsigned —

@@ -440,7 +440,7 @@ Under `models.render_provider: codex`, image and carousel-slide rendering runs t
 
 **Endpoints & parameters:**
 - **`POST /v1/images/generations`** — Text-to-image, no reference images. Same `gpt-image-2` model id as Kie. **D65 FR-364:** `quality: "high"` parameter (colour lock + consistent rendering across slides). Prompt, model id, and response format parameters match OpenAI's API shape.
-- **`POST /v1/images/edits`** — Image-to-image (multipart). Prompt, image file (anchor or logo patch), mask (optional), model id. **D65 FR-364:** `input_fidelity: "high"` parameter (anchor 1:1 match and logo patch exact reproduction). Returns edited image; reference fidelity verified against the input.
+- **`POST /v1/images/edits`** — Image-to-image (multipart). Prompt, image file (anchor or logo patch), mask (optional), model id. **D65 FR-364:** `input_fidelity` is **NOT sent** — measured 2026-08-21, the ChatGPT OAuth proxy hard-refuses it on both image routes with HTTP 400 (`` `input_fidelity` is not supported by ChatGPT OAuth image editing``). Sending it would fail every image-to-image render — every chained body slide, every logo patch, every gauntlet re-render carrying a reference — and then spend FR-317's single resubmit on an identical guaranteed refusal. It is held behind the static `_INPUT_FIDELITY_SUPPORTED = False` in `render/codex_images.py`, one line to flip if the proxy ever accepts it. Returns edited image; reference fidelity verified against the input.
 
 **Upload & result handling (FR-359):**
 - **No network upload:** The `upload_file` seam (Section 8b) is not used under codex. Brief-supplied and tool-mark reference images are read from disk and passed as `image_bytes` (base64 or multipart) directly in the image request.
@@ -454,7 +454,7 @@ Under `models.render_provider: codex`, image and carousel-slide rendering runs t
 
 - **FR-358**: Under `render_provider: codex`, the engine SHALL submit image and carousel-slide jobs to the Codex proxy's `/v1/images/generations` (text-to-image) and `/v1/images/edits` (image-to-image with multipart refs). Reference fidelity (anchor chaining, logo patches) verified. No Kie.ai calls.
 - **FR-359**: Image results under codex SHALL be returned as local `file://` paths in `RenderResult.result_urls`, not network URLs. Brief-supplied images and tool-mark patches (D48, D46) are read from disk and passed as multipart/base64 to the image endpoints. No network file upload occurs; D46 source-store carve-out unchanged (marks/ only).
-- **FR-364** *(new v2.9.0, D65)* — Colour lock: `quality: "high"` on `/v1/images/generations` and `/v1/images/edits`; `input_fidelity: "high"` on `/v1/images/edits` only. The params are always sent; a proxy that ignores them is acceptable (acceptance probed once with a $0 dev-time call, 2026-08-21) — no runtime capability check, no fallback path.
+- **FR-364** *(new v2.9.0, D65, amended at implementation)* — Colour lock: `quality: "high"` on `/v1/images/generations` and `/v1/images/edits`. **`input_fidelity` is not sent on either route** — the proxy answers HTTP 400 for it (measured 2026-08-21); the parameter is retained as a disabled constant, never as a live request field. `quality` is always sent; the proxy accepts it and echoes `"low"` back, i.e. it is ignored today and costs nothing — no runtime capability check, no fallback path. `input_fidelity` is the opposite case and is not sent at all (see above).
 
 ## 9. Secrets
 

@@ -100,6 +100,15 @@ CONSTRAINTS:
     kicker slot with nothing quoted for it stays wordless. An interface, chart
     or label group drawn for this frame is greeked into bars and unlettered
     shapes.
+  - Every icon, glyph or pictogram depicts what the line beside it says, and
+    nothing else. An icon picked for decoration, for rhythm or to fill a slot
+    is a defect; a line with nothing depictable in it gets no icon at all.
+  - Never invent a human face. Where a real person was shown or named and no
+    attached reference supplies them, draw a non-human glyph or leave that
+    element out entirely — a synthesized face is a stranger presented as real.
+  - A negative marker — an X, a cross, a strike, a "loses" or "before" mark —
+    is never drawn in the positive accent colour. Set it in a muted or
+    neutral tone: the accent marks what the frame is FOR.
   - This is one standalone image: no navigation or swipe prompt of any kind
     ("SWIPE LEFT", "SWIPE RIGHT", "READ MORE", "TAP", an arrow or a hand
     carrying words), and no brand wordmark, logotype or signature line other

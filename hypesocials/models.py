@@ -129,6 +129,16 @@ class DegradationTag(str, Enum):
     # a quote to sound like us), so this tag is the whole action: it puts the caption loudly on
     # the console and on the gallery card, and the operator decides.
     CAPTION_VOICE_REVIEW = "caption_voice_review"
+    # FR-365 — a landed frame came back with a see-through halo around its edges (an RGBA render
+    # whose alpha band is ragged and transparent at the border instead of a flat opaque
+    # rectangle), the ONE resubmit that defect is entitled to came back haloed too, and the frame
+    # was composited onto an opaque ground sampled from its own centre rather than lost. Measured
+    # on run `20260821_121514_q745`, whose LinkedIn cover shipped with 49% of the frame under
+    # alpha 250 and every one of its thirteen sibling slides carrying no alpha channel at all —
+    # so this is a rare, loud provider defect rather than a matter of degree. The pixels the
+    # operator sees are therefore NOT byte-for-byte what the model returned, which is the whole
+    # reason this is a tag: the deck ships, and the operator knows which card was repaired.
+    ALPHA_FLATTENED = "alpha_flattened"
     # --- D56 / v2.4.0 (FR-334): matched style assignment ---
     # FR-334 — the ONE batched style-matcher call failed outright (transport error, unparseable
     # answer, degraded `ParsedResult`), so EVERY entry in the plan kept the FR-291 rotation pick it

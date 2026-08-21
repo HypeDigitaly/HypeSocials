@@ -107,7 +107,13 @@ def hooks() -> tuple[list[tuple], Any, Any]:
 
 
 async def test_a_reference_free_job_posts_json_to_generations_as_gpt_image_2(tmp_path: Path) -> None:
-    """The configured Kie route name is recorded and NOT sent: this API routes by endpoint."""
+    """The configured Kie route name is recorded and NOT sent: this API routes by endpoint.
+
+    RE-PINNED at v2.9.0 (D65/FR-364): the JSON body now also carries `quality: "high"`, sent on
+    every generations call with no capability check and no fallback. It carries NO
+    `input_fidelity` — the dev-time probe on 2026-08-21 got a hard HTTP 400 from the OAuth image
+    routes for that key (`codex_images._INPUT_FIDELITY_SUPPORTED`), and a parameter that refuses
+    every request is not a parameter a proxy is "free to ignore"."""
     seen: dict[str, Any] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -126,7 +132,8 @@ async def test_a_reference_free_job_posts_json_to_generations_as_gpt_image_2(tmp
     assert seen["path"].endswith(GENERATIONS)
     assert seen["content_type"].startswith("application/json")
     assert seen["body"] == {"model": "gpt-image-2", "prompt": "one slide",
-                            "size": "1024x1536", "n": 1}
+                            "size": "1024x1536", "n": 1, "quality": "high"}
+    assert "input_fidelity" not in seen["body"], "the proxy 400s on it (FR-364 deviation, D65)"
     # D30: there is no key on this path, so there must be no header pretending there is one.
     assert seen["auth"] is None
 

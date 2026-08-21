@@ -139,6 +139,10 @@ from hypesocials.models import (
     RenderOutcome, RenderOutcomeKind, RenderParams, RenderPriority, RenderRefs, SourcePost,
 )
 from hypesocials.outputs import AssetFolder, PackagingError
+# FR-365 (D65) — the alpha-halo guard runs on the file the packager just wrote, so it is imported
+# from the domain that wrote it. Both calls are SYNCHRONOUS Pillow work and go through
+# `asyncio.to_thread` at their one call site (`_alpha_guard`), exactly as `crop_marks` does below.
+from hypesocials.outputs import flatten_frame, inspect_frame
 # `plan.py` owns the source-deck arithmetic (it is the stage that fixed this deck's length), so the
 # truncation test below asks it rather than re-deriving "how long was the source deck" here — two
 # implementations of that question are two decks that can disagree about which panels shipped.
@@ -396,7 +400,10 @@ class _Deck:
     #: outright) and what the meta's rounds rows are cross-read against.
     rerendered: set[int] = field(default_factory=set)
     #: FR-317's SEPARATE one-shot ledger: the JOBS that have already been resubmitted once. A key
-    #: is a slide number, or `(1, candidate_id)` for a cover candidate — each candidate is its own
+    #: is a slide number, `(1, candidate_id)` for a cover candidate, or `"alpha:<n>"` for D65's
+    #: alpha-halo repair of slide n (FR-365 — its own bucket, so a slide that already spent its
+    #: FR-317 retry on a timeout is still entitled to one re-render of a see-through frame, and
+    #: the other way round) — each candidate is its own
     #: FR-317 ledger (FR-351), because three covers submitted concurrently are three jobs and a
     #: single shared key would hand the one retry to whichever of them happened to time out first,
     #: which is a scheduling accident rather than a policy. Kept apart from the gauntlet's
@@ -784,6 +791,10 @@ class _Deck:
         verdict = await self._pick_cover(fetched, landed)
         winner = next((outcome for number, outcome, _ in fetched if number == verdict.chosen),
                       landed[0][1])
+        # `priority` left at its `WAVE2` default on purpose (D65): the only thing it reaches is
+        # FR-365's halo re-render of this cover, and the whole deck is blocked on slide 1 landing
+        # clean, so that repair belongs in the tier the permit gate serves FIRST — not queued
+        # behind the wave-1 anchors of every other carousel in the run.
         await self._store(1, winner, lost=True)
         self.cover_pick = {"candidates": [stored[number] for number in sorted(stored)],
                            "chosen": verdict.chosen, "reason": verdict.reason,
@@ -984,11 +995,11 @@ class _Deck:
         # `self.reasons`, which is the deck's ledger of slides that are MISSING — a "slide 3:
         # declined by the spend cap" line beside `missing_slide_numbers: [5]` told the operator
         # slide 3 was lost when slide 3 was delivered (FR-73).
-        return await self._store(number, outcome, lost=not fix)
+        return await self._store(number, outcome, lost=not fix, priority=priority)
 
     async def _render(
         self, number: int, *, anchor: bool, kind: ReserveKind, priority: RenderPriority,
-        fix: str = "", ledger: Hashable | None = None,
+        fix: str = "", ledger: Hashable | None = None, lost: bool | None = None,
     ) -> RenderOutcome | None:
         """Order one slide and hand back the finished job — the SUBMIT half of `_slide`.
 
@@ -1008,6 +1019,13 @@ class _Deck:
         replacement anchor deliberately shares slide 1's bucket exactly as it always has. FR-351's
         fan-out is the exception and passes `(1, candidate_id)`, because its candidates are
         concurrent, independent jobs — see `_resubmit`.
+
+        `lost` OVERRIDES the `not fix` default (D65/FR-365) and has exactly one caller:
+        `_alpha_guard`, whose re-render replaces a slide that is already delivered and already
+        shipping. It is a repair, like a gauntlet fix, but it carries no fix suffix — the request
+        is byte-identical, because nothing about the prompt produced the halo — so `fix` could not
+        be used to say "this loss costs the deck nothing" without changing the bytes that go out.
+        `None` keeps every pre-D65 caller byte-identical.
         """
         env = self.env
         # A gauntlet RE-RENDER can fail without losing anything: the slide it was improving is
@@ -1015,7 +1033,7 @@ class _Deck:
         # `self.reasons`, which is the deck's ledger of slides that are MISSING — a "slide 3:
         # declined by the spend cap" line beside `missing_slide_numbers: [5]` told the operator
         # slide 3 was lost when slide 3 was delivered (FR-73).
-        lost = not fix
+        lost = (not fix) if lost is None else lost
         if env.halted:  # re-read before EVERY submission (FR-201/108)
             self.abandoned = self.abandoned or not self.outcomes
             self._note(f"slide {number}: interrupted before submission", lost=lost)
@@ -1042,7 +1060,8 @@ class _Deck:
         return await self._call(number, prompt, urls, kind=kind, priority=priority, lost=lost,
                                 ledger=ledger)
 
-    async def _store(self, number: int, outcome: RenderOutcome, *, lost: bool) -> bool:
+    async def _store(self, number: int, outcome: RenderOutcome, *, lost: bool,
+                     priority: RenderPriority = RenderPriority.WAVE2) -> bool:
         """One finished job -> one slide file on disk. True when that slide is deliverable.
 
         Shared by the first pass, by FR-351's chosen cover and by the gauntlet's fix loop, which is
@@ -1050,6 +1069,18 @@ class _Deck:
         each has to re-point the anchor when slide 1 moves, and each has to answer a full disk the
         same way. Two copies of that would be two decks that disagree about which slide 1 the body
         pages copy.
+
+        **It is also the ONE landing seam, which is why FR-365's alpha-halo guard hangs off the
+        end of it** (D65). Every route a frame can reach the operator's folder by — the first
+        pass, FR-317's resubmit of a timed-out job, FR-351's chosen cover, FR-95's replacement
+        anchor and every gauntlet fix re-render — ends here at `store_render`, so a check placed
+        here covers all of them and cannot be forgotten by the next route somebody adds. Placing
+        it any earlier would mean checking a provider URL nobody had downloaded yet; any later
+        would mean the critics judging a see-through frame.
+
+        `priority` is carried only for that guard's own re-render and defaults to `WAVE2` — the
+        tier a follow-up job on a deck already in flight belongs to, the same one the gauntlet's
+        fix loop uses. It changes nothing about the store itself.
         """
         env = self.env
         url = outcome.result_urls[0] if outcome.result_urls else ""
@@ -1084,6 +1115,90 @@ class _Deck:
             # workstation rather than the render, and both keep the partial deck that ships.
             return self._note(f"slide {number}: {exc.reason}", error=True, lost=lost)
         self.delivered.add(number)
+        return await self._alpha_guard(number, priority=priority)
+
+    async def _alpha_guard(self, number: int, *, priority: RenderPriority) -> bool:
+        """FR-365: refuse a see-through frame ONCE, then repair it — never lose the slide over it.
+
+        The defect (run `20260821_121514_q745`, LinkedIn cover): gpt-image-2 returned an RGBA
+        frame whose alpha band is a ragged transparent smear around all four edges — 49% of the
+        frame under alpha 250, the 25 px edge ring 100% of it — while its thirteen sibling slides
+        in the same run came back as plain RGB with no alpha channel at all. The picture is fine;
+        the file is unpublishable, and nothing in the engine looked at it. `outputs.alpha_halo`
+        owns the measurement and the thresholds; this method owns what a failed one COSTS.
+
+        **One resubmit, on its own ledger key.** FR-317 grants a JOB one identical retry, and
+        `self.resubmitted` is that ledger; this takes an `"alpha:<n>"` key in the same set rather
+        than a second bookkeeping structure of its own. Its own key because the two failures are
+        different jobs from the ledger's point of view: a slide whose first render TIMED OUT has
+        already spent `number`, and denying it the halo retry — or vice versa — would make which
+        defect a slide is entitled to be repaired for depend on which one happened first. One key,
+        one retry, never a third: the key is added BEFORE the await. A STRING and not a tuple,
+        deliberately — `_resubmit` reads a tuple key as FR-351's `(1, candidate_id)` and would log
+        this slide's own number as a cover-candidate id.
+
+        **The replacement lands through `_store` again**, which re-enters this guard. That
+        recursion is bounded at depth two by the ledger key alone: on the second pass the key is
+        already spent, so a frame that came back haloed twice goes straight to the flatten. Doing
+        it this way rather than with a private re-render path is what makes the repaired frame a
+        first-class landed slide — its URL becomes the neighbour reference, slide 1 re-points the
+        anchor, and the critics judge what actually shipped.
+
+        **The flatten is the floor, not the answer.** It rewrites pixels a model was paid for, so
+        it runs only after the retry, and it earns `alpha_flattened` so the operator knows which
+        card was repaired. A flatten that itself fails ships the haloed frame with the same tag —
+        a deck with one ugly cover beats a deck with a missing cover (§0.14c).
+
+        Returns True in every branch: by the time this runs the slide is already in
+        `self.delivered` and on disk, and no outcome of a cosmetic check may take it back out.
+        """
+        env, path = self.env, self.paths.get(number)
+        if path is None:
+            return True
+        verdict = await asyncio.to_thread(inspect_frame, path)
+        if verdict.clean:
+            return True
+        env.log.warn(
+            "alpha_halo_detected",
+            f"{self.entry.asset_id} slide {number}: {verdict.reason} — {verdict.edge_note} "
+            "(FR-365)",
+            asset_id=self.entry.asset_id, slide=number, ring_share=round(verdict.ring_share, 4),
+            edges=[round(share, 4) for share in verdict.edges], frame=path.name)
+        key: Hashable = f"alpha:{number}"
+        stopped = env.halted or env.credits_exhausted or self.doomed
+        if key not in self.resubmitted and not stopped:
+            self.resubmitted.add(key)  # one-shot, before the await: no path may take it twice
+            env.log.warn(
+                "alpha_halo_resubmit",
+                f"{self.entry.asset_id} slide {number}: the frame landed see-through, so the SAME "
+                "job is submitted once more (FR-365 on FR-317's pattern, attempt 2 of 2); a "
+                "second halo is flattened rather than re-ordered",
+                asset_id=self.entry.asset_id, slide=number, attempt=2)
+            outcome = await self._render(number, anchor=self.anchored and number != 1,
+                                         kind="discretionary", priority=priority, ledger=key,
+                                         lost=False)
+            # `lost=False` on both halves: the slide this is replacing is ALREADY delivered and
+            # already shipping, so a failed replacement is a repair that did not happen, never a
+            # missing slide in `self.reasons` and never a D51 defect.
+            if outcome is not None and await self._store(number, outcome, lost=False,
+                                                         priority=priority):
+                return True  # the replacement landed and was re-checked by the recursion above
+        result = await asyncio.to_thread(flatten_frame, self.paths.get(number) or path)
+        self.folder.mark(DegradationTag.ALPHA_FLATTENED)
+        if result.ok:
+            env.log.warn(
+                "alpha_flattened",
+                f"{self.entry.asset_id} slide {number}: still see-through after its one resubmit, "
+                f"so the frame was composited onto its own ground colour "
+                f"#{result.ground[0]:02x}{result.ground[1]:02x}{result.ground[2]:02x} and ships "
+                "repaired (FR-365)",
+                asset_id=self.entry.asset_id, slide=number, ground=list(result.ground))
+        else:
+            env.log.warn(
+                "alpha_flatten_failed",
+                f"{self.entry.asset_id} slide {number}: the see-through frame could not be "
+                f"repaired ({result.reason}) and ships as it landed — check this card by eye",
+                asset_id=self.entry.asset_id, slide=number, detail=result.reason)
         return True
 
     async def _call(
@@ -1132,7 +1247,8 @@ class _Deck:
         failure is FINAL — the slide flows into the ordinary lost-slide path with the second job's
         own cause, and `self.resubmitted` guarantees there is never a third.
 
-        **One ledger per JOB, not per slide number** (FR-351, v2.6.0/D62). `ledger` defaults to
+        **One ledger per JOB, not per slide number** (FR-351, v2.6.0/D62; FR-365 D65 adds a third
+        key shape, `"alpha:<n>"`, for a halo repair). `ledger` defaults to
         `number`, which is the pre-D62 bucket and keeps every existing caller byte-identical —
         including FR-95's replacement anchor, which shares slide 1's bucket exactly as it always
         has. The cover fan-out passes `(1, candidate_id)` instead, because its two or three
@@ -1446,7 +1562,7 @@ class _Deck:
                         status="declined_runway" if self.starved and not starved
                         else "declined_budget")
                 billed = float(outcome.cost_usd or 0.0) or projected
-                stored = await self._store(number, outcome, lost=False)
+                stored = await self._store(number, outcome, lost=False, priority=priority)
                 if not stored:
                     return gauntlet.RerenderResult(status="failed", cost_usd=billed)
                 self.rerendered.add(number)
