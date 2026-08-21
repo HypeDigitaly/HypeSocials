@@ -4,7 +4,7 @@
 
 Covers every external system HypeSocials talks to: how it connects, what it fetches or submits, and how it fails safely. Cross-references: `00-overview.md` for the pipeline stages that call these integrations, `30-configuration-and-run.md` for config file structure, `10-pipeline.md` for the analyze/write/generate stages that consume this data, `40-outputs-and-logging.md` for run logging of every call made here.
 
-Requirement ranges owned by this file: **FR-30–FR-49**, **FR-110–FR-129**, **FR-240–FR-249**, and **FR-270–FR-279** (FR-130+ belongs to `30-configuration-and-run.md`; the FR-240 block carries reference-image and reel-reference upload paths, FR-243/FR-244, both under the one Kie file-upload API door; FR-160–FR-166 withdrawn — see Design Decisions); the FR-270 block carries the v1.5 render-provider seam, Section 12 — FR-270–FR-273 used, FR-274–FR-279 held for this file's future provider/profile work); NFR-10–NFR-14, NFR-110–NFR-112.
+Requirement ranges owned by this file: **FR-30–FR-49**, **FR-110–FR-129**, **FR-240–FR-249**, **FR-270–FR-279**, and **FR-356–FR-359** (FR-130+ belongs to `30-configuration-and-run.md`; the FR-240 block carries reference-image and reel-reference upload paths, FR-243/FR-244, both under the one Kie file-upload API door; FR-160–FR-166 withdrawn — see Design Decisions); the FR-270 block carries the v1.5 render-provider seam, Section 12 — FR-270–FR-273 used, FR-274–FR-279 held for this file's future provider/profile work; FR-356–FR-359 new in D64 carry the Codex subscription LLM and render provider seams); NFR-10–NFR-14, NFR-110–NFR-112.
 
 Config key names used below (`poll_interval_s`, `mcp_startup_timeout_s`, `http_max_attempts`, `mcp_call_timeout_s`, and the rest) are **defined canonically in `30-configuration-and-run.md`** — this file references them by name and states the behaviour they govern; it does not own their defaults.
 
@@ -14,7 +14,7 @@ HypeSocials talks to five outside systems, split into two clean groups.
 
 **Content systems** — Virlo (topic and post data), Notion (brand info), and later Postiz (scheduling) — are things that *hold* content, so the engine talks to them through **MCP**, a standard way for an AI app to call another program's tools. Virlo doesn't have an official MCP server, so HypeSocials ships its own tiny one, written in plain Python, that just translates Virlo's normal web API into five MCP tools — no caching, nothing fancy. One of those five simply lists the available monitors by name and id, so setting the app up the first time doesn't depend on hunting for numbers in a dashboard. Notion has a real MCP server too, but HypeSocials uses the simple "paste a token" version, not the one that needs a browser login, because runs happen unattended overnight. Postiz, coming in the next phase, is the one exception: its official AI-connector (MCP) genuinely cannot accept the image/video files this app creates, so drafts get pushed to Postiz over its plain web API instead — MCP is only used there for small lookups, not for publishing. The full Postiz plan lives in `60-publishing-postiz.md`; this file states the honest transport facts.
 
-**Model APIs** — OpenRouter (the AI that screens topics for brand safety, selects copy, and runs the post-render quality gate via three independent critics) and Kie.ai (the service that renders images and reels) — are just plain web calls. Reels come back with AI-generated sound built in. Model APIs don't hold state between calls, so wrapping them in MCP would add nothing but slowdown.
+**Model APIs** — OpenRouter (the AI that screens topics for brand safety, selects copy, and runs the post-render quality gate via three independent critics) and Kie.ai (the service that renders images and reels) — are just plain web calls. Reels come back with AI-generated sound built in. Codex (ChatGPT Max subscription via local proxy) can swap in for OpenRouter and Kie.ai, eliminating API spend (FR-356–359). Model APIs don't hold state between calls, so wrapping them in MCP would add nothing but slowdown.
 
 **Models can be swapped by editing a text file, not the engine.** Every model name — the copywriter, the image model, the reel model — lives in the config file, and both model services accept whichever model you name through the same door, so moving to a newer or cheaper model of the same kind is a one-line edit. Talking to a rendering service happens through one small doorway with exactly four jobs: send work, ask if it's done, collect the finished links, and turn a file on the operator's computer into a link. Kie.ai is the only service plugged into that doorway today. Each render model also carries a short note saying what it calls its own settings and which prompt style it likes, so adding a completely new model family later means writing that note plus a set of prompts — not rebuilding the engine. Name a model the engine has no note for and the run stops before spending a cent, saying exactly which note is missing. Higgsfield.ai was researched as a second rendering service and turned down for now: it doesn't have the reel model this app depends on, and its AI-connector insists on a human logging in — which an unattended overnight run cannot do.
 
@@ -227,6 +227,21 @@ OpenRouter is the routing layer for both LLM roles: **Sonnet 5** (optional visio
 - **NFR-12**: Per-call token limits for each OpenRouter model role SHALL be configurable, not hardcoded.
 - **NFR-111**: Per-role token limits SHALL carry a configured floor.
 
+## 7a. Codex subscription door (FR-356)
+
+Codex is the operator's ChatGPT Max subscription (max 20 conversations) exposed as an OpenAI-compatible HTTP endpoint on localhost via `npx openai-oauth@latest`. The engine probes and starts the proxy at pre-flight if needed, eliminating all API spend for LLM and render calls.
+
+**Connection:** `models.llm_base_url` (default `http://127.0.0.1:10531/v1`, loopback only; Codex proxy never runs over the network). Single environment: none required (OAuth token lives in `~/.codex/auth.json`, read by proxy only).
+
+**Pre-flight probe (FR-357):** Before `preflight.check`, the runner awaits `codex_proxy.ensure_proxy(llm_base_url)`: `GET /v1/models` is probed; when unreachable, `hypesocials/codex_proxy.py` starts `npx openai-oauth@latest --port <port>` itself under a kill-on-close Windows job object (stdin detached, output to `logs/codex_proxy.log`), polls until ready (≤ 45 s) and records the listed model ids; a proxy it started is stopped on every exit path. `llm_base_url` must be a loopback address.
+
+**LLM calls:** Every structured call (vision, analysis, copy) uses `POST /v1/responses` with vision + strict JSON schema verified. No API key sent. Reasoning tokens are unbilled but available.
+
+**Model IDs:** Under codex every configured id (`models.analysis`, `models.copy`, `models.critic`, per-critic overrides; `gpt-image-2` for the codex render provider) must appear in the PROXY's model list — a missing id is a pre-flight exit 2 naming the id and the listed ids (the pre-pivot OpenRouter ids are the misconfiguration this catches). The operator rule "latest models only" (GPT-5.6 family + gpt-image-2) lives in the shipped brand configs, not in code.
+
+- **FR-356**: The engine SHALL support `models.llm_backend: codex` as a config-level backend selector alongside openrouter (engine default); zero code change to swap paths. `models.llm_base_url` (default `http://127.0.0.1:10531/v1`) routes calls under codex.
+- **FR-357**: At pre-flight the engine SHALL probe `GET /v1/models` at `models.llm_base_url` (loopback only) and, when unreachable, SHALL start `npx openai-oauth@latest` itself under a kill-on-close job object and wait for readiness (≤ 45 s); a proxy that is neither reachable nor startable is exit 2, $0. Every configured model id SHALL be present in the proxy's model list (exit 2 naming the id otherwise); `formats.reel > 0` under `render_provider: codex` SHALL be refused (exit 2); the fixed ≈1254 px output SHALL be printed as one informational line. Secrets gating: `OPENROUTER_API_KEY` required only under `llm_backend: openrouter`, `KIE_API_KEY` only under `render_provider: kie`.
+
 ## 8. Kie.ai REST
 
 Kie.ai is the image/video generation backend, called directly via REST over `httpx` using its async job model.
@@ -419,18 +434,39 @@ Each critic receives: rendered frame(s) as image(s), per-frame contract fields (
 - **FR-322** *(integration side; owned by `10-pipeline.md`)*: Three independent critics (`brief`, `system`, `craft`) SHALL judge rendered frames post-completion via OpenRouter with the `critic` role, receiving the frames and contract data only — no assembled render prompt, no reference set, no prior-round verdicts, and no sibling verdicts within a round (the only style referent is the `style_dna`/`layout_zones` wording, which is stated honestly). Each critic call is one multi-image StructuredCall returning strict JSON with per-frame defects (code, zone, confidence, ≤200-char detail); the per-critic enum is enforced in-schema (`brief`: presence/leakage codes, `system`: style/consistency codes, `craft`: execution codes). An unavailable critic (unparseable, timeout, error) is retried once, then dropped for the deck with `degraded_gate` + `gauntlet_critic_unavailable`. All enabled critics unavailable ⇒ result `skipped` (ship as-is, tagged), never BLOCKED.
 - **FR-328** *(integration side; owned by `10-pipeline.md`)*: Per-round per-frame per-critic verdicts, critic token cost, and terminal outcome SHALL be persisted in `meta.yaml.gauntlet` and logged on every terminal path via the events owned by `40-outputs-and-logging.md` (`gauntlet_round`, `gauntlet_rerender`, `gauntlet_blocked`, `gauntlet_budget_stop`, `gauntlet_deadline_stop`, `gauntlet_critic_unavailable`, `gauntlet_fix_truncated`, `critic_empty_fail`).
 
+### 8f. Codex image provider (FR-358/359)
+
+Under `models.render_provider: codex`, image and carousel-slide rendering runs through the Codex proxy's OpenAI-compatible image endpoints instead of Kie.ai.
+
+**Endpoints:**
+- **`POST /v1/images/generations`** — Text-to-image, no reference images. Same `gpt-image-2` model id as Kie. Prompt, model id, and response format parameters match OpenAI's API shape.
+- **`POST /v1/images/edits`** — Image-to-image (multipart). Prompt, image file (anchor or logo patch), mask (optional), model id. Returns edited image; reference fidelity verified against the input.
+
+**Upload & result handling (FR-359):**
+- **No network upload:** The `upload_file` seam (Section 8b) is not used under codex. Brief-supplied and tool-mark reference images are read from disk and passed as `image_bytes` (base64 or multipart) directly in the image request.
+- **Local file:// results:** Image generation results are returned as local PNG files. The `RenderResult.result_urls` field contains `file://` paths (e.g., `file:///C:/output/<run>/.renders/slide_01.png`), never network URLs.
+- **No expiry:** Local files persist for the run; no 24-hour cleanup by an external service.
+- **D46 carve-out unchanged:** Tool-mark patches from source slides still stored in `source/<post_id>/marks/` and are the only source-store bytes permitted as references (D48).
+
+**No video:** Under codex, `formats.reel` must be 0. Any non-zero `formats.reel` value triggers a pre-flight exit 2 refusal: "Codex provider does not support video generation (Seedance 2.5 unavailable)".
+
+**Pricing:** All image generations show $0.00 origin "subscription" in the estimate (FR-360).
+
+- **FR-358**: Under `render_provider: codex`, the engine SHALL submit image and carousel-slide jobs to the Codex proxy's `/v1/images/generations` (text-to-image) and `/v1/images/edits` (image-to-image with multipart refs). Reference fidelity (anchor chaining, logo patches) verified. No Kie.ai calls.
+- **FR-359**: Image results under codex SHALL be returned as local `file://` paths in `RenderResult.result_urls`, not network URLs. Brief-supplied images and tool-mark patches (D48, D46) are read from disk and passed as multipart/base64 to the image endpoints. No network file upload occurs; D46 source-store carve-out unchanged (marks/ only).
+
 ## 9. Secrets
 
 Secrets are supplied via environment variables, loadable from a local `.env` file, never committed and never hardcoded:
 
-| Variable | Used by | Missing-key behavior |
+| Variable | Used by | Required under |
 |---|---|---|
-| `VIRLO_API_KEY` | Virlo MCP wrapper (Section 3), REST calls to `api.virlo.ai` | Run aborts at pre-flight — no trend data means no run is possible. |
-| `NOTION_TOKEN` | Integration secret for the self-hosted, token-based Notion MCP server (stdio, Section 5) | `notion_influence` is forced to `off` for the run with a clearly logged warning; run proceeds without brand context. |
-| `POSTIZ_API_KEY` | Postiz's public API key (Settings → Developers → Public API on the operator's instance); used by the Phase 2 REST publisher (Section 6) for `Authorization: <key>` and, optionally, by Postiz's MCP ops seam | N/A in MVP; Phase 2 `--publish` refuses to run without it. Not required for MVP generation runs at all. |
-| `POSTIZ_BASE_URL` | Base URL for the Phase 2 Postiz REST publisher; defaults to `https://api.postiz.com/public/v1` (hosted cloud, 60-publishing FR-225); a self-hosted URL works too | N/A in MVP; Phase 2 uses the default when unset — never a refusal. Not a secret in the credential sense, but env-sourced alongside the key. |
-| `OPENROUTER_API_KEY` | OpenRouter REST (Sonnet 5, GPT 5.6 Luna) | Run aborts at pre-flight — no analysis or copy is possible without it. |
-| `KIE_API_KEY` | Kie.ai REST (GPT Image 2, Seedance 2.5) | Run aborts at pre-flight — nothing can be generated without it. |
+| `VIRLO_API_KEY` | Virlo MCP wrapper (Section 3), REST calls to `api.virlo.ai` | All backends (metered + subscription). Aborts pre-flight if missing. |
+| `NOTION_TOKEN` | Integration secret for the self-hosted, token-based Notion MCP server (stdio, Section 5) | Optional (when `notion_influence: copy` or `full`). Absent → `notion_influence` forced to `off` + warning. |
+| `POSTIZ_API_KEY` | Postiz's public API key (Settings → Developers → Public API); Phase 2 REST publisher (Section 6) | N/A in MVP; Phase 2 `--publish` requires it. Not required for MVP generation. |
+| `POSTIZ_BASE_URL` | Phase 2 Postiz REST base URL; defaults `https://api.postiz.com/public/v1` | N/A in MVP; Phase 2 uses default when unset. |
+| `OPENROUTER_API_KEY` | OpenRouter REST (Sonnet 5, GPT 5.6 Luna) — Section 7 | Metered backend only (`models.llm_backend: openrouter`). Aborts pre-flight if missing AND backend is metered. Not required under codex. |
+| `KIE_API_KEY` | Kie.ai REST (GPT Image 2, Seedance 2.5) — Section 8 | Metered backend only (`models.render_provider: kie`). Aborts pre-flight if missing AND backend is metered. Not required under codex. |
 
 A missing key degrades only the features that need it, loudly and early, never silently. Keys structurally required for any output (Virlo, OpenRouter, Kie.ai) cause a pre-flight abort. Keys gating an optional feature (Notion, Postiz) degrade or refuse that feature only.
 
@@ -474,12 +510,15 @@ Per the shared philosophy: **degrade and report, never block the whole run.** Th
 
 ## 11. Model table
 
-| Role | Model | Access |
+| Role | Metered (OpenRouter/Kie.ai) | Subscription (Codex) |
 |---|---|---|
-| Optional vision check (post-render safety gate) | `anthropic/claude-sonnet-5` | OpenRouter REST |
-| Copywriting (captions, hooks, on-image/slide text, hashtags) | GPT 5.6 Luna (OpenRouter id `openai/gpt-5.6-luna`, confirmed) | OpenRouter REST |
-| Image & carousel slides | `gpt-image-2` — **two routes under one profile**: `gpt-image-2-image-to-image` (reference-bearing, `input_urls` ≤16) and `gpt-image-2-text-to-image` (reference-free only; accepts no image inputs). ~$0.03/1K img (2K ~$0.05, 4K ~$0.08 — third-party corroborated, verify), resolutions 1K/2K/4K | Kie.ai REST (createTask/recordInfo) |
-| Reels | Seedance 2.5 (Kie model id `bytedance/seedance-2-5`, confirmed; per-unit price still unpublished — config-required before reels can be planned) | Kie.ai REST |
+| Analysis (vision check, slide intelligence) | `anthropic/claude-sonnet-5` — OpenRouter REST | `gpt-5.6-terra` — Codex `/v1/responses` |
+| Copywriting (captions, hooks, on-image/slide text, hashtags) | `openai/gpt-5.6-luna` — OpenRouter REST | `gpt-5.6-luna` — Codex `/v1/responses` |
+| Gauntlet brief critic | `anthropic/claude-sonnet-5` via `models.critic` (default: analysis model) | `gpt-5.6-sol` — Codex `/v1/responses` |
+| Gauntlet system critic | (same as brief) | `gpt-5.6-terra` — Codex `/v1/responses` |
+| Gauntlet craft critic | (same as brief) | `gpt-5.6-terra` — Codex `/v1/responses` |
+| Image & carousel slides | `gpt-image-2` — **two routes**: `gpt-image-2-image-to-image` (ref-bearing, ≤16) and `gpt-image-2-text-to-image` (ref-free). ~$0.03/1K img (2K ~$0.05, 4K ~$0.08), resolutions 1K/2K/4K — Kie.ai REST (createTask/recordInfo) | `gpt-image-2` — Codex `/v1/images/generations` (no refs) + `/v1/images/edits` (multipart refs). ~1254×1254 px output, no tier. `file://` local results. |
+| Reels | `bytedance/seedance-2-5` — Kie.ai REST. Per-unit price unpublished (config-required before planning) | Not supported. Pre-flight refusal, exit 2. |
 
 All model identifiers above are config values, not hardcoded strings — a model swap is a config edit (**D34**; the rules that make that true, and their limits, are Section 12, FR-270/FR-272).
 
@@ -498,7 +537,7 @@ The model market moves faster than this codebase ever will. Two rules keep that 
 3. **Retrieve result URLs** — the public link(s) to the finished asset(s), or their honest absence.
 4. **Upload a local file, receive a public URL** — the single door from local bytes to something a renderer can reference (Section 8b).
 
-**Kie.ai is the only implementation built** — `createTask`, `recordInfo`, and the file-upload API, exactly as Sections 8 through 8c specify. Everything above the seam (Generate, the seed-frame chain, the carousel anchor chain, budget accounting, packaging) speaks only these four operations. Kie's field names, its `resultJson` shape, its state vocabulary, and its HTTP status codes stay *behind* the seam; the three-outcome classification — fail, stuck, success-with-unusable-result (FR-242) — is something the seam reports, not something each caller re-derives from raw provider JSON. A second provider is therefore an additional implementation of four operations, never a fork of the pipeline.
+**Two implementations built: Kie.ai (metered) and Codex (subscription).** Kie.ai: `createTask`, `recordInfo`, and the file-upload API, exactly as Sections 8 through 8b specify. Codex: `/v1/images/generations` (text-to-image), `/v1/images/edits` (image-to-image multipart), and local `file://` results (no upload, no expiry), per Section 8f. Everything above the seam (Generate, the seed-frame chain, the carousel anchor chain, budget accounting, packaging) speaks only the four operations; the particular provider is selected at config load via `models.render_provider`. Kie's field names, its `resultJson` shape, its state vocabulary, and its HTTP status codes stay *behind* the seam, as do Codex's endpoint signatures and result paths; the three-outcome classification — fail, stuck, success-with-unusable-result (FR-242) — is something the seam reports, not something each caller re-derives from raw provider JSON. Each provider is therefore an additional implementation of four operations, never a fork of the pipeline.
 
 **Model profiles.** An id alone doesn't tell the engine how to talk to a model — providers disagree about what to call a prompt, a reference, a ratio, or a duration, and about how many references they will accept. So each render model the engine supports carries a small **profile** declaring three things:
 
