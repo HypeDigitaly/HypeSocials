@@ -438,15 +438,15 @@ Each critic receives: rendered frame(s) as image(s), per-frame contract fields (
 
 Under `models.render_provider: codex`, image and carousel-slide rendering runs through the Codex proxy's OpenAI-compatible image endpoints instead of Kie.ai.
 
-**Endpoints:**
-- **`POST /v1/images/generations`** — Text-to-image, no reference images. Same `gpt-image-2` model id as Kie. Prompt, model id, and response format parameters match OpenAI's API shape.
-- **`POST /v1/images/edits`** — Image-to-image (multipart). Prompt, image file (anchor or logo patch), mask (optional), model id. Returns edited image; reference fidelity verified against the input.
+**Endpoints & parameters:**
+- **`POST /v1/images/generations`** — Text-to-image, no reference images. Same `gpt-image-2` model id as Kie. **D65 FR-364:** `quality: "high"` parameter (colour lock + consistent rendering across slides). Prompt, model id, and response format parameters match OpenAI's API shape.
+- **`POST /v1/images/edits`** — Image-to-image (multipart). Prompt, image file (anchor or logo patch), mask (optional), model id. **D65 FR-364:** `input_fidelity: "high"` parameter (anchor 1:1 match and logo patch exact reproduction). Returns edited image; reference fidelity verified against the input.
 
 **Upload & result handling (FR-359):**
 - **No network upload:** The `upload_file` seam (Section 8b) is not used under codex. Brief-supplied and tool-mark reference images are read from disk and passed as `image_bytes` (base64 or multipart) directly in the image request.
 - **Local file:// results:** Image generation results are returned as local PNG files. The `RenderResult.result_urls` field contains `file://` paths (e.g., `file:///C:/output/<run>/.renders/slide_01.png`), never network URLs.
 - **No expiry:** Local files persist for the run; no 24-hour cleanup by an external service.
-- **D46 carve-out unchanged:** Tool-mark patches from source slides still stored in `source/<post_id>/marks/` and are the only source-store bytes permitted as references (D48).
+- **D46 carve-out unchanged, D65 second Pillow carve-out (FR-370):** Tool-mark patches from source slides still stored in `source/<post_id>/marks/` and are the only source-store bytes permitted as references (D48). **D65 new:** local post-render screenshot compositing uses Pillow (SECOND sanctioned Pillow use, local-only, never uploads, never touches render payloads).
 
 **No video:** Under codex, `formats.reel` must be 0. Any non-zero `formats.reel` value triggers a pre-flight exit 2 refusal: "Codex provider does not support video generation (Seedance 2.5 unavailable)".
 
@@ -454,6 +454,7 @@ Under `models.render_provider: codex`, image and carousel-slide rendering runs t
 
 - **FR-358**: Under `render_provider: codex`, the engine SHALL submit image and carousel-slide jobs to the Codex proxy's `/v1/images/generations` (text-to-image) and `/v1/images/edits` (image-to-image with multipart refs). Reference fidelity (anchor chaining, logo patches) verified. No Kie.ai calls.
 - **FR-359**: Image results under codex SHALL be returned as local `file://` paths in `RenderResult.result_urls`, not network URLs. Brief-supplied images and tool-mark patches (D48, D46) are read from disk and passed as multipart/base64 to the image endpoints. No network file upload occurs; D46 source-store carve-out unchanged (marks/ only).
+- **FR-364** *(new v2.9.0, D65)* — Colour lock: `quality: "high"` on `/v1/images/generations` and `/v1/images/edits`; `input_fidelity: "high"` on `/v1/images/edits` only. The params are always sent; a proxy that ignores them is acceptable (acceptance probed once with a $0 dev-time call, 2026-08-21) — no runtime capability check, no fallback path.
 
 ## 9. Secrets
 

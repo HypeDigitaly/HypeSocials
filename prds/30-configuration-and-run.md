@@ -311,6 +311,7 @@ run:
   trend_history_days: 30           # post-ID-level no-repeat window (days); must be >= max_post_age_days (FR-307, §0.10)
   max_trend_reuses_per_run: 6
   carousel_anchor: true
+  screenshot_reuse: false          # D65 FR-370: when true, paste exact-pixel screenshots into reserved plate; three brand configs pin true
   reel_overlay_text: seed_frame    # seed_frame | in_model | none
   reel_audio: true                 # Seedance generate_audio; false = silent clip
   reel_duration_s: 5               # 4-30 (Seedance verified range), clamped at pre-flight if out of range
@@ -370,7 +371,7 @@ models:
   image_profile: gpt-image-2                # param mapping + reference limits + prompts/ set (20-integrations FR-272)
   video_profile: seedance-2-5
   reasoning_effort: low             # models.copy role only; Luna is a reasoning model
-  critic_reasoning_effort: low      # models.critic role; bounds gauntlet critic spend (v2.2.0)
+  critic_reasoning_effort: low      # models.critic role; bounds gauntlet critic spend (v2.2.0). Engine default stays low; the three brand configs pin `high` since D65/FR-367 (they pinned `xhigh` under D64, and xhigh over-blocked — see 00-overview D65)
   temperature: { analysis: 0.4, copy: 0.8 }
   max_tokens: { analysis: 12000, copy: 3000, critic: 8000 }   # analysis 12000 (measured briefs); copy sized for grouped FR-99 call; critic 8000 (v2.2.0, per-critic defect verdict envelope — FR-322)
   max_tokens_floor: { analysis: 6000, copy: 1000, critic: 4000 }  # floor enforced by NFR-111; critic floor sized for minimum defect reporting
@@ -487,6 +488,7 @@ All flags override the loaded config for that run only (they never rewrite the c
 | `--verbose` or `-v` | Shows extended console output — all `keep` verdicts + reasons, all posts all topics, per-entry ref offers/choices, per-upload style-file lines, per-entry branding decisions, 15 s render heartbeats, job ids + reference URLs (FR-299). `run.log` and `events.jsonl` are unchanged by verbosity; only the console tier moves (§Output below). |
 | `--quick` | Skips the config picker step, selects the first runnable config from `_PREFERRED_CONFIGS` (or the one named by `--config`), prints which config is chosen and its readiness, then proceeds directly to the confirm stage — still interactive and still requires approval before spend (FR-285). Mutually exclusive with `--yes` (the combination is meaningless). |
 | `--styles <list>` | Overrides `styles.enabled` (comma-separated style keys from `prompts/styles.yaml`) — restricts this run's rotation to the named styles; unknown keys or a selection that empties the usable pool for a requested format refuse at pre-flight, $0 (FR-314). |
+| `--style-test` | *(new v2.9.0, D65, FR-369)* Diagnostic mode: generates one full carousel deck per enabled style, all on the same source post, skips trend history, gallery title gets " — STYLE TEST" suffix (no variant outputs). **Refuses without `--styles`** (the style list IS the test matrix); auto-overrides formats (carousel only, count = style count), platform (first platform), max trend reuses (= style count), cover candidates (1), gauntlet fail_action (degrade), run deadline (max 240 min). Proves all styles on live output; operator selects which to keep/disable. Config key `run.style_test` (CLI-only; config file setting warns) — not a wizard step. |
 | `--history-days N` | Overrides `trend_history_days` (the post-level no-repeat window in days, default 30). `0` is valid and turns the window off. A value outside the documented bounds is **refused in one line at the flag boundary, before any config is loaded — never clamped** (FR-285): a silently-corrected typo would hide exactly the kind of operator mistake this refusal exists to surface. The invariant `trend_history_days ≥ max_post_age_days` is checked at pre-flight; misconfiguration names both keys plainly (FR-307). |
 | `--brief <name>:<count>` | Requests a named campaign brief with a creative count; repeatable for multiple briefs (e.g. `--brief ai-audit-cta:2 --brief customer-story:1`). Folds into the plan and pre-flight estimate like any other creative; a missing/malformed brief is a pre-flight error naming the file (D26, FR-171/FR-172). |
 | `--yes` | Skips the interactive menu entirely; run starts immediately after the pre-flight estimate is logged (not shown interactively, but still computed and still enforced against the spend cap). Every decision the menu would have raised resolves to a documented non-blocking outcome — see FR-252. |
@@ -505,6 +507,23 @@ All flags override the loaded config for that run only (they never rewrite the c
 **FR-63** An unrecognized flag SHALL cause the engine to exit immediately with a one-line error naming the unknown flag, before any config load or API call.
 
 **FR-64** When a flag and a config value conflict (e.g. `--verbose` overriding `console_verbosity: normal` in config, which is harmless, versus `--images 0 --carousels 0 --reels 0` combined with a config that also nets zero creatives), the engine SHALL apply flags over config per FR-61 and, if the resulting plan requests zero total creatives, SHALL exit with a one-line explanation rather than starting an empty run.
+
+### Style-test mode overrides (FR-369, D65)
+
+When `--style-test` is set, the engine applies these temporary overrides to the config plan before pre-flight (non-persistent, affecting this run only):
+
+| Config key | Normal value(s) | Style-test override | Reason |
+|---|---|---|---|
+| `run.formats` | `{image: N, carousel: M, reel: K}` | `{image: 0, carousel: len(styles), reel: 0}` | One full carousel per style, all on same post |
+| `run.platforms` | Multiple platforms allowed | First of `run.platforms` (or the one platform `--platforms` names) | Single platform, one deck per style |
+| `run.max_trend_reuses_per_run` | Configured value | `= len(styles)` | Pinned post reused for every deck |
+| `run.cover_candidates` | 1–3 | 1 | Minimize per-deck cost |
+| `run.gauntlet.fail_action` | block \| degrade | degrade | Degrade non-leakage defects for quick proof |
+| `run.run_deadline_min` | Configured value | `max(configured, 240)` | Allows 17+ decks × batched critic roundtrips |
+| `logs/trend_history.json` | Updated after run | Unchanged | Style test never learns the pinned post |
+| Gallery title | `<run_id>` | `<run_id> — STYLE TEST` | Operator recognition in directory listings |
+
+Console output when style-test applies: `style test: 01→anime-noir-statement, 02→platform-showcase-card, ...` showing the entry-order–to–style mapping — a deterministic 1:1 walk of the `--styles` list in its given order (never the registry file order, never the matcher).
 
 **FR-139** *(amended v2.0.0)* `--preview-sources` SHALL execute Collect → Topics → Filter, and SHALL display every topic labelled with the filter verdict a paid run would reach: `keep`, `strip: <brand names>`, or `skip: <reason>` (PROMO, BLOCK, THIN). It SHALL apply **deterministic blocklist verdicts only** (fail-closed, labelled as such), show topics NOT trends, make zero LLM or render calls, and perform zero Kie uploads. The blocklist is $0; LLM verdicts belong to FR-140. (Virlo API calls themselves may carry metered cost against the operator's Virlo deposit — OQ-19; "free"/"$0" claims about this mode read precisely as "zero model spend".)
 

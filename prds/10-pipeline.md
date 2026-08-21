@@ -218,6 +218,32 @@ Either way the copy call is still the one-per-(topic × language) call of FR-99 
 
 ---
 
+## 4.5. Contract guard stage (Wave 0 — FR-362, FR-363)
+
+Before any render contract is frozen, panel_map rows are validated deterministically. **FR-362** governs nine pure-function guards:
+
+1. **Digit repair + drift check:** Within numeric-ish tokens (ISO digits + suffixes like GB, K, X, %, STARS), repair OCR confusables (I→1, l→1, O→0, o→0) when `source_text_original` has the digit at that position. Any remaining CHANGED digit triggers replacement with the original or wordless (if over budget), tagged `copy_digit_drift`.
+
+2. **Row-alignment check:** A row whose token-overlap with its own `source_text_original` falls below a floor (start ~0.3 Jaccard on content words) is misaligned—replace with verbatim original or wordless, tag `panel_map_realigned`. Duplicate `source_position` values refused outright.
+
+3. **Dedupe:** Collapse identical repeated lines within one row's `source_text` before contract finalization.
+
+4. **Identity scrub:** Run handle/competitor/commit/watermark scrub on every row BEFORE it becomes the contract. If stripping beheads the row (leading clause lost → subjectless fragment), drop to wordless rather than ship the orphan.
+
+5. **Truncation gate:** `truncation_suspect: true` or trailing (`,`, `(`, `N.` marker) gates the row—ship the un-truncated original or go wordless.
+
+6. **Coverage assertion:** `len(panel_map) + len(drops_with_reason) == source_panel_count`, else loud console warning + meta receipt, never silent.
+
+7. **Watermark-as-chrome:** A contract row equaling a source `brand_marks` string is stripped into chrome (kept in `source_text_original`), not rendered.
+
+8. **Incomplete-deck block (FR-363):** At packaging stage, if `slide_count < slides_ordered`, the creative is refused terminal — no publish, marked BLOCKED with reason `incomplete_deck`, tagged never-silent in console + meta.
+
+9. **Caption-voice guard (FR-363):** Captions carrying dense first-person creator voice (pronoun heuristic: leading `I`/`my`/`i'm` density) are tagged `caption_voice_review`, loud on console + gallery. Caption ships verbatim; operator reviews and decides.
+
+Guards (1)–(7) and the caption guard (9) run at copy finalization, before the render contract is frozen; the incomplete-deck block (8) runs at package time, on what actually landed. Unit tests fixture all real defects from prior runs (I6GB→16GB, I46K→146K, IOX→10X, 28GB→128GB, misalignment, dedupe, identity scrub, orphan fragments, truncation, coverage, caption voice).
+
+---
+
 ## 5. Image generation
 
 **FR-17 — Prompt assembly *(amended v2.1.0)*.** Every creative's image prompt is assembled deterministically from, in order: the assigned style's textual style DNA — `render_prompt` (≤120 words, from the meta-style registry), `layout_zones`, `palette`, `typography`, `text_placement`, `image_treatment`, `visual_pacing` (five style guidance fields); the copy's exact on-image text with an instruction to render it verbatim; and the mandatory clauses of FR-94. Assembly fills the model-specific scaffolds from the editable `prompts/` folder — the section order, text-locking phrasing, and per-model conventions are owned by `50-promptcraft.md`. For carousel slides, the prompt includes the slide's visual brief from intelligence analysis (FR-308). The assembled prompt is logged in full for every job (to `events.jsonl`, per `40-…`'s logging split). **Note:** style reference images are not attached; enriched textual style DNA carries the look (FR-18, D46 decision).
@@ -315,7 +341,9 @@ No ffmpeg, no stitching, no local audio work, no stitched voiceover or music tra
 
 ## 6a. Quality gate (Gauntlet loop)
 
-**FR-322 — Three-critic gate.** After a deck's frames are delivered (and per standalone image / reel seed frame), up to three independent fresh-context critics — `brief`, `system`, `craft` — judge the RENDERED FRAMES against contract data only (per-frame expected lines, counters, signature, wordless mandates, required/forbidden mark lists, style DNA, layout zones, list_mode, sanctioned-illegibility note, platform). Critics never receive the assembled render prompt, the reference set, the builder's reasoning, or each other's verdicts within a round. (They DO receive style DNA/layout zones — the same words the prompt uses; this is stated honestly: it is the only possible style referent.) Verdict = strict JSON, per-critic defect-code enum, `zone` + `confidence` per defect, bounded output; `frame` indexes the attachment slot and is re-mapped via the shared image-loading positions. A critic that returns nothing parseable is retried once, then dropped for the deck (`degraded_gate`); all-critics-unavailable ⇒ `skipped` (ship tagged), never BLOCKED.
+**Screenshot exact paste (FR-370 — D65).** After each render result lands locally, **before any critic sees it**, a screenshot-paste stage (if enabled via `run.screenshot_reuse: true`, pinned in all three brand configs) checks the slide's SOURCE panel intel (FR-306 item 6) for `panel_kind: screenshot` with a valid `screenshot_box` and composites the cropped source interface into the reserved plate (if the source file exists and identity screen passes — source creator's own post skipped). The paste happens on first render, all FR-317 resubmits, and every gauntlet re-render (paste is re-done identically each time). Pasted slides are never uploaded; the plate composite is the artifact critics and gallery see. Failed paste (missing file, box parsing, identity skip) ships the empty plate judged as-is (defect), tagged `screenshot_paste_failed`.
+
+**FR-322 — Three-critic gate.** After a deck's frames are delivered (pasted if applicable) and per standalone image / reel seed frame, up to three independent fresh-context critics — `brief`, `system`, `craft` — judge the RENDERED FRAMES (or pasted frames) against contract data only (per-frame expected lines, counters, signature, wordless mandates, required/forbidden mark lists, style DNA, layout zones, list_mode, sanctioned-illegibility note, platform). Critics never receive the assembled render prompt, the reference set, the builder's reasoning, or each other's verdicts within a round. (They DO receive style DNA/layout zones — the same words the prompt uses; this is stated honestly: it is the only possible style referent.) Verdict = strict JSON, per-critic defect-code enum, `zone` + `confidence` per defect, bounded output; `frame` indexes the attachment slot and is re-mapped via the shared image-loading positions. A critic that returns nothing parseable is retried once, then dropped for the deck (`degraded_gate`); all-critics-unavailable ⇒ `skipped` (ship tagged), never BLOCKED.
 
 **FR-323 — Fail list → targeted re-render.** A frame fails a round if any enabled critic reports a defect on it (empty-defect fails are logged `critic_empty_fail` and treated as pass). Only failing frames re-render. The fix suffix is composed EXCLUSIVELY from canned per-(code, zone) remedy sentences + the precedence block + the closing fence line; it is `_neutralize`d, competitor/creator-stripped, capped at 600 chars, carries the union of the frame's standing defect codes across rounds, and counts inside the prompt cap. Verbatim text is never trimmed by the loop. Re-render references: anchor + nearest delivered neighbor + patches.
 
