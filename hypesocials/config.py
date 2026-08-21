@@ -380,6 +380,28 @@ class ModelsConfig:
     Every id is a plain string (FR-270/280): a same-family swap is that one line and nothing else.
     """
 
+    # SESSION O (v2.8.0, D64): WHICH DOOR every LLM call leaves through. `openrouter` is the
+    # metered REST seam this engine shipped with (FR-39-41); `codex` is the operator's own ChatGPT /
+    # Codex subscription, exposed as an OpenAI-compatible endpoint on localhost by
+    # `npx openai-oauth@latest` (default port 10531). Under `codex` the per-role ids below are the
+    # proxy's bare names (`gpt-5.6-luna`, `gpt-5.6-sol`, ...), vision rides the `/responses`
+    # endpoint (the proxy's `/chat/completions` refuses base64 images), `OPENROUTER_API_KEY` is not
+    # required, and every LLM line of the estimate prices at $0 with origin "subscription" - the
+    # spend cap keeps guarding Virlo metering and nothing else. The proxy process is probed and,
+    # if absent, started at pre-flight (`codex_proxy.ensure_proxy`).
+    llm_backend: Literal["openrouter", "codex"] = "openrouter"
+    # The `codex` backend's base URL. Only ever a loopback address: the OAuth token lives in
+    # `~/.codex/auth.json` on this workstation and the proxy must never be exposed (D30 posture).
+    llm_base_url: str = "http://127.0.0.1:10531/v1"
+    # SESSION O (D64): WHO renders pixels. `kie` is the D34 Kie.ai implementation (metered,
+    # gpt-image-2 + Seedance); `codex` renders gpt-image-2 through the same local proxy's
+    # `/images/generations` (reference-free) and `/images/edits` (reference-bearing: anchor
+    # chaining, logo patches) at $0. Under `codex`: `KIE_API_KEY` is not required, reels cannot be
+    # rendered (no subscription path for video - `formats.reel` must be 0, refused at pre-flight),
+    # `upload_file` returns a `file://` URL instead of a Kie CDN URL, results land as local files,
+    # and the image tier is the proxy's fixed output (~1254 px measured 2026-08-21) whatever
+    # `platforms.<name>.image_resolution` asks - pre-flight prints that.
+    render_provider: Literal["kie", "codex"] = "kie"
     analysis: str = "anthropic/claude-sonnet-5"
     copy: str = "openai/gpt-5.6-luna"
     # v2.2.0 (D49): the gauntlet's own role. It is a SEPARATE role from `analysis` rather than a
@@ -405,7 +427,9 @@ class ModelsConfig:
     video: str = "bytedance/seedance-2-5"
     image_profile: str = "gpt-image-2"  # FR-281 — changes only on a model FAMILY change
     video_profile: str = "seedance-2-5"
-    reasoning_effort: Literal["low", "medium", "high"] = "low"  # `copy` role only (Luna)
+    # `xhigh` exists for the `codex` backend only (GPT-5.6 through the proxy accepts it; OpenRouter
+    # routing may not) - SESSION O, D64.
+    reasoning_effort: Literal["low", "medium", "high", "xhigh"] = "low"  # `copy` role only (Luna)
     # The CRITIC role's own effort knob (F5, Session 5.5). A sibling scalar rather than a role
     # keyed dict because `reasoning_effort` above already ships as a plain scalar in every config
     # on disk, and a config file is data (NFR-19): the key an operator has already written keeps
@@ -419,7 +443,7 @@ class ModelsConfig:
     # without touching the answer's own token cap, which stays the safety valve. Living here
     # rather than in the shipped YAMLs is deliberate: the bound then applies to every config
     # written before the key existed, with no file edit.
-    critic_reasoning_effort: Literal["low", "medium", "high"] = "low"
+    critic_reasoning_effort: Literal["low", "medium", "high", "xhigh"] = "low"
     # DELIBERATELY EMPTY (spikes/RESULTS.md §E): neither shipped model advertises `temperature`,
     # and sending it under `provider.require_parameters` returns HTTP 404. The key survives for a
     # model that does support it; FR-129 as written needs a D15 amendment.
