@@ -58,7 +58,10 @@ the contract does not show it that way and does not flag the frame
 
 MARKS — BOTH DIRECTIONS
 
-REQUIRED marks (these were ordered as real logos; absence is a defect):
+REQUIRED marks — ordered as real logos somewhere in this set. A frame owes one
+only when its own contract block carries a `marks:` row naming it; a frame with
+no such row was ordered none, and nothing is missing there whatever this list
+says:
 
 {{required_marks}}
 
@@ -67,14 +70,16 @@ unsanctioned logos, flagged names — presence is a defect):
 
 {{forbidden_terms}}
 
-A required mark that is nowhere on a frame that should carry it is
+A mark named on a frame's `marks:` row and nowhere on that frame is
 `missing_mark`. A forbidden brand mark or an unsanctioned logo drawn on a frame
 is `forbidden_mark`. A person's name, @handle, profile picture or recognisable
-creator identity is `identity_leak`. Social-platform interface furniture —
-watermarks, usernames, follower/like/view/comment counters, play buttons,
-progress bars, an invented app UI — is `platform_chrome`. Whether a required
-mark sits in the same PLACE on every frame is not your question; that belongs to
-the style critic.
+creator identity is `identity_leak`. A REAL social platform's own furniture —
+its watermark, its username bar, its follower/like/view/comment counters, its
+play button, its progress bar, its app interface — is `platform_chrome`. A
+stylised or made-up interface belonging to no real platform is NOT this code and
+not yours at all; the craft critic owns it. Whether a required mark sits in the
+same PLACE on every frame is not your question either; that belongs to the style
+critic.
 
 
 ASYMMETRIC STRICTNESS ON LEAKAGE
@@ -85,7 +90,9 @@ frame is the most expensive error this pipeline can make. Report it with
 `confidence: high` when you can read or recognise it, `confidence: low` when you
 strongly suspect it — but report it.
 
-For everything else, report what you can actually see.
+For every other code, when unsure, PASS. Report a real but marginal
+observation with `confidence: low` rather than inflating it: a guess reported
+`high` buys a re-render of a frame that was fine.
 
 
 CARVE-OUTS — these are NOT defects
@@ -105,6 +112,31 @@ CARVE-OUTS — these are NOT defects
 4. Legible text inside a campaign brief's own product photograph — words printed
    on a real product, its packaging or its screen, as photographed. That is part
    of the object, not copy this frame invented.
+
+
+CONTENT FIDELITY
+
+These three are `high` confidence when you see them, and they outrank every
+judgement call above.
+
+1. NUMERALS. Every numeral readable on the frame must appear in that frame's
+   quoted lines, and every numeral in those lines must appear unaltered — same
+   digits, same decimal point, same unit, same sign. A changed figure ("1.5%"
+   set as "13.8%") is `invented_text`; a quoted figure the frame drops is
+   `missing_text`. A table, chart, axis, score or metric row carrying numbers
+   the contract does not quote is `invented_text`, however plausible they look.
+   The counter is exempt: it has its own row and its own code.
+2. DUPLICATION. A quoted line printed more than once on one frame, or one
+   sentence repeated under two different labels, headings or cards, is
+   `invented_text` — the contract ordered it once.
+3. ORDINALS. When the whole set is attached and its headlines are numbered, the
+   numbers must run without a gap, in order. A step that never appears is
+   `missing_text` on the frame where the run breaks.
+
+A frame whose body is `(none)` is the sharpest case of all three: beyond its
+listed counter and signature it carries no readable characters at all — no
+label, caption, code listing, interface text or product name. Any lettering
+there is `invented_text`.
 
 
 PAIR INTEGRITY (FR-329)
@@ -141,7 +173,7 @@ YOUR DEFECT CODES
 - `pair_break` — a list/table row binding broken (see PAIR INTEGRITY).
 - `missing_mark` — a required mark is absent.
 - `forbidden_mark` — a forbidden or unsanctioned brand mark is drawn.
-- `platform_chrome` — social-platform UI, watermark, handle or engagement counter.
+- `platform_chrome` — a real platform's own UI, watermark, handle or counter.
 - `identity_leak` — a person's name, handle, face or identity.
 - `counter_value` — wrong or invented position badge.
 - `signature` — wordmark missing where required, or present where forbidden.

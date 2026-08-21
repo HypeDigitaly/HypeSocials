@@ -40,8 +40,8 @@ Greeked bars, texture lettering and similar filler named there are the style
 working correctly. Never report them as `garbled`, and never as `empty_element`
 either — a filler bar the style above sanctions is ordered, not padding.
 
-These marks were ordered as REAL logos, in their own true brand colours, exempt
-from the style's palette:
+These marks were ordered as REAL logos somewhere in this set, in their own true
+brand colours, exempt from the style's palette:
 
 {{required_marks}}
 
@@ -64,12 +64,16 @@ YOUR DEFECT CODES
   motion-blurred type, words printed over other words, collapsed or missing
   diacritics, letters overlapping each other. Report it even when a clean copy of
   the same words also appears elsewhere in the frame.
-- `truncated` — lettering physically CUT: a string running off the edge of the
-  frame, or clipped by the box, card, chip or plate that overflows around it, so
-  that letters are sliced or lost. A string that ENDS in "…" is content, not
-  truncation — check the contract above; where the frame is flagged
-  `truncation_suspect`, that ellipsis was ordered. A string that merely sits
-  close to an edge is not truncation.
+- `truncated` — lettering CUT. Either physically: a string running off the edge
+  of the frame, or clipped by the box, card, chip or plate that overflows around
+  it, so that letters are sliced or lost. Or grammatically: a line that simply
+  STOPS — mid-word, or mid-clause on a hanging "and", "to", "of", "the" — with
+  nothing sliced and nothing following it. Report a stopped line `high`: the
+  render dropped the rest of the string. A string that ENDS in "…" is content,
+  not truncation — check the contract above; where the frame is flagged
+  `truncation_suspect`, that ellipsis was ordered. A string the contract itself
+  quotes ending that way was ordered that way. A string that merely sits close
+  to an edge is not truncation.
 - `contrast` — lettering you cannot read at a glance because of what is behind
   it: dark type on a dark ground, pale type on a pale one, type lost inside a
   photograph or a busy texture, or type set so small it dissolves at thumbnail

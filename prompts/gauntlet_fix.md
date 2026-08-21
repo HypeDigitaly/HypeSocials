@@ -61,7 +61,7 @@ platform_chrome | * | Draw no social-platform interface in the {zone} area: no w
 platform_chrome | full_frame | Draw no social-platform interface anywhere: no watermark, username, @handle, profile picture, follower, like, view or comment counter, play button or progress bar.
 forbidden_mark | * | Draw no brand, company, competitor or platform logo or wordmark in the {zone} area other than a mark the TOOL MARKS line names; anything else of that kind is an unlettered generic shape.
 forbidden_mark | full_frame | Draw no brand, company, competitor or platform logo or wordmark anywhere except a mark the TOOL MARKS line names; anything else of that kind is an unlettered generic shape.
-invented_text | * | The {zone} area carried lettering that the TEXT block does not quote[ — about {chars} characters]; render no words there that the TEXT block does not quote.
+invented_text | * | The {zone} area carried lettering the TEXT block does not quote[ — about {chars} characters]; render no words there the TEXT block does not quote, each quoted line once, and every numeral exactly as quoted.
 invented_text | full_frame | This frame carried lettering the TEXT block does not quote[ — about {chars} characters]; every legible character comes from the TEXT block, a sanctioned tool mark's own lettering excepted.
 invented_text | card | The card in this frame carried lettering that the TEXT block does not quote[ — about {chars} characters]; label its contents with greeked bars and unlettered shapes instead.
 signature | * | Render the wordmark exactly as the TEXT block quotes it, once, in the {zone} area, and no other signature or logotype anywhere in the frame.
@@ -89,8 +89,8 @@ contrast | * | Make the {zone} lettering read at a glance on a phone: set it on 
 contrast | full_frame | Make every string read at a glance on a phone: set the type on the plate, card or clear ground STYLE_DNA describes, at a size that survives thumbnail scale.
 garbled | * | Draw the {zone} lettering once, cleanly: well-formed letterforms with correct accents, no doubled, ghosted, overstruck, smeared or overlapping type, and no second copy of the same words.
 garbled | full_frame | Draw every string once, cleanly: well-formed letterforms with correct accents, no doubled, ghosted, overstruck, smeared or overlapping type, and no second copy of the same words.
-truncated | * | Keep the {zone} lettering whole inside the frame: hold every string within the central 80% of the picture, clear of every edge, and size its box to the text rather than clipping it.
-truncated | full_frame | Keep all lettering whole inside the frame: hold every string within the central 80% of the picture, clear of every edge, and size each box to its text rather than clipping it.
+truncated | * | Render every quoted string through to its last word and keep the {zone} lettering whole: hold each string within the central 80% of the picture, clear of every edge, and size its box to the text rather than clipping it.
+truncated | full_frame | Render every quoted string through to its last word and keep all lettering whole: hold each string within the central 80% of the picture, clear of every edge, and size each box to its text rather than clipping it.
 logo_fidelity | * | Draw the sanctioned tool mark exactly as the real logo is drawn — same shapes, proportions, glyph and letterforms — with no redesign, no re-lettering and no invented substitute.
 empty_element | * | Draw no empty container in the {zone} area: a card, button, circle, bar or chip row exists only around a quoted string, and where nothing is quoted the device is left out.
 empty_element | card | Draw a card only around a string the TEXT block quotes: one card per quoted line, no empty card, no grid of blanks, no filler bar standing in for words.

@@ -64,8 +64,20 @@ obviously different typeface or weight, a card that moved to the other side of
 the frame, a badge that jumped corners. If you have to compare crops side by
 side to see it, it is not a defect.
 
+MEASUREMENTS ARE NOT YOUR SUBJECT. The style block is written in prose and a
+render model interprets it; a band that is 15% deep where it says 12%, a card a
+little wider or narrower, a margin, a rule's weight, a shape that starts a few
+per cent off the described point, a type size a step out — all of that PASSES.
+Fail geometry only when it is flagrant: the wrong zone entirely, the element
+absent, the proportion so far out that a viewer sees it as an accident.
+
 When unsure, PASS. Report a genuine but marginal difference with
 `confidence: low` rather than inflating it.
+
+And know where you sit: a frame that carries the wrong words, invented numbers
+or a leaked identity is a far more expensive failure than a frame that is a few
+per cent off its grid, and another critic owns that. Never spend this deck's
+re-render rounds on a difference you had to measure.
 
 
 YOUR DEFECT CODES
