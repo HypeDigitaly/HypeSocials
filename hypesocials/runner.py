@@ -1261,6 +1261,16 @@ async def _write(session: _Session, live: Sequence[PlanEntry], trends: dict[str,
         chrome_lines={pid: [slide.chrome_text for slide in intel.slides
                             if str(slide.chrome_text or "").strip()]
                       for pid, intel in session.slide_intel.items()} or None,
+        # D65/FR-362 guard 9: the same decks' brand MARKS, per post — every logo, wordmark and
+        # watermark the vision pass could see. The contract guards use them for one test and one
+        # only: a panel_map row that is nothing but one of these strings is the source's own
+        # chrome, and shipped as our slide's words it becomes an order to draw somebody else's
+        # lockup. Flattened deck-wide (a watermark sits on every slide; a row does not care which
+        # slide named it) and de-duplicated in `mark_identifiers`.
+        brand_marks={pid: [str(mark) for slide in intel.slides
+                           for mark in (getattr(slide, "brand_marks", ()) or ())
+                           if str(mark or "").strip()]
+                     for pid, intel in session.slide_intel.items()} or None,
         burnt_post_ids=sorted(session.used_post_ids),
         # D54/FR-331: the operator's copy contract for BOUND carousel decks. This is the single
         # production call site, so it is also the only place the key is read for copy — previews
@@ -1342,7 +1352,42 @@ async def _write(session: _Session, live: Sequence[PlanEntry], trends: dict[str,
         body = f"{head}, {compressed} compressed"
     _stage(session, "COPY", body, elapsed_s=watch.elapsed_s)
     _not_translated_lines(session, result)
+    _guard_lines(session, result)
     return result
+
+
+#: D65/FR-362/FR-363 — the contract guards' console vocabulary: the tag, and the half-line that
+#: says what the engine DID about it. Ordered as the operator should read them: the two that
+#: changed pixels first, the one that says a panel went missing next, the caption's hand-raise
+#: last. A guard that never fired prints nothing at all, which is what makes a printed line mean
+#: something.
+_GUARD_LINES: tuple[tuple[DegradationTag, str], ...] = (
+    (DegradationTag.COPY_DIGIT_DRIFT, "the source's own digits shipped instead (FR-362)"),
+    (DegradationTag.PANEL_MAP_REALIGNED, "those rows ship their own source panel (FR-362)"),
+    (DegradationTag.PANEL_DROPPED_UNMAPPED, "a source panel has no row and no reason (FR-362)"),
+    (DegradationTag.CAPTION_VOICE_REVIEW, "caption ships verbatim -- read it first (FR-363)"),
+)
+
+
+def _guard_lines(session: _Session, result: copywrite.CopyResult) -> None:
+    """FR-362/FR-363: the contract guards, said out loud, in `_not_translated_lines`' posture.
+
+    Every guard already writes its own detailed warning through `copywrite._warn` — which slide,
+    which token, which line — and that is the record. This is the SUMMARY the operator reads while
+    the run is still in front of them and, on a `--yes` run, before the render spend: N creatives
+    had their contract corrected, and here is what the engine did about it.
+
+    Two lines per tag that fired and none for a tag that did not, because a block printed on every
+    run is a block the operator stops seeing. The tag word is printed verbatim so one string greps
+    the console, `events.jsonl` and `meta.yaml.degradations` alike.
+    """
+    for tag, consequence in _GUARD_LINES:
+        hit = sorted(asset_id for asset_id, tags in result.tags.items() if tag in tags)
+        if not hit:
+            continue
+        ordinals = ", ".join(asset_id.rsplit("_", 1)[-1] for asset_id in hit)
+        session.say(f"  {fit(f'{tag.value}: {len(hit)} creative(s) -- {ordinals}', 76)}")
+        session.say(f"  {fit(consequence, 76)}")
 
 
 def _not_translated_lines(session: _Session, result: copywrite.CopyResult) -> None:

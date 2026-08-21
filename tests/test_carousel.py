@@ -1357,11 +1357,19 @@ async def test_a_deck_that_fits_the_ceiling_is_not_tagged_truncated(tmp_path: Pa
 # ------------------------------------------------------------------- partial decks & moderation
 
 
-async def test_a_failed_slide_download_ships_an_incomplete_deck(
+async def test_a_failed_slide_download_blocks_the_deck_as_incomplete(
     tmp_path: Path, downloads: SimpleNamespace
 ) -> None:
-    """10 §10: completed slides ship, metadata records `incomplete` with the missing numbers.
-    Explicitly NOT all-or-nothing (D3)."""
+    """FR-363 (D65): a deck that delivered fewer slides than it ordered is never a `success`.
+
+    This assertion used to read the other way — 10 §10's "completed slides ship", `status: success`
+    plus an `incomplete` badge. The 2026-08-21 audit is what reversed it: decks shipped that way
+    with the critics silent (they judge the frames that EXIST), and our slide *i* is their panel
+    *i*, so a hole in the middle is not a smaller version of the approved deck, it is a different
+    one. The refusal is terminal in the FR-325 sense rather than the FR-74 one — every paid slide
+    stays on disk, `BLOCKED.txt` explains itself, nothing is published — which is why the
+    delivered files are still asserted here, unchanged.
+    """
     entry = make_entry(slides=4)
     env = make_env(tmp_path, entry)
     downloads.fail_contains = "slide-3-"
@@ -1369,12 +1377,14 @@ async def test_a_failed_slide_download_ships_an_incomplete_deck(
 
     record = await render_carousel(entry, env, folder, submit=FakeSubmit())
 
-    assert record.status is AssetStatus.SUCCESS, "a labelled incomplete deck beats nothing"
+    assert record.status is AssetStatus.BLOCKED, "3 of 4 ordered slides is not a success (FR-363)"
+    assert record.skip_reason.startswith("incomplete_deck:")
     assert record.missing_slide_numbers == [3]
     assert record.slide_count == 3
-    assert "incomplete" in [tag.value for tag in record.degradations]
+    assert "incomplete" in [tag.value for tag in record.degradations], "the cause still badges"
     on_disk = sorted(path.name for path in folder.path.glob("slide_*.jpg"))
-    assert on_disk == ["slide_01.jpg", "slide_02.jpg", "slide_04.jpg"]
+    assert on_disk == ["slide_01.jpg", "slide_02.jpg", "slide_04.jpg"], "FR-74: paid bytes kept"
+    assert "Missing: 3" in (folder.path / "BLOCKED.txt").read_text(encoding="utf-8")
     assert packager.read_meta(folder.path)["missing_slide_numbers"] == [3]
 
 
@@ -1401,11 +1411,16 @@ async def test_an_incomplete_deck_carries_the_run_to_exit_one(
 
     record = await render_carousel(entry, env, make_folder(tmp_path, entry), submit=FakeSubmit())
 
-    assert record.status is AssetStatus.SUCCESS and record.slide_count == 4
+    assert record.status is AssetStatus.BLOCKED and record.slide_count == 4
     assert record.missing_slide_numbers == [2]
-    assert entry.status is PlanEntryStatus.SUCCESS and entry.skip_reason is None
+    # D65/FR-363 closes the same gap a second time, and from the other end: the deck no longer
+    # ships at all, so the entry carries a BLOCKED status and a `skip_reason` and the exit code is
+    # 1 from the entry alone. The tag route below still has to answer 1 as well — it is what
+    # catches every OTHER delivered loss (`text_trimmed`, `copy_degraded`), and a run whose only
+    # evidence is a badge must never exit 0.
+    assert entry.status is PlanEntryStatus.BLOCKED and entry.skip_reason
     degradations = {record.asset_id: record.degradations}  # the map `runner._package` builds
-    assert decide_exit_code([entry]) == EXIT_OK, "the pre-fix answer, blind to the tags"
+    assert decide_exit_code([entry]) == EXIT_PARTIAL, "the blocked entry is a loss on its own"
     assert decide_exit_code([entry], degradations=degradations) == EXIT_PARTIAL
 
 
@@ -1573,7 +1588,11 @@ async def test_out_of_credits_packages_the_deck_instead_of_raising(tmp_path: Pat
 
     assert env.credits_exhausted is True
     assert record.slide_count == 1 and record.missing_slide_numbers == [2, 3, 4]
-    assert record.status is AssetStatus.SUCCESS
+    # FR-167's point is that the 402 does not RAISE: the deck is packaged, the latch is set and the
+    # run goes on to package everything else. What that packaging says changed at D65/FR-363 — one
+    # of four ordered slides is an incomplete deck and is refused terminal, whatever took the other
+    # three away.
+    assert record.status is AssetStatus.BLOCKED
 
 
 # ------------------------------------------------- D49 the gauntlet: fix loop and three tiers

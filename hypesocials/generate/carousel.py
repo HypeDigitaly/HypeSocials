@@ -122,7 +122,7 @@ from __future__ import annotations
 
 import asyncio
 import re
-from collections.abc import Hashable, Sequence
+from collections.abc import Collection, Hashable, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol
@@ -289,6 +289,38 @@ def _is_chrome(raw: str) -> bool:
     """True for a mark that is the creator's or the platform's furniture, not a product logo."""
     folded = str(raw or "").casefold()
     return "@" in folded or any(word in folded for word in _CHROME_WORDS)
+
+
+def _incomplete_text(asset_id: str, delivered: Collection[int], texts: Sequence[Any],
+                     missing: Sequence[int], reasons: Sequence[str]) -> str:
+    """`BLOCKED.txt` for FR-363's incomplete-deck refusal — the operator's paragraph, plainly.
+
+    The sibling of `contracts.blocked_text` and written by hand rather than through it: that one
+    reports a CRITIC panel's standing defects and this deck may have no report at all (a deck can
+    come up short before the gate ever ran). What the operator needs here is the arithmetic, the
+    numbers of the slides that are missing, and the honest reason each one is missing — which is
+    what `self.reasons` has been collecting all along and what nothing terminal used to print.
+    """
+    lines = [
+        f"BLOCKED — {asset_id} is an incomplete deck (FR-363).",
+        "",
+        f"Ordered: {len(texts)} slide(s).  Delivered: {len(delivered)}.  "
+        f"Missing: {', '.join(str(number) for number in missing)}.",
+        "",
+        "A carousel is our slide i for their panel i (FR-304). A deck with a hole in the middle",
+        "reads as though the source skipped a step, and a deck that stops early stops",
+        "mid-argument — so a short deck is not a smaller version of the deck that was approved,",
+        "it is a different deck. It is refused terminal whatever the critics said: they judge the",
+        "frames that exist, and these frames do not exist.",
+        "",
+        "Every slide that DID render is in this folder and every dollar spent on it is in",
+        "meta.yaml. Nothing is published, the source post is not burnt in the trend history, and",
+        "the run exits 1. Re-running renders the deck again from the same source panels.",
+    ]
+    if reasons:
+        lines += ["", "Why each slide is missing:",
+                  *(f"  - {reason}" for reason in reasons)]
+    return "\n".join(lines) + "\n"
 
 
 class Submit(Protocol):
@@ -1809,6 +1841,33 @@ class _Deck:
                          # way to tell which three lost slides went unexplained. This is a
                          # structured log field, not a console line — it has no width to protect.
                          missing_slide_numbers=missing, detail="; ".join(self.reasons))
+            # FR-363 (D65) — and this is where it STOPS being a note. A deck that delivered fewer
+            # slides than it ordered is not the deck the operator approved: our slide *i* is their
+            # panel *i* (FR-304), so a hole in the middle is a deck that reads as if the source
+            # skipped a step, and a hole at the end is a deck that stops mid-argument. Until D65
+            # every one of those shipped as `status: success` carrying an `incomplete` badge, and
+            # the 2026-08-21 audit found decks doing exactly that with no critic ever objecting —
+            # the gauntlet judges the frames that EXIST.
+            #
+            # So the shortfall is now terminal, and terminal in the FR-325 sense rather than the
+            # FR-74 one: every paid slide stays on disk, `BLOCKED.txt` explains itself, and the
+            # operator can open the folder and disagree. It is deliberately NOT `skip()` (this
+            # creative happened, in full, and cost money) and deliberately NOT conditional on the
+            # critics (they were looking at a different question). D51's `deck_viability_loss`
+            # above stays the branch for slides PERMANENTLY lost mid-flight; this one is the
+            # backstop underneath it, for every other way a deck can come up short.
+            reason = (f"incomplete_deck: {len(self.delivered)} of {len(self.texts)} ordered "
+                      f"slide(s) delivered; missing {missing} (FR-363)")
+            entry.status = PlanEntryStatus.BLOCKED
+            entry.skip_reason = entry.skip_reason or reason
+            fields["event_id"] = env.log.error(
+                "incomplete_deck", f"{entry.asset_id}: {reason}", asset_id=entry.asset_id,
+                slides=len(self.delivered), slides_ordered=len(self.texts),
+                missing_slide_numbers=missing, cost_usd=fields["actual_cost_usd"],
+                detail="; ".join(self.reasons))
+            return self.folder.block(reason, _incomplete_text(entry.asset_id, self.delivered,
+                                                              self.texts, missing, self.reasons),
+                                     **fields)
         entry.status = PlanEntryStatus.SUCCESS
         fields["event_id"] = env.log.event(
             "creative_delivered", f"{entry.asset_id} deck of {len(self.delivered)} slide(s)",

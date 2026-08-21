@@ -1084,7 +1084,12 @@ async def test_the_panel_map_row_says_creator_stripped_and_keeps_the_pre_strip_p
                        # source language (the engine default), so nothing on any row is a
                        # translation — and the key is still written, because one row schema
                        # always is the contract every reader of `panel_map` relies on.
-                       "translated": False}
+                       "translated": False,
+                       # D65 (v2.9.0, FR-362): the eleventh and twelfth, from the contract guards.
+                       # This panel's own creator line was taken at admission by layer 3 (the row
+                       # above says so); THIS row named nobody and was nobody's wordmark, so both
+                       # guard flags are False — and written, like every other key here.
+                       "identity_scrubbed": False, "chrome_watermark_stripped": False}
 
 
 async def test_the_caption_loses_the_creators_name_at_word_boundaries() -> None:

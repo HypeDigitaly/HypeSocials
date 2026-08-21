@@ -24,12 +24,20 @@ deck into a `copy_not_verbatim` failure. So:
 2. **Raw bytes always survive.** `panel_map.source_text_original` keeps the unrepaired string, and
    every correction is logged (`ocr_repaired`). A repair that cannot be pointed at afterwards is
    indistinguishable from the drift this whole design exists to prevent.
-3. **A truncation suspect is FLAGGED, NEVER BLANKED.** `truncation_suspect` returns a boolean and
-   this module offers no function that shortens, completes or discards text. A panel ending in "…"
-   is CONTENT — the source author wrote it that way as often as an OCR pass cut it — and the only
-   consumer of the flag is contract data handed to the gauntlet's `brief` critic (FR-304c), which
-   can look at the rendered frame and tell the two apart. Dropping the panel would silently re-map
-   the whole deck (FR-304), which is worse than any transcription defect.
+3. **A truncation suspect is FLAGGED, NEVER BLANKED — by THIS module.** `truncation_suspect`
+   returns a boolean and this module offers no function that shortens, completes or discards text.
+   A panel ending in "…" is CONTENT — the source author wrote it that way as often as an OCR pass
+   cut it — and this module has no way to tell the two apart.
+
+   *(Amended v2.9.0, D65/FR-362.)* What a CALLER may do with the flag has changed, and this note is
+   here so the two files do not read as contradicting each other. `contract_guard`'s guard 5 now
+   treats the flag as a GATE rather than a note: a flagged row ships its un-truncated
+   `source_text_original` instead, or renders wordless in its own position when that original is
+   cut too. The reason the old rule gave for never blanking — "dropping the panel would silently
+   re-map the whole deck" — is answered rather than overruled: the guard never drops a ROW, only
+   its words, so FR-304's alignment is untouched and the operator gets a wordless frame instead of
+   a public one whose sentence stops mid-air (the audit's `( src/types/in` class). This module's
+   own contract is unchanged: it still only ever returns a boolean.
 4. **Uppercase-token scope.** Every substitution here is confined to tokens that are wholly
    upper-case (plus the `Al`→`AI` title-case case, which is the specific defect measured). Applied
    to ordinary prose, `l`→`I` and `0`→`O` would rewrite half of every Czech and English caption

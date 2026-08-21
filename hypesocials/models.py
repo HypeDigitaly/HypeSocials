@@ -99,6 +99,36 @@ class DegradationTag(str, Enum):
     # warning names the slide and both lengths, and the operator knows which card to read twice
     # (A20 polarity, exactly as `copy_not_verbatim`).
     TRANSLATE_LENGTH_DRIFT = "translate_length_drift"
+    # --- D65 / v2.9.0 (FR-362/FR-363): the panel-map contract guards ---
+    # FR-362 guard 1 — a numeric token on a shipped slide disagreed with the same token on that
+    # row's own `source_text_original`, beyond what the OCR confusable repair (I/l -> 1, O/o -> 0)
+    # could heal: `I6GB` for `16GB` is a repair, `28GB` for `128GB` is a DRIFT. The row ships the
+    # original bytes for the token that drifted — or the whole original panel where the token
+    # structure differs too far to do surgery — and earns this tag. What it is written against is
+    # measured: the 2026-08-21 audit found `I46K STARS`, `IOX` and `I4B-3OB` rendered as pixels
+    # while the correct digits sat on the SAME panel_map row, and nothing in the engine ever
+    # diffed the two.
+    COPY_DIGIT_DRIFT = "copy_digit_drift"
+    # FR-362 guard 2 — a row's shipped words had almost nothing in common with its own
+    # `source_text_original` (content-word overlap under the alignment floor), which is what a
+    # deck whose compressed rows slipped by one position looks like from the inside: run
+    # `20260821_030722_4344`'s `Ig_car_..._08` carried the PREVIOUS repo's text on slides 4, 6 and
+    # 8 while the right text sat one row up. The row ships the verbatim original instead (wordless
+    # when the original cannot be admitted) and earns this tag. Also emitted when two rows claim
+    # the same `source_position` — the first keeps it, the rest are realigned the same way.
+    PANEL_MAP_REALIGNED = "panel_map_realigned"
+    # FR-362 guard 6 — the coverage assertion found a source panel with NEITHER a panel_map row
+    # NOR a recorded drop reason: the deck simply lost it, silently, and shipped as a success
+    # (4344 `Ig_02`, source panels 11–12). Panels past the platform ceiling are NOT this — they
+    # are `panels_truncated`, which is a decision the plan made and priced. This tag is only ever
+    # the engine losing a panel it meant to map, so it is loud on the console as well as here.
+    PANEL_DROPPED_UNMAPPED = "panel_dropped_unmapped"
+    # FR-363 — the caption reads as the SOURCE creator's first-person voice ("I ran the
+    # experiment…", "my stack…"): published under our account it is our life story, told about
+    # someone else's life. The caption still ships VERBATIM (FR-331 — the engine does not rewrite
+    # a quote to sound like us), so this tag is the whole action: it puts the caption loudly on
+    # the console and on the gallery card, and the operator decides.
+    CAPTION_VOICE_REVIEW = "caption_voice_review"
     # --- D56 / v2.4.0 (FR-334): matched style assignment ---
     # FR-334 — the ONE batched style-matcher call failed outright (transport error, unparseable
     # answer, degraded `ParsedResult`), so EVERY entry in the plan kept the FR-291 rotation pick it
@@ -725,6 +755,19 @@ class AssetRecord:
     # of it, false on every verbatim row. One row schema always: a reader that had to ask whether
     # the key exists before trusting `source_text` would be reading two schemas, and the gallery's
     # alignment loop is the last place that should have to branch.
+    #
+    # `identity_scrubbed` and `chrome_watermark_stripped` (v2.9.0, D65/FR-362) are the contract
+    # guards' two row flags, written on EVERY row of every walk under the same one-row-schema rule,
+    # false by default. The first says a line naming ANOTHER PARTY was taken off this row before it
+    # became the render contract — a creator handle, a commit line (`… merged commit 859bdce into
+    # dev`), a bare `owner/repo #125` reference; the second says the row WAS a brand mark or
+    # watermark the source stamped on its own slide (`OPAL COLLECTION`, `EVOLVING AI`) and was
+    # stripped into chrome exactly as a page counter is. They are separate flags for the same
+    # reason `creator_stripped` and `chrome_counter_stripped` are: "we nearly named another
+    # account" and "we nearly reprinted their furniture" are different findings on a gallery card,
+    # and only the first is about anybody's identity. Both keep their bytes in
+    # `source_text_original`, and a row whose remainder read as a beheaded fragment ships wordless
+    # in its own position rather than as an orphan clause.
     source_post: dict | None = None
     source_panel_count: int = 0
     panel_map: list = field(default_factory=list)

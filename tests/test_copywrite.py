@@ -597,19 +597,31 @@ async def test_a_bound_decks_slides_are_mapped_from_the_source_panels_position_f
         {"slide": 1, "source_position": 1, "source_text": "Panel one line",
          "source_text_original": "Panel one line", "ref_label": "P1.panel.1", "drop_reason": "",
          "creator_stripped": False, "chrome_counter_stripped": False,
-         "truncation_suspect": False, "compressed": False, "translated": False},
+         "truncation_suspect": False, "compressed": False, "translated": False,
+         # D65 (v2.9.0, FR-362): the eleventh and twelfth, written on every row of every
+         # walk by the contract guards under the same one-row-schema rule. Nothing on
+         # this deck named another party and no row was a brand mark, so both are False.
+         "identity_scrubbed": False, "chrome_watermark_stripped": False},
         {"slide": 2, "source_position": 2, "source_text": "Panel two line",
          "source_text_original": "Panel two line", "ref_label": "P1.panel.2", "drop_reason": "",
          "creator_stripped": False, "chrome_counter_stripped": False,
-         "truncation_suspect": False, "compressed": False, "translated": False},
+         "truncation_suspect": False, "compressed": False, "translated": False,
+         # D65 (v2.9.0, FR-362): the eleventh and twelfth, written on every row of every
+         # walk by the contract guards under the same one-row-schema rule. Nothing on
+         # this deck named another party and no row was a brand mark, so both are False.
+         "identity_scrubbed": False, "chrome_watermark_stripped": False},
         {"slide": 3, "source_position": 3, "source_text": "", "source_text_original": "",
          "ref_label": "", "drop_reason": "empty", "creator_stripped": False,
          "chrome_counter_stripped": False, "truncation_suspect": False, "compressed": False,
-         "translated": False},
+         "translated": False, "identity_scrubbed": False, "chrome_watermark_stripped": False},
         {"slide": 4, "source_position": 4, "source_text": "Panel four line",
          "source_text_original": "Panel four line", "ref_label": "P1.panel.4", "drop_reason": "",
          "creator_stripped": False, "chrome_counter_stripped": False,
-         "truncation_suspect": False, "compressed": False, "translated": False},
+         "truncation_suspect": False, "compressed": False, "translated": False,
+         # D65 (v2.9.0, FR-362): the eleventh and twelfth, written on every row of every
+         # walk by the contract guards under the same one-row-schema rule. Nothing on
+         # this deck named another party and no row was a brand mark, so both are False.
+         "identity_scrubbed": False, "chrome_watermark_stripped": False},
     ], "one row per OUR slide, empty ones included — the row IS the alignment (FR-309)"
 
 
@@ -697,7 +709,11 @@ async def test_a_panel_past_the_sanity_ceiling_keeps_position_and_cites_it() -> 
         # D63 (v2.7.0): the tenth, and False on this walk by construction — the verbatim mapping
         # quotes the source's own bytes in the source's own language. Asserted rather than
         # filtered out for the same "one row schema always" reason `compressed` is.
-        "translated": False}
+        "translated": False,
+        # D65 (v2.9.0, FR-362): the eleventh and twelfth, from the contract guards. This row ships
+        # nothing at all (the panel is past the sanity ceiling), so neither the identity scrub nor
+        # the watermark strip had anything to look at — and both keys are still written.
+        "identity_scrubbed": False, "chrome_watermark_stripped": False}
     assert len(log.warned("panel_over_budget")) == 1
     warning = log.warned("panel_over_budget")[0]
     assert "slide 2 (1600 characters, sanity ceiling 1500)" in warning

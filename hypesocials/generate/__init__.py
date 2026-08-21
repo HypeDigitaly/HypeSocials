@@ -1088,14 +1088,17 @@ def _panel_map(prov: CopyProvenance | None, intel: Any) -> list[dict[str, Any]]:
 
     The copy stage owns `{slide, source_position, source_text, source_text_original, drop_reason,
     creator_stripped, chrome_counter_stripped, truncation_suspect, ref_label, compressed,
-    translated}` — our slide's index, the source panel it renders, the words it ships and the
+    translated, identity_scrubbed, chrome_watermark_stripped}` — our slide's index, the source
+    panel it renders, the words it ships and the
     pre-gate bytes they came from, why a row shipped nothing, which safety strips fired, the label
     the words were quoted under (empty when nothing was, including on every D54-compressed and
     every D63-translated row) and the two transform flags: whether those words are a COMPRESSION
     of the source panel rather than a quote of it, and whether they are a TRANSLATION of it. The
     whole row is copied across key by key rather than rebuilt from a list, so a key the copy stage
     adds arrives here without this function being edited — which is exactly how `translated`
-    (D63/FR-346) reached `meta.yaml` and the gallery's per-row chip. This
+    (D63/FR-346) and then the two contract-guard flags `identity_scrubbed` /
+    `chrome_watermark_stripped` (D65/FR-362) reached `meta.yaml` and the gallery's per-row chips.
+    This
     adds the two the slide-intelligence pass owns: `visual_brief` (the English content directive
     the slide prompt carried, FR-308) and `source_image` (the run-relative path of the downloaded
     source panel, FR-309's strip; forward-slashed and already relative to the run folder, since

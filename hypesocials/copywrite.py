@@ -252,6 +252,17 @@ from hypesocials.models import (
     StructuredCall,
     TrendItem,
 )
+#: D65/FR-362 — the deterministic contract guards. They live in their own module rather than here
+#: because they are PURE (strings and rows in, strings and rows out, no logging of their own) and
+#: because this file is long enough that a reader looking for the copy contracts should not have
+#: to walk past a digit-repair regex to find them. This module owns the seam: `_guarded` runs the
+#: ladder once per creative, on every path, and emits the warnings it hands back.
+from hypesocials.contract_guard import (
+    guard_caption,
+    guard_deck,
+    mark_identifiers,
+    strip_lines_equal,
+)
 from hypesocials.ocr_repair import repair_confusables, truncation_suspect
 from hypesocials.prompts_engine import (
     PromptEngine,
@@ -723,6 +734,7 @@ async def write_copy(
     strip_brands: Mapping[str, Sequence[str]] | None = None,
     merged_panels: Mapping[str, Sequence[str]] | None = None,
     chrome_lines: Mapping[str, Sequence[str]] | None = None,
+    brand_marks: Mapping[str, Sequence[str]] | None = None,
     burnt_post_ids: Sequence[str] = (),
     carousel_copy_mode: str = MODE_VERBATIM,
     copy_language_mode: str = LANGUAGE_SOURCE,
@@ -777,6 +789,16 @@ async def write_copy(
             it and is dropped (FR-312). Keyed by post like `merged_panels`, and for the same
             reason: the chrome is a property of the SOURCE DECK, so two siblings bound to one post
             see one reading of it. Omitted, the author handle alone supplies the identifiers.
+        brand_marks: `post_id -> the logos, wordmarks and watermarks the vision pass saw on that
+            deck` (`SlideIntel.slides[*].brand_marks`, FR-306), keyed by post like `chrome_lines`
+            and for the same reason. Read by ONE thing — D65/FR-362's guard 9 — and used to answer
+            ONE question: is a contract row nothing but somebody's wordmark? A slide whose whole
+            text is `OPAL COLLECTION` (an incidental tote bag in the source photo) or `EVOLVING AI`
+            (the creator's own watermark) is chrome the source stamped on its own slide, and
+            shipped into `panel_map.source_text` it becomes an ORDER: run 4344 drew that watermark
+            as a hero headline in our brand colour and then CHOSE that frame as the cover, because
+            `cover_pick` reads the same contract. Omitted, guard 9 simply has no vocabulary and
+            stays silent; every other guard is unaffected.
         burnt_post_ids: post ids this run may not quote — the used-post set the fetch gate already
             filtered on (FR-305/FR-307). Belt-and-braces, and deliberately redundant: an entry
             whose bound post turns up here is refused outright (assembled caption, wordless frame,
@@ -826,7 +848,7 @@ async def write_copy(
                onimage_languages=onimage_languages or {}, niche_descriptor=niche_descriptor,
                brand_context=brand_context, competitors=tuple(competitors),
                strip_brands=strip_brands or {}, merged_panels=merged_panels or {},
-               chrome_lines=chrome_lines or {},
+               chrome_lines=chrome_lines or {}, brand_marks=brand_marks or {},
                burnt_posts=frozenset(str(post_id) for post_id in burnt_post_ids
                                      if str(post_id).strip()),
                carousel_copy_mode=str(carousel_copy_mode or MODE_VERBATIM),
@@ -881,6 +903,12 @@ class _Run:
     #   per-slide texts, Virlo ∪ vision (FR-306)
     chrome_lines: Mapping[str, Sequence[str]] = field(default_factory=dict)  # post_id -> that
     #   deck's `chrome_text` strings — layer 3's chrome identifiers (FR-312)
+    #: D65/FR-362 guard 9 — `post_id -> the vision pass's `brand_marks` for that deck` (every logo,
+    #: wordmark and watermark it could see, FR-306). Read by `_guarded` alone, and only to answer
+    #: one question: is this ROW nothing but somebody's wordmark? A slide whose entire text is
+    #: `OPAL COLLECTION` off an incidental tote bag, or `EVOLVING AI` off the creator's own
+    #: watermark, is chrome the source stamped on its slide — never our creative's words.
+    brand_marks: Mapping[str, Sequence[str]] = field(default_factory=dict)
     burnt_posts: frozenset[str] = frozenset()  # post ids an earlier run already quoted (FR-307)
     #: D54/FR-331 and D62/FR-353 — `verbatim` (default), `auto` or `compress`. Run-scoped because
     #: the operator sets it once per run; consumed per CREATIVE by `_compress_wanted`, which is the
@@ -1003,6 +1031,12 @@ class _Offer:
     #: The author terms `_offer_for` built for THIS post's caption strips, kept so a promoted line
     #: (above) faces the same caption-scoped scrub the post's own caption would have faced.
     caption_terms: tuple[str, ...] = ()
+    #: §1.5 layer 3's COLLAPSED identifier keys for this post — the author's handle, their display
+    #: name, this deck's chrome (`_creator_identifiers`). Kept on the offer (D65/FR-362) because
+    #: the contract guards need the same vocabulary layer 3 used and must not build a second one:
+    #: a guard that restored `source_text_original` restored the PRE-layer-3 bytes with it, creator
+    #: header and all, and it re-runs exactly this strip over them before they become an order.
+    creator_identifiers: tuple[str, ...] = ()
     #: True when this post came from `entry.source_post_id` (the plan bound it at ASSIGN) rather
     #: than from the deprecated modulo rotation. FR-304's panel mapping applies to bound decks
     #: alone: an unbound carousel has no promise that this post's slides are the deck's slides.
@@ -1212,6 +1246,7 @@ def _offer_for(entry: PlanEntry, group: _Group, run: _Run) -> _Offer:
     offer.caption_fallbacks = tuple(dict.fromkeys(
         [*promotable["hook"], *promotable["overlay"], *promotable["panel"]]))
     offer.caption_terms = tuple(own_name)
+    offer.creator_identifiers = tuple(creators)  # D65/FR-362 — layer 3's keys, for the guards
     if hits or caption_named:
         # DEDUPED for the message, counted in full: a brand header sits on all eight panels of a
         # deck, and printing it eight times buries the finding it is supposed to surface.
@@ -1679,18 +1714,19 @@ def _strip_creator_lines(text: str, identifiers: Mapping[str, str]) -> tuple[str
 
     A text that matched nothing comes back the same object, which is what keeps this safe to run
     over every candidate on every post.
+
+    The MECHANICS moved to `contract_guard.strip_lines_equal` with D65/FR-362 and this function is
+    now its caller. Not a tidy-up: the contract guards re-run this exact strip over rows they
+    RESTORED from `source_text_original` (which is the pre-layer-3 panel, creator header and all),
+    and a second implementation of "drop the lines that equal an identifier" is precisely how the
+    two would come to disagree about which lines those are — the same argument
+    `sources/mark_names` was extracted on. The signature, the semantics and the same-object
+    return are unchanged; layer 3's own vocabulary stays here, where its callers read it.
     """
     if not text or not identifiers:
         return text, False
-    lines = text.split("\n")
-    kept = [line for line in lines if _collapse(line) not in identifiers]
-    if len(kept) == len(lines):
-        return text, False
-    while kept and not kept[0].strip():
-        kept.pop(0)
-    while kept and not kept[-1].strip():
-        kept.pop()
-    return "\n".join(kept), True
+    out, dropped = strip_lines_equal(text, identifiers)
+    return out, bool(dropped)
 
 
 def _strip_counter_lines(text: str, *, position: int = 0) -> tuple[str, list[str]]:
@@ -2123,7 +2159,12 @@ async def _write_group(
             written = _resolve(entry, payload, offer, group, run)
         else:
             written = _free_text(entry, payload, group, run)
-        earned = [*written.tags, *_verify(written, entry, run)]
+        # D65/FR-362/FR-363 — the contract guards run HERE, on the finished copy of every path,
+        # and before the verifier: `_guarded` may put the source's own bytes back on a row, and
+        # `_verify` has to audit what actually ships. Two statements rather than one list so the
+        # order is a fact of the code rather than of Python's argument evaluation.
+        guarded = _guarded(written, entry, offer, run)
+        earned = [*written.tags, *guarded, *_verify(written, entry, run)]
         # D63/FR-343 — the ONE place `copy_not_translated` is decided, and it is decided here
         # rather than inside each path so no future degrade branch can forget it: translation was
         # WANTED for this creative (it is in `translating`, which already required target mode, a
@@ -4944,6 +4985,89 @@ def _apply_budgets(copyset: CopySet, entry: PlanEntry, run: _Run) -> bool:
 # --------------------------------------------------------------------------------------------
 # The verifier — A20's polarity, flipped (§1.7)
 # --------------------------------------------------------------------------------------------
+
+
+def _guarded(written: _Written, entry: PlanEntry, offer: _Offer,
+             run: _Run) -> list[DegradationTag]:
+    """FR-362/FR-363 — run the contract guards over one creative's finished copy. THE seam.
+
+    ONE call site (`_write_group`'s per-entry loop) covers every path this module has: the
+    verbatim mapping, the compressed deck, the auto splice, the translated deck, both degrade
+    tiers and the free-text brief. That is deliberate and it is the whole design decision behind
+    this function. Guarding inside each walk would mean four implementations of one rule, drifting
+    apart the first time a fifth contract is added — and it is exactly how `panel_map` came to
+    carry corrupted rows in the first place: every walk knew its own invariants and nobody checked
+    the SHAPE they all produce. Here there is one shape, checked once, after everything that
+    writes it has finished writing.
+
+    It runs BEFORE `_verify` because the verifier reads what ships: a guard that put the source's
+    own bytes back must be audited on those bytes, not on the ones it rejected. Every string a
+    guard authored joins `written.quoted` on the way through, for the same reason `_auto`'s
+    compressed lines join it — a restored original is not a quote gone missing, and reporting it
+    as `copy_not_verbatim` would bury the rows where that check still has teeth.
+
+    Mutation is deliberate and narrow: `panel_map` rows are REPLACED (the guard module never
+    mutates the caller's dicts — it returns new ones), `slide_texts` is re-read off those rows so
+    the two can never disagree, a withdrawn `ref_label` is dropped from `refs` in the same breath,
+    and the caption is written back scrubbed. Nothing else on the `_Written` is touched.
+
+    The deck half is skipped — loudly — when the rows and the slide texts disagree in count or in
+    content. That invariant (`slide_texts[i] is panel_map[i]["source_text"]`) holds on all four
+    walks by construction, and a deck where it does not hold is a deck this function has no honest
+    way to guard: rewriting one side would silently re-map the other. The caption half still runs.
+    """
+    tags: list[DegradationTag] = []
+    post_id = str(offer.post.post_id) if offer.post is not None else ""
+    identifiers = tuple(offer.creator_identifiers)
+    # `sanctioned=()` on purpose (D65): nothing is a sanctioned tool mark at COPY time. The patch
+    # crop that sanctions a mark for rendering happens later, in `generate/carousel`, and Wave 2
+    # of D65 is what joins the two. Until then guard 9's rule is the conservative one — a row that
+    # is nothing but a mark the source stamped on its slide is chrome — and `mark_identifiers`
+    # carries the seam for the caller that will have the patch list.
+    marks = mark_identifiers(run.brand_marks.get(post_id, ()) if post_id else ())
+    rows, slides = written.source.panel_map, written.copyset.slide_texts
+    aligned = len(rows) == len(slides) and all(
+        str(row.get("source_text") or "") == text for row, text in zip(rows, slides))
+    if rows and not aligned:
+        _warn(run.log, "panel_map_desynced",
+              f"{entry.asset_id}: this creative's {len(rows)} panel_map row(s) and "
+              f"{len(slides)} slide text(s) do not carry the same strings, so the FR-362 contract "
+              "guards were skipped for its deck — there is no honest way to repair one side "
+              "without silently re-mapping the other. The creative ships as its copy walk built "
+              "it; its caption is still guarded", asset_id=entry.asset_id,
+              rows=len(rows), slides=len(slides))
+    if rows and aligned:
+        guarded = guard_deck(rows, asset_id=entry.asset_id,
+                             # The walks' OWN admission gate, passed in rather than re-implemented:
+                             # a restored panel faces the same social-mark and sanity-ceiling tests
+                             # `_mapped_deck` applied, and a second copy of those rules living in
+                             # the guard module is how the two would come to disagree.
+                             admits=lambda text: not _panel_verdict(text),
+                             identifiers=identifiers, marks=marks,
+                             source_panel_count=written.source.source_panel_count)
+        written.source.panel_map = list(guarded.rows)
+        written.copyset.slide_texts = list(guarded.texts)
+        for slot in guarded.dropped_refs:
+            written.source.refs.pop(slot, None)
+        tags.extend(guarded.tags)
+        written.quoted = (*written.quoted, *guarded.authored)
+        for warning in guarded.warnings:
+            _warn(run.log, warning.event_type, warning.message, **warning.data)
+    caption = guard_caption(written.copyset.caption, asset_id=entry.asset_id,
+                            identifiers=identifiers, marks=marks,
+                            # The VOICE test asks whether this caption is the source creator's own
+                            # story. An override brief's caption is written from the operator's
+                            # directives, so a first-person sentence in it is the operator — and a
+                            # tag that fires on our own house style is a tag the operator learns
+                            # to skip. The identity scrub runs either way.
+                            quoted=offer.post is not None)
+    written.copyset.caption = caption.caption
+    if caption.scrubbed:
+        written.quoted = (*written.quoted, caption.caption)
+    tags.extend(caption.tags)
+    for warning in caption.warnings:
+        _warn(run.log, warning.event_type, warning.message, **warning.data)
+    return tags
 
 
 def _verify(written: _Written, entry: PlanEntry, run: _Run) -> list[DegradationTag]:
