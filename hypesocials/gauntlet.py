@@ -134,11 +134,21 @@ BRIEF_CODES: tuple[str, ...] = (
 SYSTEM_CODES: tuple[str, ...] = (
     "style_palette", "style_layout", "style_consistency", "counter_placement")
 #: Execution quality. EXECUTION, never content.
+#:
+#: `empty_element` joined the craft vocabulary in v2.9.0 (D65, FR-368) and it is a CRAFT code on
+#: purpose. An empty card, button, circle, bar or chip row is a rendering habit, not a contract
+#: breach — the frame carries no word it should not, so the brief critic has nothing to say about
+#: it, and the style contract was not broken either, so the system critic has nothing to say
+#: either. It is exactly the kind of defect that is worth ONE more render round and is never worth
+#: killing a paid deck for, which is what the craft tier means (FR-325 tier 4). The corresponding
+#: positive rule is FR-340's, stated to the renderer in `carousel_slide.md`'s CONSTRAINTS: a
+#: device exists once per quoted line and not at all when nothing is quoted.
 CRAFT_CODES: tuple[str, ...] = (
-    "garbled", "truncated", "contrast", "logo_fidelity", "composition", "frame_integrity")
+    "garbled", "truncated", "contrast", "logo_fidelity", "composition", "frame_integrity",
+    "empty_element")
 CRITIC_CODES: dict[str, tuple[str, ...]] = {
     "brief": BRIEF_CODES, "system": SYSTEM_CODES, "craft": CRAFT_CODES}
-#: All twenty codes — the vocabulary `gauntlet_fix.md` is keyed by and validated against.
+#: All twenty-one codes — the vocabulary `gauntlet_fix.md` is keyed by and validated against.
 ALL_CODES: frozenset[str] = frozenset(BRIEF_CODES + SYSTEM_CODES + CRAFT_CODES)
 
 #: FR-325 tier 1. These five block a deck outright, whatever `fail_action` says.
@@ -227,7 +237,8 @@ _PRECEDENCE: tuple[str, ...] = (
     "identity_leak", "platform_chrome", "forbidden_mark", "invented_text", "signature",
     "counter_value", "translated", "missing_text", "pair_break", "missing_mark",
     "style_palette", "style_layout", "style_consistency", "counter_placement",
-    "contrast", "garbled", "truncated", "logo_fidelity", "composition", "frame_integrity",
+    "contrast", "garbled", "truncated", "logo_fidelity", "empty_element", "composition",
+    "frame_integrity",
 )
 
 #: The STAND-IN remedies (FR-323/FR-183). `prompts/gauntlet_fix.md` is the source of the canned
@@ -286,6 +297,9 @@ _REMEDIES: dict[str, str] = {
     "logo_fidelity": ("Draw the sanctioned tool mark exactly as the real logo is drawn — same "
                       "shapes, proportions, glyph and letterforms — with no redesign and no "
                       "invented substitute."),
+    "empty_element": ("Draw no empty container in the {zone} area: a card, button, circle, bar or "
+                      "chip row exists only around a quoted string, and where nothing is quoted "
+                      "the device is left out."),
     "composition": ("Give the {zone} element its own room: one text block and one focal element, "
                     "nothing overlapping or colliding, no duplicated subject, clear margins on "
                     "every side."),

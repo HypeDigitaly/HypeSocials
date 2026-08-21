@@ -385,6 +385,16 @@ def test_the_four_tiers_partition_the_frozen_vocabulary_with_no_code_in_two_of_t
     assert sum(len(tier) for tier in tiers) == len(gauntlet.ALL_CODES), "a code sits in two tiers"
     assert gauntlet.COSMETIC_CODES == {"counter_placement"}
     assert "counter_placement" not in gauntlet.CONTRACT_CODES, "F7-A's move was reverted"
+    # D65/FR-368's newcomer, pinned by TIER rather than by membership. `empty_element` buys a
+    # re-render round and must never block a paid deck, so it belongs to the craft vocabulary and
+    # to no other tier: an empty card is a rendering habit, not a leaked identity and not a broken
+    # style contract. Putting it in either of those two sets would make a blank pill the reason a
+    # finished deck goes unpublished.
+    assert "empty_element" in gauntlet.CRAFT_CODES
+    assert "empty_element" not in gauntlet.LEAKAGE_CODES, "a blank card never blocks a deck"
+    assert "empty_element" not in gauntlet.CONTRACT_CODES, "a blank card never blocks a deck"
+    assert "empty_element" not in gauntlet.COSMETIC_CODES, \
+        "cosmetic is the counter-treatment carve-out alone; craft is the tier that re-renders"
     # The number is contract content even though its styling is not — the two halves of the F7
     # split live in different critics' vocabularies, which is what makes them separable at all.
     assert "counter_value" in gauntlet.CONTRACT_CODES and "counter_value" in gauntlet.BRIEF_CODES
@@ -1446,16 +1456,22 @@ def test_an_absent_or_unparseable_sheet_falls_back_to_the_built_ins_and_never_ra
 
 
 def test_the_shipped_sheet_is_the_one_the_module_actually_assembles_from() -> None:
-    """End-to-end against `prompts/gauntlet_fix.md` itself: all 20 codes ordered, all 40 rows
+    """End-to-end against `prompts/gauntlet_fix.md` itself: all 21 codes ordered, all 42 rows
     parsed (39 + the D59 `style_consistency | chip` row that refuses to propagate an unmandated
-    chip from slide 1), and the two verbatim blocks byte-identical to the module's stand-in
-    constants."""
+    chip from slide 1 + D65's two `empty_element` rows), and the two verbatim blocks
+    byte-identical to the module's stand-in constants.
+
+    The two counts move only when the FROZEN vocabulary itself moves, which is the point of
+    asserting them: v2.9.0/D65 added `empty_element` (FR-368) and had to touch the code tuple, the
+    sheet's `## ORDER` line, the sheet's remedy rows, `_REMEDIES`, `_PRECEDENCE` and both critic
+    templates in the same change — a partial edit lands here, on the numbers, rather than on a
+    live deck whose fix suffix silently dropped a remedy it had no sentence for."""
     from hypesocials.prompts_engine import PromptEngine
 
     sheet = gauntlet._sheet(PromptEngine())
     assert sheet.origin.endswith("gauntlet_fix.md")
-    assert set(sheet.order) == gauntlet.ALL_CODES and len(sheet.order) == 20
-    assert len(sheet.remedies) == 40
+    assert set(sheet.order) == gauntlet.ALL_CODES and len(sheet.order) == 21
+    assert len(sheet.remedies) == 42
     assert all((code, "") in sheet.remedies for code in gauntlet.ALL_CODES)  # every code has a `*`
     assert sheet.precedence == gauntlet.PRECEDENCE_BLOCK
     assert sheet.closing == gauntlet.FENCE_LINE

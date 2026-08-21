@@ -51,7 +51,7 @@ dropping any of them is a worse failure than the defect being fixed.
 
 ## ORDER
 
-identity_leak, platform_chrome, forbidden_mark, invented_text, signature, counter_value, translated, missing_text, pair_break, missing_mark, style_palette, style_layout, style_consistency, counter_placement, contrast, garbled, truncated, logo_fidelity, composition, frame_integrity
+identity_leak, platform_chrome, forbidden_mark, invented_text, signature, counter_value, translated, missing_text, pair_break, missing_mark, style_palette, style_layout, style_consistency, counter_placement, contrast, garbled, truncated, logo_fidelity, empty_element, composition, frame_integrity
 
 ## REMEDIES
 
@@ -92,6 +92,8 @@ garbled | full_frame | Draw every string once, cleanly: well-formed letterforms 
 truncated | * | Keep the {zone} lettering whole inside the frame: hold every string within the central 80% of the picture, clear of every edge, and size its box to the text rather than clipping it.
 truncated | full_frame | Keep all lettering whole inside the frame: hold every string within the central 80% of the picture, clear of every edge, and size each box to its text rather than clipping it.
 logo_fidelity | * | Draw the sanctioned tool mark exactly as the real logo is drawn — same shapes, proportions, glyph and letterforms — with no redesign, no re-lettering and no invented substitute.
+empty_element | * | Draw no empty container in the {zone} area: a card, button, circle, bar or chip row exists only around a quoted string, and where nothing is quoted the device is left out.
+empty_element | card | Draw a card only around a string the TEXT block quotes: one card per quoted line, no empty card, no grid of blanks, no filler bar standing in for words.
 composition | * | Give the {zone} element its own room: one text block and one focal element, nothing overlapping or colliding, no duplicated subject or repeated text block, clear margins on every side.
 composition | full_frame | Compose one text block and one focal element with room around each: nothing overlapping or colliding, no duplicated subject or repeated text block, clear margins on every side.
 frame_integrity | * | Compose natively for the frame this request sets and fill it edge to edge: no letterbox or pillar bars, no seams or tiling repeats, no stretching, and no crop of a larger composition.

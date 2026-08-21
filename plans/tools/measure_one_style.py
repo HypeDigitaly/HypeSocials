@@ -136,13 +136,21 @@ def main(argv: list[str]) -> int:
         print(f"{'PASS' if ok else 'FAIL'}    {label}")
         bad += 0 if ok else 1
 
+    # D65: `style_dna()` prepends a shared `colour_rendering` row that belongs to NO style — every
+    # entry in the registry carries the identical text. Charging it to each style's own budget made
+    # all 26 read FAIL against a cap written for the five DNA fields, which is a measurement fault
+    # rather than an authoring one. The shared prefix is subtracted here so the number answers the
+    # question the cap asks: how much DNA does THIS style own? `owned` keeps the full string,
+    # because the prompt really does carry it.
     dna = pe.style_dna(style)
+    shared = f"colour_rendering: {pe._COLOUR_RENDERING_ROW}\n  "
+    own_dna = len(dna) - len(shared) if dna.startswith(shared) else len(dna)
     owned = (len(style.render_prompt) + len(guidance.get("carousel_slide", "")) + len(dna)
              + len("\n".join(style.exclusions))
              + (len(style.list_mode.layout) if style.list_mode else 0)
              + (len(counter.text_treatment) if counter else 0))
-    for label, value, cap in (("owned chars", owned, OWNED_CAP), ("style_dna chars", len(dna),
-                                                                      DNA_CAP)):
+    for label, value, cap in (("owned chars", owned, OWNED_CAP),
+                              ("style_dna chars (own)", own_dna, DNA_CAP)):
         ok = value <= cap
         print(f"{'PASS' if ok else 'FAIL'}    {label} {value:,} (cap {cap:,})")
         bad += 0 if ok else 1

@@ -161,7 +161,9 @@ CONSTRAINTS:
     quoted above is left out of the frame — never filled with invented words,
     and never with a bar, rule, block or placeholder standing in for words. A
     repeating device (a row, a card, a chip) exists once per quoted line and not
-    at all when none is quoted.
+    at all when none is quoted. No container is drawn empty: a card, button,
+    circle, bar, chip row or lorem block holds quoted text or a sanctioned mark,
+    or it is not there.
   - An icon depicts what its line says, never decoration. Never invent a
     human face. A negative mark (an X, a cross) is never in the accent
     colour.

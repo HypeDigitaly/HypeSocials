@@ -37,7 +37,8 @@ This style deliberately renders some things unreadable:
 {{sanctioned_illegible}}
 
 Greeked bars, texture lettering and similar filler named there are the style
-working correctly. Never report them as `garbled`.
+working correctly. Never report them as `garbled`, and never as `empty_element`
+either — a filler bar the style above sanctions is ordered, not padding.
 
 These marks were ordered as REAL logos, in their own true brand colours, exempt
 from the style's palette:
@@ -75,6 +76,14 @@ YOUR DEFECT CODES
   size.
 - `logo_fidelity` — a required mark drawn wrong: distorted proportions, wrong or
   re-lettered glyph, mangled letterforms, a blurred or reconstructed lookalike.
+- `empty_element` — a container drawn with nothing quoted inside it: an empty
+  card, button, pill, circle, bar, chip row or table cell, a block of
+  lorem-style filler standing where words would go, or a repeating grid of such
+  shapes padding the layout out. A device belongs to a line the frame was
+  ordered to carry; where no line was quoted for it, that device is left out of
+  the picture rather than drawn blank. ONE exception, and only this one: a
+  single flat, unlettered rounded plate reserved for a screenshot the engine
+  pastes in after the render was ORDERED that way — it is never this defect.
 - `composition` — the frame does not hold together: the focal element or a text
   block colliding with or overlapping another, a duplicated subject or a
   duplicated text block, an element crowding the very edge with no margin,

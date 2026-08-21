@@ -32,7 +32,73 @@ Czech panel plus its FR-186 echo is ~2,700 uncuttable characters of TEXT block o
   budget, the panel and every SAFETY rule still arrive, and what a hard truncation eats is
   confined to the droppable tail prose F1-E demoted. That is the property the reorder was for.
 
-**RE-measured on the shipped bytes, 2026-08-20, after v2.5.2/D61** (`assembled` = the filled
+**RE-measured on the shipped bytes, 2026-08-21, after v2.9.0/D65 (SESSION P waves 1 and 3).**
+Two edits moved every row in the table below, in opposite directions, and the second one paid for
+the first:
+
+* **Wave 1 PREPENDED FR-364's `colour_rendering` row to `style_dna`** — 251 characters of
+  uncuttable-in-practice colour instruction on all twenty-six styles at once (it is trio prose, so
+  the trim CAN reach it, but it sits at the head where only the hard-truncation backstop does).
+  On its own that put twenty-two styles over `_TRIO_CUT_CEILING` — the worst at 2,054 — and it
+  stripped the FR-340 empty-zone rule off four styles' 1,500-character panels at tier B
+  (`letterpress-print-carousel` and its teal twin, `social-quote-card`, `terminal-mockup-deck`),
+  which is exactly the failure mode this file was written to catch. It caught it.
+* **Wave 3's empty-element purge (FR-368) took 9,146 characters back out of the registry**, and
+  took them out of the prose that had gone redundant rather than out of anything the frame needs:
+  the positive greeking instructions (a mock-up interior is now an allowance two styles have, not
+  a registry-wide rule), the FR-340 empty-zone restatements the D61 styles each spelled out three
+  or four times (`carousel_slide.md`'s CONSTRAINTS now states that rule once, to every render),
+  the platform-UI and watermark exclusion lines that every render template already bans
+  unconditionally in its own CONSTRAINTS block, and the cover-only hero-object paragraphs that
+  `carousel_cover` guidance already carried in full.
+
+The net is a registry that is 4.2% smaller and a worst case 24 characters BETTER than the one D61
+left behind: the tightest style in the file is now `hypelead-brand-card` at 1,540, against
+`icon-ledger-carousel`'s 1,516 before Wave 1 — and `icon-ledger-carousel` itself came down to
+1,528. `_TRIO_CUT_CEILING` stays 1,600, untouched, with 60 characters of headroom on the worst
+style. `plans/tools/measure_prompt_fit.py` reads
+**`0 of 26 styles outside target (cutA <= 1540, slackB >= 60)`**, and tier B's marker survives on
+all twenty-six again (the thinnest is `neon-glass-dark` at 303 characters of slack, the widest
+`meme-caricature-panels-teal` at 1,049).
+
+    style                              cut@700  cut@1500  slackB
+    photoreal-ambient-caption            1,430     1,830     473
+    editorial-voxel-carousel             1,487     1,742     326
+    letterpress-print-carousel           1,535     1,814     351
+    meme-caricature-panels                 881     1,846   1,046
+    anime-noir-statement                 1,528     1,951     499
+    ugc-tabletop-statement               1,468     1,815     418
+    platform-showcase-card               1,532     1,792     337
+    hypelead-brand-card                  1,540     1,834     371
+    quiet-luxury-night-photoreal         1,518     2,006     559
+    build-log-mono                       1,435     1,761     394
+    icon-ledger-carousel                 1,528     1,827     373
+    circuit-atlas-dark                   1,532     1,845     380
+    social-quote-card                    1,521     1,769     319
+    terminal-mockup-deck                 1,528     1,781     326
+    letterpress-print-carousel-teal      1,535     1,814     351
+    meme-caricature-panels-teal            862     1,835   1,049
+    quiet-luxury-night-photoreal-teal    1,529     2,010     555
+    photoreal-ambient-caption-teal       1,499     1,870     448
+    ugc-tabletop-statement-teal          1,491     1,829     409
+    big-number-editorial                 1,533     1,842     382
+    contrast-verdict-deck                1,500     1,818     388
+    photo-poster-statement               1,518     1,867     424
+    mono-cutout-editorial                1,538     1,788     320
+    neon-glass-dark                      1,538     1,767     303
+    paper-editorial-carousel             1,527     1,807     351
+    aurora-white-deck                    1,528     1,816     361
+
+`slackB` is the characters left AFTER the every-legible-character marker at tier B — the quantity
+the four Wave-1 failures had driven negative. It is measured here rather than asserted because the
+assertion that matters is the marker's PRESENCE, which the tier-B test makes by name.
+
+**The D61 table and its narrative, kept below because the reasoning still reads true.** The
+absolute numbers in it are superseded by the table above; what it explains — why a safe-area
+sentence or a coverage clause lands 1:1 on the trim, and why an uncuttable slot's growth always
+comes out of the trio — is why the two D65 edits behaved the way they did.
+
+**Measured on the shipped bytes, 2026-08-20, after v2.5.2/D61** (`assembled` = the filled
 template before any fit pass; `cut` = the last-resort trio trim; `over` = characters hard-truncated
 past the floors). D61 touched NO template, NO engine code on this path and no slot the fit pass
 reads — and this time it did not re-author a single existing style either. Every one of the
@@ -174,14 +240,16 @@ LIVE_WORST_PANEL_CHARS = 700
 
 #: The most the last-resort trim may take out of the style trio at tier A before this stops being
 #: headroom and starts being a slide that renders in a different look than its neighbours. The
-#: measured worst on the shipped bytes is 1,516 (`icon-ledger-carousel`) after v2.5.1/D60, up 17
-#: from the 1,499 D59 left; the runner-up is `anime-noir-statement` at 1,487. The number stays
-#: 1,600 across both moves — a ceiling that follows the measurement is not a ceiling, and D59
-#: bought its headroom with an exclusions dedup that will not repeat while D60 spent a little of
-#: it back on the FR-350 safe-area sentence. It sits just above the worst so an edit that costs the
-#: deck another paragraph shows up HERE, loudly, instead of showing up three weeks later as a
-#: blocked deck. If this trips: compress the template, the anchor block or that style's
-#: `style_dna` — do not raise the number.
+#: measured worst on the shipped bytes is 1,540 (`hypelead-brand-card`) after v2.9.0/D65, DOWN
+#: from the 1,516 (`icon-ledger-carousel`) D60 left once Wave 1's colour row and Wave 3's registry
+#: purge are both counted; the runner-up pair is `mono-cutout-editorial` and `neon-glass-dark` at
+#: 1,538. The number stays 1,600 across every one of those moves — a ceiling that follows the
+#: measurement is not a ceiling. D59 bought its headroom with an exclusions dedup, D60 spent a
+#: little of it back on the FR-350 safe-area sentence, D65 spent 251 characters of it on the
+#: FR-364 colour row and then bought 9,146 back by deleting registry prose that had gone redundant
+#: (FR-368). It sits just above the worst so an edit that costs the deck another paragraph shows up
+#: HERE, loudly, instead of showing up three weeks later as a blocked deck. If this trips: compress
+#: the template, the anchor block or that style's `style_dna` — do not raise the number.
 _TRIO_CUT_CEILING = 1_600
 
 #: The rules F1-E moved to the TOP of CONSTRAINTS, each identified by a phrase that appears
@@ -425,7 +493,8 @@ def test_the_shipped_registry_is_the_twenty_six_styles_this_file_measures() -> N
 
     Three membership assertions, not one, and all three on purpose: `quiet-luxury-night-photoreal`
     is D55's entry and the tightest of the pre-D56 nine, `circuit-atlas-dark` is the densest of
-    D56's archetype four (its DNA carries the diagram node cap and the greeking rule), and
+    D56's archetype four (its DNA carries the diagram node cap; the greeking rule that used to sit
+    beside it was retired by D65/FR-368 — an unlabelled chip is not drawn rather than barred), and
     `neon-glass-dark` is the tightest of D61's seven. A registry edit that dropped any of them
     would leave the count intact only by adding something else, which is exactly the substitution
     a bare count cannot see.
