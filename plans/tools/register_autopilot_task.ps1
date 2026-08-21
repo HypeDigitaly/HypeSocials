@@ -39,8 +39,10 @@ if (-not (Test-Path $Bat)) {
 }
 
 # --- validate the time ------------------------------------------------------
-$parsed = $null
-if (-not [DateTime]::TryParseExact($At, "HH:mm", $null, [System.Globalization.DateTimeStyles]::None, [ref]$parsed)) {
+# PS 5.1 cannot bind TryParseExact with an untyped [ref]; ParseExact in a try is unambiguous.
+try {
+    $parsed = [DateTime]::ParseExact($At, "HH:mm", [System.Globalization.CultureInfo]::InvariantCulture)
+} catch {
     throw "-At must be HH:mm (24h), got '$At'"
 }
 

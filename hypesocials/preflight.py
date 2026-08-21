@@ -361,7 +361,7 @@ def check(
     _check_profiles(config, action, errors)
     _check_prompt_overrides(config, action, warnings)
     _check_gauntlet(config, action, errors, warnings)
-    _check_codex(config, action, entries, errors, hints)
+    _check_codex(config, action, entries, errors, warnings, hints)
     _check_styles(config, action, errors, warnings)
     _check_branding(config, action, errors, warnings)
     _check_node(config, errors)
@@ -625,7 +625,7 @@ def _check_gauntlet(config: Config, action: str, errors: list[str],
 
 
 def _check_codex(config: Config, action: str, entries: Sequence[PlanEntry],
-                 errors: list[str], hints: list[str]) -> None:
+                 errors: list[str], warnings: list[str], hints: list[str]) -> None:
     """D64: when either door is `codex`, prove the local proxy can serve THIS run — or exit 2.
 
     Three findings, and the order is the order an operator can act on them.
@@ -654,6 +654,14 @@ def _check_codex(config: Config, action: str, entries: Sequence[PlanEntry],
     3. **Reels.** There is no subscription path for video: the proxy renders `gpt-image-2` and
        nothing else. A plan that wants a reel under `render_provider: codex` is refused here
        rather than half-delivered, and the cure is in the sentence.
+
+    4. **Shape.** The proxy answers ~1254x1254 to every `size` it is sent, so a creative planned
+       at FR-21's 4:5 (Instagram/LinkedIn images) ships SQUARE. That is a WARNING, not a refusal:
+       a square post is a real, publishable creative and refusing the run would be worse than
+       delivering it — but it changes what the operator gets, and silence would let them find out
+       from the folder. One line per distinct ratio, counted, so a mixed plan says which part of
+       it is affected. Reels are excluded because arm 3 already refused them outright, and one
+       event should produce one finding.
 
     Plus one informational line, never a finding's grade: the proxy returns a fixed ~1254 px frame
     whatever `platforms.<name>.image_resolution` says (FR-342 is a Kie knob). The operator approves
@@ -706,6 +714,28 @@ def _check_codex(config: Config, action: str, entries: Sequence[PlanEntry],
                          f"~{CODEX_IMAGE_PX} px whatever platforms.<name>.image_resolution asks "
                          "for, and bills $0 against the subscription rather than the spend cap "
                          "(D64/FR-342)")
+        for ratio, count in _non_square_ratios(entries):
+            warnings.append(f"codex renders square ~{CODEX_IMAGE_PX} px; {count} creative(s) "
+                            f"asked for {ratio} and will ship 1:1")
+
+
+def _non_square_ratios(entries: Sequence[PlanEntry]) -> list[tuple[str, int]]:
+    """`(aspect ratio, how many creatives asked for it)` for every planned non-1:1 IMAGE shape.
+
+    Read off `PlanEntry.aspect_ratio`, which is `plan._aspect_ratio`'s FR-21 answer (platform x
+    format, config-overridable) and the same string the render payload carries — so this counts
+    what was really ordered rather than re-deriving it from `config.platforms`. Carousels are 1:1
+    and never appear; reels are dropped because `_check_codex` refuses them one arm earlier.
+    Sorted by ratio so two identical plans report identically.
+    """
+    counts: dict[str, int] = {}
+    for entry in entries:
+        if str(entry.creative_format) == "reel":
+            continue
+        ratio = str(entry.aspect_ratio or "").strip()
+        if ratio and ratio != "1:1":
+            counts[ratio] = counts.get(ratio, 0) + 1
+    return sorted(counts.items())
 
 
 def _codex_llm_models(config: Config) -> list[tuple[str, str]]:

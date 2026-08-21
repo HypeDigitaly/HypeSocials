@@ -24,7 +24,10 @@ Invariants:
   this module reads nothing from there and sends no `Authorization` header (D30/NFR-112).
 - **The result is a local file, not a borrowed URL.** Bytes land under `<scratch_dir>/.renders/`
   by temp+rename and travel on as a `file://` URL, which `outputs.packager._download()` reads
-  without a socket. Nothing here uploads anything anywhere.
+  without a socket. Nothing here uploads anything anywhere. That folder is a SCRATCH copy — the
+  packager has already copied every shipped frame into its asset folder by the end of the run —
+  so `runner._cleanup` deletes it once a run reaches packaging, and leaves it standing on a run
+  that crashed before then, where these files are the only surviving evidence of what rendered.
 - **`upload()` moves no bytes.** A reference is already a local file; the "public URL" this
   provider needs is that file's own `file://` URI. The FR-244 source-store gate (`source/` vs
   `marks/`) stays where it is, in `generate/refs.py`, and is NOT re-implemented here.
@@ -102,10 +105,20 @@ PROXY_DOWN = "Codex proxy unreachable — is `npx openai-oauth@latest` running?"
 
 #: OpenAI states a refusal in prose, so this is a substring test like Kie's. MODERATION is its own
 #: cause because its remedy differs: FR-97 retries once with the offending references stripped.
+#:
+#: The list is deliberately SHORT and is read only on the two status codes that can mean "this
+#: content" (`_MODERATION_STATUSES`). "not allowed" and "rejected" were in it and are gone: a 403
+#: saying "You are not allowed to use this model" is an ACCOUNT problem, and classifying it as
+#: moderation spent FR-97's reference-strip retry on it — a retry that cannot help at all — and
+#: then forfeited the FR-317 resubmit a provider failure is entitled to.
 _MODERATION_SIGNS = (
-    "moderation", "safety", "content_policy", "content policy", "policy violation",
-    "not allowed", "violat", "rejected",
+    "moderation", "safety", "content_policy", "content policy", "policy violation", "violat",
 )
+#: The only statuses whose body may be read as a content refusal. 400 is what the OpenAI image
+#: API answers a blocked prompt with and 422 is the proxy's own validation twin; 401/403 are
+#: authentication and entitlement, 404 is a wrong model id or a wrong path, and none of the three
+#: is about the picture that was asked for.
+_MODERATION_STATUSES = frozenset({400, 422})
 
 
 class CodexRenderError(RuntimeError):
@@ -229,7 +242,10 @@ class CodexImageClient:
                 timeout_s=timeout_s, watch=watch)
             blob = _first_image(payload)
             task_id = f"codex-{uuid.uuid4().hex}"
-            url = self._store(task_id, blob)
+            # Rule 1: `_store` opens, writes, fsyncs and renames, so it never runs ON the
+            # loop. It stays SYNCHRONOUS (one atomic write is one thing) and is dispatched
+            # to a worker thread here, the same way `_reference_blobs` reads its files.
+            url = await asyncio.to_thread(self._store, task_id, blob)
         except CodexRenderError as exc:
             if on_submitted is not None:
                 on_submitted(token, None)  # no id was ever minted -> `submit_unknown`
@@ -348,7 +364,7 @@ class CodexImageClient:
             if response.status_code >= 400:
                 message = _error_message(response)
                 raise CodexRenderError(f"POST {path} HTTP {response.status_code}: {message}",
-                                       _fail_cause(message))
+                                       _fail_cause(response.status_code, message))
             try:
                 payload = response.json()
             except ValueError as exc:
@@ -372,6 +388,10 @@ class CodexImageClient:
         Atomic for the same reason `meta.yaml` is (NFR-21): the packager copies these bytes into
         the asset folder afterwards, and a torn file would be a half-slide nobody could tell from
         a whole one.
+
+        **Synchronous on purpose, and never called on the event loop.** `render()` dispatches it
+        through `asyncio.to_thread` (rule 1: no blocking I/O on the loop); keeping the function
+        itself plain makes it directly testable and keeps the atomic write one unsplit step.
         """
         target = self.renders_dir / f"{task_id}.png"
         try:
@@ -487,8 +507,19 @@ def _usage(payload: dict[str, Any]) -> dict[str, Any]:
             if isinstance(usage.get(key), int)}
 
 
-def _fail_cause(message: str) -> RenderFailCause:
-    """Moderation is its own class because its remedy differs (FR-97's single stripped retry)."""
+def _fail_cause(status: int, message: str) -> RenderFailCause:
+    """Moderation is its own class because its remedy differs (FR-97's single stripped retry).
+
+    The STATUS decides first, and the prose only within it. A refusal about the content arrives as
+    400 (or the proxy's 422); 401, 403 and 404 are about the account, the entitlement or the model
+    id, and their bodies carry the same words — "You are not allowed to use this model" reads
+    as a policy refusal to any substring test. Calling that MODERATION cost the job twice: FR-97
+    burned its one retry stripping references that were never the problem, and the outcome no
+    longer qualified for FR-317's single resubmit. A PROVIDER_FAIL carrying the proxy's own
+    sentence is both truer and cheaper.
+    """
+    if status not in _MODERATION_STATUSES:
+        return RenderFailCause.PROVIDER_FAIL
     lowered = message.lower()
     return (RenderFailCause.MODERATION if any(sign in lowered for sign in _MODERATION_SIGNS)
             else RenderFailCause.PROVIDER_FAIL)

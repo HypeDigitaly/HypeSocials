@@ -308,9 +308,11 @@ def _port_of(base_url: str) -> int:
 async def _launch(base_url: str, port: int, *, startup_timeout_s: float, log: Any,
                   client: httpx.AsyncClient | None) -> ProxyHandle:
     """Starts the proxy and waits for it to serve a model list. Cleans up after itself on failure."""
-    npx = _resolve_npx()
-    LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    sink = open(LOG_PATH, "ab")  # noqa: SIM115 — the handle lives as long as the child does
+    # Rule 1: `shutil.which` walks PATH and `open()` creates a file — both are disk I/O, and both
+    # used to run ON the event loop while the rest of pre-flight waited. One hop to a worker
+    # thread each; `_open_log_sink` bundles the mkdir with the open so it is one hop, not two.
+    npx = await asyncio.to_thread(_resolve_npx)
+    sink = await asyncio.to_thread(_open_log_sink)
     try:
         process = await asyncio.create_subprocess_exec(
             npx, *LAUNCH_COMMAND, "--port", str(port),
@@ -358,6 +360,17 @@ async def _wait_ready(base_url: str, process: Any, startup_timeout_s: float,
                 f"the Codex proxy did not answer at {base_url} within {startup_timeout_s:.0f}s "
                 f"(last: {last}) — see {LOG_PATH}; {_CURE}")
         await asyncio.sleep(_POLL_INTERVAL_S)
+
+
+def _open_log_sink() -> Any:
+    """`logs/codex_proxy.log` opened for append, its folder created — the child's stdout/stderr.
+
+    Synchronous and dispatched to a thread by `_launch` (rule 1). The handle is deliberately NOT a
+    context manager: it has to outlive this function, because it lives exactly as long as the
+    child process writing into it does, and `stop()` closes it.
+    """
+    LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    return open(LOG_PATH, "ab")  # noqa: SIM115 — the handle lives as long as the child does
 
 
 def _resolve_npx() -> str:

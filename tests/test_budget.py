@@ -22,7 +22,8 @@ from types import SimpleNamespace
 import pytest
 
 from hypesocials import budget
-from hypesocials.budget import Budget, Estimate, SpendCategory, estimate, format_usd, trim
+from hypesocials.budget import (Budget, Estimate, SpendCategory, estimate, format_usd,
+                                job_projection, trim)
 from hypesocials.config import Config, PlatformConfig
 from hypesocials.models import PlanEntry, PlanEntryStatus
 
@@ -1731,3 +1732,114 @@ def test_d64_the_codex_backend_does_not_disturb_the_openrouter_default(cfg: Conf
     est = estimate(cfg, [entry(0)])
     assert all(line.price_key != "codex" for line in est.lines)
     assert one(est, "copy_call").amount_usd > 0
+
+
+# ---- D64 (review round) ----------------- SESSION O: the RENDER lines under the codex provider
+#
+# `models.render_provider: codex` renders every image through the same subscription proxy the LLM
+# door uses. The first cut of D64 zeroed the LLM lines and left the render lines at Kie's rates,
+# so a free nine-deck run still quoted ~$2.10 at the Confirm gate — and that number is not just
+# read, it is SPENT: `--yes` trims creatives against it and `Budget.reserve` declines FR-317
+# resubmits and gauntlet re-renders against it. Phantom money buys nothing and costs creatives.
+
+
+def _both_doors_codex(cfg: Config) -> Config:
+    """The shipped-brand shape SESSION O aims at: both doors on the subscription proxy."""
+    cfg.models.llm_backend = "codex"
+    cfg.models.render_provider = "codex"
+    return cfg
+
+
+def test_d64_the_codex_render_door_prices_every_line_at_zero(cfg: Config) -> None:
+    """Both doors on the subscription: the whole estimate is $0, and every line says WHY."""
+    plan = [entry(0), entry(1, "carousel")]
+    metered = estimate(cfg, plan)
+    assert metered.expected_usd > 0, "the comparison needs a run that really costs money"
+
+    free = estimate(_both_doors_codex(cfg), [entry(0), entry(1, "carousel")])
+
+    assert free.expected_usd == 0.0, "the Confirm gate must not quote money nobody will be billed"
+    assert free.worst_case_usd == 0.0, "nor a worst case: a free resubmit is still free"
+    assert {line.price_key for line in free.lines} == {"codex"}
+    assert all(line.price_origin == "subscription (Codex OAuth) — $0 metered"
+               for line in free.lines)
+    assert all(line.unit_price == 0.0 and line.amount_usd == 0.0 for line in free.lines)
+    # FR-282's third column is provenance, not money: the ids an operator would swap survive.
+    assert {line.assumed_model for line in free.lines if line.category is SpendCategory.RENDER} \
+        == {cfg.models.image}
+
+
+def test_d64_a_free_render_raises_no_governance_banner_and_no_critic_price_gap(cfg: Config) -> None:
+    """$0 here is a measured fact, not a rate somebody forgot to type in (`_line`'s exemption).
+
+    A banner on a run whose spend is genuinely zero trains the operator to scroll past the one
+    line that exists to stop a run.
+    """
+    est = estimate(_both_doors_codex(cfg), [entry(0), entry(1, "carousel")])
+
+    assert est.unpriced_lines == () and est.banner == ""
+    assert est.blocked == ()
+    assert budget.critic_price_gap(cfg) is None
+
+
+def test_d64_a_free_render_reserves_nothing_so_no_resubmit_is_declined(cfg: Config) -> None:
+    """`job_projection` is what `Budget.reserve` holds against the cap (FR-106c).
+
+    Under the codex door the hold has to be $0 too: a metered projection on a subscription render
+    would let a free run "run out of money" and refuse the FR-317 resubmit that comes after it.
+    """
+    image, deck = entry(0), entry(1, "carousel")
+    assert job_projection(cfg, image, "image") > 0
+
+    _both_doors_codex(cfg)
+    assert job_projection(cfg, image, "image") == 0.0
+    assert job_projection(cfg, deck, "slide") == 0.0
+    assert job_projection(cfg, deck, "seed_frame") == 0.0
+    # Moot (pre-flight refuses a reel under this provider) and still $0: a reservation for a job
+    # that cannot cost anything is exactly what declines the next job that can.
+    assert job_projection(cfg, entry(2, "reel"), "clip") == 0.0
+
+    async def exhausted_cap_still_admits_a_free_resubmit() -> bool:
+        money = Budget(cap_usd=0.10)
+        await money.commit(0.10, label="everything this cap could buy")
+        held = await money.reserve(job_projection(cfg, deck, "slide"),
+                                   label="FR-317 resubmit")
+        return held is not None
+
+    assert asyncio.run(exhausted_cap_still_admits_a_free_resubmit()), (
+        "a $0 hold fits a spent-out cap; a phantom-priced one would be declined")
+
+
+def test_d64_per_entry_shares_are_zero_so_yes_mode_trims_nothing(cfg: Config) -> None:
+    """FR-28's auto-trim reads `estimated_cost_usd`. A free plan fits any cap, whole."""
+    plan = [entry(0), entry(1, "carousel"), entry(2)]
+    result = trim(_both_doors_codex(cfg), plan, cap_usd=0.01)
+
+    assert result.fits and not result.trimmed
+    assert all(item.estimated_cost_usd == 0.0 for item in plan)
+
+
+def test_d64_one_codex_door_leaves_the_other_metered(cfg: Config) -> None:
+    """The two doors are configured independently, so each half prices itself.
+
+    This is the guard against a single "am I on codex?" flag: `llm_backend: codex` +
+    `render_provider: kie` is a legal config that still owes Kie for every pixel.
+    """
+    cfg.models.llm_backend = "codex"  # render door left on kie
+    est = estimate(cfg, [entry(0), entry(1, "carousel")])
+    render = [line for line in est.lines if line.category is SpendCategory.RENDER]
+    assert all(line.price_key == "codex"
+               for line in est.lines if line.category is SpendCategory.LLM)
+    assert sum(line.amount_usd for line in render) > 0
+    assert all(line.price_key != "codex" for line in render)
+
+
+def test_d64_the_kie_render_door_is_byte_identical_to_before(cfg: Config) -> None:
+    """The metered path must not move by a cent — the regression guard for the tests above."""
+    assert cfg.models.render_provider == "kie"
+    est = estimate(cfg, [entry(0), entry(1, "carousel")])
+
+    assert one(est, "image_render").price_key == "models.price_per_unit.image.1k"
+    assert one(est, "carousel_slides").amount_usd > 0
+    assert one(est, "gauntlet_rerender_allowance").price_key == "run.gauntlet.deck_budget_usd"
+    assert all(line.price_key != "codex" for line in est.lines)

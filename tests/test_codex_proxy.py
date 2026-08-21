@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
@@ -382,3 +383,44 @@ async def test_stop_never_touches_a_proxy_this_run_did_not_start() -> None:
     process = _FakeProcess()
     await stop(ProxyHandle(base_url=BASE, port=10531, owned=False, process=process))
     assert process.terminated == 0
+
+
+# --------------------------------------------------------- the preview's own exit path (D64)
+
+
+@pytest.mark.asyncio
+async def test_a_refused_preview_stops_the_proxy_it_just_started(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`previews._preview` starts the proxy BEFORE `check()` can judge the model ids, and its
+    pre-flight refusal returns before any session exists — so `_cleanup`'s `finally` never runs.
+
+    Left as it shipped, a $0 refusal stranded an `npx` child on the workstation and the next run
+    found port 10531 taken. The refusal path therefore stops what it started, idempotently.
+    """
+    from hypesocials import cli, plan, preflight, previews
+    from hypesocials.config import Config
+    from hypesocials.preflight import Preflight
+
+    stopped: list[Any] = []
+    handle = ProxyHandle(base_url=BASE, port=10531, models=("gpt-image-2",), owned=True)
+
+    async def fake_ensure(config: Any, *, action: str = "run", log: Any = None) -> None:
+        codex_proxy._CURRENT = handle
+
+    async def fake_stop(target: Any) -> None:
+        stopped.append(target)
+
+    monkeypatch.setattr(previews, "load_config", lambda name: Config())
+    monkeypatch.setattr(preflight, "resolve_briefs", lambda *a, **k: ([], [], []))
+    monkeypatch.setattr(plan, "build_plan", lambda *a, **k: SimpleNamespace(entries=[]))
+    monkeypatch.setattr(preflight, "ensure_backends", fake_ensure)
+    monkeypatch.setattr(preflight, "check",
+                        lambda *a, **k: Preflight(ok=False, errors=("no proxy models",)))
+    monkeypatch.setattr(codex_proxy, "stop", fake_stop)
+
+    code = await previews.preview_analysis(cli.Options())
+
+    assert code == 2, "still exit 2, $0 — the refusal itself is unchanged"
+    assert stopped == [handle], "the proxy this preview started does not outlive it"
+    codex_proxy._CURRENT = None

@@ -36,7 +36,7 @@ import pytest
 
 from hypesocials import render
 from hypesocials.models import (
-    RenderFailCause, RenderOutcomeKind, RenderParams, RenderRefs,
+    AssetRecord, RenderFailCause, RenderOutcomeKind, RenderParams, RenderRefs,
 )
 from hypesocials.outputs import packager
 from hypesocials.render import codex_images, profiles
@@ -289,6 +289,54 @@ async def test_an_ordinary_four_hundred_is_a_provider_fail_carrying_the_proxys_o
     assert "unknown parameter" in outcome.fail_message
 
 
+@pytest.mark.parametrize(
+    ("status", "message"),
+    [(401, "Missing or invalid credentials for this endpoint."),
+     (403, "You are not allowed to use this model."),
+     (404, "The model `gpt-image-2` does not exist or you do not have access to it.")],
+)
+async def test_an_account_refusal_is_a_provider_fail_however_it_is_worded(
+    status: int, message: str, tmp_path: Path,
+) -> None:
+    """The STATUS decides the class, and only 400/422 may be read as a content refusal.
+
+    Every message here contains a word the moderation sign list used to match ("not allowed",
+    "does not exist ... access"), and the review round found what that cost: a 403 became
+    MODERATION, FR-97 spent its one retry stripping references that were never the problem, and
+    the outcome no longer qualified for FR-317's single resubmit. Two remedies were burned on a
+    problem that only an operator can fix, and the operator was never told what it was.
+    """
+    codex = client(lambda request: httpx.Response(status, json={"error": {"message": message}}),
+                   tmp_path)
+    outcome = await codex.render("gpt-image-2-text-to-image", image_body(), timeout_s=60)
+    await codex.aclose()
+
+    assert outcome.kind is RenderOutcomeKind.FAIL
+    assert outcome.fail_cause is RenderFailCause.PROVIDER_FAIL, message
+    assert message in outcome.fail_message, "the proxy's own sentence reaches the operator"
+    assert str(status) in outcome.fail_message
+
+
+async def test_a_moderation_class_still_needs_the_content_status_under_it(tmp_path: Path) -> None:
+    """The pair the classifier turns on, in one test: same prose, two statuses, two causes."""
+    blocked = {"error": {"message": "moderation_blocked: this prompt violates our policy",
+                         "type": "invalid_request_error"}}
+
+    def refused(status: int) -> RenderFailCause:
+        return codex_images._fail_cause(status, str(blocked["error"]["message"]))
+
+    assert refused(400) is RenderFailCause.MODERATION
+    assert refused(422) is RenderFailCause.MODERATION, "the proxy's own validation twin"
+    assert refused(403) is RenderFailCause.PROVIDER_FAIL, "an entitlement, whatever it says"
+
+    codex = client(lambda request: httpx.Response(400, json=blocked), tmp_path)
+    outcome = await codex.render("gpt-image-2-text-to-image", image_body(), timeout_s=60)
+    await codex.aclose()
+
+    assert outcome.fail_cause is RenderFailCause.MODERATION
+    assert "moderation_blocked" in outcome.fail_message
+
+
 async def test_a_429_is_retried_with_backoff_and_the_render_still_lands(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -468,3 +516,112 @@ def test_a_relative_scratch_dir_still_mints_an_absolute_file_url(tmp_path: Path,
     url = codex._store("codex-abc", b"\x89PNG\r\n\x1a\nxx")
     assert url.startswith("file:///")
     assert (tmp_path / "output" / "run_x" / ".renders" / "codex-abc.png").exists()
+
+
+def test_a_codex_png_keeps_its_extension_all_the_way_into_the_asset_folder(
+    tmp_path: Path,
+) -> None:
+    """`render_name` is the packager's own answer to "what are these bytes called" (FR-72).
+
+    Under Kie a render arrives as a `.jpg` on a CDN URL; under codex it is a `.png` on a `file://`
+    URL. `_extension` parses the URL PATH, so the scheme is irrelevant and the suffix survives —
+    which is what stops a PNG landing as `slide_01.jpg` and every downstream reader (the gallery's
+    `<img>`, the critics' loader, the operator's eye) being told the wrong format.
+    """
+    folder = packager.AssetFolder(tmp_path, AssetRecord(
+        asset_id="Li_car_dance-challenge_01", source="t1", source_name="dance challenge",
+        platform="linkedin", creative_format="carousel", aspect_ratio_requested="1:1"))
+    url = (tmp_path / "run x" / ".renders" / "codex-abc.png").as_uri()
+
+    assert folder.render_name(url, slide=1) == "slide_01.png"
+    assert folder.render_name(url, seed_frame=True) == "seed_frame.png"
+    assert "%20" in url, "the space is percent-escaped and still does not disturb the suffix"
+    # The metered path is untouched: a Kie CDN URL still names a .jpg.
+    assert folder.render_name("https://cdn.kie.ai/x/y.jpg", slide=2) == "slide_02.jpg"
+    # And an extension-less URL keeps the image default rather than inventing one.
+    assert folder.render_name("https://cdn.kie.ai/x/y", slide=3) == "slide_03.jpg"
+
+
+# ---------------------------------------------- 8. the scratch folder is pruned, but not always
+
+
+class _StubLog:
+    """`_Session.log` reduced to what `_cleanup` and `_prune_render_scratch` really touch."""
+
+    def __init__(self) -> None:
+        self.events: list[str] = []
+        self.closed = False
+
+    def event(self, event_type: str, message: str = "", **data: Any) -> str:
+        self.events.append(event_type)
+        return "ev"
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def _session_with_renders(run_dir: Path, *, packaged: bool) -> Any:
+    """A `_Session` with a `.renders/` folder on disk and nothing else running."""
+    from hypesocials import cli, runner
+    from hypesocials.config import Config
+    from hypesocials.util import Deadline, Stopwatch
+
+    scratch = run_dir / codex_images.RENDERS_DIR
+    scratch.mkdir(parents=True)
+    (scratch / "codex-abc.png").write_bytes(PNG)
+    return runner._Session(
+        config=Config(), opts=cli.Options(), control=runner.Control(),
+        run_id="20260821_120000_zzzz", run_dir=run_dir, log=_StubLog(), ledger=None,
+        deadline=Deadline.from_minutes(25), clock=Stopwatch(), budget=None, engine=None,
+        packaged=packaged)
+
+
+async def test_a_completed_run_deletes_the_scratch_copy_of_every_frame(tmp_path: Path) -> None:
+    """The bytes exist twice by DONE — here, and in the asset folder the packager copied them to.
+
+    Keeping both doubles a nine-deck run on disk for no reader: the folder is dot-prefixed exactly
+    because nothing is meant to look in it.
+    """
+    from hypesocials import runner
+
+    session = _session_with_renders(tmp_path / "run", packaged=True)
+    await runner._cleanup(session)
+
+    assert not (tmp_path / "run" / codex_images.RENDERS_DIR).exists()
+    assert "render_scratch_pruned" in session.log.events
+    assert session.log.closed, "cleanup still closes the log after its steps"
+
+
+async def test_a_crashed_run_keeps_the_only_evidence_of_what_rendered(tmp_path: Path) -> None:
+    """`session.packaged` is False on every crash, abort and Ctrl+C.
+
+    On those paths these PNGs may be the only copy of what the proxy actually drew, and the
+    operator's first move is to go and look at them. A cleanup step that eats the evidence of the
+    failure it is cleaning up after is worse than a folder that doubles on disk.
+    """
+    from hypesocials import runner
+
+    session = _session_with_renders(tmp_path / "run", packaged=False)
+    await runner._cleanup(session)
+
+    assert (tmp_path / "run" / codex_images.RENDERS_DIR / "codex-abc.png").read_bytes() == PNG
+    assert "render_scratch_pruned" not in session.log.events
+
+
+async def test_a_kie_run_has_no_scratch_folder_and_says_nothing_about_one(tmp_path: Path) -> None:
+    """Nothing is created just to be removed: the metered provider never writes here."""
+    from hypesocials import cli, runner
+    from hypesocials.config import Config
+    from hypesocials.util import Deadline, Stopwatch
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    session = runner._Session(
+        config=Config(), opts=cli.Options(), control=runner.Control(),
+        run_id="20260821_120000_zzzz", run_dir=run_dir, log=_StubLog(), ledger=None,
+        deadline=Deadline.from_minutes(25), clock=Stopwatch(), budget=None, engine=None,
+        packaged=True)
+
+    await runner._cleanup(session)
+
+    assert "render_scratch_pruned" not in session.log.events

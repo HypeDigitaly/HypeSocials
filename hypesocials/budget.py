@@ -169,9 +169,13 @@ _ROLE_PRICE_KEY: dict[str, str] = {"analysis": "sonnet", "copy": "luna", "critic
 #: rather than importing it, for the same reason `_RETRY_TOKEN_*` mirrors `llm.py`: this module
 #: prices, it does not depend on the modules whose behaviour it prices.
 #:
-#: What this does NOT touch: render pricing. Kie keeps metering pixels whatever door the text
-#: calls use, and the cap still guards that spend (plus Virlo's own deposit, which was never in
-#: this estimate at all).
+#: The SAME literal answers the SAME question on the other door, `models.render_provider: codex`
+#: (`_codex_renders` below): a picture rendered through the subscription proxy is not metered
+#: either, so every RENDER line goes to $0 with this key too. The two doors are independent —
+#: `llm_backend: codex` + `render_provider: kie` is a legal config and still pays Kie for pixels —
+#: which is why there are two predicates and not one flag.
+#:
+#: What this does NOT touch on either door: Virlo's own deposit, which was never in this estimate.
 _CODEX_BACKEND = "codex"
 _CODEX_PRICE_KEY = "codex"
 _CODEX_ORIGIN = "subscription (Codex OAuth) — $0 metered"
@@ -321,9 +325,56 @@ def _image_tokens(long_edge: int, aspect_ratio: str) -> int:
     return math.ceil(edge * edge * factor / _IMAGE_TOKEN_DIVISOR)
 
 
+def _codex_renders(config: Config) -> bool:
+    """Does this run's RENDER door ride the subscription? (D64, `models.render_provider: codex`)
+
+    The render twin of `_llm_call_price`'s backend test, and separate from it on purpose: the two
+    doors are configured independently, so a run can pay OpenRouter for text and nothing for
+    pixels, or the other way round, and each half of the estimate has to answer for itself.
+    """
+    return str(config.models.render_provider) == _CODEX_BACKEND
+
+
+def _codex_priced(model: str) -> Priced:
+    """The $0 subscription tuple every codex-door line carries — one shape, one place."""
+    return (0.0, _CODEX_PRICE_KEY, _CODEX_ORIGIN, model)
+
+
+def _video_price(config: Config) -> Priced:
+    """FR-131's per-second reel rate, or the $0 subscription tuple under the codex render door.
+
+    Moot in practice and here anyway: pre-flight refuses a planned reel outright under
+    `render_provider: codex` (there is no subscription path for video, D64), and the provider
+    itself fails a video body rather than submitting it. But `job_projection` reserves money
+    against this number before either of those speaks, and a reservation for a job that cannot
+    cost anything is exactly the phantom money that declines the NEXT job that can.
+
+    The unpriced-reel line in `_entry_lines` deliberately does NOT come through here: it must keep
+    naming `models.price_per_unit.reel_second.<res>`, the key an operator has to go and fill in.
+    """
+    if _codex_renders(config):
+        return _codex_priced(config.models.video)
+    return (config.reel_price_per_second, config.reel_price_key,
+            _origin(config, config.reel_price_key), config.models.video)
+
+
 def _image_price(config: Config, platform: str, *,
                  aspect_ratio: str | None = None) -> tuple[Priced, int]:
     """FR-107's per-platform resolution: the render tier's rate, plus its native long edge.
+
+    **Under `models.render_provider: codex` the rate is $0 (D64)** — the same argument
+    `_llm_call_price` makes for its own door, applied to pixels: the proxy renders against the
+    operator's ChatGPT subscription, so quoting Kie's `2k` rate would put $2.10 on a Confirm table
+    for a run that will be billed nothing. That is not a harmless over-statement either, because
+    the SAME arithmetic reserves money: `--yes` would trim creatives out of a free plan, and
+    `Budget.reserve` would decline an FR-317 resubmit or a gauntlet re-render against money that
+    was never at stake.
+
+    The long edge that comes back is still the CONFIGURED tier's, not the proxy's fixed ~1254 px.
+    It prices no pixels — it only sizes the vision tokens a critic or a cover pick pays to LOOK at
+    the frame, which is metered whenever `llm_backend` stays `openrouter` — and quoting the tier
+    keeps that arithmetic on the honest-high side (D11) instead of pinning a measured proxy
+    constant that a proxy update can silently falsify. Pre-flight prints the real pixel size.
 
     The tier comes from `platforms.<name>.image_resolution`, real since FR-342 (v2.5.1) and read
     through `Config.image_resolution()` — the SAME accessor every image render calls before it
@@ -353,10 +404,13 @@ def _image_price(config: Config, platform: str, *,
     tier = config.image_resolution(platform)
     if aspect_ratio is not None:  # what Kie RENDERS, not what config asked for (FR-342)
         tier = effective_image_tier(aspect_ratio, tier)
+    long_edge = _TIER_LONG_EDGE.get(tier, _DEFAULT_LONG_EDGE_PX)
+    if _codex_renders(config):
+        return _codex_priced(config.models.image), long_edge
     key = f"models.price_per_unit.image.{tier}"
     priced = (config.models.price_per_unit.image.get(tier), key, _origin(config, key),
               config.models.image)
-    return priced, _TIER_LONG_EDGE.get(tier, _DEFAULT_LONG_EDGE_PX)
+    return priced, long_edge
 
 
 def _llm_call_price(config: Config, role: str, prompt: int, completion: int, reasoning: int) -> Priced:
@@ -547,16 +601,19 @@ def _entry_lines(config: Config, entry: PlanEntry, lines: list[EstimateLine]) ->
                                SpendCategory.RENDER, "render", 2, image_priced, orders,
                                allowance=True))
     else:  # reel
-        reel_priced: Priced = (config.reel_price_per_second, config.reel_price_key,
-                               _origin(config, config.reel_price_key), config.models.video)
         if not config.reels_plannable:
+            # NOT `_video_price`: this line's whole job is to name the key nobody filled in, so
+            # is built from the metered key even under the codex door (which refuses reels anyway).
+            unset: Priced = (None, config.reel_price_key,
+                             _origin(config, config.reel_price_key), config.models.video)
             lines.append(_line("reel_clip",
                                f"reel clip · {entry.asset_id} — not planned: "
                                f"{config.reel_price_key} is unset, and an unpriced format is an "
                                "unbounded format (FR-131)",
                                SpendCategory.RENDER, "second", run.reel_duration_s,
-                               (None, *reel_priced[1:]), orders, blocking=True))
+                               unset, orders, blocking=True))
             return  # a blocked reel buys nothing else: no seed frame, no check, no allowance
+        reel_priced: Priced = _video_price(config)
         if run.reel_overlay_text == "seed_frame":
             lines.append(_line("reel_seed_frame", f"reel seed frame · {entry.asset_id}",
                                SpendCategory.RENDER, "render", 1, image_priced, orders))
@@ -598,10 +655,15 @@ def job_projection(config: Config, entry: PlanEntry, job: str) -> float:
     priced the plan with), `clip` is `price_per_unit.reel_second` x the configured duration.
     An unpriced line projects **$0** and the submission still proceeds — pre-committed work is
     already approved (FR-106b), and FR-131 blocked unpriced reels at *planning* time, not here.
+
+    Under `models.render_provider: codex` every projection here is $0 (D64), through the same two
+    helpers the estimate uses. That is not cosmetic: this number is what `Budget.reserve` holds
+    against the cap, so a metered projection on a subscription render would let a free run run out
+    of money and decline the FR-317 resubmit that follows.
     """
     if job == "clip":
-        return round((config.reel_price_per_second or 0.0)
-                     * max(int(config.run.reel_duration_s), 0), 6)
+        (per_second, *_) = _video_price(config)
+        return round((per_second or 0.0) * max(int(config.run.reel_duration_s), 0), 6)
     (price, *_), _ = _image_price(config, entry.platform, aspect_ratio=entry.aspect_ratio)
     return round(price or 0.0, 6)
 
@@ -1177,7 +1239,12 @@ def _gauntlet_lines(config: Config, entries: Sequence[PlanEntry],
     if not rerendering or gauntlet.deck_budget_usd <= 0:
         return  # `deck_budget_usd: 0.00` legally means "judge, never re-render" — not an unset rate
     key = "run.gauntlet.deck_budget_usd"
-    priced: Priced = (gauntlet.deck_budget_usd, key, _origin(config, key), config.models.image)
+    # D64: the cap itself is still read from config above (`deck_budget_usd: 0.00` still means
+    # "judge, never re-render"), but under the codex render door the re-renders it caps are free,
+    # so the LINE quotes $0. A per-deck cap that nothing can ever draw against is not a worst case.
+    priced: Priced = (_codex_priced(config.models.image) if _codex_renders(config)
+                      else (gauntlet.deck_budget_usd, key, _origin(config, key),
+                            config.models.image))
     lines.append(_line(
         "gauntlet_rerender_allowance",
         f"gauntlet re-render budget ({len(rerendering)} x {format_usd(gauntlet.deck_budget_usd)} "

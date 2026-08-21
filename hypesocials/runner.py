@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shutil
 import time
 from collections import Counter
 from collections.abc import Mapping, Sequence
@@ -172,6 +173,12 @@ class _Session:
     engine: PromptEngine
     llm: LLMClient | None = None
     render_ready: bool = False
+    #: SESSION O (D64): has this run reached PACKAGE/DONE? Read by `_cleanup` alone, to decide
+    #: whether the codex provider's `.renders/` scratch folder may be deleted. False on every
+    #: mid-run crash, abort and Ctrl+C, where those PNGs are the only surviving copy of what
+    #: rendered — a cleanup step that eats the evidence of the failure it is cleaning up after
+    #: is worse than a folder that doubles on disk.
+    packaged: bool = False
     virlo_contacted: bool = False  # FR-286: Virlo meters separately, so the total must say so
     counters: sources.Counters = field(default_factory=sources.Counters)  # FR-155's funnel
     campaign_briefs: dict[str, Brief] = field(default_factory=dict)  # D26, by brief name
@@ -1713,6 +1720,7 @@ async def _package(session: _Session, entries: Sequence[PlanEntry], plan_estimat
     true), then the spend table, any loss lines, and the closing status with folder + gallery
     paths. Each number appears in exactly one of those surfaces.
     """
+    session.packaged = True  # D64: every shipped frame is in its asset folder by now (`_cleanup`)
     _log_template_attribution(session)
     credits_line = _credits_exhausted_line(session, entries, report)  # FR-248, before the counts
     write_gallery(session.run_dir, title=session.config.output.gallery.title, log=session.log)
@@ -2690,6 +2698,30 @@ def _final_line(session: _Session, entries: Sequence[PlanEntry], summary: SpendS
     ])
 
 
+async def _prune_render_scratch(session: _Session) -> None:
+    """Delete `<run>/.renders/` — the codex provider's working copy of every rendered frame (D64).
+
+    Under `render_provider: codex` a render lands on disk twice: once here, as the `file://` URL
+    the seam hands back, and once in `<asset>/slide_NN.png` where the packager copied it. Keeping
+    both doubles a nine-deck run's footprint for no reader — the folder is dot-prefixed precisely
+    because nothing is meant to look in it.
+
+    **Only on a run that reached packaging** (`session.packaged`, set at the top of `_package`).
+    On a crash, an abort or a Ctrl+C these PNGs may be the ONLY copy of what was rendered, and the
+    operator's first move is to go and look at them. Best-effort in every direction: it runs after
+    `render.aclose()` has released the client, `rmtree(ignore_errors=True)` never raises on a file
+    Windows still has open, and `_cleanup`'s own guard swallows anything that does.
+    """
+    scratch = session.run_dir / render.SCRATCH_RENDERS_DIR
+    if not scratch.is_dir():
+        return  # the kie provider never makes one, and nothing here is created just to remove it
+    await asyncio.to_thread(shutil.rmtree, scratch, True)
+    session.log.event("render_scratch_pruned",
+                      f"removed the provider scratch folder {render.SCRATCH_RENDERS_DIR}/ "
+                      "(every shipped frame is in its own asset folder)",
+                      path=str(scratch))
+
+
 async def _cleanup(session: _Session) -> None:
     """FR-249: scratch, clients and log handles released on EVERY exit path, in a safe order.
 
@@ -2705,6 +2737,8 @@ async def _cleanup(session: _Session) -> None:
     # SESSION O (D64): a proxy THIS run started dies last, after the clients that talk to it; one
     # the operator started themselves (`owned=False`) is left alone. Idempotent, never raises.
     steps.append(codex_proxy.stop(codex_proxy.current_handle()))
+    if session.packaged:  # D64: only a run that got its bytes into the asset folders (see below)
+        steps.append(_prune_render_scratch(session))
     for step in steps:
         try:
             await step

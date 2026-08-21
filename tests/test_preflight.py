@@ -1406,3 +1406,83 @@ def test_d64_a_preview_needs_the_llm_door_and_never_the_render_one(tmp_path: Pat
     clean = check(llm_only, action="preview-analysis", entries=[_deck(0)])
     assert [line for line in clean.errors if "Codex proxy" in line] == [], clean.report
     assert [hint for hint in clean.hints if "1254" in hint] == [], "a preview renders nothing"
+
+
+# ---- D64 (review round) ------------------- SESSION O: the proxy's shape is not the plan's shape
+
+
+def _image_entry(order: int, ratio: str) -> PlanEntry:
+    """A trend-backed IMAGE at one FR-21 ratio — what `plan._aspect_ratio` would have stamped."""
+    entry = _entry(order)
+    entry.aspect_ratio = ratio
+    return entry
+
+
+def test_d64_a_non_square_plan_is_warned_about_before_the_gate_not_after_the_download(
+    tmp_path: Path,
+) -> None:
+    """The proxy answers ~1254x1254 to every `size` it is sent (measured 2026-08-21).
+
+    `_SIZE_BY_RATIO` still asks for `1024x1536` on a 4:5 image, so the request is honest and the
+    ANSWER is square anyway. Silence here would let an operator approve nine Instagram images at
+    4:5 and find nine squares in the folder. A warning, never a refusal: a square post is a real,
+    publishable creative, and refusing the run would be the worse outcome.
+    """
+    _proxy_is_up()
+    config = _codex_config(tmp_path)
+    config.run.formats = {"image": 2, "carousel": 1, "reel": 0}
+    config.sources.include_videos = True  # FR-283's own pairing rule, unrelated to shape
+
+    verdict = check(config, action="run",
+                    entries=[_image_entry(0, "4:5"), _image_entry(1, "4:5"), _deck(2)])
+
+    assert verdict.ok, verdict.report
+    shape = [line for line in verdict.warnings if line.startswith("codex renders")]
+    assert shape == ["codex renders square ~1254 px; 2 creative(s) asked for 4:5 and will ship 1:1"]
+
+
+def test_d64_a_square_plan_and_the_kie_provider_both_say_nothing_about_shape(
+    tmp_path: Path,
+) -> None:
+    """Two silences worth pinning: an all-carousel plan is already 1:1, and Kie honours the ratio.
+
+    The second one is the regression guard — this warning must never appear on the metered path,
+    where a 4:5 image really does come back 4:5.
+    """
+    _proxy_is_up()
+    square_config = _codex_config(tmp_path)
+    square_config.run.formats = {"image": 0, "carousel": 2, "reel": 0}
+    all_square = check(square_config, action="run", entries=[_deck(0), _deck(1)])
+    assert [line for line in all_square.warnings
+            if line.startswith("codex renders")] == [], all_square.report
+
+    metered_config = _styled_config(tmp_path, registry=_TWO_STYLES)
+    metered_config.run.formats = {"image": 1, "carousel": 0, "reel": 0}
+    metered_config.sources.include_videos = True
+    metered = check(metered_config, action="run", entries=[_image_entry(0, "4:5")])
+    assert [line for line in metered.warnings
+            if line.startswith("codex renders")] == [], metered.report
+
+
+def test_d64_a_mixed_plan_reports_one_counted_line_per_ratio(tmp_path: Path) -> None:
+    """One event, one finding, and the count says which part of the plan is affected.
+
+    Reels are excluded on purpose: `_check_codex` already REFUSES them (no subscription path for
+    video), and a 9:16 shape warning under that refusal would be a second line about one problem.
+    """
+    _proxy_is_up()
+    reel = _image_entry(3, "9:16")
+    reel.creative_format = "reel"  # type: ignore[assignment]
+
+    mixed = _codex_config(tmp_path)
+    mixed.run.formats = {"image": 3, "carousel": 1, "reel": 1}
+    mixed.sources.include_videos = True
+    verdict = check(mixed, action="run",
+                    entries=[_image_entry(0, "4:5"), _image_entry(1, "16:9"),
+                             _image_entry(2, "4:5"), reel, _deck(4)])
+
+    assert [line for line in verdict.warnings if line.startswith("codex renders")] == [
+        "codex renders square ~1254 px; 1 creative(s) asked for 16:9 and will ship 1:1",
+        "codex renders square ~1254 px; 2 creative(s) asked for 4:5 and will ship 1:1",
+    ], verdict.report
+    assert not verdict.ok and [line for line in verdict.errors if "reel" in line], "video refused"

@@ -48,7 +48,8 @@ from collections import Counter
 from collections.abc import Mapping, Sequence
 from contextlib import suppress
 
-from hypesocials import cli, plan, preflight, runner, style_match, styles, topic_filter
+from hypesocials import (cli, codex_proxy, plan, preflight, runner, style_match, styles,
+                         topic_filter)
 from hypesocials.budget import format_usd
 from hypesocials.config import Config, ConfigError, load_config
 from hypesocials.copywrite import LANGUAGE_TARGET, MODE_AUTO, MODE_COMPRESS, CopyResult
@@ -123,6 +124,11 @@ async def _preview(opts: cli.Options, control: runner.Control | None, *, deep: b
     if verdict.report:
         print(verdict.report)
     if not verdict.ok:
+        # `ensure_backends` may have STARTED the proxy a moment ago, and this return is the one
+        # path out of a preview that never reaches `_cleanup` (no session exists yet). Leaving it
+        # running would strand an `npx` child on a $0 refusal — and the next run would find the
+        # port taken. Idempotent and silent when nothing was ever started.
+        await codex_proxy.stop(codex_proxy.current_handle())
         return runner.EXIT_PREFLIGHT
 
     session = _open(config, opts, control or runner.Control())

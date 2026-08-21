@@ -10,10 +10,15 @@ The defect these were written against still binds. A 131-character mapped panel 
 53-character mid-sentence stub on 2026-08-13, because the cut was `image_headline` (90) × 0.6
 applied to a quote nobody may shorten (FR-304 > FR-105). The verbatim carve-out below is that fix.
 
-Everything here is pure: no network, no filesystem, no money, no model.
+Everything here was pure — no network, no filesystem, no money, no model — and the last
+section is the one exception: `load_images()` is the product's ONLY frame loader (D49), and
+since D64 the frames it loads may be `file://` URLs off the local disk. Those tests write
+bytes into `tmp_path` and read them back. Still no network, no money and no model.
 """
 
 from __future__ import annotations
+
+import asyncio
 
 import pytest
 
@@ -206,3 +211,61 @@ def test_a_detail_less_verdict_still_names_the_defect() -> None:
 
     assert "no further detail was given" in plan.instruction
     assert " — ." not in plan.instruction
+
+
+# --------------------------------------------------------------- the one frame loader (D49/D64)
+#
+# `load_images()` is what every gauntlet critic call and every cover pick loads its frames with.
+# Under `render_provider: codex` a result URL is a `file://` URI into `<run>/.renders/`, and SESSION
+# O added `_file_url_path` for it without a test — so nothing pinned the two things that actually
+# break: a run folder with a SPACE in its path (`C:/Users/Pavli/My Runs/`) arrives percent-escaped,
+# and a dropped frame must not shift the frames around it (a critic reads by ATTACHMENT slot).
+
+
+def test_a_file_url_loads_including_the_spaces_and_escapes_a_windows_path_carries(
+    tmp_path,
+) -> None:
+    """`Path("file:///C:/...")` is not a path, and `%20` is not a space until it is unescaped.
+
+    Both would have surfaced as "frame not loaded" on every deck of a codex run — a silently
+    unjudged gauntlet, which is the failure mode D64's own review round already found once.
+    """
+    folder = tmp_path / "My Runs" / "renders"
+    folder.mkdir(parents=True)
+    frame = folder / "codex-abc.png"
+    frame.write_bytes(b"\x89PNG frame one")
+    url = frame.as_uri()
+    assert "%20" in url, "the fixture only proves anything if the path really is escaped"
+
+    assert vision_check._file_url_path(url) == frame
+    blobs, positions = asyncio.run(vision_check.load_images([url]))
+
+    assert blobs == [b"\x89PNG frame one"] and positions == [1]
+
+
+def test_the_loader_still_takes_plain_paths_and_bytes_and_keeps_every_position(tmp_path) -> None:
+    """Three input kinds in one call, and the 1-based slot each one came from.
+
+    `positions` is the mapping a caller needs to turn a model's attachment slot back into its own
+    slide numbering, so a frame that cannot be read has to leave a GAP in the numbers rather than
+    pulling its neighbours down one.
+    """
+    first = tmp_path / "slide_01.png"
+    first.write_bytes(b"one")
+    third = tmp_path / "slide_03.png"
+    third.write_bytes(b"three")
+    missing = (tmp_path / "gone.png").as_uri()
+
+    blobs, positions = asyncio.run(vision_check.load_images(
+        [first, b"two", missing, str(third), third.as_uri()]))
+
+    assert blobs == [b"one", b"two", b"three", b"three"]
+    assert positions == [1, 2, 4, 5], "the unreadable third input leaves a gap, not a shift"
+
+
+def test_only_a_file_scheme_is_treated_as_a_local_url() -> None:
+    """`_file_url_path` answers `None` for everything `load_images` must handle another way —
+    raw bytes, a plain path and an http(s) URL, which is fetched rather than opened."""
+    assert vision_check._file_url_path(b"bytes") is None
+    assert vision_check._file_url_path("C:/runs/slide_01.png") is None
+    assert vision_check._file_url_path("https://cdn.kie.ai/x/y.jpg") is None

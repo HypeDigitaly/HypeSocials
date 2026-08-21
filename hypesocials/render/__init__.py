@@ -65,6 +65,7 @@ from hypesocials.models import RenderOutcome, RenderParams, RenderPriority, Rend
 from hypesocials.render import profiles as _profiles
 from hypesocials.render.codex_images import CodexImageClient, CodexUploadError
 from hypesocials.render.codex_images import DEFAULT_BASE_URL as CODEX_BASE_URL
+from hypesocials.render.codex_images import RENDERS_DIR as SCRATCH_RENDERS_DIR
 from hypesocials.render.kie import KieClient, KieError, KieOutOfCredits, KieUploadError
 from hypesocials.render.profiles import ReferenceLimits, RenderProfile, UnknownProfileError
 
@@ -344,6 +345,6 @@ def _require() -> tuple[RenderSettings, ProviderClient, RenderGate]:
 __all__ = [
     "CodexUploadError", "KieError", "KieOutOfCredits", "KieUploadError", "PROVIDER_CODEX",
     "PROVIDER_KIE", "ReferenceLimits", "RenderError", "RenderGate", "RenderProfile",
-    "RenderSettings", "UnknownProfileError", "aclose", "configure", "gate_stats", "get_profile",
-    "run", "upload_file",
+    "RenderSettings", "SCRATCH_RENDERS_DIR", "UnknownProfileError", "aclose", "configure",
+    "gate_stats", "get_profile", "run", "upload_file",
 ]
