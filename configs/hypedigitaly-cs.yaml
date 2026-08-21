@@ -341,7 +341,11 @@ models:
   analysis: gpt-5.6-terra
   copy: gpt-5.6-luna
   critic: gpt-5.6-sol
-  critic_reasoning_effort: xhigh
+  # D65/FR-367: high, not xhigh. Under D64 these three configs pinned xhigh and run pm3y shipped
+  # 0 of 3 decks -- every standing defect leakage-tier, which `fail_action: degrade` cannot ship
+  # by design. The audit found the strictness was spent on layout pedantry while real content
+  # failures went unflagged, so the effort comes down and the critic PROMPTS get the rebalance.
+  critic_reasoning_effort: high
 
   # 30 min (operator decision 2026-08-10, was 600). The W6 acceptance run declared a Seedance reel
   # failed at the 600 s ceiling and wasted ~$4.78 - a timed-out job is paid and never resubmitted
