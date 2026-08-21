@@ -56,7 +56,7 @@ a rule from a past failure - never launch `run.bat` inside a normal foreground o
    @echo off
    cd /d "C:\Users\Pavli\Desktop\HypeDigitaly\GIT\HypeSocials"
    call "C:\Users\Pavli\Desktop\HypeDigitaly\GIT\HypeSocials\run.bat" --config hypedigitaly --yes > "C:\Users\Pavli\Desktop\HypeDigitaly\GIT\HypeSocials\logs\autopilot\<STAMP>.console.log" 2>&1
-   echo exit=%ERRORLEVEL%>> "C:\Users\Pavli\Desktop\HypeDigitaly\GIT\HypeSocials\logs\autopilot\<STAMP>.console.log"
+   >> "C:\Users\Pavli\Desktop\HypeDigitaly\GIT\HypeSocials\logs\autopilot\<STAMP>.console.log" echo exit=%ERRORLEVEL%
    ```
 3. Start it detached so it outlives every tool call (PowerShell tool, one line):
    `Start-Process cmd.exe -ArgumentList '/c','"C:\Users\Pavli\Desktop\HypeDigitaly\GIT\HypeSocials\logs\autopilot\<STAMP>.cmd"' -WindowStyle Hidden`
