@@ -22,7 +22,8 @@ folded in below; where a reviewer measured a number, the number is theirs).
    name, company name, number, ONE strong adjective; verbatim text untouched; renderer lights them with the
    style's accent device; critic checks (checks — not blocks).
 6. **Portrait carousels:** LinkedIn 4:5, Instagram 4:5, TikTok 9:16 (option A). One render, local crop/pad.
-7. **Matrix:** 5 source kinds × all 26 styles, 4:5, ~130 decks, $0, pre-sorted gallery + per-style score.
+7. **Matrix:** 10 source kinds × all 26 styles, 4:5, ~260 decks, $0, pre-sorted gallery + per-style score
+   (raised from 5 kinds by the operator on 2026-08-22).
 8. **Counter:** the MODEL renders it — much stronger instruction, head of every slide prompt; a missing
    counter keeps buying a re-render. NOT drawn by code.
 9. **Duplicate line → `duplicate_text`, contract tier** (re-render, then ship flagged), not leakage.
@@ -36,8 +37,8 @@ clean state FIRST. Parent chain J→K→L→M→N→O→P unmerged to `main`, me
 still stands: `pre-codex-pivot` = `b6eac4d`.
 
 **Money & quota:** every LLM call and render under the Codex subscription — $0 metered. The real
-constraints: (a) the proxy's daily image quota — this plan orders ~220 decks / ~1,500 renders across its
-barriers (W2 canary 17 + accent runs 3×17 + W3 ~6 + W4 3×4 + W5 5×26); spread them over the sessions as
+constraints: (a) the proxy's daily image quota — this plan orders ~350 decks / ~2,400 renders across its
+barriers (W2 canary 17 + accent runs 3×17 + W3 ~6 + W4 3×4 + W5 10×26); spread them over the sessions as
 written, never back-to-back on one day; (b) **Virlo is metered** — every run Collects afresh; (c) wall clock
 (`3pa5`: 17 decks in 1,124 s; `_STYLE_TEST_DEADLINE_MIN = 240`, `cli.py:69`). A `--pin-post` refusal happens
 AFTER Collect, so it is "Virlo spent, $0 renders", and the console must say so.
@@ -553,16 +554,18 @@ test + visual read), critics sanction it, identity skips fire on a creator-own s
 **Shape:** `python-pro` ×1 (aggregator tool + gallery filter), then the conductor runs and writes.
 
 - `plans/tools/style_matrix.py <run_dir>...` → `plans/SESSION-Q-STYLE-MATRIX.md`: rows = 26 styles, columns =
-  pinned posts (kind label), cell = `shipped | blocked(<tier>) | n/a`, top-3 standing codes, re-render count,
+  the 10 pinned posts (kind label), cell = `shipped | blocked(<tier>) | n/a`, top-3 standing codes, re-render count,
   counter presence share, `duplicate_mark`/`emphasis_miss`/`copy_fact_lost` counts, hue spread; per-style
   totals + rank; **METHOD section states the compress-once caveat (every deck carries the SMALLEST style's
   text) and records each deck's OWN budget beside its score.** Reads `meta.yaml`, `GAUNTLET_REPORT.yaml`,
   `BLOCKED.txt`, slide files (local Pillow).
 - Gallery: style filter + post-major grouping under `--style-test`.
-- **Runs:** 5 × `--style-test --styles all --pin-post <id> --platform instagram` (4:5) — ONE post per run,
-  26 decks each (~35–45 min; deadline floor 240 min). Posts = the five kinds (numbered tips list · single big
-  statement · tool walkthrough with screenshots · benchmark table · before/after story), ≥ 1 in DE/CS.
-  Spread over ≥ 2 days for the image quota. The conductor writes per-kind style RECOMMENDATIONS and the
+- **Runs:** 10 × `--style-test --styles all --pin-post <id> --platform instagram` (4:5) — ONE post per run,
+  26 decks each (~35–45 min; deadline floor 240 min). Posts = TEN kinds, picked from `--preview-sources`:
+  numbered tips list · single big statement · tool walkthrough with screenshots · benchmark/comparison table ·
+  before/after story · step-by-step tutorial · news/announcement · opinion/hot take · listicle of tools ·
+  data/chart explainer; ≥ 2 in DE/CS so translate is covered; ≥ 3 with real screenshots so the visual paste
+  is exercised at scale. Spread over ≥ 3 days for the image quota. The conductor writes per-kind style RECOMMENDATIONS and the
   proposed `match_profile` / `styles.enabled` changes (edits = SESSION R).
 
 **Barrier W5:** matrix file written; galleries open; `logs/trend_history.json` md5 unchanged; `output/
@@ -644,7 +647,7 @@ integer pins (W1); `reframe` ← `carousel._store` LAST + `generate/__init__.py`
   canary pins the SAME post as `3pa5`.
 - **Line growth** measured at every barrier with per-task attribution; no docstring/comment trimmed.
 - **Session sizing:** W0–W2 is one session (canary + three accent runs ≈ 2 h machine time); W3–W4 the next;
-  W5 a third (5 runs, ≥ 2 days for quota). Stop at wave boundaries only.
+  W5 a third and fourth (10 runs, ≥ 3 days for quota). Stop at wave boundaries only.
 
 ---
 
